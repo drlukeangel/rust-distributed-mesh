@@ -28,6 +28,7 @@ pub fn os_clock_skew_dir(root: &std::path::Path) -> std::path::PathBuf {
 /// (`os_clock_skew_dir`), if it recorded any. Called only by testkit executables: it proves no
 /// stamp of a node reads the OS clock (rafka-time is adopted, and the OS clock takes part in no
 /// fleet decision). A product executable never calls it. Returns the skew applied.
+#[cfg(feature = "testkit-skew")]
 pub fn skew_os_clock_from_root(root: &std::path::Path, name: &str) -> Option<i64> {
     let ms: i64 = std::fs::read_to_string(os_clock_skew_dir(root).join(name)).ok()?.trim().parse().ok()?;
     rafka_mesh_transport::clock::skew_os_clock_for_testkit(ms);

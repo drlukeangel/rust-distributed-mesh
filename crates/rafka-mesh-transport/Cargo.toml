@@ -23,6 +23,10 @@ blake3 = "1"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 bytes = "1"
 
+[features]
+# The test-only OS-clock skew (`clock::skew_os_clock_for_testkit`): enabled by the testkit alone.
+testkit-skew = []
+
 [dev-dependencies]
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 

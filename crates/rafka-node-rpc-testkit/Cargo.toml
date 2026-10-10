@@ -31,6 +31,10 @@ reqwest = { version = "0.13.3", features = ["json"] }
 [features]
 # The launcher half of a functional fabric (`rig`), shared by test crates.
 rig = []
+# The OS-clock skew a testkit executable applies from its launch environment. Default for the
+# testkit's own executables; the product role binaries depend on the testkit without it.
+default = ["testkit-skew"]
+testkit-skew = ["rafka-mesh-transport/testkit-skew"]
 
 [dev-dependencies]
 rafka-node-rpc-testkit = { path = ".", features = ["rig"] }

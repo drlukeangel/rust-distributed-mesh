@@ -25,12 +25,15 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OsClock;
 
-/// Milliseconds added to every [`OsClock`] read of this process. Zero in every product process; a
-/// testkit executable sets it from its launch environment to prove no stamp reads the OS clock.
+/// Milliseconds added to every [`OsClock`] read of this process. Present only under the
+/// `testkit-skew` feature, which only the testkit enables: a testkit executable sets it from its
+/// launch environment to prove no stamp reads the OS clock. A product build has no such symbol.
+#[cfg(feature = "testkit-skew")]
 static OS_CLOCK_SKEW_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 /// Skew every [`OsClock`] read of this process by `ms`. Called only by a testkit executable that
-/// reads a test knob from its environment; no product executable calls it.
+/// reads a test knob from its environment; no product build contains it.
+#[cfg(feature = "testkit-skew")]
 pub fn skew_os_clock_for_testkit(ms: i64) {
     OS_CLOCK_SKEW_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
 }
@@ -38,7 +41,9 @@ pub fn skew_os_clock_for_testkit(ms: i64) {
 impl Clock for OsClock {
     fn now_rafka_ms(&self) -> u64 {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-        now.saturating_add(OS_CLOCK_SKEW_MS.load(std::sync::atomic::Ordering::Relaxed)).max(0) as u64
+        #[cfg(feature = "testkit-skew")]
+        let now = now.saturating_add(OS_CLOCK_SKEW_MS.load(std::sync::atomic::Ordering::Relaxed));
+        now.max(0) as u64
     }
 }
 

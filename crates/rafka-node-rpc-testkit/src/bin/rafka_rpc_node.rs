@@ -16,7 +16,10 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    #[cfg(feature = "testkit-skew")]
     let skew = launch.data_dir.parent().and_then(|root| rafka_node_rpc_testkit::skew_os_clock_from_root(root, &launch.name.to_string()));
+    #[cfg(not(feature = "testkit-skew"))]
+    let skew: Option<i64> = None;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node = %launch.name,
