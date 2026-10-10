@@ -128,16 +128,23 @@ impl AdminSide {
 }
 
 pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true).await
+    admin_side_taking_joins(ip, fabric, true, None).await
+}
+
+/// [`admin_side`] whose rafka-time is `reference_ms` (adopted once, as a Day-0 root adopts its own
+/// clock) instead of the OS clock: a node it admits adopts that lineage, so a reading that matches
+/// it cannot have come from an OS clock.
+pub async fn admin_side_on_rafka_time(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: u64) -> AdminSide {
+    admin_side_taking_joins(ip, fabric, true, Some(reference_ms)).await
 }
 
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
 /// `NotReady` by name, always.
 pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, false).await
+    admin_side_taking_joins(ip, fabric, false, None).await
 }
 
-async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_joins: bool) -> AdminSide {
+async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_joins: bool, reference_ms: Option<u64>) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the membership silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
@@ -149,7 +156,14 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
     let gossip = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
     // The stand-in admin is the fabric's Day-0 root: it adopts its own clock once and serves it.
     let rafka_time = rafka_mesh_transport::clock::RafkaTime::unadopted();
-    rafka_node_admin_core::rafka_time::adopt_own_clock(&rafka_time, "mesh1.admin.1");
+    match reference_ms {
+        Some(ms) => {
+            rafka_time.adopt(ms);
+        }
+        None => {
+            rafka_node_admin_core::rafka_time::adopt_own_clock(&rafka_time, "mesh1.admin.1");
+        }
+    }
     let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", Arc::new(rafka_time.clone()), vec![]).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
