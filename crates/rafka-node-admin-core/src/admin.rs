@@ -3716,6 +3716,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // channel through every member of its mesh it knows.
     {
         let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
+        let (view_fabric, view_fabric_id, view_provider, view_book) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone());
         let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
         let adapter = runner.builds.clone();
         let (records, accepted, rpc_client) = (records.clone(), accepted.clone(), node_rpc.client.clone());
@@ -3749,7 +3750,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 if let Some(b) = accepted.current(&*adapter).await {
                     records.set_planned(&b.topology);
                 }
-                let t = topology.read().await.clone();
+                // Decide on the view as it is now: a cached view can predate the seat record this admin holds
+                // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
+                let t = records.install_projected(&topology, || project(&view_fabric, &view_fabric_id, view_provider, &view_book, &records)).await;
                 // The accepted Build is the authority on which meshes the fabric has: the book
                 // takes no old aggregate of a mesh it does not name, and a mesh it does not name
                 // that has no member left keeps no recorded id (a name added again is a new mesh).
