@@ -409,6 +409,11 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
     }
 }
 
+/// The processor a local span sink runs behind: the one place that decides what ending a span costs.
+pub fn evidence_processor<E: opentelemetry_sdk::export::trace::SpanExporter + 'static>(exporter: E) -> impl opentelemetry_sdk::trace::SpanProcessor {
+    SimpleSpanProcessor::new(Box::new(exporter))
+}
+
 /// Telemetry for i143 binaries. Spans go to the JSONL evidence sink when
 /// `RDM_EVIDENCE_DIR` is set and to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT`
 /// is set; with neither, only the fmt layer runs. Returns `None` when no
@@ -424,7 +429,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         match JsonlSpanExporter::create(std::path::Path::new(&dir), &service) {
             Ok(e) => {
                 evidence = Some(e.writer.clone());
-                builder = builder.with_span_processor(SimpleSpanProcessor::new(Box::new(e)));
+                builder = builder.with_span_processor(evidence_processor(e));
                 any = true;
             }
             Err(e) => eprintln!("telemetry: RDM_EVIDENCE_DIR={dir} is unusable: {e}"),
