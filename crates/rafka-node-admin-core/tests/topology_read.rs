@@ -482,6 +482,45 @@ fn a_read_while_a_birth_of_the_mesh_is_being_retired_carries_the_retirement_over
     assert_eq!((serve[0]["outcome"].as_str(), serve[0]["snapshots"].as_str()), ("served", "1"));
 }
 
+// @feature: node-lifecycle
+/// CONTRACT: an admin that joins after a node was stopped never heard the node's digest; a
+/// `GetTopology` read of the mesh carries the stop overlay, the reader holds the birth parked from
+/// it, and the reader's view lists the node `Leaving` and parked, never absent.
+#[test]
+fn a_late_reader_lists_a_stopped_node_parked_from_the_stop_overlay_a_read_carries() {
+    let cap = capture("stopped-late");
+    cap.run(async {
+        let fabric = FabricId::mint();
+        let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+        open(&server, &fabric);
+        let members: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
+        let stopped = &members[1];
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "stop-node:mesh3.rpc.2".into(),
+            node_id: stopped.node.node_id.clone(),
+            incarnation: stopped.node.incarnation.clone(),
+            name: stopped.node.name.clone(),
+            event_at_rafka_ms: 1,
+        };
+        // The mesh primary's snapshot after the stop: the parked birth's digest is dropped, its overlay stays.
+        let kept: Vec<MeshDigest> = members.iter().filter(|d| d.node.node_id != stopped.node.node_id).cloned().collect();
+        let mut s = snap("mesh3", &publisher("mesh3.admin.1"), 4, kept);
+        s.in_flight = vec![op.clone()];
+        hold(&server.membership, &s);
+        let t = target_of(&caller, &server);
+        get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh3"), None).await.unwrap();
+        assert!(caller.membership.book.get(stopped.node.node_id.as_str()).is_none(), "the reader never held the stopped node's digest");
+        assert_eq!(caller.membership.book.parked_unheard(), vec![op]);
+        let view = rafka_node_admin_core::admin::project("fabric1", &fabric, rafka_node_admin_core::model::ProviderKind::Process, &caller.membership.book, &rafka_node_admin_core::admin::Records::default());
+        let n = view.node(&stopped.node.name).expect("the parked node is listed");
+        assert_eq!((n.status, n.parked, n.routable), (rafka_node_admin_core::model::NodeStatus::Leaving, true, false));
+        server.ep.close().await;
+        caller.ep.close().await;
+    });
+}
+
 fn stored_of(d: &MeshDigest) -> rafka_node_rpc_contract::topology::StoredNode {
     rafka_node_rpc_contract::topology::StoredNode { node_id: d.node.node_id.clone(), name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id.clone(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr }
 }

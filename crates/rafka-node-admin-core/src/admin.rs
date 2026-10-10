@@ -694,6 +694,31 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         }
         nodes.entry(name).or_insert(n);
     }
+    // A parked birth this admin never held a digest of (it joined after the stop): the stop
+    // overlay the mesh topology carried names it, `Leaving` and `parked`, until it rejoins or departs.
+    for op in book.parked_unheard() {
+        if book.is_departed(op.node_id.as_str()) {
+            continue;
+        }
+        heard.insert(op.incarnation.clone());
+        let name = if renamed.contains(&(op.node_id.clone(), op.incarnation.clone())) { op.name.renamed() } else { op.name.clone() };
+        if removed.contains(&(name.clone(), Some(op.incarnation.clone()))) {
+            continue;
+        }
+        let mut n = Node::allocated(name.clone());
+        n.node_id = op.node_id.clone();
+        n.incarnation_id = Some(op.incarnation.clone());
+        n.provider = Some(provider);
+        n.status = if records.is_exited(&op.node_id, &op.incarnation) { NodeStatus::Dead } else { NodeStatus::Leaving };
+        n.parked = n.status == NodeStatus::Leaving;
+        n.routable = false;
+        n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
+        if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
+            n.deployment_id = r.deployment_id.clone();
+            n.data_dir = r.data_dir.clone();
+        }
+        nodes.entry(name).or_insert(n);
+    }
     // Births this admin started that have not reported yet. A launch record
     // stands in for a birth only until membership speaks for it: once heard,
     // it never revives the birth (another admin may have retired it since). A

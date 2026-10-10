@@ -3365,6 +3365,20 @@ impl DigestBook {
         self.stopped_marks.lock().unwrap().values().filter_map(|(_, _, d)| d.clone()).collect()
     }
 
+    /// The open stop overlays of parked births this book never held a digest of (an admin that
+    /// joined after the stop and read the overlay from the mesh topology): the only facts it has of
+    /// them are the overlay's own, the node's path, id and incarnation.
+    pub fn parked_unheard(&self) -> Vec<LifecycleOp> {
+        let marks = self.stopped_marks.lock().unwrap();
+        self.in_flight
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|op| op.is_stop() && marks.get(op.node_id.as_str()).is_some_and(|(inc, _, held)| *inc == op.incarnation && held.is_none()))
+            .cloned()
+            .collect()
+    }
+
     /// The stop of `node_id` is over (it rejoined, or departed): its overlay and mark clear.
     fn end_stop(&self, node_id: &str) {
         self.stopped_marks.lock().unwrap().remove(node_id);
