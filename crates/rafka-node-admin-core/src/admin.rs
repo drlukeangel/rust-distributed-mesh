@@ -248,6 +248,9 @@ pub struct Records {
     /// What wakes the declarer (`crate::status_declare`): poked by the topology, this admin's own
     /// digest status, the declare gate, the meshes this admin holds and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
+    /// Poked each time the installed view changes: the hierarchy loop wakes on it to publish a
+    /// material change (a seat taken, a status that routing reads) at once, not on its next round.
+    pub view_changed: tokio::sync::Notify,
     /// This admin does not hold the fabric-primary role and the last fabric status published is
     /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
     published_degraded: std::sync::atomic::AtomicBool,
@@ -440,6 +443,7 @@ impl Records {
             drop(held);
             self.view_tick.send_modify(|v| *v += 1);
             self.wake.poke();
+            self.view_changed.notify_one();
         }
         t
     }
@@ -3840,10 +3844,24 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 backbone.join_admins(admins).await;
                 let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
                 // The next round is due after one gossip interval, or at once when a checklist the
-                // fabric-primary waits on, or the application's answer, moved.
-                tokio::select! {
-                    _ = tokio::time::sleep(gossip_interval()) => {}
-                    _ = fabric_rounds.climb_due() => {}
+                // fabric-primary waits on, or the application's answer, moved, or when the view changes
+                // what the round publishes: this admin takes or loses a seat, or its mesh's status moves
+                // (gossip.md §3.2, a material change is published at once).
+                let round_ends = tokio::time::Instant::now() + gossip_interval();
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(round_ends) => break,
+                        _ = fabric_rounds.climb_due() => break,
+                        _ = records.view_changed.notified() => {
+                            let now = topology.read().await.clone();
+                            let live = membership.authorizes();
+                            let (mp, fp) = (live && now.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me), live && now.fabric_primary().is_some_and(|n| n.name == me));
+                            let status = now.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
+                            if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         });
