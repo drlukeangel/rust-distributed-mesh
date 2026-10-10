@@ -121,3 +121,24 @@ fn a_peer_mesh_primary_forwards_mesh_frames_once_and_the_authors_mesh_does_not()
         assert!(forward_of(forwarded, "mesh3.admin.1", "mesh3").is_none(), "a forwarded frame is not forwarded again");
     }
 }
+
+/// CONTRACT: `NodeStopped` is variant 22, appended after `TrafficOpened` (21); it is the lifecycle op
+/// (build, attempt, operation, node id, incarnation, path.name, event instant) then the forwarding
+/// primary, the shape of the other node lifecycle frames. A peer mesh's primary forwards it onto its
+/// own channel, preserving the op; the frame's own mesh hears the original.
+#[test]
+fn node_stopped_matches_the_frozen_wire_schema_and_is_forwarded_by_a_peer_mesh_primary() {
+    let hex = "16 05626c645f31011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00";
+    let frame = Frame::NodeStopped { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None };
+    assert_eq!(frame.encode(), bytes(hex));
+    assert_eq!(Frame::decode(&bytes(hex)).unwrap().encode(), bytes(hex), "decodes and re-encodes to the same bytes");
+    let forwarded = forward_of(frame.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
+    match forwarded {
+        Frame::NodeStopped { op: forwarded_op, forwarded_by } => {
+            assert_eq!(forwarded_op, op("stop-node:mesh1.rpc.1"), "the op is preserved");
+            assert_eq!(forwarded_by.as_deref(), Some("mesh2.admin.1"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(forward_of(frame, "mesh1.admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
+}

@@ -539,6 +539,16 @@ pub enum Frame {
         /// The admin or primary that forwards the frame.
         forwarded_by: Option<String>,
     },
+    /// The mesh executor holding `op` (`stop-node:<path>`) received the exact birth's `left` on the
+    /// stop call's own reply: the birth is parked (its process alive, its endpoint bound) and
+    /// gossips nothing. Every node drops it from its book until the birth itself rejoins. Same
+    /// channel as `NodeDeleting`; carried in `Members.in_flight` while open.
+    NodeStopped {
+        /// The stop being executed.
+        op: LifecycleOp,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
 }
 
 impl Frame {
@@ -1037,6 +1047,7 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeRestarting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeStopped { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeDraining { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDraining { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeft { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeft { op, forwarded_by: Some(me.to_string()) }),
@@ -1614,6 +1625,10 @@ impl View {
                 self.book.restarting(op.clone());
                 Vec::new()
             }
+            Frame::NodeStopped { op, .. } => {
+                self.book.stopped(op.clone());
+                Vec::new()
+            }
             Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeDrained { op, forwarded_by } => {
                 let kind = match f {
                     Frame::NodeDraining { .. } => "node-draining",
@@ -1942,6 +1957,8 @@ impl View {
         for op in full.in_flight() {
             if op.is_restart() {
                 self.book.restarting(op);
+            } else if op.is_stop() {
+                self.book.stopped(op);
             } else {
                 self.book.deleting(op);
             }
@@ -2904,6 +2921,10 @@ pub struct DigestBook {
     departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
     in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
+    /// The parked births (`NodeStopped`) by NodeId: the incarnation and the highest `digest_seq`
+    /// this book held of it when it dropped it. Only that birth's own rejoin (a `Pending`, or a
+    /// `ReadyForTraffic` after a `Draining`, with a higher sequence) reopens it.
+    stopped_marks: Arc<Mutex<HashMap<String, (IncarnationId, u64)>>>,
     /// The meshes this book heard `mesh-leaving` for and not yet `mesh-left`, by mesh id: Leaving.
     /// Nothing is kept of a mesh once its `mesh-left` is applied.
     leaving: Arc<Mutex<BTreeMap<String, LeavingMesh>>>,
@@ -3002,6 +3023,7 @@ impl DigestBook {
             heard: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
             in_flight: Arc::default(),
+            stopped_marks: Arc::default(),
             leaving: Arc::default(),
             accepted_meshes: Arc::default(),
             retention,
@@ -3061,6 +3083,7 @@ impl DigestBook {
             departed.insert(id.clone(), (op.clone(), now));
         }
         fence_incarnation(&op.node_id, &op.incarnation);
+        self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().remove(&op.key());
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
@@ -3110,15 +3133,89 @@ impl DigestBook {
         self.in_flight.lock().unwrap().values().find(|op| op.is_restart() && op.node_id.as_str() == node_id && &op.incarnation == incarnation).cloned()
     }
 
-    /// A later birth of `d`'s NodeId is held: every open restart of an earlier birth is over.
-    fn close_restarts(&self, d: &MeshDigest) {
+    /// `d` was taken, and `prior` was the status the book held of the node before it (`None` when it
+    /// held none): an open restart of the node is over when the same birth rejoins, a `Pending`
+    /// digest (its start) or a `ReadyForTraffic` one after a `Draining` or `Leaving` the restart
+    /// began with.
+    fn close_restarts(&self, d: &MeshDigest, prior: Option<rafka_mesh_entity::MemberStatus>) {
+        use rafka_mesh_entity::MemberStatus::{Draining, Leaving, Pending, ReadyForTraffic};
+        let rejoin = d.status == Pending || (d.status == ReadyForTraffic && matches!(prior, Some(Draining | Leaving) | None));
         let mut in_flight = self.in_flight.lock().unwrap();
         let before = in_flight.len();
-        in_flight.retain(|_, op| !(op.is_restart() && op.node_id == d.node.node_id && op.incarnation != d.node.incarnation));
+        in_flight.retain(|_, op| !(op.is_restart() && op.node_id == d.node.node_id && op.incarnation == d.node.incarnation && rejoin));
         if in_flight.len() != before {
             tracing::info_span!("rdm.mesh.membership.update.via-node-restarted", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0)
-                .in_scope(|| tracing::info!("the restarted node's new birth is heard: the restart is over"));
+                .in_scope(|| tracing::info!("the restarted node is heard again: the restart is over"));
         }
+    }
+
+    /// Accept a parked birth (`op` is `stop-node:<path>`, naming the birth that stopped): the node
+    /// leaves the book and is not routable, and its own rejoin is the only digest that brings it
+    /// back (`stopped_refuses`). `false` when already held, when the node departed, or when a later
+    /// birth of the node is held (the stop is of an older birth).
+    pub fn stopped(&self, op: LifecycleOp) -> bool {
+        if self.is_departed(op.node_id.as_str()) {
+            return false;
+        }
+        let held = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| (d.node.incarnation.clone(), d.digest_seq, d.status));
+        if held.as_ref().is_some_and(|(inc, _, _)| *inc != op.incarnation) {
+            return false;
+        }
+        let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
+        if !new {
+            return false;
+        }
+        let seq = held.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
+        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), seq));
+        let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
+        tracing::info_span!(
+            "rdm.mesh.membership.remove.via-node-stopped",
+            node = %op.name,
+            node_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            build_id = %op.build_id,
+            attempt = op.attempt,
+            operation = %op.operation,
+            was_held = removed,
+            held_status = held.as_ref().map(|(_, _, st)| format!("{st:?}")).unwrap_or_default(),
+            held_digest_seq = seq,
+        )
+        .in_scope(|| tracing::info!("the exact birth is parked: dropped from the view, it is heard again only when it rejoins as itself"));
+        self.births.send_modify(|v| *v += 1);
+        true
+    }
+
+    /// Whether `d` is refused because its birth is parked: only the birth's own rejoin, a digest of
+    /// the parked incarnation with a higher sequence than the one held when it was dropped and a
+    /// status of `Pending` or `ReadyForTraffic`, is taken (and ends the stop). A digest of another
+    /// birth of the node ends the stop and is taken by the rules of any birth.
+    fn stopped_refuses(&self, d: &MeshDigest) -> bool {
+        let mark = self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).cloned();
+        let Some((incarnation, seq)) = mark else { return false };
+        let rejoin = incarnation != d.node.incarnation || (d.digest_seq > seq && matches!(d.status, rafka_mesh_entity::MemberStatus::Pending | rafka_mesh_entity::MemberStatus::ReadyForTraffic));
+        if !rejoin {
+            tracing::info_span!(
+                "rdm.mesh.membership.reject.via-stopped-birth",
+                node = %d.node.name,
+                node_id = %d.node.node_id,
+                incarnation_id = %d.node.incarnation.0,
+                status = ?d.status,
+                digest_seq = d.digest_seq,
+                held_digest_seq = seq,
+            )
+            .in_scope(|| tracing::info!("a digest of a parked birth that is not its rejoin: refused, the stop stands"));
+            return true;
+        }
+        self.end_stop(d.node.node_id.as_str());
+        tracing::info_span!("rdm.mesh.membership.update.via-node-started", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0, status = ?d.status, digest_seq = d.digest_seq)
+            .in_scope(|| tracing::info!("the parked birth rejoined as itself: held again"));
+        false
+    }
+
+    /// The stop of `node_id` is over (it rejoined, or departed): its overlay and mark clear.
+    fn end_stop(&self, node_id: &str) {
+        self.stopped_marks.lock().unwrap().remove(node_id);
+        self.in_flight.lock().unwrap().retain(|_, o| !(o.is_stop() && o.node_id.as_str() == node_id));
     }
 
     /// Accept an open lifecycle overlay: the node stays held and stops being
@@ -3242,6 +3339,7 @@ impl DigestBook {
             departed.insert(id.clone(), (op.clone(), Instant::now()));
         }
         fence_incarnation(&op.node_id, &op.incarnation);
+        self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
         self.inner.lock().unwrap().remove(&id);
         true
@@ -3296,6 +3394,9 @@ impl DigestBook {
             reject_departed(&d, "mesh-channel");
             return false;
         }
+        if self.stopped_refuses(&d) {
+            return false;
+        }
 
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
@@ -3311,6 +3412,7 @@ impl DigestBook {
                 return false;
             }
         }
+        let prior = inner.get(d.node.node_id.as_str()).map(|(held, _, _)| held.status);
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.status != d.status || now.saturating_duration_since(*at) > self.staleness_floor);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Direct));
@@ -3318,8 +3420,8 @@ impl DigestBook {
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
+        self.close_restarts(&d, prior);
         if birth_changed {
-            self.close_restarts(&d);
             self.births.send_modify(|v| *v += 1);
         }
         true
@@ -3343,6 +3445,9 @@ impl DigestBook {
             reject_departed(&d, "forwarded");
             return false;
         }
+        if self.stopped_refuses(&d) {
+            return false;
+        }
         let mut inner = self.inner.lock().unwrap();
         let mut held_entry = None;
         if let Some((held, at, heard)) = inner.get(d.node.node_id.as_str()) {
@@ -3362,6 +3467,7 @@ impl DigestBook {
             }
             held_entry = Some((*at, *heard));
         }
+        let prior = inner.get(d.node.node_id.as_str()).map(|(held, _, _)| held.status);
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
@@ -3370,8 +3476,8 @@ impl DigestBook {
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
+        self.close_restarts(&d, prior);
         if birth_changed {
-            self.close_restarts(&d);
             self.births.send_modify(|v| *v += 1);
         }
         true
@@ -3385,6 +3491,9 @@ impl DigestBook {
     fn record_forwarded_inner(&self, d: MeshDigest, now: Instant) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "forwarded");
+            return false;
+        }
+        if self.stopped_refuses(&d) {
             return false;
         }
 
@@ -3402,6 +3511,7 @@ impl DigestBook {
                 return false;
             }
         }
+        let prior = inner.get(d.node.node_id.as_str()).map(|(held, _, _)| held.status);
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
@@ -3409,8 +3519,8 @@ impl DigestBook {
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
+        self.close_restarts(&d, prior);
         if birth_changed {
-            self.close_restarts(&d);
             self.births.send_modify(|v| *v += 1);
         }
         true
@@ -3700,27 +3810,100 @@ mod tests {
         assert!(!book.depart(o), "a second copy of the departure is a no-op");
     }
 
-    /// CONTRACT (fabric-node-lifecycle.md Restarting, fabric-mesh-ops.md §3 pre-event): a
-    /// `NodeRestarting` for the exact birth holds it as restarting and not routable through its
-    /// own Leaving; the later birth of the same NodeId (superseding it) is taken and closes the
-    /// restart; a repeat of the event after that is refused, and nothing departs.
+    /// CONTRACT (ops-naming, restart = stop then start on the parked process): a `NodeRestarting`
+    /// for the exact birth holds it as restarting and not routable through its own `Draining`
+    /// and `Leaving`; the SAME birth rejoining (its start: a `Pending` digest) is taken and closes
+    /// the restart; a repeat of the event after that is a new restart of the same birth and holds
+    /// it again, and nothing departs. Must NOT happen: a status the restart itself passes through,
+    /// or a late digest, ending the restart.
     #[test]
-    fn a_restart_holds_the_birth_until_its_later_birth_is_heard() {
+    fn a_restart_holds_the_birth_until_the_same_birth_rejoins() {
         let book = DigestBook::default();
-        let (id, old, new) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        assert!(book.record(digest(&id, &old, None, MemberStatus::ReadyForTraffic, 100)));
-        let r = op(&id, &old, "restart-node:mesh1.rpc.1");
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        let r = op(&id, &inc, "restart-node:mesh1.rpc.1");
         assert!(book.restarting(r.clone()));
         assert!(!book.restarting(r.clone()), "the same event twice is applied once");
-        assert!(book.restart_of(id.as_str(), &old).is_some());
+        assert!(book.restart_of(id.as_str(), &inc).is_some());
         assert!(!book.routable(id.as_str()), "a restarting birth is not routable");
-        assert!(book.record(digest(&id, &old, None, MemberStatus::Leaving, 200)), "its own Leaving is taken");
-        assert!(book.restart_of(id.as_str(), &old).is_some(), "the Leaving does not end the restart");
-        assert!(book.record(digest(&id, &new, Some(old.clone()), MemberStatus::Pending, 300)), "the later birth is taken");
-        assert!(book.restart_of(id.as_str(), &old).is_none(), "the later birth closes the restart");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 150)), "a heartbeat before the drain is taken");
+        assert!(book.restart_of(id.as_str(), &inc).is_some(), "a heartbeat of the running birth does not end the restart");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 160)), "its own Draining is taken");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Leaving, 200)), "its own Leaving is taken");
+        assert!(book.restart_of(id.as_str(), &inc).is_some(), "the Leaving does not end the restart");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 300)), "the same birth's start is taken");
+        assert!(book.restart_of(id.as_str(), &inc).is_none(), "the same birth rejoining closes the restart");
         assert!(book.routable(id.as_str()));
-        assert!(!book.restarting(r), "a late copy of the event after the later birth is refused");
         assert!(book.departed().is_empty(), "a restart departs nothing");
+        assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, inc, "the book shows the same birth throughout");
+    }
+
+    /// CONTRACT (ops-naming, `node.stop`): a `NodeStopped` for the exact birth drops it from the
+    /// book and keeps it unroutable; digests the parked birth sent before it stopped (a late
+    /// `Draining`, an older heartbeat) never bring it back; its own rejoin (a `Pending` digest with a
+    /// higher sequence) does, as the same birth, and closes the stop; a departure ends the stop for good.
+    #[test]
+    fn a_stopped_birth_leaves_the_book_and_only_its_own_rejoin_brings_it_back() {
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
+        let o = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        assert!(book.stopped(o.clone()));
+        assert!(!book.stopped(o.clone()), "the same event twice is applied once");
+        assert!(book.get(id.as_str()).is_none(), "dropped from the book");
+        assert!(!book.routable(id.as_str()));
+        assert_eq!(book.in_flight(), vec![o.clone()]);
+        assert!(book.departed().is_empty(), "a stop departs nothing");
+        for late in [digest(&id, &inc, None, MemberStatus::Draining, 111), digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 105), digest(&id, &inc, None, MemberStatus::Pending, 109)] {
+            assert!(!book.record(late.clone()), "{late:?}");
+            assert!(!book.record_forwarded(late.clone()), "{late:?}");
+            assert!(!book.record_topology(late.clone()), "{late:?}");
+        }
+        assert!(book.get(id.as_str()).is_none(), "no late digest brought it back");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 120)), "its own rejoin is taken");
+        assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, inc, "the same birth");
+        assert!(book.in_flight().is_empty(), "the rejoin closes the stop");
+        assert!(book.routable(id.as_str()));
+        // A departure ends a stop for good.
+        let o2 = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        assert!(book.stopped(LifecycleOp { attempt: 2, ..o2 }));
+        assert!(book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1")));
+        assert!(book.in_flight().is_empty(), "the departure cleared the stop overlay");
+        assert!(!book.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a departed node never returns");
+    }
+
+    /// CONTRACT: a stop of an older birth than the one held, and a stop of a departed node, are refused;
+    /// a node this book holds nothing of is marked parked all the same (a late joiner reads it from
+    /// the aggregate's open overlays) and refuses what is not its rejoin.
+    #[test]
+    fn a_stop_of_another_birth_is_refused_and_one_for_an_unheld_node_still_parks_it() {
+        let book = DigestBook::default();
+        let (id, old, new) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &new, Some(old.clone()), MemberStatus::ReadyForTraffic, 100)));
+        assert!(!book.stopped(op(&id, &old, "stop-node:mesh1.rpc.1")), "the stop names a birth the held one superseded");
+        assert!(book.get(id.as_str()).is_some());
+        let late_joiner = DigestBook::default();
+        assert!(late_joiner.stopped(op(&id, &new, "stop-node:mesh1.rpc.1")));
+        assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::Draining, 90)));
+        assert!(late_joiner.record(digest(&id, &new, None, MemberStatus::Pending, 1)));
+    }
+
+    /// CONTRACT: a stop is an open overlay of its mesh's aggregate (`Members.in_flight`), recognised
+    /// by its operation, so a node that never heard the frame reads the node as parked from the aggregate.
+    #[test]
+    fn a_stop_overlay_rides_the_aggregate_and_is_told_from_a_restart_by_its_operation() {
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let book = DigestBook::default();
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        assert!(stop.is_stop() && !stop.is_restart());
+        assert!(!op(&id, &inc, "restart-node:mesh1.rpc.1").is_stop());
+        assert!(!op(&id, &inc, "retire-node:mesh1.rpc.1").is_stop());
+        assert!(book.stopped(stop.clone()));
+        let (in_flight, departed) = book.overlays_of("mesh1");
+        assert_eq!(in_flight, vec![stop]);
+        assert!(departed.is_empty());
     }
 
     #[test]
@@ -4107,29 +4290,28 @@ mod tests {
         assert_eq!(c.observe(false, healed + floor), None);
     }
 
-    /// CONTRACT (i143 R-J1 follow-up): a member whose restart is open is held through it, but its
-    /// address is the address of a birth that is going or gone: the repair refeed never hands it
-    /// to the channel again, however long the member has been silent. The later birth closes the
-    /// restart and the member is a target again at its new address.
+    /// CONTRACT (i143 R-J1 follow-up, ops-naming): a member whose restart is open is held through
+    /// it, but it is a parked birth that answers nobody and gossips nothing: the repair refeed
+    /// never hands its address to the channel again, however long the member has been silent. The
+    /// same birth rejoining closes the restart and the member is a target again at its address.
     #[test]
     fn a_member_under_an_open_restart_is_never_a_repair_target() {
         let book = DigestBook::default();
-        let (id, old, new) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let key = iroh::SecretKey::generate().public().to_string();
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
-        let mut d = digest(&id, &old, None, MemberStatus::ReadyForTraffic, 100);
+        let mut d = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100);
         d.node.endpoint_id = EndpointId(key.clone());
         assert!(book.record_at(d.clone(), long_ago));
         assert_eq!(held_targets(&book, |_| true).len(), 1, "a silent held member is a repair target");
-        assert!(book.restarting(op(&id, &old, "restart-node:mesh1.rpc.1")));
-        assert!(held_targets(&book, |_| true).is_empty(), "its restart is open: its old address is never handed to the channel");
-        let mut next = digest(&id, &new, Some(old.clone()), MemberStatus::Pending, 300);
+        assert!(book.restarting(op(&id, &inc, "restart-node:mesh1.rpc.1")));
+        assert!(held_targets(&book, |_| true).is_empty(), "its restart is open: its address is never handed to the channel");
+        let mut next = digest(&id, &inc, None, MemberStatus::Pending, 300);
         next.node.endpoint_id = EndpointId(key);
-        next.node.transport_addr = "127.0.0.1:41999".parse().unwrap();
         assert!(book.record_at(next, long_ago));
         let targets = held_targets(&book, |_| true);
-        assert_eq!(targets.len(), 1, "the later birth closes the restart");
-        assert_eq!(targets[0].addr.ip_addrs().next().map(|a| a.port()), Some(41999), "and is a target at its own address");
+        assert_eq!(targets.len(), 1, "the same birth rejoining closes the restart");
+        assert_eq!(targets[0].addr.ip_addrs().next().map(|a| a.port()), Some(41000), "and is a target at its own address");
     }
 
     fn born(mesh: &str, kind_ordinal: &str, mesh_id: Option<&MeshId>, at: u64) -> MeshDigest {

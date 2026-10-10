@@ -69,6 +69,12 @@ impl LifecycleOp {
         self.operation.starts_with("restart-node:")
     }
 
+    /// A stop operation (`stop-node:<path>`): the birth is parked and rejoins as itself; its
+    /// departure is `NodeStopped`, never `NodeDeleted`.
+    pub fn is_stop(&self) -> bool {
+        self.operation.starts_with("stop-node:")
+    }
+
     /// The operation's identity: the same for its `NodeDeleting` and `NodeDeleted`.
     pub fn key(&self) -> (String, u32, String) {
         (self.build_id.clone(), self.attempt, self.operation.clone())
