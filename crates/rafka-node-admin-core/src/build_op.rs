@@ -71,7 +71,7 @@ pub fn refusal_reply(r: Refusal) -> BuildReply {
 
 impl BuildDoor {
     /// A change a caller submitted: a new Build or the next attempt of the accepted one.
-    async fn accept(&self, change: &BuildChange) -> Result<crate::http::Opened, BuildReply> {
+    async fn admit_change(&self, change: &BuildChange) -> Result<crate::http::Opened, BuildReply> {
         let cp = &self.control;
         let node_span = |node: &PathName| tracing::info_span!("rdm.node_admin.build.update.via-node-rpc", route = "build.create", build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %node);
         let created = |change: &TopologyChange| {
@@ -146,7 +146,7 @@ impl BuildDoor {
     async fn create(&self, submit: BuildSubmit, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         match submit {
             BuildSubmit::Change(change) => {
-                let opened = match self.accept(&change).await {
+                let opened = match self.admit_change(&change).await {
                     Ok(o) => o,
                     Err(refusal) => return Ok(refusal),
                 };

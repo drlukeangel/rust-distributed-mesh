@@ -108,6 +108,8 @@ impl DeploymentProvider for Up {
 struct Membership {
     published: Mutex<Option<Publication>>,
     joined: AtomicBool,
+    /// While set, the node is not ready and this is what its Ready check names.
+    not_ready: Mutex<Option<String>>,
 }
 
 #[async_trait::async_trait]
@@ -116,7 +118,10 @@ impl NodeObserver for Membership {
         self.joined.load(Ordering::SeqCst).then(|| self.published.lock().unwrap().clone()).flatten()
     }
     async fn ready(&self, _: &Node) -> Result<(), String> {
-        Ok(())
+        match self.not_ready.lock().unwrap().clone() {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
     }
 }
 
@@ -253,7 +258,7 @@ impl Rig {
         };
         let runs = Arc::new(AttemptRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), membership: Arc::new(Membership { published: Mutex::new(None), joined: AtomicBool::new(false) }), sink: Arc::default(), template, data_root }
+        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), membership: Arc::new(Membership { published: Mutex::new(None), joined: AtomicBool::new(false), not_ready: Mutex::new(None) }), sink: Arc::default(), template, data_root }
     }
 
     /// Run the create pipeline for `name` in `attempt` of `build`, as the executing admin does once
@@ -393,6 +398,53 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     let join_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForMeshJoin").collect();
     assert_eq!(join_step.len(), 1, "the pipeline ran the join step once");
     assert_eq!(join_step[0]["attributes"]["outcome"], "failed", "and it failed there");
+}
+
+/// CONTRACT: a create whose node has joined but is not ready (its Ready check names a blocker, as an
+/// application's `hydrate_before_ready` does) streams one `Blocked { operation, step, reason }` frame
+/// naming the step in flight and the check's own reason, however many times the check is polled with
+/// that reason; the blocker is live progress, so the stream goes on, and when the node is ready it
+/// emits `node.ready` and `Complete`.
+#[test]
+fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() {
+    let cap = capture();
+    let (blocked, after) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let why = "mesh1.rpc.3: hydrate_before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on authority-ready";
+        *rig.membership.not_ready.lock().unwrap() = Some(why.to_string());
+        rig.membership.joined.store(true, Ordering::SeqCst);
+        let served = serve(door(&rig, Duration::from_secs(30)).await).await;
+        let nodes = nodes_over(&served.carrier);
+        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let build = BuildId(stream.accepted().build_id.0.clone());
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
+        });
+        let mut blocked = None;
+        while blocked.is_none() {
+            match tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the stream went quiet before any Blocked frame") {
+                Some(Ok(f @ Frame::Blocked { .. })) => blocked = Some(f),
+                Some(Ok(_)) => {}
+                other => panic!("the stream ended before the node's blocker was framed: {other:?}"),
+            }
+        }
+        // The Ready check polls again with the same reason: no second frame. Then the node is ready.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        *rig.membership.not_ready.lock().unwrap() = None;
+        let (after, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
+        (blocked.unwrap(), after)
+    });
+    assert_eq!(
+        blocked,
+        Frame::Blocked {
+            operation: "create-node:mesh1.rpc.3".into(),
+            step: "WaitForNodeReady".into(),
+            reason: "mesh1.rpc.3: hydrate_before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on authority-ready".into()
+        }
+    );
+    assert_eq!(after, [Frame::Event(NodeEvent::Ready), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
 }
 
 /// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
