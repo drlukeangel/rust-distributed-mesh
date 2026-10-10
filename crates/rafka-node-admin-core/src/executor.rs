@@ -163,11 +163,11 @@ pub enum Reconciled {
 /// Runs the attempt of an accepted Build that the fabric-primary claimed for this admin.
 ///
 /// An executor never claims and never picks a Build up from its projection: the fabric-primary
-/// decides the claim on its own log and calls [`BuildExecutor::run_attempt`] with the won claim
-/// (`build_run::RunDoor`, op `0x20` `build.attempt.run`). The executor records the claim, re-reads
-/// the Build's pinned intent and the observed topology, plans what is left and runs it; it never
-/// resumes from a saved instruction pointer and never mints a build id. A successor after the
-/// executor's loss runs exactly the same from its own projection of the Build.
+/// decides the claim on its own log, plans the run (the contiguous operations this executor
+/// executes) and calls [`BuildExecutor::run_attempt`] with the won claim and that [`RunPlan`]
+/// (`build_run::RunDoor`, op `0x20` `build.attempt.run`). The executor records the claim and runs
+/// exactly the operations the call carries; it does not plan, it re-reads no topology to decide what
+/// is left, it never resumes from a saved instruction pointer and never mints a build id.
 ///
 /// Which admin executes an operation (PRD §12.1, `executor_for`): a mesh's admin primary runs the
 /// operations on that mesh's members, its node-admins included; the fabric primary runs everything
