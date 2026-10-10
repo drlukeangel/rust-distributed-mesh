@@ -165,6 +165,10 @@ pub async fn run(role: Role) -> Result<()> {
         drop(drain);
     }
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
-    running.stop(leave_linger_from_env()).await;
+    if rafka_node_rpc_testkit::node::stop_commanded() {
+        running.stop_commanded().await;
+    } else {
+        running.stop(leave_linger_from_env()).await;
+    }
     Ok(())
 }

@@ -1898,16 +1898,20 @@ impl Running {
     /// announcement can be lost; an attempt the executor was running is
     /// continued by the Build's next attempt.
     pub async fn leave(self) {
-        self.leave_with(true).await
+        self.leave_with(true, true).await
     }
 
     /// Leave after a `stop-node` was admitted: `Leaving` with no `Draining` say (stop has no
-    /// implicit drain), then the same linger and close.
+    /// implicit drain). A mesh primary keeps its aggregate publisher through its Leaving linger
+    /// (mesh-leave.md: "the mesh-primary keeps its aggregate publisher alive through its own
+    /// Leaving linger"); any other admin has no aggregate to publish, its `node-left` has been
+    /// accepted, so it says Leaving once and closes.
     pub async fn leave_after_stop(self) {
-        self.leave_with(false).await
+        let linger = self.backbone.is_mesh_primary();
+        self.leave_with(false, linger).await
     }
 
-    async fn leave_with(self, say_draining: bool) {
+    async fn leave_with(self, say_draining: bool, linger: bool) {
         // A leaving holder yields before it says anything: its Build log decides nothing after
         // this, and the committed facts are with the neighbours before the new holder acts.
         if let Err(e) = self.builds.yield_seat("leaving").await {
@@ -1942,7 +1946,7 @@ impl Running {
         // publisher of this admin's membership.
         let announcement = std::sync::atomic::AtomicU32::new(0);
         let (linger_started, waited) = (std::time::Instant::now(), rafka_mesh_transport::membership::runqueue_wait());
-        let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
+        let announce = || {
             let d = say(MemberStatus::Leaving);
             let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let (m, bb, me, seam) = (self.membership.clone(), self.backbone.clone(), me.clone(), self.leave_seam.clone());
@@ -1979,8 +1983,13 @@ impl Running {
                 bb_span.record("outcome", outcome);
                 bb_span.in_scope(|| tracing::info!("said Leaving among this mesh's members on the backbone"));
             }
-        })
-        .await;
+        };
+        let said = if linger {
+            announce_leaving(leave_linger_from_env(), LEAVE_EVERY, announce).await
+        } else {
+            announce().await;
+            1
+        };
         tracing::info!(
             announcements = said,
             linger_ms = linger_started.elapsed().as_millis() as u64,

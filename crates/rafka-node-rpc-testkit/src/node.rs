@@ -114,6 +114,19 @@ impl RunningNode {
         }
     }
 
+    /// The shutdown that follows an admitted `stop-node` (node-stop.md): the node already entered
+    /// `Leaving`, published it and called `node-left` while its endpoint was open
+    /// (`node_self`), so nothing is announced again. The tasks end and the endpoints close.
+    pub async fn stop_commanded(self) {
+        self.publisher.abort();
+        self.node_rpc_feed.abort();
+        self.declare_loop.abort();
+        let _ = self.gossip.shutdown().await;
+        for r in self.routers {
+            let _ = r.shutdown().await;
+        }
+    }
+
     /// Publish `Leaving` and stop serving.
     /// Phase two: say `Leaving` on the fabric, keep saying it every
     /// `LEAVE_EVERY` for `linger`, then leave gossip and close every endpoint.
