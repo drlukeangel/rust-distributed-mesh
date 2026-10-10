@@ -29,6 +29,14 @@ use tokio::sync::RwLock;
 pub trait OperationRunner: Send + Sync {
     /// Realise `op` of `attempt` of `build_id`; `Err` names why it failed.
     async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String>;
+
+    /// What `op` owes before its executor is decided, once its turn comes: a mesh retire whose
+    /// fabric-primary sits inside the leaving mesh hands the fabric seat to an outside
+    /// mesh-primary first, so the executor is the new fabric-primary. `Err` ends the attempt by
+    /// name and nothing of `op` has run.
+    async fn prepare(&self, _build_id: &BuildId, _attempt: u32, _op: &BuildOperation) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The admin that executes `op` in view `t`; `None` while no admin can.
@@ -49,14 +57,6 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         BuildOperation::CreateNode { node } if node.kind == NodeKind::NodeAdmin => {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
         }
-        // A whole-mesh retire runs outside the mesh it removes: an executor inside M cannot see a
-        // member's departure leave M, and would retire itself mid-plan. The fabric primary keeps
-        // authority; when it sits in M, execution goes to the lowest-NodeId ready mesh-primary
-        // admin of another mesh (the Build's ordinary hand-off). No such admin: none.
-        BuildOperation::ShutdownMesh { mesh, .. } => match t.fabric_primary() {
-            Some(fp) if fp.mesh != *mesh => Some(fp.name.clone()),
-            _ => retire_mesh_executor_outside(mesh, t),
-        },
         // The fabric primary is never the executor of its own retire, restart or replace: the
         // operation's terminate step would stop the executor mid-step. It is a hand-off: the admin
         // the election seats once the target drains (a Draining birth is no candidate,
@@ -102,15 +102,6 @@ fn successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
     }
     crate::election::resolve(&mut nodes);
     nodes.into_iter().find(|n| n.is_fabric_primary && n.name != *target).map(|n| n.name)
-}
-
-/// The admin that executes `retire-mesh:mesh` when the fabric primary is inside `mesh`: the
-/// lowest-NodeId ready-for-traffic admin primary of another mesh.
-fn retire_mesh_executor_outside(mesh: &str, t: &Topology) -> Option<PathName> {
-    t.members()
-        .filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && n.mesh != mesh && n.status == crate::model::NodeStatus::ReadyForTraffic)
-        .min_by(|a, b| a.node_id.as_str().cmp(b.node_id.as_str()))
-        .map(|n| n.name.clone())
 }
 
 /// The admin that executes what is left of a plan: the first operation's
@@ -306,6 +297,9 @@ impl BuildExecutor {
         for (i, op) in operations.iter().enumerate() {
             // The view moves as operations run (a new mesh's admins become
             // its primary): eligibility is decided on the view as it is now.
+            if let Err(e) = self.runner.prepare(&build.build_id, attempt, op).await {
+                return self.finish(build, attempt, Err(format!("{}: {e}", op.key()))).await;
+            }
             let to = executor_for(op, &*self.topology.read().await);
             if let Some(to) = to.filter(|to| to.to_string() != self.executor) {
                 return self.hand_off(build, attempt, operations[..i].to_vec(), to.to_string()).await;
@@ -432,22 +426,20 @@ mod tests {
         BuildOperation::ShutdownMesh { mesh: mesh.into(), mesh_id: rafka_mesh_entity::MeshId::mint() }
     }
 
-    /// CONTRACT (Luke 2026-10-05, mesh retire runs outside the mesh): `shutdown-mesh:<mesh_id>` runs on the
-    /// fabric primary when it is outside M; when the fabric primary sits inside M, on the
-    /// lowest-NodeId ready admin primary of another mesh; with no admin outside M, on none.
+    /// CONTRACT (R-ST2): `shutdown-mesh:<mesh_id>` is the fabric primary's, whatever mesh holds the
+    /// seat. When the fabric primary is inside the leaving mesh it hands the seat over first
+    /// (`OperationRunner::prepare`), and the executor of the operation is then the new fabric
+    /// primary.
     #[test]
-    fn a_mesh_retire_runs_outside_the_mesh_it_removes() {
+    fn a_mesh_retire_is_the_fabric_primarys() {
         let t = mm(true);
         assert_eq!(who(&shutdown("mesh2"), &t), "mesh1.admin.1", "the fabric primary, outside mesh2");
-        let mut inside = mm(true);
-        for n in inside.nodes.iter_mut() {
+        assert_eq!(who(&shutdown("mesh1"), &t), "mesh1.admin.1", "the fabric primary, inside mesh1: it hands the seat over before it runs");
+        let mut moved = mm(true);
+        for n in moved.nodes.iter_mut() {
             n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
         }
-        assert_eq!(who(&shutdown("mesh2"), &inside), "mesh1.admin.1", "the fabric primary is in mesh2: another mesh's admin primary runs it");
-        let mut alone = mm(true);
-        alone.nodes.retain(|n| n.mesh == "mesh2");
-        alone.nodes[0].is_fabric_primary = true;
-        assert_eq!(who(&shutdown("mesh2"), &alone), "", "no admin outside mesh2: no executor");
+        assert_eq!(who(&shutdown("mesh1"), &moved), "mesh2.admin.1", "once the seat moved, the new fabric primary is the executor");
     }
 
     #[test]

@@ -196,6 +196,20 @@ fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String,
     lowest_primary(Some(h.mesh.as_str()))
 }
 
+/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it: every node
+/// of `mesh` stands as Leaving, so the incumbent's mesh holds no candidate, and the lowest Ready
+/// mesh primary of another mesh wins (the explicit committed handover of
+/// fabric-node-lifecycle-elections.md section 4.4). `None` when no other mesh has an eligible Ready
+/// mesh primary: the handover is blocked.
+pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) -> Option<Node> {
+    let mut hypothetical: Vec<Node> = nodes.to_vec();
+    for n in hypothetical.iter_mut().filter(|n| n.mesh == mesh) {
+        n.status = NodeStatus::Leaving;
+    }
+    resolve_with(&mut hypothetical, inc);
+    hypothetical.into_iter().find(|n| n.is_fabric_primary && n.mesh != mesh)
+}
+
 /// A seat's holder as a span names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Seat {

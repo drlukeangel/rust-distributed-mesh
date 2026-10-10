@@ -431,7 +431,7 @@ impl TopologySink for Records {
 /// proven gone. A birth is proven gone when its runtime was found exited, when its departure was
 /// heard, or when a later birth announced that it replaced it (`supersedes`). Silence, an
 /// unreachable path and the observer-inferred `Dead` prove nothing.
-fn incumbency_of(book: &DigestBook, records: &Records) -> crate::election::Incumbency {
+pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::election::Incumbency {
     let mut lost = records.exited_incarnations();
     lost.extend(book.departed().into_iter().map(|op| op.incarnation));
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
@@ -1161,6 +1161,8 @@ pub struct AdminRunner {
     pub leaves: Arc<crate::mesh_leave::LeaveBook>,
     /// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished.
     pub leave_runs: Mutex<HashMap<crate::mesh_leave::LeaveKey, LeaveRun>>,
+    /// The fabric-primary handover: this admin's initiator, doors and recorded operations.
+    pub handover: Arc<crate::fabric_handover::HandoverDoor>,
 }
 
 /// One mesh leave at the leaving mesh's primary.
@@ -1746,6 +1748,20 @@ impl OperationRunner for AdminRunner {
         r
     }
 
+    /// A mesh retire whose fabric-primary (this admin) sits inside the leaving mesh hands the
+    /// fabric seat to an outside mesh-primary first (fabric-primary-handover.md); the executor of
+    /// the retire is then the new fabric-primary, by the Build's ordinary hand-off.
+    async fn prepare(&self, _build_id: &crate::build::BuildId, _attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        let BuildOperation::ShutdownMesh { mesh, mesh_id } = op else { return Ok(()) };
+        let holds_seat_inside = self.topology.read().await.fabric_primary().is_some_and(|fp| fp.name == self.me && fp.mesh == *mesh);
+        if !holds_seat_inside {
+            return Ok(());
+        }
+        let r = self.handover.hand_over(mesh, mesh_id).await;
+        self.refresh_view().await;
+        r.map_err(|e| format!("{mesh} holds the fabric seat and it was not handed over: {e}"))
+    }
+
 }
 
 impl AdminRunner {
@@ -2312,13 +2328,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     let build_facts_slot: crate::build_facts_read::BuildFactsSlot = Arc::new(std::sync::OnceLock::new());
+    let handover_slot: crate::fabric_handover::HandoverSlot = Arc::new(std::sync::OnceLock::new());
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
     let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone(), Some(connections.clone()));
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rpc_builder = crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone());
+    let rpc_builder = crate::fabric_handover::serve(crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone()), handover_slot.clone());
     // The app's own ops (each behind the gate of its hook), before the catalog seals.
     let rpc_builder = match wiring.serve_app.take() {
         Some(serve_app) => serve_app(rpc_builder),
@@ -2754,6 +2771,23 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     }
     let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
     let provider_dyn: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), prepared.provider.clone());
+    let handover = Arc::new(crate::fabric_handover::HandoverDoor {
+        fabric: cfg.fabric.clone(),
+        me: name.clone(),
+        node_id: node_id.clone(),
+        incarnation: incarnation.clone(),
+        topology: control.topology.clone(),
+        membership: membership.clone(),
+        backbone: backbone.clone(),
+        storage: fabric_storage.clone(),
+        client: node_rpc.client.clone(),
+        book: book.clone(),
+        records: records.clone(),
+        contacts: std::sync::OnceLock::new(),
+        handovers: Default::default(),
+    });
+    let _ = handover.contacts.set(crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) });
+    let _ = handover_slot.set(handover.clone());
     let runner = Arc::new(AdminRunner {
         provider: provider_dyn.clone(),
         joins: joins.clone(),
@@ -2778,6 +2812,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone() })),
         leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
         leave_runs: Mutex::new(HashMap::new()),
+        handover: handover.clone(),
     });
     let _ = leaver.set(Arc::new(LeaveDoor { runner: runner.clone() }));
 

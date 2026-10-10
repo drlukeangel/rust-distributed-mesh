@@ -1,7 +1,8 @@
 //! The two sides of the mesh-leave workflow a runner executes (mesh-leave.md).
 //!
-//! The owner's side ([`AdminRunner::shutdown_mesh`]) owns the outer workflow
-//! `shutdown-mesh:<mesh_id>` from outside the leaving mesh: it captures the accepted roster and the
+//! The owner's side ([`AdminRunner::shutdown_mesh`]) is the fabric-primary: it owns the outer
+//! workflow `shutdown-mesh:<mesh_id>` once the fabric seat is outside the leaving mesh (the
+//! confirmed fabric-primary handover, `fabric_handover`). It captures the accepted roster and the
 //! final primary's provider access (refusing before anything is dismantled when it has none),
 //! publishes `mesh-leaving`, sends `LeaveMesh`, waits for the validated `MeshLeave` handoff, drains
 //! and stops the final primary itself, and only with every exact exit proven records `MeshLeft`.
@@ -43,12 +44,6 @@ impl AdminRunner {
         self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
     }
 
-    /// The holder of the fabric-primary seat when it sits inside the leaving mesh `mesh`: the one
-    /// place the workflow asks where the seat is (mesh-leave.md step 1).
-    fn seat_inside(view: &Topology, mesh: &str) -> Option<Node> {
-        view.fabric_primary().filter(|fp| fp.mesh == mesh).cloned()
-    }
-
     /// The owner's outer workflow `shutdown-mesh:<mesh_id>`.
     pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), String> {
         let outer = crate::mesh_leave::operation(mesh_id);
@@ -65,17 +60,10 @@ impl AdminRunner {
         }
         let view = self.topology.read().await.clone();
         let node_rpc = self.node_rpc.as_ref().ok_or_else(|| format!("{}: this admin holds no Node RPC client: {outer} cannot call the mesh", self.me))?;
-        // Step 1: this owner is outside the leaving mesh (`executor_for`). The fabric-primary seat
-        // may be held inside it: the seat leaves a mesh only when every node-admin of that mesh is
-        // gone (election.rs), so the workflow is owned from outside and the seat moves when the
-        // mesh's admins have exited.
-        if view.nodes.iter().any(|n| n.name == self.me && n.mesh == mesh) {
-            return Err(format!("{outer} is refused: {} sits inside {mesh}, so no owner outside it holds this workflow", self.me));
-        }
-        if let Some(holder) = Self::seat_inside(&view, mesh) {
-            tracing::info_span!("rdm.node_admin.mesh.update.via-seat-inside-leaving-mesh", mesh = %mesh, seat_holder = %holder.name, owner = %self.me, operation = %outer)
-                .in_scope(|| tracing::info!("the fabric-primary seat is held inside the leaving mesh: the workflow is owned from outside it and the seat moves when every admin of the mesh has exited"));
-        }
+        // Step 1: this owner is the fabric-primary. When the leaving mesh held the fabric seat it
+        // was handed over first (fabric-primary-handover.md): the leave opens only on the confirmed
+        // transfer, and an unconfirmed one is reconciled here before anything is dismantled.
+        self.handover.confirmed(mesh_id).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric-primary handover is not confirmed: {e}"))?;
         let members: Vec<Node> = view.members().filter(|n| n.mesh == mesh && n.status.is_live()).cloned().collect();
         let primary = view.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to"))?;
         // The final primary's authoritative provider domain: access before anything is dismantled.

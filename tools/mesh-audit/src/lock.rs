@@ -235,6 +235,9 @@ pub const TOPOLOGY_CELLS: &str = "crates/rafka-node-rpc-contract/tests/topology_
 pub const BUILD_FACTS_SOURCE: &str = "crates/rafka-node-admin-core/src/build_facts_read.rs";
 pub const BUILD_FACTS_HYDRATE: &str = "crates/rafka-node-admin-core/src/hydrate.rs";
 pub const BUILD_FACTS_CELLS: &str = "crates/rafka-node-rpc-contract/tests/build_facts_wire.rs";
+/// The fabric-primary handover (`TakeFabricPrimary` / `FabricPrimaryTaken`, 0x21): its door and the cells that prove its postcard shape and the new-fabric-primary frame.
+pub const HANDOVER_SOURCE: &str = "crates/rafka-node-admin-core/src/fabric_handover.rs";
+pub const HANDOVER_CELLS: &str = "crates/rafka-node-rpc-contract/tests/handover_wire.rs";
 
 pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
 pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
@@ -629,6 +632,9 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, BUILD_FACTS_SOURCE, &["encode_chunks", "BuildMessage::from_bytes", "rdm.node_admin.build.serve.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "resolve_wanted", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_ten_variant_wire_schema"], ratchet, &mut out);
+            require(root, HANDOVER_SOURCE, &["rdm.node_admin.fabric.update.via-handover-committed", "rdm.node_admin.fabric.update.via-handover-confirmed", "rdm.node_admin.fabric.reject.via-handover", "announce_new_fabric_primary", "put_seat"], ratchet, &mut out);
+            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_two_variant_wire_schema", "fn replies_match_the_frozen_thirteen_variant_wire_schema"], ratchet, &mut out);
+            require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {
