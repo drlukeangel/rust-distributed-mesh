@@ -390,18 +390,7 @@ impl FabricRounds {
             Some(t) => t.meshes.keys().cloned().collect(),
             None => view.meshes.iter().map(|m| m.name.clone()).collect(),
         };
-        let planned = self.env.records.planned();
-        let mut out = Vec::new();
-        for mesh in &meshes {
-            match view.meshes.iter().find(|m| &m.name == mesh) {
-                Some(m) if m.status == crate::model::ScopeStatus::ReadyForTraffic => {}
-                Some(_) => {
-                    let why = view.mesh_unready(mesh, planned.get(mesh));
-                    out.extend(if why.is_empty() { vec![Missing { who: mesh.clone(), why: "not-ready" }] } else { why });
-                }
-                None => out.push(Missing { who: mesh.clone(), why: "no-mesh" }),
-            }
-        }
+        let mut out = mesh_blockers(view, &meshes, &self.env.records.planned());
         let primaries: Vec<(String, Option<IncarnationId>, bool)> =
             meshes.iter().map(|m| { let p = view.cohort_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.name == self.env.me)) }).collect();
         let reports = self.env.records.declared.lock().unwrap().reports.clone();
@@ -807,6 +796,23 @@ impl FabricRounds {
     }
 }
 
+/// The meshes among `meshes` that are not ready-for-traffic in `view`, with the nodes behind each. A
+/// mesh's state is the one the view projects (`Topology::mesh_unready` decides it).
+fn mesh_blockers(view: &Topology, meshes: &[String], planned: &std::collections::BTreeMap<String, std::collections::BTreeSet<PathName>>) -> Vec<Missing> {
+    let mut out = Vec::new();
+    for mesh in meshes {
+        match view.meshes.iter().find(|m| &m.name == mesh) {
+            Some(m) if m.status == crate::model::ScopeStatus::ReadyForTraffic => {}
+            Some(_) => {
+                let why = view.mesh_unready(mesh, planned.get(mesh));
+                out.extend(if why.is_empty() { vec![Missing { who: mesh.clone(), why: "not-ready" }] } else { why });
+            }
+            None => out.push(Missing { who: mesh.clone(), why: "no-mesh" }),
+        }
+    }
+    out
+}
+
 /// The `sync_state` call: the application's function with the round fields, its answer held for
 /// the climb to judge. No application work answers at once, naming why.
 async fn run_sync_state(hook: Option<SyncState>, me: PathName, sent: StateSyncRound, progress: Arc<Mutex<Progress>>, parent: tracing::Span) {
@@ -833,4 +839,51 @@ async fn run_sync_state(hook: Option<SyncState>, me: PathName, sent: StateSyncRo
     .instrument(span)
     .await;
     *progress.lock().unwrap() = Progress::Answered(answer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Fabric, Mesh, NodeStatus, ProviderKind, ScopeStatus};
+
+    fn node(name: &str, status: NodeStatus, primary: bool) -> Node {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.status = status;
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.is_primary = primary;
+        n
+    }
+
+    /// The view as the projection builds it: a mesh is ready when `Topology::mesh_unready` is empty.
+    fn projected(nodes: Vec<Node>) -> Topology {
+        let mut t = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process }, meshes: Vec::new(), nodes };
+        for m in ["mesh1", "mesh2"] {
+            let status = if t.mesh_unready(m, None).is_empty() { ScopeStatus::ReadyForTraffic } else { ScopeStatus::Pending };
+            t.meshes.push(Mesh { id: None, name: m.into(), status });
+        }
+        t
+    }
+
+    /// CONTRACT (R-H1): the fabric enters state-sync only when every mesh is ready-for-traffic, and a
+    /// mesh is ready only when every node of it is. A mesh with a primary and one node not ready blocks
+    /// entry and names that node; the mesh whose nodes are all ready blocks nothing.
+    #[test]
+    fn a_mesh_with_one_node_not_ready_blocks_the_fabric_from_entering_state_sync() {
+        let meshes = vec!["mesh1".to_string(), "mesh2".to_string()];
+        let planned = std::collections::BTreeMap::new();
+        let ready = projected(vec![
+            node("mesh1.admin.1", NodeStatus::ReadyForTraffic, true),
+            node("mesh1.rpc.1", NodeStatus::ReadyForTraffic, false),
+            node("mesh2.admin.1", NodeStatus::ReadyForTraffic, true),
+        ]);
+        assert!(mesh_blockers(&ready, &meshes, &planned).is_empty(), "every node of both meshes is ready: nothing blocks entry");
+        let one_pending = projected(vec![
+            node("mesh1.admin.1", NodeStatus::ReadyForTraffic, true),
+            node("mesh1.rpc.1", NodeStatus::Pending, false),
+            node("mesh2.admin.1", NodeStatus::ReadyForTraffic, true),
+        ]);
+        assert!(one_pending.cohort_primary("mesh1", NodeKind::NodeAdmin).is_some(), "mesh1 has its primary");
+        let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
+        assert_eq!(blockers, ["mesh1.rpc.1(not-ready)"], "the one node that is not ready is what blocks entry");
+    }
 }
