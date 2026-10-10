@@ -178,6 +178,31 @@ async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
 }
 
+/// The fabric-primary's Build door over a Build log of its own: the executor writes its step
+/// receipts on `rig`'s log, the fabric-primary's log holds the claim it decided and the verdict the
+/// executor reported, and no step receipt reaches it (the Build topic delivers those apart, later).
+async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, join: Duration) -> Arc<BuildDoor> {
+    let t = mn();
+    let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*fp, t.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let control = Arc::new(ControlPlane::new(fp.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
+    let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
+    let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone() });
+    let env = Arc::new(DriveEnv {
+        me: me.clone(),
+        topology: control.topology.clone(),
+        accepted,
+        builds: fp.clone(),
+        door: Arc::new(ClaimDoor { me: me.clone(), topology: control.topology.clone(), builds: fp.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        dispatcher: Arc::new(Local(run.clone())),
+        gate: Arc::new(OpenGate),
+        departure: Arc::new(crate::loopback::Proofs::default()),
+        verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
+    });
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
+}
+
 /// The one executor of the fixture is the fabric-primary itself.
 struct Local(Arc<RunDoor>);
 
@@ -541,6 +566,41 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         assert_eq!(ran.len(), 1, "{step} ran once: {ran:?}");
         assert_eq!(ran[0]["attributes"]["outcome"], "complete");
     }
+}
+
+/// CONTRACT (R-ON8): a re-submit of a Build that completed is answered from what the
+/// fabric-primary's own drive recorded off the calls it made, never from the Build facts its log
+/// holds. The fabric-primary's log holds the verdict the executor reported and not one step receipt
+/// (the Build topic delivers those separately, and may deliver the verdict first), yet the
+/// re-submit is `AlreadyApplied` with every event the create named and the terminal frame.
+#[test]
+fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_the_log_holds() {
+    let cap = capture();
+    let (first, again, disposition) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let fp = Arc::new(MemoryBuildStateAdapter::new());
+        let served = serve(door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await).await;
+        let nodes = nodes_over(&served.carrier);
+        rig.membership.joined.store(true, Ordering::SeqCst);
+        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let build = BuildId(stream.accepted().build_id.0.clone());
+        let accepted = stream.accepted().clone();
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
+        });
+        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        assert!(fp.facts().await.unwrap().iter().all(|f| !matches!(f, rafka_node_admin_core::build_state::BuildFact::Step(_))), "the fabric-primary's log holds no step receipt");
+        let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
+        let disposition = resumed.disposition();
+        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        (first, again, disposition)
+    });
+    assert_eq!(first[1..], [Frame::Event(NodeEvent::Created), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Ready), Frame::Complete], "{first:?}");
+    assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
+    assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
 }
 
 /// CONTRACT: a valid put ends `NotBackedToday` naming the call, because no op carries the put;
