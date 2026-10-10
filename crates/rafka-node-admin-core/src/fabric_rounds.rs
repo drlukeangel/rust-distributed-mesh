@@ -73,33 +73,24 @@ pub(crate) async fn run_action(actions: &dyn RoundActions, node: &PathName, kind
 
 /// How a call to a round peer ended.
 enum Delivery {
-    /// The peer answered with a typed reply the round can act on (it admitted or refused by name).
+    /// The peer admitted the op (`Applied` or `AlreadyApplied`): it is never sent again.
     Answered(StatusReply),
-    /// The peer was not reached (`typed: false`), or replied that it is not ready (`typed: true`):
+    /// The peer was not reached (`typed: false`), or replied with a refusal or that it is not ready
+    /// (`typed: true`; a refusal rests on the peer's own view, which heals):
     /// the same op is sent again on an eligible event only (`RoundBook::take_due`).
     Undelivered { why: String, typed: bool },
 }
 
-/// A reply that names why the op is refused: sending it again changes nothing.
-fn typed_refusal(r: &StatusReply) -> bool {
-    matches!(
-        r,
-        StatusReply::RejectedStaleIncarnation { .. }
-            | StatusReply::RejectedStaleMesh { .. }
-            | StatusReply::RejectedStaleFabric { .. }
-            | StatusReply::RejectedNotAuthority { .. }
-            | StatusReply::RejectedInvalidNodeTransition { .. }
-            | StatusReply::RejectedInvalidMeshTransition { .. }
-            | StatusReply::RejectedUnmatchedCompletion { .. }
-    )
+fn delivery(out: &RpcOutcome<StatusReply>) -> Delivery {
+    delivery_of(out.reply().map(|r| r.value()), out.name())
 }
 
-fn delivery(out: &RpcOutcome<StatusReply>) -> Delivery {
-    match out.reply().map(|r| r.value()) {
+/// `reply` is the typed reply the call got, when it got one; `outcome` names how a call without one ended.
+fn delivery_of(reply: Option<&StatusReply>, outcome: &str) -> Delivery {
+    match reply {
         Some(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => Delivery::Answered(r.clone()),
-        Some(r) if typed_refusal(r) => Delivery::Answered(r.clone()),
         Some(other) => Delivery::Undelivered { why: format!("{other:?}"), typed: true },
-        None => Delivery::Undelivered { why: out.name().to_string(), typed: false },
+        None => Delivery::Undelivered { why: outcome.to_string(), typed: false },
     }
 }
 
@@ -862,6 +853,21 @@ mod tests {
             t.meshes.push(Mesh { id: None, name: m.into(), status });
         }
         t
+    }
+
+    /// CONTRACT (R-S2): only an admission ends a round command. A refusal by name rests on the receiver's own view, which
+    /// heals, and a call that got no reply never reached it: both wait for an eligible event. Must NOT happen: a
+    /// refusal that is final, which strands the round when a new primary commands members that still name the old one.
+    #[test]
+    fn only_an_admission_ends_a_round_command() {
+        for admitted in [StatusReply::Applied, StatusReply::AlreadyApplied] {
+            assert!(matches!(delivery_of(Some(&admitted), "Reply"), Delivery::Answered(_)), "{admitted:?}");
+        }
+        let refusal = StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "mesh1.admin.2".into() } };
+        assert!(matches!(delivery_of(Some(&refusal), "Reply"), Delivery::Undelivered { typed: true, .. }), "a refusal by name is undelivered, typed");
+        let not_ready = StatusReply::NotReady { reason: "authority not filled".into() };
+        assert!(matches!(delivery_of(Some(&not_ready), "Reply"), Delivery::Undelivered { typed: true, .. }));
+        assert!(matches!(delivery_of(None, "NotSent"), Delivery::Undelivered { typed: false, .. }), "no reply: untyped");
     }
 
     /// CONTRACT (R-H1): the fabric enters state-sync only when every mesh is ready-for-traffic, and a

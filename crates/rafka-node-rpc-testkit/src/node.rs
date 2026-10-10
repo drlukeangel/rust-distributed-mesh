@@ -5,7 +5,7 @@ use rafka_mesh_entity::launch::Launch;
 use anyhow::{anyhow, Context, Result};
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, SecretKey};
-use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
+use rafka_mesh_entity::{IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{NodeRpcServer, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
@@ -527,14 +527,34 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
     // cadence until an authority answers by name. An authority that does not yet hold this
     // birth answers `sender-not-subject`; the next cadence carries the digest and the retry lands.
+    // When the mesh's primary seat moves to another birth, this birth's state is owed to the new
+    // holder (R-S2: a declaration is owed again when the authority is another node or a new
+    // incarnation of the same node): that declaration is how the new primary learns this birth
+    // addresses it, and sends again a down op this birth refused while it still named the old holder.
     let declare_loop = {
-        let (node, membership, client, owed) = (digest.node.clone(), membership.clone(), node_rpc.client.clone(), owed_state.clone());
+        let (node, membership, client, owed, status) = (digest.node.clone(), membership.clone(), node_rpc.client.clone(), owed_state.clone(), status.clone());
         tokio::spawn(async move {
+            let mut seats = membership.seats().subscribe();
+            let mut told: Option<(NodeId, IncarnationId)> = None;
             loop {
+                seats.borrow_and_update();
+                let holder = membership.seats().mesh(&node.name.mesh);
+                if authority_moved(told.as_ref(), holder.as_ref()) && owed.lock().unwrap().is_none() {
+                    let state = node_state_of(*status.lock().unwrap());
+                    tracing::info_span!("rdm.node_rpc.status.update.via-authority-moved", node = %node.name, state = ?state, to = %holder.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
+                        .in_scope(|| tracing::info!("the mesh's primary seat moved to another birth: this birth's state is owed to it"));
+                    *owed.lock().unwrap() = Some(state);
+                }
                 if owed.lock().unwrap().is_some() {
                     declare_once(&node, &membership, &client, &owed).await;
                 }
-                tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
+                if owed.lock().unwrap().is_none() {
+                    told = holder.map(|h| (h.node_id, h.incarnation));
+                }
+                tokio::select! {
+                    _ = seats.changed() => {}
+                    _ = tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()) => {}
+                }
             }
         })
     };
@@ -655,6 +675,16 @@ impl Becoming {
         tokio::spawn(async move {
             declare_once(&node, &membership, &client, &owed).await;
         });
+    }
+}
+
+/// Whether the primary seat of this birth's mesh moved to another birth than the one this birth
+/// last told its state: the holder it told is `told`, the holder its seat record names is `holder`.
+/// A birth that told no holder yet has nothing to repeat.
+fn authority_moved(told: Option<&(NodeId, IncarnationId)>, holder: Option<&rafka_mesh_entity::SeatHolder>) -> bool {
+    match (told, holder) {
+        (Some((node, incarnation)), Some(h)) => !h.is_birth(node, incarnation),
+        _ => false,
     }
 }
 
@@ -807,4 +837,28 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+    use rafka_mesh_entity::SeatHolder;
+
+    fn holder(node: &NodeId, incarnation: &IncarnationId, epoch: u64) -> SeatHolder {
+        SeatHolder { mesh: "mesh1".into(), node_id: node.clone(), incarnation: incarnation.clone(), epoch }
+    }
+
+    /// CONTRACT (R-S2): a birth owes its state again when its mesh's primary seat names another birth than the
+    /// one it told: another node, or a new incarnation of the same node. A birth that told no one, or whose seat
+    /// is unchanged or unheard, owes nothing new.
+    #[test]
+    fn a_birth_owes_its_state_again_only_when_its_meshs_primary_seat_moved_to_another_birth() {
+        let (a, b, inc_a, inc_b) = (NodeId::mint(), NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        let told = (a.clone(), inc_a.clone());
+        assert!(!authority_moved(None, Some(&holder(&a, &inc_a, 1))), "nothing was told yet");
+        assert!(!authority_moved(Some(&told), None), "the seat record is not heard: the seat is unknown, not moved");
+        assert!(!authority_moved(Some(&told), Some(&holder(&a, &inc_a, 1))), "the same birth holds the seat");
+        assert!(authority_moved(Some(&told), Some(&holder(&b, &inc_b, 2))), "another node holds the seat");
+        assert!(authority_moved(Some(&told), Some(&holder(&a, &inc_b, 2))), "a new incarnation of the same node holds the seat");
+    }
 }
