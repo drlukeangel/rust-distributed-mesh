@@ -57,6 +57,11 @@ impl StopCommand {
     }
 }
 
+/// What a node does before it stops being eligible for the seat it holds: a node-admin that holds the
+/// fabric-primary seat fences its Build log and hands its committed facts to its neighbours
+/// (`FabricBuildStateAdapter::yield_seat`). The argument names the command that is about to move it.
+pub type YieldSeat = Arc<dyn Fn(&'static str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
 /// Declares a state this birth entered to its authority.
 pub type Declare = Arc<dyn Fn(NodeState) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
@@ -81,6 +86,11 @@ pub struct NodeSelf {
     /// Declare the state this birth entered to its authority (a node-admin of its mesh); `None` for
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
+    /// Run before this birth publishes `Draining` or `Leaving`: the planned hand-over's fence. The
+    /// election hands a seat on at that status, so the old holder fences before it says it (R-A2:
+    /// "the old holder fences claims and transfers committed Build facts BEFORE the new holder
+    /// acts"). `None` for a node that holds no seat.
+    pub yield_seat: Option<YieldSeat>,
     seen: Mutex<HashSet<String>>,
 }
 
@@ -98,7 +108,13 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, seen: Mutex::new(HashSet::new()) }
+        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, yield_seat: None, seen: Mutex::new(HashSet::new()) }
+    }
+
+    /// This surface, fencing its seat before it publishes `Draining` or `Leaving`.
+    pub fn with_yield_seat(mut self, yield_seat: YieldSeat) -> Self {
+        self.yield_seat = Some(yield_seat);
+        self
     }
 
     /// Serve `DrainNode` or `StopNode` from `commander` (a node-admin the caller resolved).
@@ -155,6 +171,9 @@ impl NodeSelf {
             commander = %commander, in_flight_at_zero = tracing::field::Empty, "otel.kind" = "internal"
         );
         async {
+            if let Some(yield_seat) = &self.yield_seat {
+                yield_seat("drain-node").await;
+            }
             self.server.drain();
             let draining = (self.set_status)(MemberStatus::Draining);
             let _ = self.membership.publish(&draining).await;
@@ -200,6 +219,9 @@ impl NodeSelf {
         );
         async {
             stop_command().admit();
+            if let Some(yield_seat) = &self.yield_seat {
+                yield_seat("stop-node").await;
+            }
             let leaving = (self.set_status)(MemberStatus::Leaving);
             let _ = self.membership.publish(&leaving).await;
             let declared = async {

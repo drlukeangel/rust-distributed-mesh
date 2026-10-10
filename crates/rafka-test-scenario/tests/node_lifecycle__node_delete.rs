@@ -68,9 +68,9 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let (status, d) = estate.delete(&format!("/api/nodes/{VICTIM}")).await;
     assert_eq!(status, 202, "{d}");
     let build_id = s(&d["build_id"]);
-    // The pre-notice is read from the spans below (every other node held the overlay before the
-    // departure): the window in which a poll could see the node live and not routable is the
-    // drain and stop legs, and a poll's cadence is not evidence of it.
+    // The pre-notice is read from each receiver's overlay span below, not from a poll: the window
+    // in which the node is live and not routable is the drain and stop legs, and a poll's cadence
+    // is not evidence of it.
     estate.await_build(&build_id, Duration::from_secs(120)).await;
     let after = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
     assert!(after.iter().all(|n| n["name"] != VICTIM), "the current topology no longer lists the node: {after:#?}");
@@ -183,6 +183,18 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     assert!(heard_deleting >= 5, "every other node heard the pre-notice: {heard_deleting}");
+    // Each receiver's overlay install shows the victim found, live and not routable, before the
+    // victim's departure left that receiver's view.
+    let overlays: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
+    let departures: Vec<u64> = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).map(start).collect();
+    let first_departure = departures.iter().copied().min().expect("a receiver removed the departed victim");
+    let held: Vec<&&Value> = overlays.iter().filter(|sp| sp["attributes"]["held"] == "true").collect();
+    assert!(held.len() >= 3, "receivers that held the victim when the overlay opened: {}: {overlays:#?}", held.len());
+    for sp in &held {
+        assert_eq!(sp["attributes"]["routable"], "false", "the overlay made the held victim not routable: {sp}");
+        assert!(!matches!(sp["attributes"]["held_status"].as_str(), Some("Dead" | "PendingReconnect")), "the victim is not dead or unheard while the overlay opens: {sp}");
+        assert!(start(sp) < first_departure, "the overlay opened before any receiver removed the victim: {sp}");
+    }
     assert!(heard_deleted >= 5, "every other node heard the departure: {heard_deleted}");
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| start(sp) > start(deleting[0])).next().is_none(), "a departure is not drift: nothing is repaired");
     let mut births: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| start(sp) > start(deleting[0])).map(|sp| s(&sp["attributes"]["node"])).collect();

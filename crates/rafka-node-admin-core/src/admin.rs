@@ -3057,7 +3057,22 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             d.clone()
         });
         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
-        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None)));
+        // A planned hand-over: the admin holding the fabric-primary seat fences its Build log before
+        // it publishes Draining or Leaving, which is what lets the election seat its heir.
+        let yield_seat: crate::node_self::YieldSeat = {
+            let (builds, membership, node_id, incarnation) = (builds.clone(), membership.clone(), node_id.clone(), incarnation.clone());
+            Arc::new(move |by: &'static str| {
+                let (builds, membership, node_id, incarnation) = (builds.clone(), membership.clone(), node_id.clone(), incarnation.clone());
+                Box::pin(async move {
+                    if membership.seats().fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
+                        if let Err(e) = builds.yield_seat(by).await {
+                            tracing::info_span!("rdm.node_admin.build.reject.via-seat-fence-unsent", node = %node_id, error = %e).in_scope(|| tracing::info!("the fence is set; the committed Build facts could not all be handed on"));
+                        }
+                    }
+                })
+            })
+        };
+        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat)));
     }
     // A node's own `node-drained` / `node-left`, heard on this mesh's channel: this admin carries
     // it onto the backbone when it holds the command (gossip.md, node-drained, node-left).

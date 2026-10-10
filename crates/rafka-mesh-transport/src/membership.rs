@@ -2727,6 +2727,9 @@ impl DigestBook {
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if new {
+            // What this receiver holds of the node as the overlay opens: found, in what status, and
+            // not routable (the overlay is what makes it so).
+            let held_status = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| format!("{:?}", d.status));
             tracing::info_span!(
                 "rdm.mesh.membership.update.via-node-deleting",
                 node = %op.name,
@@ -2734,6 +2737,9 @@ impl DigestBook {
                 build_id = %op.build_id,
                 attempt = op.attempt,
                 operation = %op.operation,
+                held = held_status.is_some(),
+                held_status = held_status.as_deref().unwrap_or("not held"),
+                routable = self.routable(op.node_id.as_str()),
             )
             .in_scope(|| tracing::info!("the node is being removed: held, not routable"));
             self.births.send_modify(|v| *v += 1);
