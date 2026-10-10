@@ -2,6 +2,7 @@
 //! here, so the crate links once. A stem runs alone as `<exe> <stem>::`.
 
 mod build_claim_wire;
+mod build_wire;
 mod build_facts_wire;
 mod forward_wire;
 mod handover_wire;

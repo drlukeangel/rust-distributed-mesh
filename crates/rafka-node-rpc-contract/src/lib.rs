@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 
 
+pub mod build;
 pub mod build_claim;
 pub mod build_facts;
 pub mod join;
