@@ -16,7 +16,7 @@
 
 use crate::clock::SharedClock;
 use crate::forward_path::ForwardPath;
-use crate::snapshot::{Chunk, Delta, Forward, Forwarder, Full, Gap, Install, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
+use crate::snapshot::{Chunk, Delta, Forwarder, Full, Gap, Install, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use anyhow::Result;
 use bytes::Bytes;
 use futures_lite::StreamExt as _;

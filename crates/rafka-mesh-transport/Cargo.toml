@@ -28,6 +28,7 @@ bytes = "1"
 testkit-skew = []
 
 [dev-dependencies]
+tracing-subscriber = { workspace = true }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 
 [[test]]
