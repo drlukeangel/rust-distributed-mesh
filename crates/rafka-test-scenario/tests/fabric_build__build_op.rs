@@ -250,7 +250,7 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
 
 /// What a `build.attempt.run` sent to `to` for `attempt` answers, whole: the refusal, or the first frame.
 async fn attempt_run(caller: &Caller, to: &str, build: &BuildId, attempt: u32, executor: &str) -> BuildReply {
-    let req = BuildRequest::AttemptRun { build_id: build.0.clone(), attempt, executor: executor.into(), context: CallContext::default(), intent: Vec::new() };
+    let req = BuildRequest::AttemptRun { build_id: build.0.clone(), attempt, executor: executor.into(), context: CallContext::default(), intent: Vec::new(), operations: Vec::new(), hand_off_to: None };
     let opts = CallOptions { budget: Budget::Stream { send: Duration::from_secs(10) }, ..CallOptions::default() };
     match caller.client.call_stream::<Build>(&NodeTarget::CurrentPath(path(to)), &req, &opts).await {
         Err((RpcOutcome::Reply(r), _)) => r.into_value(),

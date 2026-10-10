@@ -20,7 +20,7 @@
 
 use crate::build::BuildId;
 use crate::build_state::{AttemptOutcome, BuildFact, BuildProjection, BuildState, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
-use crate::executor::{BuildExecutor, Reconciled};
+use crate::executor::{BuildExecutor, Reconciled, RunPlan};
 use crate::model::PathName;
 use rafka_node_rpc_contract::build::{BuildReply, Disposition};
 use rafka_node_rpc_contract::context::CallContext;
@@ -325,8 +325,9 @@ pub struct RunDoor {
 
 impl RunDoor {
     /// Answer `build.attempt.run` for `attempt` of `build_id`, claimed for `executor`. `intent` is
-    /// the Build's intent the fabric-primary carried (empty for a run it makes itself).
-    pub async fn attempt_run(&self, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>]) -> Attached {
+    /// the Build's intent the fabric-primary carried (empty for a run it makes itself) and `plan`
+    /// the run it planned: the operations this admin runs.
+    pub async fn attempt_run(&self, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         let span = tracing::info_span!(
             "rdm.node_admin.build.serve.via-attempt-run",
             node = %self.me,
@@ -335,7 +336,7 @@ impl RunDoor {
             executor,
             outcome = tracing::field::Empty,
         );
-        let attached = self.attach_or_start(build_id, attempt, executor, context, intent).instrument(span.clone()).await;
+        let attached = self.attach_or_start(build_id, attempt, executor, context, intent, plan).instrument(span.clone()).await;
         span.record(
             "outcome",
             match &attached {
@@ -352,7 +353,7 @@ impl RunDoor {
         attached
     }
 
-    async fn attach_or_start(&self, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>]) -> Attached {
+    async fn attach_or_start(&self, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         if executor != self.me.to_string() {
             tracing::info_span!("rdm.node_admin.build.reject.via-not-executor", node = %self.me, build_id = %build_id, attempt, named = executor)
                 .in_scope(|| tracing::info!("the claim names another admin as the executor"));
@@ -393,13 +394,13 @@ impl RunDoor {
             return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
         let reader = log.reader();
-        let (exec, runs, build_id, context) = (self.exec.clone(), self.runs.clone(), build_id.clone(), context.clone());
+        let (exec, runs, build_id, context, plan) = (self.exec.clone(), self.runs.clone(), build_id.clone(), context.clone(), plan.clone());
         let run = log.clone();
         let task = tokio::spawn(
             {
                 let runs = runs.clone();
                 async move {
-                    let r = exec.run_attempt(&build_id, attempt, &context).await;
+                    let r = exec.run_attempt(&build_id, attempt, &context, &plan).await;
                     run.finish(terminal_of(&build_id, &r, run.last_failed_step()));
                     runs.end(&build_id, attempt);
                 }
@@ -632,10 +633,10 @@ mod tests {
     async fn a_call_for_another_executor_or_a_stale_claim_is_refused_by_name_and_records_nothing() {
         let (door, memory) = door("mesh1.admin.1").await;
         let ctx = CallContext::default();
-        assert!(matches!(door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[]).await, Attached::Refused(BuildReply::UnknownBuild { .. })));
+        assert!(matches!(door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await, Attached::Refused(BuildReply::UnknownBuild { .. })));
         accepted(&memory).await;
         assert!(matches!(
-            door.attempt_run(&id(), 1, "mesh2.admin.1", &ctx, &[]).await,
+            door.attempt_run(&id(), 1, "mesh2.admin.1", &ctx, &[], &RunPlan::default()).await,
             Attached::Refused(BuildReply::NotExecutor { named, recipient }) if named == "mesh2.admin.1" && recipient == "mesh1.admin.1"
         ));
         // Attempt 1 is claimed and converged; attempt 4 is ahead of the Build, attempt 0 behind it.
@@ -643,7 +644,7 @@ mod tests {
         memory.append_attempt_receipt(&BuildAttemptReceipt { build_id: id(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
         for carried in [4u32, 0] {
             assert_eq!(
-                match door.attempt_run(&id(), carried, "mesh1.admin.1", &ctx, &[]).await {
+                match door.attempt_run(&id(), carried, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await {
                     Attached::Refused(r) => r,
                     _ => panic!("attempt {carried} is not the current folded attempt"),
                 },
@@ -664,7 +665,7 @@ mod tests {
         let ctx = CallContext::default();
         // The fabric-primary won attempt 1 for this admin and died before calling it.
         memory.claim_attempt(&BuildAttemptClaim { build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-        let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[]).await else { panic!("the claimed attempt is started") };
+        let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await else { panic!("the claimed attempt is started") };
         assert_eq!(disposition, Disposition::Started);
         let mut last = None;
         while let Some(f) = reader.next().await {
@@ -674,7 +675,7 @@ mod tests {
         // A recorded step of that attempt, then a call after the end.
         memory.append_step_receipt(&receipt(1, "AllocateIdentity", StepOutcome::Complete)).await.unwrap();
         memory.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::Failed { reason: "x".into() })).await.unwrap();
-        match door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[]).await {
+        match door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await {
             Attached::Ended { replay, terminal } => {
                 assert_eq!(names(&replay), vec!["step"], "a frame per Complete receipt, none for a failed one");
                 assert!(matches!(terminal, BuildReply::Complete { attempt: 1, .. }));

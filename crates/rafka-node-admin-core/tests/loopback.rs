@@ -59,12 +59,12 @@ impl Loopback {
 
 #[async_trait::async_trait]
 impl Dispatcher for Loopback {
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>) -> Dispatched {
+    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         if self.lost.lock().unwrap().contains(&executor.to_string()) {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }
         self.dispatched.lock().unwrap().push((executor.to_string(), attempt));
-        local_dispatched(self.door(executor).attempt_run(build_id, attempt, &executor.to_string(), &context, &intent).await)
+        local_dispatched(self.door(executor).attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
 }
 

@@ -13,7 +13,8 @@
 //! before it plans.
 
 use crate::accepted::TopologyChange;
-use crate::build::{BuildId, FabricDesired, MeshDesired};
+use crate::build::{BuildId, BuildOperation, FabricDesired, MeshDesired};
+use crate::executor::RunPlan;
 use crate::build_drive::{Dispatched, Dispatcher, Drive, DriveEnv, Drives, InnerItem, InnerStream, Read, VerdictSink};
 use crate::build_run::{bounded_reason, Attached, RunDoor, RunReader};
 use crate::build_state::{AttemptReason, BuildFact, BuildState, BuildStateError, LocalBuildLog};
@@ -119,7 +120,7 @@ impl BuildDoor {
         let call = req.op();
         let reply = async {
             match req {
-                BuildRequest::AttemptRun { build_id, attempt, executor, context, intent } => self.attempt_run(BuildId(build_id), attempt, executor, context, intent, sink).await,
+                BuildRequest::AttemptRun { build_id, attempt, executor, context, intent, operations, hand_off_to } => self.attempt_run(BuildId(build_id), attempt, executor, context, intent, operations, hand_off_to, sink).await,
                 other => {
                     if let Some(refusal) = self.not_fabric_primary().await {
                         return Ok(refusal);
@@ -167,22 +168,15 @@ impl BuildDoor {
             Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.0 }),
             Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: Build {id} could not be read: {e}", self.me) }),
         };
-        if p.state == BuildState::Complete {
-            let facts = self.control.builds.facts().await.map_err(|e| HandlerFault::invariant_broken(format!("{}: the facts of Build {id}: {e}", self.me)))?;
-            let mut sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition: Disposition::AlreadyApplied }).await?;
-            let mut sent = Vec::new();
-            for f in facts.iter().filter(|f| f.build_id() == &id) {
-                if let BuildFact::Step(s) = f {
-                    if s.attempt >= from_attempt && s.outcome == crate::build_state::StepOutcome::Complete {
-                        let frame = BuildReply::Step { build_id: id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() };
-                        if !sent.contains(&frame) {
-                            sink.data(frame.clone()).await.map_err(gone)?;
-                            sent.push(frame);
-                        }
-                    }
-                }
-            }
-            return Ok(BuildReply::Complete { build_id: id.0, attempt: p.attempt });
+        // The drive's own record answers a Build that ended: the frames it took off the calls it
+        // made. A drive still running answers by streaming. A fabric-primary with no drive of the
+        // Build (it took the seat after the Build ended) makes one, which attaches to the last
+        // attempt's executor and reads its frames.
+        let held = self.drives.get(&id);
+        if held.as_ref().map(|d| d.completed()).unwrap_or(p.state == BuildState::Complete) {
+            let drive = self.drives.ensure(&self.env, &id);
+            let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition: Disposition::AlreadyApplied }).await?;
+            return stream_frames(sink, drive.reader(from_attempt)).await;
         }
         if self.control.accepted.build_id().await.as_ref() != Some(&id) {
             return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("Build {id} is {:?} and is not the accepted Build (Fabric.build_id): nothing drives it", p.state) });
@@ -254,15 +248,26 @@ impl BuildDoor {
 
     async fn delete(&self, id: BuildId) -> Result<BuildReply, HandlerFault> {
         Ok(match self.control.forget_build(&id).await {
-            Ok(()) => BuildReply::Deleted { build_id: id.0 },
+            Ok(()) => {
+                self.drives.forget(&id);
+                BuildReply::Deleted { build_id: id.0 }
+            }
             Err(Refusal::NotFound(_)) => BuildReply::UnknownBuild { build_id: id.0 },
             Err(Refusal::Conflict(reason)) => BuildReply::CannotDelete { build_id: id.0, reason },
             Err(other) => refusal_reply(other),
         })
     }
 
-    async fn attempt_run(&self, id: BuildId, attempt: u32, executor: String, context: CallContext, intent: Vec<Vec<u8>>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
-        match self.run.attempt_run(&id, attempt, &executor, &context, &intent).await {
+    #[allow(clippy::too_many_arguments)]
+    async fn attempt_run(&self, id: BuildId, attempt: u32, executor: String, context: CallContext, intent: Vec<Vec<u8>>, operations: Vec<Vec<u8>>, hand_off_to: Option<String>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+        let mut plan = RunPlan { operations: Vec::with_capacity(operations.len()), hand_off_to };
+        for (i, bytes) in operations.iter().enumerate() {
+            match serde_json::from_slice::<BuildOperation>(bytes) {
+                Ok(op) => plan.operations.push(op),
+                Err(e) => return Ok(BuildReply::Rejected { reason: "operation-undecodable".into(), detail: format!("{}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}", self.me) }),
+            }
+        }
+        match self.run.attempt_run(&id, attempt, &executor, &context, &intent, &plan).await {
             Attached::Refused(r) => Ok(r),
             Attached::Ended { replay, terminal } => {
                 let mut sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt, disposition: Disposition::Reattached }).await?;
@@ -397,16 +402,23 @@ pub const DISPATCH_SEND: Duration = Duration::from_secs(10);
 
 #[async_trait::async_trait]
 impl Dispatcher for RpcDispatcher {
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>) -> Dispatched {
+    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched {
         if *executor == self.me {
             // The fabric-primary runs the attempt itself: it plans from the log the claim was decided on.
-            return local_dispatched(self.local.attempt_run(build_id, attempt, &executor.to_string(), &context, &[]).await);
+            return local_dispatched(self.local.attempt_run(build_id, attempt, &executor.to_string(), &context, &[], &plan).await);
         }
         let node_id = self.topology.read().await.members().find(|n| n.name == *executor).map(|n| n.node_id.clone());
         let Some(node_id) = node_id else {
             return Dispatched::Unreached(format!("{executor} is not a node of {}'s view", self.me));
         };
-        let req = BuildRequest::AttemptRun { build_id: build_id.0.clone(), attempt, executor: executor.to_string(), context: context.clone(), intent };
+        let mut operations = Vec::with_capacity(plan.operations.len());
+        for op in &plan.operations {
+            match serde_json::to_vec(op) {
+                Ok(b) => operations.push(b),
+                Err(e) => return Dispatched::Unreached(format!("the operation {} does not encode: {e}", op.key())),
+            }
+        }
+        let req = BuildRequest::AttemptRun { build_id: build_id.0.clone(), attempt, executor: executor.to_string(), context: context.clone(), intent, operations, hand_off_to: plan.hand_off_to };
         let opts = CallOptions { budget: Budget::Stream { send: DISPATCH_SEND }, context: Some(context), ..CallOptions::default() };
         match self.client.call_stream::<Build>(&NodeTarget::ExactNode(node_id), &req, &opts).await {
             Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream })),

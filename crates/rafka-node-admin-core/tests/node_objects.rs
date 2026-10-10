@@ -208,8 +208,8 @@ struct Local(Arc<RunDoor>);
 
 #[async_trait::async_trait]
 impl Dispatcher for Local {
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>) -> Dispatched {
-        local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &intent).await)
+    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+        local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
 }
 
@@ -309,7 +309,11 @@ impl Rig {
         let op = format!("create-node:{name}");
         let name: rafka_node_admin_core::model::PathName = name.parse().unwrap();
         loop {
-            let view = self.builds.read_build(build).await.unwrap();
+            // The executor's own log holds the Build once the call that carries it has arrived.
+            let Ok(view) = self.builds.read_build(build).await else {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                continue;
+            };
             let done = |step: &str| view.steps.iter().find(|s| s.operation == op && s.step == step && s.outcome == rafka_node_admin_core::build_state::StepOutcome::Complete);
             if let (Some(identity), Some(storage), Some(_)) = (done("AllocateIdentity"), done("PrepareStorage"), done("MakeRuntimeFactAvailableToBirth")) {
                 let id = identity.output.clone().unwrap();
@@ -601,6 +605,41 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
     assert_eq!(first[1..], [Frame::Event(NodeEvent::Created), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Ready), Frame::Complete], "{first:?}");
     assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
+}
+
+/// CONTRACT (R-ON8): a fabric-primary that took the seat after a Build ended holds no frame of it.
+/// Its re-submit is `AlreadyApplied` and the frames are read from the executor of the last attempt
+/// (`build.attempt.run` attaches to what that admin wrote itself), not from step facts the new
+/// fabric-primary's log may not hold yet.
+#[test]
+fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor() {
+    let cap = capture();
+    let (first, again, disposition) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let fp = Arc::new(MemoryBuildStateAdapter::new());
+        let before = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
+        let served = serve(before.clone()).await;
+        rig.membership.joined.store(true, Ordering::SeqCst);
+        let mut stream = nodes_over(&served.carrier).create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let build = BuildId(stream.accepted().build_id.0.clone());
+        let accepted = stream.accepted().clone();
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
+        });
+        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        // The same Build log and executor under a fabric-primary that never drove this Build.
+        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone() });
+        let successor = serve(after).await;
+        let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
+        let disposition = resumed.disposition();
+        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        (first, again, disposition)
+    });
+    assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
+    assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
 }
 
 /// CONTRACT: a valid put ends `NotBackedToday` naming the call, because no op carries the put;

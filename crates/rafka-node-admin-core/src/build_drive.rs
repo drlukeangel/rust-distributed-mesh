@@ -23,7 +23,7 @@
 use crate::build::BuildId;
 use crate::build_claim::ClaimDoor;
 use crate::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter, BuildStateError};
-use crate::executor::lead_for;
+use crate::executor::{lead_for, run_of, RunPlan};
 use crate::model::PathName;
 use crate::topology::Topology;
 use rafka_node_rpc_contract::build::BuildReply;
@@ -111,9 +111,10 @@ pub trait InnerStream: Send {
 /// Calls the executor `executor` names for one claimed attempt.
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync {
-    /// `build.attempt.run` for `attempt` of `build_id` at `executor`, carrying the won claim and the
-    /// Build's intent (`intent`: postcard frames of the Build topic's message).
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>) -> Dispatched;
+    /// `build.attempt.run` for `attempt` of `build_id` at `executor`, carrying the won claim, the
+    /// Build's intent (`intent`: postcard frames of the Build topic's message) and the run the
+    /// fabric-primary planned (`plan`): the operations the executor runs and nothing else.
+    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
 }
 
 #[derive(Default)]
@@ -212,6 +213,17 @@ impl Drive {
         for s in steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from && s.attempt < to) {
             self.push(BuildReply::Step { build_id: self.build_id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() });
         }
+    }
+
+    /// Whether the drive ended with the Build complete: its frames are the record a re-submit is
+    /// answered from.
+    pub fn completed(&self) -> bool {
+        matches!(self.state.lock().unwrap().terminal, Some(BuildReply::Complete { .. }))
+    }
+
+    /// Whether this drive dispatched an attempt: it holds the frames of the calls it made.
+    fn has_run_log(&self) -> bool {
+        self.first_attempt.load(Ordering::SeqCst) != 0
     }
 
     /// Whether the drive has ended.
@@ -338,19 +350,21 @@ impl Drives {
     pub fn ensure(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId) -> Arc<Drive> {
         let drive = {
             let mut drives = self.drives.lock().unwrap();
-            if drives.get(build_id).is_some_and(|d| d.ended()) {
+            if drives.get(build_id).is_some_and(|d| d.ended() && !d.completed()) {
                 drives.remove(build_id);
             }
             drives.entry(build_id.clone()).or_insert_with(|| Drive::new(build_id.clone())).clone()
         };
-        if !drive.running.swap(true, Ordering::SeqCst) {
+        if !drive.completed() && !drive.running.swap(true, Ordering::SeqCst) {
             let (env, d, drives) = (env.clone(), drive.clone(), self.clone());
             let parent = tracing::Span::current();
             tokio::spawn(
                 async move {
                     let end = env.run(&d).await;
                     d.running.store(false, Ordering::SeqCst);
-                    if matches!(end, DriveEnd::Terminal | DriveEnd::SeatLost(_)) {
+                    // A Build that completed keeps its drive: the frames it recorded are what a
+                    // re-submit is answered from.
+                    if matches!(end, DriveEnd::Terminal | DriveEnd::SeatLost(_)) && !d.completed() {
                         let mut held = drives.drives.lock().unwrap();
                         if held.get(&d.build_id).is_some_and(|h| Arc::ptr_eq(h, &d)) {
                             held.remove(&d.build_id);
@@ -364,7 +378,12 @@ impl Drives {
         drive
     }
 
-    /// The drive of `build_id` when one is held (running, stalled or paused).
+    /// The Build left history: its drive's record goes with it.
+    pub fn forget(&self, build_id: &BuildId) {
+        self.drives.lock().unwrap().remove(build_id);
+    }
+
+    /// The drive of `build_id` when one is held (running, stalled, paused or completed).
     pub fn get(&self, build_id: &BuildId) -> Option<Arc<Drive>> {
         self.drives.lock().unwrap().get(build_id).cloned()
     }
@@ -451,6 +470,15 @@ impl DriveEnv {
                 Err(e) => return self.stalled(drive, format!("{}: Build {id} could not be read: {e}", self.me)),
             };
             if p.state == BuildState::Complete {
+                if !drive.has_run_log() {
+                    // This drive made no call of the Build: a fabric-primary that took over after
+                    // the Build ended holds no frame of it. The executor of the last attempt replays
+                    // it from the receipts it wrote itself, and the facts of earlier attempts are
+                    // read; the Build topic's step facts are never the answer for the last attempt.
+                    if let Some(end) = self.reattach_to_ended(drive, &p).await {
+                        return end;
+                    }
+                }
                 drive.finish(BuildReply::Complete { build_id: id.0.clone(), attempt: p.attempt });
                 return DriveEnd::Terminal;
             }
@@ -484,7 +512,11 @@ impl DriveEnv {
             if let Some(tp) = &context.traceparent {
                 rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
             }
-            let inner = self.run_inner(drive, &id, attempt, &executor, context).instrument(dspan.clone()).await;
+            let plan = {
+                let t = self.topology.read().await.clone();
+                run_of(&crate::accepted::plan_for_build(&p, &t).operations, &t, &executor)
+            };
+            let inner = self.run_inner(drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
             drive.clear_stall();
             match inner {
                 Inner::Terminal(t @ BuildReply::Complete { .. }) => {
@@ -603,9 +635,40 @@ impl DriveEnv {
         frames.into_iter().map(|b| b.to_vec()).collect()
     }
 
-    async fn run_inner(&self, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext) -> Inner {
+    /// A complete Build this drive made no call of: attach to the last attempt's executor and read
+    /// its frames. `None` when the attached run ended `Complete`; otherwise the end of the drive.
+    async fn reattach_to_ended(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
+        let id = &drive.build_id;
+        drive.replay_receipts(&p.steps, 0, p.attempt);
+        let named = p.executor.clone().unwrap_or_default();
+        let Some(holder) = parse_path(&named) else {
+            drive.finish(BuildReply::NotReady { reason: format!("{}: attempt {} of Build {id} completed on {named:?}, which is not a path.name", self.me, p.attempt) });
+            return Some(DriveEnd::Terminal);
+        };
+        drive.note_first_attempt(p.attempt);
+        let context = self.door.contexts.get(id, p.attempt).ok().flatten().unwrap_or_default();
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %self.me, outcome = tracing::field::Empty);
+        match self.run_inner(drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
+            Inner::Terminal(BuildReply::Complete { .. }) => {
+                span.record("outcome", "complete");
+                None
+            }
+            other => {
+                let why = match other {
+                    Inner::Terminal(t) => format!("it answered {}", t.name()),
+                    Inner::Refused(r) => format!("it refused: {}", describe(&r)),
+                    Inner::Unreached(w) | Inner::Broke(w) => w,
+                };
+                span.record("outcome", "executor-lost");
+                drive.finish(BuildReply::NotReady { reason: format!("{}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", self.me, p.attempt) });
+                Some(DriveEnd::Terminal)
+            }
+        }
+    }
+
+    async fn run_inner(&self, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
         let intent = self.intent_of(id).await;
-        let mut stream = match self.dispatcher.dispatch(executor, id, attempt, context, intent).await {
+        let mut stream = match self.dispatcher.dispatch(executor, id, attempt, context, intent, plan).await {
             Dispatched::Stream(s) => s,
             Dispatched::Refused(r) => return Inner::Refused(r),
             Dispatched::Unreached(why) => return Inner::Unreached(why),

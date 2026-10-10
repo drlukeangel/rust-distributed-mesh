@@ -3,8 +3,9 @@
 //!
 //! A Build is driven by the fabric-primary alone (`build_drive`): it claims each attempt on its own
 //! log and calls the admin that [`executor_for`] names with `build.attempt.run` (`build_run`). The
-//! executor here runs what that call carries: it records the won claim, re-plans from the Build's
-//! pinned intent and the topology it observes now, and runs the operations whose executor it is.
+//! executor here runs what that call carries: it records the won claim and runs exactly the
+//! operations the fabric-primary planned for the run ([`RunPlan`]), never planning the Build again
+//! from its own view.
 
 use crate::build::{BuildId, BuildOperation};
 use crate::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildProjection, BuildStateAdapter};
@@ -102,6 +103,33 @@ pub fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<PathName> {
     }
 }
 
+/// What the fabric-primary planned for one run of an attempt: the contiguous leading operations of
+/// what is left that one executor executes in the fabric-primary's view, and who executes what
+/// follows them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RunPlan {
+    /// The operations to run, in plan order. Each is idempotent by its natural key.
+    pub operations: Vec<BuildOperation>,
+    /// The executor of the operation after this run; `None` when the run is the rest of the plan.
+    pub hand_off_to: Option<String>,
+}
+
+/// The run of `executor` within `ops` in view `t`: the leading operations it executes, and the
+/// executor of the first one it does not (an operation no admin can execute stays in the run).
+pub fn run_of(ops: &[BuildOperation], t: &Topology, executor: &PathName) -> RunPlan {
+    let mut run = RunPlan::default();
+    for op in ops {
+        match executor_for(op, t) {
+            Some(other) if other != *executor => {
+                run.hand_off_to = Some(other.to_string());
+                return run;
+            }
+            _ => run.operations.push(op.clone()),
+        }
+    }
+    run
+}
+
 /// How one attempt ended on its executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciled {
@@ -161,7 +189,7 @@ impl BuildExecutor {
     /// Run attempt `attempt` of `build_id`, which the fabric-primary won for this admin. The span is
     /// parented to the attempt's context the claim returned, so a restart reads under its request
     /// and a drift repair under the span that proved it.
-    pub async fn run_attempt(&self, build_id: &BuildId, attempt: u32, context: &rafka_node_rpc_contract::context::CallContext) -> Reconciled {
+    pub async fn run_attempt(&self, build_id: &BuildId, attempt: u32, context: &rafka_node_rpc_contract::context::CallContext, plan: &RunPlan) -> Reconciled {
         use tracing::Instrument;
         let previous = self.builds.read_build(build_id).await.ok();
         let span = tracing::info_span!(
@@ -178,7 +206,7 @@ impl BuildExecutor {
         if let Some(tp) = &context.traceparent {
             rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
         }
-        let r = self.run_claimed(build_id, attempt, &span).instrument(span.clone()).await;
+        let r = self.run_claimed(build_id, attempt, plan, &span).instrument(span.clone()).await;
         span.record(
             "outcome",
             match &r {
@@ -190,7 +218,7 @@ impl BuildExecutor {
         r
     }
 
-    async fn run_claimed(&self, build_id: &BuildId, attempt: u32, span: &tracing::Span) -> Reconciled {
+    async fn run_claimed(&self, build_id: &BuildId, attempt: u32, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
         // The fabric-primary decided the claim; this admin's own log takes the fact with it.
         let claim = BuildAttemptClaim { build_id: build_id.clone(), attempt, executor: self.executor.clone() };
         if let Err(e) = self.builds.adopt_claim(&claim).await {
@@ -200,26 +228,19 @@ impl BuildExecutor {
             Ok(b) => b,
             Err(e) => return Reconciled::Failed { attempt, operation: String::new(), reason: format!("reading Build {build_id} after the claim of attempt {attempt}: {e}") },
         };
-        // The accepted topology is the Build's; observed is read now, never remembered.
-        let observed = self.topology.read().await.clone();
-        let operations = crate::accepted::plan_for_build(&build, &observed).operations;
+        let operations = &plan.operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
         for (i, op) in operations.iter().enumerate() {
-            // The view moves as operations run (a new mesh's admins become
-            // its primary): eligibility is decided on the view as it is now.
+            // An operation's executor can move while it is prepared (the seat handover of a mesh
+            // retire): the operation then belongs to the admin the view now names, and it is passed
+            // to it unrun. Nothing else hands an operation off from here; the run is the
+            // fabric-primary's plan.
             let named = executor_for(op, &*self.topology.read().await);
             if let Err(e) = self.runner.prepare(&build.build_id, attempt, op).await {
                 return self.finish(&build, attempt, Err((op.key(), e))).await;
             }
-            // The first operation left is the one the fabric-primary claimed this attempt for this
-            // admin to run: its view named this admin, and this admin's own view of its mesh's seat
-            // may lag it (a lost mesh primary's successor has not yet elected itself). Only the
-            // operations after it, and a first operation whose own preparation moved its executor
-            // (the seat handover of a mesh retire), are handed off by this admin's view, so every
-            // hand-off follows a step completed or a seat moved, and two views that disagree never
-            // pass an attempt back and forth.
             let to = executor_for(op, &*self.topology.read().await);
-            if i > 0 || to != named {
+            if to != named {
                 if let Some(to) = to.filter(|to| to.to_string() != self.executor) {
                     return self.hand_off(&build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }
@@ -228,7 +249,10 @@ impl BuildExecutor {
                 return self.finish(&build, attempt, Err((op.key(), e))).await;
             }
         }
-        self.finish(&build, attempt, Ok(operations)).await
+        match &plan.hand_off_to {
+            Some(to) => self.hand_off(&build, attempt, operations.clone(), to.clone()).await,
+            None => self.finish(&build, attempt, Ok(operations.clone())).await,
+        }
     }
 
     async fn hand_off(&self, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {

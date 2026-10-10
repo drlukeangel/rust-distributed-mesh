@@ -157,6 +157,15 @@ pub enum BuildRequest {
         /// folds and plans, so the run never waits for the Build topic to deliver what the claim was
         /// decided on. Empty when the fabric-primary runs the attempt itself.
         intent: Vec<Vec<u8>>,
+        /// The operations the fabric-primary planned for this run, in plan order: the contiguous
+        /// leading run of what is left that the executor executes in the fabric-primary's view, one
+        /// JSON-encoded operation each. The executor runs exactly these and never plans the Build
+        /// from its own view. Each is idempotent by its natural key.
+        operations: Vec<Vec<u8>>,
+        /// The executor of the operation that follows this run, when the run is not the whole of
+        /// what is left: the run then ends `HandedOff` to it. `None` when the run is the rest of the
+        /// plan, and the attempt ends `Complete`.
+        hand_off_to: Option<String>,
     },
     /// `build.get`: the Build and its receipts, for reattachment after a cut.
     Get {
