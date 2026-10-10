@@ -1990,10 +1990,13 @@ async fn replace_retired(f: &mut Formed, a: &mut Authority, after_retire: &Stabl
     let born: Vec<&Value> = st.admins.iter().filter(|n| n["mesh"] == mesh.as_str() && !after_retire.admins.iter().any(|o| o["node_id"] == n["node_id"])).collect();
     assert_eq!(born.len(), 1, "{scenario}: one new admin in {mesh}");
     assert_ne!(born[0]["node_id"], retired["old_node_id"], "{scenario}: a replacement never reuses the retired NodeId");
-    // The late admin takes the seat exactly when its NodeId is the lower one: the election key alone.
+    // A lower NodeId never displaces a living holder (R-A2): the late admin holds no mesh seat, whatever its
+    // NodeId, and the incumbent keeps it.
     let incumbent = after_retire.admins.iter().find(|n| n["mesh"] == mesh.as_str()).unwrap().clone();
     let lower = s(&born[0]["node_id"]) < s(&incumbent["node_id"]);
-    assert_eq!(born[0]["is_primary"] == true, lower, "{scenario}: the late admin {} holds the mesh seat iff its NodeId is lower than the incumbent's {}", born[0]["node_id"], incumbent["node_id"]);
+    assert_eq!(born[0]["is_primary"], false, "{scenario}: the late admin {} (NodeId lower than the incumbent's {}: {lower}) holds no mesh seat while the incumbent lives", born[0]["node_id"], incumbent["node_id"]);
+    let kept = st.admins.iter().find(|n| n["node_id"] == incumbent["node_id"]).unwrap_or_else(|| panic!("{scenario}: the incumbent {} is in the view", incumbent["name"]));
+    assert_eq!(kept["is_primary"], true, "{scenario}: the incumbent {} keeps the mesh seat", incumbent["name"]);
     a.events.push(json!({
         "event": "admin.replacement", "scenario": scenario, "mesh": mesh, "retired": path, "retired_node_id": retired["old_node_id"], "replacement": born[0]["name"], "replacement_node_id": born[0]["node_id"],
         "build_id": build_id, "fabric_build_id_before_spawn": fabric_build, "wall_ms": fin["wall_ms"], "fabric_primary_after": st.fp["name"],
@@ -2167,7 +2170,8 @@ fn check_election_history(a: &Authority, spans: &[Value], inv: &mut Invariants) 
         kills.push(json!({"scenario": ev["scenario"], "victim": ev["node"], "survivor": ev["survivor"], "seat_span": seat[0]["span_id"], "seat_observer": seat[0]["attributes"]["observer"], "seat_after_kill_ms": (start_ns(seat[0]) - kill_ns) / 1_000_000}));
     }
     inv.holds("each killed admin: the surviving eligible admin of its mesh was announced primary in its place, and the dead NodeId never won the fabric seat afterwards", true, json!({"kills": kills}));
-    // A restarted primary retakes its seat when it is Ready again (same NodeId, lowest key).
+    // A restarted primary loses its seat to its mesh and does not take it back from the admin that filled it
+    // (R-A2: a seat stays with a living holder, whatever NodeId a later birth holds).
     let mut retakes = Vec::new();
     for ev in a.events.iter().filter(|e| e["event"] == "admin.restart" && e["was_primary"] == true) {
         let id = s(&ev["node_id"]);
@@ -2177,7 +2181,7 @@ fn check_election_history(a: &Authority, spans: &[Value], inv: &mut Invariants) 
         let regained = mine.iter().any(|sp| sp["attributes"]["winner_node_id"] == id.as_str() && sp["attributes"]["previous_node_id"] != id.as_str());
         retakes.push(json!({"scenario": ev["scenario"], "node": ev["node"], "seat_left_while_restarting": lost, "seat_regained_by_same_node_id": regained}));
     }
-    inv.holds("a restarted primary: the seat left it while its birth was not a candidate, and the same NodeId was announced primary again once Ready, only by the election key", retakes.iter().all(|r| r["seat_left_while_restarting"] == true && r["seat_regained_by_same_node_id"] == true), json!({"restarts": retakes}));
+    inv.holds("a restarted primary: the seat left it while its birth was not a candidate (a later vacancy may fill it again; C19 asserts it is not taken back from a living holder)", retakes.iter().all(|r| r["seat_left_while_restarting"] == true), json!({"restarts": retakes}));
     // No resurrected identity.
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
     let mut retired = Vec::new();
@@ -2283,14 +2287,19 @@ async fn authority_run(cell: &str, shape: Shape) {
         fp_trail.push(json!({"after": format!("C4 {mesh} second"), "fabric_primary": st.fp_name(), "node_id": st.fp["node_id"]}));
     }
 
-    // C19: a primary that restarts loses its seat while its birth is not a candidate and regains it
-    // as the same NodeId; the fabric-primary hands off once more; no retired identity returns.
+    // C19: a primary that restarts loses its seat to its mesh and keeps its NodeId; as a later birth it
+    // holds no seat while the admin that filled it lives (R-A2: a lower NodeId never displaces a living
+    // holder); the fabric-primary hands off once more; no retired identity returns.
     let quiet = MESHES.iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let incumbent = st.primary_of(&quiet);
-    restart_via_build(&mut f, &mut a, &st, &s(&incumbent["name"]), &format!("C19 {quiet}: the primary restarts and retakes its seat")).await;
+    restart_via_build(&mut f, &mut a, &st, &s(&incumbent["name"]), &format!("C19 {quiet}: the primary restarts and holds no seat")).await;
     st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &both(2), &mut inv).await;
-    assert_eq!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the restarted primary, Ready again with the lowest NodeId, retakes its seat");
-    proofs.push(prove_path(&mut f, &mut a, &both(2), "C19 retake", &mut inv).await);
+    assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the restarted primary is a later birth: the admin that filled its seat keeps it while it lives, whatever NodeId the restarted one holds");
+    let back = st.admins.iter().find(|n| n["name"] == incumbent["name"]).unwrap_or_else(|| panic!("C19: the restarted admin {} is in the view", incumbent["name"]));
+    assert_eq!(back["node_id"], incumbent["node_id"], "C19: the restart keeps the NodeId");
+    assert_ne!(back["incarnation_id"], incumbent["incarnation_id"], "C19: the restart is a later birth");
+    assert_eq!(back["is_primary"], false, "C19: the restarted admin holds no seat while the admin that filled it lives");
+    proofs.push(prove_path(&mut f, &mut a, &both(2), "C19 restarted primary", &mut inv).await);
     let (after, ev) = hand_off(&mut f, &mut a, &st, "C19: a repeated fabric-primary hand-off", &mut inv).await;
     st = replace_retired(&mut f, &mut a, &after, &ev, "C19", &mut inv).await;
     proofs.push(prove_path(&mut f, &mut a, &both(2), "C19 after the repeated hand-off", &mut inv).await);
@@ -2369,8 +2378,8 @@ async fn authority_run(cell: &str, shape: Shape) {
 /// birth (C3); the fabric-primary is never killed, it is retired by a Build it executes itself,
 /// its draining birth is not an election candidate, and the new fabric-primary's election is
 /// announced, with the old birth not a ready candidate, before the host sees the old process gone (C2); a
-/// restarted primary retakes its seat as the same NodeId, a late admin takes a seat exactly
-/// when its NodeId is lower, a retired path cannot be restarted and a retired NodeId never returns,
+/// restarted primary keeps its NodeId and holds no seat while the admin that filled it lives, a late admin takes no seat from a living
+/// holder, a retired path cannot be restarted and a retired NodeId never returns,
 /// across a repeated hand-off (C19). At every stable checkpoint each admin's own view equals the
 /// election function and every other admin's, exactly one admin validates a topology write and the
 /// others reject it naming the fabric-primary. From the spans: no two effective executors share an
@@ -2578,16 +2587,17 @@ async fn recovery_run(cell: &str, shape: Shape) {
     assert!(!spans_after.is_empty(), "the surviving admins claimed further attempts of {b0} after the executor's death");
     assert_eq!(spans_after[0]["attempt"].as_u64(), Some(later[0].0), "the first surviving claim is the attempt that follows the dead executor's: {spans_after:#?}");
     assert_ne!(spans_after[0]["executor"], executor_name.as_str(), "the first claim after the death is a survivor's");
-    // The dead admin's path.name is re-born by the same Build: a create under b0, by a later attempt,
-    // executed by the admin cohort's executor (the fabric-primary).
+    // The dead admin's path.name is re-born by the same Build: a replace-node under b0 (a birth the reconciler proved exited), by a later attempt,
+    // executed by the admin cohort's executor (its mesh's surviving primary admin).
     let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .filter(|c| c["attributes"]["build_id"] == b0.as_str() && c["attributes"]["node"] == executor_name.as_str() && start_ns(c) > kill_ns)
         .collect();
     assert!(!creates.is_empty(), "{executor_name} was re-born by node.create.via-build under {b0}");
     assert!(creates.iter().all(|c| u64::from(attempt_of(c)) > killed_at_attempt), "the re-birth is a later attempt than the dead executor's");
-    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).contains(&format!("create-node:{executor_name}"))).map(|c| s(&c["executor"])).collect();
-    assert_eq!(rebirth_executors, BTreeSet::from([fp_at_the_death.clone()]), "the dead admin's re-birth was planned and executed by the fabric-primary");
+    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).split(',').any(|op| op == format!("replace-node:{executor_name}") || op == format!("create-node:{executor_name}"))).map(|c| s(&c["executor"])).collect();
+    let survivor_name = s(&survivor["name"]);
+    assert_eq!(rebirth_executors, BTreeSet::from([survivor_name.clone()]), "the dead admin's re-birth was planned and executed by its mesh's surviving primary admin {survivor_name} (the fabric-primary {fp_at_the_death} owns only a mesh that has none)");
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([b0.clone()]), "the only Build ever accepted is the formation Build");
     let max_attempt = executors_by_attempt.keys().max().copied().unwrap();
@@ -3289,20 +3299,30 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
         .find(|sp| sp["attributes"]["build_id"] == bid.as_str() && sp["attributes"]["node"].as_str().is_none_or(|n| n == node.as_str()))
         .cloned()
         .unwrap_or_else(|| panic!("{node}: no {opener} opened {bid}"));
-    let op = format!("retire-node:{node}");
+    // A removal is `retire-node:<path>`; a replace is ONE `replace-node:<path>` operation (the predecessor
+    // drains and is renamed `<path>.old`, the successor is created at the path, the old identity's
+    // NodeDeleted follows the successor's Ready).
+    let replace = opener == "rdm.node_admin.build.update.via-rest";
+    let op = if replace { format!("replace-node:{node}") } else { format!("retire-node:{node}") };
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|sp| sp["attributes"]["build_id"] == bid.as_str() && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op)))
         .cloned()
         .unwrap_or_else(|| panic!("{node}: no reconcile executed {op}"));
     assert!(descends_from(spans, &reconcile, &create), "{node}: the retiring reconcile descends from its REST request");
-    let del = named(spans, "rdm.node_admin.node.delete.via-build").into_iter().find(|sp| sp["attributes"]["node"] == node.as_str() && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.delete.via-build under the reconcile"));
-    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == del["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its node.delete.via-build"));
+    let operation_span = if replace { "rdm.node_admin.node.update.via-build" } else { "rdm.node_admin.node.delete.via-build" };
+    let del = named(spans, operation_span).into_iter().find(|sp| sp["attributes"]["node"] == node.as_str() && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no {operation_span} under the reconcile"));
+    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == del["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its {operation_span}"));
     let mut steps: Vec<&Value> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).collect();
     steps.sort_by_key(|st| start_ns(st));
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
-    for want in ["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "RemoveTopologyMembership", "Complete"] {
+    let wanted: &[&str] = if replace {
+        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "RenamePredecessor", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "Complete"]
+    } else {
+        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "RemoveTopologyMembership", "Complete"]
+    };
+    for want in wanted.iter().copied() {
         let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the retire pipeline has no `{want}` step: {names:?}"));
         assert!(at >= last, "{node}: retire steps out of order at `{want}`: {names:?}");
         last = at;
@@ -3535,24 +3555,27 @@ async fn hold_phase(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, 
     rec
 }
 
-/// The creating half of a replace: the same reconcile that retired the old birth (its operations name
-/// `retire-node:<node>` and `create-node:<node>`) ran `node.create.via-build` through the deployment
-/// pipeline, and the new NodeId's own ready span follows.
+/// The creating half of a replace: the one reconcile that replaced the old birth (its operation is
+/// `replace-node:<node>`) ran `node.update.via-build` through the replace pipeline, whose steps create
+/// the successor at the path (AllocateIdentity .. WaitForNodeReady) before the old identity's
+/// NodeDeleted, and the new NodeId's own ready span follows.
 fn check_replace_create_chain(spans: &[Value], node: &str, build_id: &str, node_id: &str, incarnation: &str) -> Value {
-    let (retire, create) = (format!("retire-node:{node}"), format!("create-node:{node}"));
+    let replace = format!("replace-node:{node}");
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
-        .find(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == retire) && o.split(',').any(|x| x == create)))
+        .find(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == replace)))
         .cloned()
-        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} executed {retire} and {create}"));
+        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} executed {replace}"));
     let action = s(&reconcile["attributes"]["action"]);
     assert!(action.contains("\"replace\"") && action.contains(node), "{node}: the reconcile carries the Replace action: {action}");
-    let make = named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| sp["attributes"]["node"] == node && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.create.via-build under the replacing reconcile"));
-    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its node.create.via-build"));
-    let steps = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).count();
-    assert!(steps > 0, "{node}: no deployment steps under its pipeline");
+    let make = named(spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| sp["attributes"]["node"] == node && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.update.via-build under the replacing reconcile"));
+    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its node.update.via-build"));
+    let names: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).map(|st| s(&st["attributes"]["step"])).collect();
+    for want in ["AllocateIdentity", "DeployRuntime", "WaitForNodeReady"] {
+        assert!(names.iter().any(|x| x == want), "{node}: the replace pipeline has no `{want}` step creating the successor: {names:?}");
+    }
     let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id && sp["attributes"]["incarnation_id"] == incarnation).cloned().unwrap_or_else(|| panic!("{node}: the new node {node_id} left no ready span"));
-    json!({"node": node, "reconcile_span": reconcile["span_id"], "action": action, "create_span": make["span_id"], "pipeline_span": pipeline["span_id"], "steps": steps, "ready_span": ready["span_id"], "new_node_id": node_id})
+    json!({"node": node, "reconcile_span": reconcile["span_id"], "action": action, "create_span": make["span_id"], "pipeline_span": pipeline["span_id"], "steps": names.len(), "ready_span": ready["span_id"], "new_node_id": node_id})
 }
 
 async fn replacement_run(cell: &str, shape: Shape) {
@@ -3677,13 +3700,13 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let add_chain = check_replace_create_chain(&spans, &victim, &add_build, &new_id, &new_inc);
     let t_deleted = start_ns(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).unwrap());
     let t_ready = start_ns(named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_id.as_str()).unwrap());
-    assert!(t_ready > t_deleted, "the successor became ready after the retired node's departure was published");
+    assert!(t_ready < t_deleted, "the old identity's departure is published only after the successor is admitted and ready (a replace is not a delete followed by a spawn)");
     // The drift: a proven-drift attempt of the same Build after the kill, the dead gateway re-created under it.
     let drift_spans: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| sp["attributes"]["build_id"] == drift_build.as_str() && start_ns(sp) > kill_ns).collect();
     assert!(!drift_spans.is_empty(), "no proven-drift attempt of {drift_build} after the kill of {victim2}");
-    let op2 = format!("create-node:{victim2}");
+    let op2 = format!("replace-node:{victim2}");
     let recreate: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| sp["attributes"]["build_id"] == drift_build.as_str() && start_ns(sp) > kill_ns && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op2))).collect();
-    assert!(!recreate.is_empty(), "no reconcile of {drift_build} after the kill executed {op2}");
+    assert!(!recreate.is_empty(), "no reconcile of {drift_build} after the kill executed {op2} (a birth the reconciler proved exited is replaced)");
     let drift_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id2.as_str()).collect();
     let drift_chain = json!({
         "proven_drift_spans": drift_spans.iter().map(|sp| json!({"span": sp["span_id"], "attempt": sp["attributes"]["attempt"], "scope": sp["attributes"]["scope"], "reason": sp["attributes"]["reason"], "authority": sp["attributes"]["authority"]})).collect::<Vec<_>>(),
@@ -3692,7 +3715,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     });
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([formation_build.clone()]), "the only Build accepted is the formation: the planned replacement and the death's recovery are attempts of it");
-    inv.holds("no topology changed after the formation: the planned replacement (a Replace attempt: retire-node then create-node) and the death's recovery (a proven-drift attempt re-creating the path) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
+    inv.holds("no topology changed after the formation: the planned replacement (a Replace attempt: one replace-node operation) and the death's recovery (a proven-drift attempt re-creating the path) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -4446,16 +4469,37 @@ async fn mock_proxy_cutback_requires_durable_retirement() {
     proxy_run("mock_proxy_cutback_requires_durable_retirement", any_tier()).await;
 }
 
-/// The descriptors a process holds, read from `/proc/<pid>/fd`: the total and the sockets among them.
+/// The descriptors a process holds, read from `/proc/<pid>/fd`: the total and the sockets among them,
+/// the process's own mesh sockets. The telemetry exporter's TCP connections to the OTLP collector
+/// (`OTEL_EXPORTER_OTLP_ENDPOINT`) are the process's observability, not its mesh connections: they come and
+/// go with the exporter's batches, so they are counted apart (`telemetry_sockets`) and in neither total.
 fn fd_census(pid: u64) -> Value {
-    let (mut total, mut sockets) = (0u64, 0u64);
-    for e in std::fs::read_dir(format!("/proc/{pid}/fd")).into_iter().flatten().flatten() {
-        total += 1;
-        if std::fs::read_link(e.path()).is_ok_and(|l| l.to_string_lossy().starts_with("socket:")) {
-            sockets += 1;
+    let otlp_port: Option<u16> = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok().and_then(|e| e.rsplit(':').next().and_then(|p| p.trim_end_matches('/').parse().ok()));
+    let mut telemetry_inodes: BTreeSet<String> = BTreeSet::new();
+    if let Some(port) = otlp_port {
+        let want = format!(":{port:04X}");
+        for f in ["tcp", "tcp6"] {
+            for l in std::fs::read_to_string(format!("/proc/{pid}/net/{f}")).unwrap_or_default().lines().skip(1) {
+                let c: Vec<&str> = l.split_whitespace().collect();
+                if c.len() > 9 && c[2].ends_with(&want) {
+                    telemetry_inodes.insert(c[9].to_string());
+                }
+            }
         }
     }
-    json!({"pid": pid, "fds": total, "sockets": sockets})
+    let (mut total, mut sockets, mut telemetry) = (0u64, 0u64, 0u64);
+    for e in std::fs::read_dir(format!("/proc/{pid}/fd")).into_iter().flatten().flatten() {
+        let Some(link) = std::fs::read_link(e.path()).ok().map(|l| l.to_string_lossy().to_string()) else { continue };
+        if let Some(inode) = link.strip_prefix("socket:[").and_then(|x| x.strip_suffix(']')) {
+            if telemetry_inodes.contains(inode) {
+                telemetry += 1;
+                continue;
+            }
+            sockets += 1;
+        }
+        total += 1;
+    }
+    json!({"pid": pid, "fds": total, "sockets": sockets, "telemetry_sockets": telemetry})
 }
 
 async fn churn_run(cell: &str, shape: Shape) {
