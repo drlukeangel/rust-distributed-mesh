@@ -64,12 +64,13 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     // The restart outruns gossip, so every node must hold the target before it begins: each rpc node reports,
     // through its held view, that it holds the target's mesh including the target.
     {
-        let nodes = rafka_node_admin_client::Nodes::new(rafka_node_admin_client::NodeAdminClient::new(estate.admin.clone()));
+        let peers = rafka_node_admin_client::Peers::of(&[]).await;
+        let nodes = peers.nodes(rafka_node_admin_client::NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
         let mut views = Vec::new();
         for m in ["mesh1", "mesh2"] {
             views.extend(nodes.get(&rafka_node_admin_client::NodeSelector::Mesh(m.into())).await.expect("node.get"));
         }
-        let peers = rafka_node_admin_client::Peers::of(&views).await;
+        peers.learn(&views);
         let target_view = views.iter().find(|n| n.name.to_string() == target).expect("node.get lists the target").clone();
         for peer in views.iter().filter(|n| n.name != target_view.name && n.kind == rafka_node_admin_client::LaunchKind::RpcNode) {
             peers.fact(peer, &target_view.mesh, "it holds the restart target's mesh including the target", |v| v.birth(&target_view.node_id).is_some()).await;

@@ -17,7 +17,7 @@ mod peers;
 mod workflow;
 
 pub use build_stream::{BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, MeshCounts, StartDisposition};
-pub use calls::{CallEnd, DrainContext, ExactBirth, NodeRpc};
+pub use calls::{CallEnd, DrainContext, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
 pub use names::{BuildOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
     BuildPreset, BuildSpec, Builds, MetaField, MetaFieldIsRdmOwned, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter,

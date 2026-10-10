@@ -142,6 +142,10 @@ impl From<ClientError> for CallEnd {
     }
 }
 
+fn target_name(t: &NodeTarget) -> String {
+    format!("{t:?}")
+}
+
 pub(crate) fn ended<R>(out: RpcOutcome<R>) -> Result<R, CallEnd> {
     match out {
         RpcOutcome::Reply(r) => Ok(r.into_value()),

@@ -29,16 +29,14 @@ const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 1), ("mesh2", 2, 2)];
 /// A restart of an rpc node of `mesh2`: executed by `mesh2`'s own primary, not the fabric-primary.
 const NODE: &str = "mesh2.rpc.1";
 /// The events a restart's stream carries, in order.
-const RESTART_EVENTS: [NodeEvent; 10] = [
+const RESTART_EVENTS: [NodeEvent; 8] = [
     NodeEvent::Restarting,
     NodeEvent::Draining,
     NodeEvent::Drained,
-    NodeEvent::Left,
+    NodeEvent::ConnectionsDeleted,
     NodeEvent::Stopped,
-    NodeEvent::Created,
-    NodeEvent::Started,
     NodeEvent::Joined,
-    NodeEvent::Ready,
+    NodeEvent::Started,
     NodeEvent::Restarted,
 ];
 

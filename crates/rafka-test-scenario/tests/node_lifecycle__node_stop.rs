@@ -83,11 +83,12 @@ async fn stop_then_start(test: &str, node: &str) {
     assert_eq!(status, 202, "{a}");
     estate.await_build(&s(&a["build_id"]), SETTLE).await;
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
-    let nodes = Nodes::new(NodeAdminClient::new(estate.admin.clone())).polling_every(Duration::from_millis(200));
+    let peers = Peers::of(&[]).await;
+    let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
     let path: PathName = node.parse().unwrap();
 
     let mesh = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get");
-    let peers = Peers::of(&mesh).await;
+    peers.learn(&mesh);
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
     let others: Vec<&NodeView> = mesh.iter().filter(|n| n.name != path).collect();
     let pid = estate.pid_of(node).await;

@@ -101,6 +101,7 @@ impl BuildDoor {
             }
             BuildChange::Drain { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Drain, node.clone(), ActionKind::Drain, None).await,
             BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop, None).await,
+            BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start, None).await,
         };
         r.map_err(refusal_reply)
     }

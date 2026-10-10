@@ -11,7 +11,8 @@ use std::time::Duration;
 
 /// A client over a table of the mesh's nodes, taken from `node.get`.
 pub struct Peers {
-    rpc: NodeRpcClient,
+    rpc: Arc<NodeRpcClient>,
+    resolver: Arc<StaticResolver>,
     _endpoint: iroh::Endpoint,
 }
 
@@ -20,8 +21,15 @@ impl Peers {
     pub async fn of(views: &[NodeView]) -> Self {
         let endpoint = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the test endpoint binds");
         let resolver = Arc::new(StaticResolver::new());
+        let me = Self { rpc: Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm")), resolver, _endpoint: endpoint };
+        me.learn(views);
+        me
+    }
+
+    /// Make every node of `views` reachable.
+    pub fn learn(&self, views: &[NodeView]) {
         for n in views {
-            resolver.insert(ResolvedNode {
+            self.resolver.insert(ResolvedNode {
                 node_id: n.node_id.clone(),
                 name: n.name.clone(),
                 endpoint_id: n.endpoint_id.as_deref().expect("a ready node carries its endpoint").parse().expect("an iroh key"),
@@ -29,7 +37,12 @@ impl Peers {
                 transport_addr: n.transport_addr.expect("a ready node carries its address"),
             });
         }
-        Self { rpc: NodeRpcClient::new(endpoint.clone(), resolver), _endpoint: endpoint }
+    }
+
+    /// The node objects over this client: Build calls start at the fabric-primary `admin` names.
+    pub async fn nodes(&self, admin: crate::NodeAdminClient) -> Result<crate::Nodes, crate::CallEnd> {
+        let fp = admin.fabric().await.map_err(crate::CallEnd::from)?.fabric_primary.ok_or_else(|| crate::CallEnd::Indeterminate { reason: "the admin's fabric names no fabric-primary".into() })?;
+        Ok(crate::Nodes::new(admin, crate::BuildCarrier::new(self.rpc.clone(), fp)))
     }
 
     /// Await the typed fact `fact` of `peer`'s held view of `mesh`; a peer that never reports it is named

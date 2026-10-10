@@ -330,8 +330,7 @@ impl Nodes {
     /// incarnation, endpoint key and port). The stream is `Started`, then `node.joined` and
     /// `node.started`, ending `Complete` or `Failed { step, reason }`.
     pub async fn start(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        let _ = node;
-        Err(CallEnd::NotBackedToday { op: NodeOp::Start, why: "node.start is submitted through the Build family (op 0x20), which this tree does not serve yet" })
+        self.workflow(WorkflowKind::Start(node.clone()), BuildChange::Start { node: node.clone() }).await
     }
 
     /// `node.restart` of `node`.

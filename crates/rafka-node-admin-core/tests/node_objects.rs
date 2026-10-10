@@ -470,7 +470,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
             reason: "mesh1.rpc.3: hydrate_before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on authority-ready".into()
         }
     );
-    assert_eq!(after, [Frame::Event(NodeEvent::Ready), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
+    assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
 }
 
 /// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
@@ -657,7 +657,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         };
         assert!(matches!(nodes.update(&held, &held, false), Ok(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
         assert_eq!(nodes.update(&NodeMeta { status: rafka_node_admin_client::NodeStatus::Dead, ..held.clone() }, &held, false).unwrap_err(), MetaFieldIsRdmOwned { field: MetaField::Status });
-        for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet), (nodes.config_update(), NodeOp::ConfigUpdate), (nodes.start(), NodeOp::Start)] {
+        for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet), (nodes.config_update(), NodeOp::ConfigUpdate)] {
             assert!(matches!(end, CallEnd::NotBackedToday { op: got, .. } if got == op), "{end:?}");
         }
     });
