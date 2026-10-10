@@ -230,7 +230,20 @@ impl BuildExecutor {
             BuildState::Pending | BuildState::Failed => {}
         }
         let ops = crate::accepted::plan_for_build(build, &t).operations;
-        lead_for(&ops, &t).is_some_and(|l| l.to_string() == self.executor)
+        let lead = lead_for(&ops, &t);
+        // A mesh shutdown with no admin outside the mesh has no owner: no one executes it. The
+        // fabric-primary says so, once per Build, rather than leaving the Build to stall unnamed.
+        if lead.is_none() && t.fabric_primary().is_some_and(|f| f.name.to_string() == self.executor) {
+            if let Some(op @ BuildOperation::ShutdownMesh { mesh, .. }) = ops.first() {
+                static NAMED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+                let key = format!("{}/{}", build.build_id, op.key());
+                if NAMED.lock().unwrap().replace(key.clone()).as_deref() != Some(key.as_str()) {
+                    tracing::info_span!("rdm.node_admin.build.reject.via-no-owner-outside-mesh", build_id = %build.build_id, operation = %op.key(), mesh = %mesh)
+                        .in_scope(|| tracing::info!("no ready admin primary exists outside the leaving mesh: nothing owns its shutdown, and the mesh is not dismantled"));
+                }
+            }
+        }
+        lead.is_some_and(|l| l.to_string() == self.executor)
     }
 
     /// Claim the next attempt of `build` from the fabric-primary, plan what is left and run it.
