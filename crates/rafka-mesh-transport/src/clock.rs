@@ -355,6 +355,7 @@ impl RafkaTime {
     /// on. Called only by a testkit executable that reads a test knob from its environment, to
     /// prove the discipline holds a clock with a frequency error on its authority's time; no
     /// product executable calls it.
+    #[cfg(feature = "testkit-skew")]
     pub fn drift_for_testkit(&self, ppm: i64) {
         let mut s = self.inner.lock().unwrap();
         let now = std::time::Instant::now();

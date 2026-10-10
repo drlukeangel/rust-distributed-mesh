@@ -50,6 +50,7 @@ pub fn rafka_time_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
 /// `drift_ppm` runs the node's monotonic time that many parts per million fast from now on. Called
 /// only by testkit executables, once the node has adopted its authority's time, to prove the
 /// discipline brings a node back to it. Returns `(ahead_ms, drift_ppm)` applied.
+#[cfg(feature = "testkit-skew")]
 pub fn apply_rafka_time_knob(root: &std::path::Path, name: &str, time: &rafka_mesh_transport::clock::RafkaTime, parent: &tracing::Span) -> Option<(i64, i64)> {
     let text = std::fs::read_to_string(rafka_time_knob_dir(root).join(name)).ok()?;
     let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('=')?.trim().parse::<i64>().ok()).unwrap_or(0);
