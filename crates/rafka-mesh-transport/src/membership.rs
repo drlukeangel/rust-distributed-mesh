@@ -2497,7 +2497,7 @@ impl Backbone {
                 // A complete snapshot of a source Mesh: the forwarding primary says what moved
                 // since it last published that source into its own Mesh.
                 if let (Some((source_mesh, publisher, version, full)), true) = (taken.source, fw.load(Ordering::Relaxed)) {
-                    m.forward_path.source_spawned(&me, &source_mesh, &publisher, version, &full, m.clock.now_rafka_ms());
+                    m.forward_path.source(&me, &source_mesh, &publisher, version, &full, m.clock.now_rafka_ms());
                 }
                 return;
             }
@@ -2707,7 +2707,7 @@ impl Backbone {
         if self.full_due.swap(false, Ordering::Relaxed) {
             self.forward_fulls().await;
         } else {
-            self.membership.forward_path.source_awaited(&self.node, &self.mesh, &self.publisher, version, &overlays, sent).await;
+            self.membership.forward_path.source(&self.node, &self.mesh, &self.publisher, version, &overlays, sent);
         }
     }
 
@@ -2724,13 +2724,7 @@ impl Backbone {
             held.push((self.mesh.clone(), self.publisher.clone(), version, full));
         }
         let now = self.membership.clock.now_rafka_ms();
-        let frames = self.membership.view.forwarder.lock().unwrap().fulls(&self.node, &held, now);
-        let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-        tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %self.node, mesh = %self.mesh, reason = "seat", sources = held.len(), chunks = frames.len(), bytes)
-            .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
-        for f in frames {
-            let _ = self.membership.forward(&f).await;
-        }
+        self.membership.forward_path.fulls(&self.node, &self.mesh, &held, now);
     }
 
     /// Publish a hook (`node-draining`, `node-leaving`, or a fabric round hook) this admin authored: the backbone,
