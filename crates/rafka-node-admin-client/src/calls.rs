@@ -60,6 +60,12 @@ pub enum CallEnd {
         /// What the refusal says.
         detail: String,
     },
+    /// Another Build is still reconciling: one accepted topology, one Build in flight. `current` is
+    /// that Build; a caller that must go after it follows it to its end by re-submitting its id.
+    BuildInProgress {
+        /// The Build in flight.
+        current: BuildId,
+    },
     /// The typed object exists and its request is valid, and no op carries it today.
     NotBackedToday {
         /// The call.
@@ -86,6 +92,7 @@ impl std::fmt::Display for CallEnd {
             Self::RejectedStale { target_node_id } => write!(f, "stale target {target_node_id}"),
             Self::Refused { status, error, detail } => write!(f, "refused ({status} {error}): {detail}"),
             Self::Rejected { reason, detail } => write!(f, "rejected ({reason}): {detail}"),
+            Self::BuildInProgress { current } => write!(f, "Build {current} is still reconciling; one Build at a time"),
             Self::NotBackedToday { op, why } => write!(f, "{} is not backed by an op today: {why}", op.name()),
             Self::UnrecognisedReceipt { operation, step } => write!(f, "a receipt names operation {operation} step {step}, which this client does not recognise"),
         }
@@ -104,6 +111,7 @@ impl CallEnd {
             Self::RejectedStale { .. } => "rejected-stale",
             Self::Refused { .. } => "refused",
             Self::Rejected { .. } => "rejected",
+            Self::BuildInProgress { .. } => "build-in-progress",
             Self::NotBackedToday { .. } => "not-backed-today",
             Self::UnrecognisedReceipt { .. } => "unrecognised-receipt",
         }

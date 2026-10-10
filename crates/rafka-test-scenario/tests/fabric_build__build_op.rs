@@ -114,7 +114,17 @@ async fn until_complete(stream: &mut BuildStream) {
 async fn born(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> BuildCarrier {
     let carrier = caller.carrier().await;
     let desired = FabricDesired { fabric: FABRIC.into(), meshes: shape.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
-    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(desired)).await.expect("the fabric-primary accepts the shape");
+    let builds = Builds::new(carrier.clone());
+    let mut stream = match builds.create(&BuildSpec::Fabric(desired.clone())).await {
+        // The Build the fabric accepted on its Day 0 is still reconciling: its own stream says when it
+        // is done, and the shape is accepted after it.
+        Err(CallEnd::BuildInProgress { current }) => {
+            let mut day_zero = carrier.resubmit(&current, 1).await.expect("the fabric-primary streams the Build in flight");
+            until_complete(&mut day_zero).await;
+            builds.create(&BuildSpec::Fabric(desired)).await.expect("the fabric-primary accepts the shape once the Day-0 Build is done")
+        }
+        other => other.expect("the fabric-primary accepts the shape"),
+    };
     until_complete(&mut stream).await;
     estate.settled_shape(shape, Duration::from_secs(90)).await;
     caller.learn().await;
@@ -179,7 +189,10 @@ async fn a_restart_over_the_build_family_is_one_call_that_pushes_every_step_fram
         .expect("the executor's run of the attempt");
     assert_eq!(s(&reconcile["attributes"]["executor"]), "mesh2.admin.1", "the node of mesh2 is executed by mesh2's primary, not the fabric-primary");
     assert_eq!(s(&reconcile["attributes"]["outcome"]), "converged");
-    let dispatch = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == *build).expect("the fabric-primary's dispatch");
+    let dispatch = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch")
+        .into_iter()
+        .find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string())
+        .expect("the fabric-primary's dispatch");
     assert_eq!(s(&dispatch["attributes"]["node"]), "mesh1.admin.1");
     assert_eq!(s(&dispatch["attributes"]["executor"]), "mesh2.admin.1");
     assert_eq!(dispatch["trace_id"], reconcile["trace_id"], "the run is in the call's trace");
@@ -235,8 +248,12 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
     let spans = estate.spans();
     let build = &accepted.build_id.0;
     let drives: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
+    assert!(!drives.is_empty());
     assert!(drives.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "terminal"), "the drive ended the Build with no caller attached: {drives:?}");
-    let reconcile = spans_named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == *build).expect("the run");
+    let reconcile = spans_named(&spans, "rdm.node_admin.build.update.via-reconcile")
+        .into_iter()
+        .find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string())
+        .expect("the run");
     estate.record_trace_url(reconcile["trace_id"].as_str().unwrap_or(""));
 }
 
@@ -315,10 +332,10 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     estate.stop().await;
     let spans = estate.spans();
     let build = &accepted.build_id.0;
-    let proofs: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
+    let proofs: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string()).collect();
     assert_eq!(proofs.len(), 1, "the departure was proven once, before the next attempt was claimed: {proofs:?}");
     assert_eq!(s(&proofs[0]["attributes"]["executor"]), "mesh2.admin.1");
-    let claims: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
+    let claims: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && sp["attributes"]["attempt"].as_str().and_then(|a| a.parse::<u32>().ok()) > Some(accepted.attempt)).collect();
     let successor = claims.iter().find(|sp| s(&sp["attributes"]["executor"]) == "mesh2.admin.2").expect("the next attempt was claimed for the successor");
     assert!(successor["start_unix_nano"].as_u64() > proofs[0]["start_unix_nano"].as_u64(), "the claim for the successor came after the proof");
     let lost = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["outcome"]) == "executor-lost").expect("the inner call to the lost executor ended");
@@ -394,7 +411,10 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     estate.stop().await;
     let spans = estate.spans();
     let build = &accepted.build_id.0;
-    let run = spans_named(&spans, "rdm.node_admin.build.serve.via-attempt-run").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == *build).expect("the executor was called with the claimed attempt");
+    let run = spans_named(&spans, "rdm.node_admin.build.serve.via-attempt-run")
+        .into_iter()
+        .find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string())
+        .expect("the executor was called with the claimed attempt");
     assert_eq!(s(&run["attributes"]["executor"]), "mesh2.admin.1");
     assert_eq!(s(&run["attributes"]["outcome"]), "started");
     estate.record_trace_url(run["trace_id"].as_str().unwrap_or(""));

@@ -14,10 +14,12 @@
 use crate::calls::ended;
 use crate::{BuildId, CallEnd};
 use rafka_mesh_entity::PathName;
-use rafka_node_rpc::stream::{ReplyStream, StreamItem};
+use rafka_node_rpc::stream::{ReplyStream, StreamFailure, StreamItem};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rafka_node_rpc_contract::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rafka_node_rpc_contract::codes::ResetCode;
+use rafka_node_rpc_contract::outcome::{IndeterminateReason, RpcOutcome};
+use rafka_node_rpc_contract::protocol::NodeProtocol;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -185,6 +187,9 @@ impl BuildStream {
 
 /// The refusal `reply` is, as the call ends.
 fn refusal(reply: BuildReply) -> CallEnd {
+    if let BuildReply::BuildInProgress { current_build_id } = &reply {
+        return CallEnd::BuildInProgress { current: BuildId(current_build_id.clone()) };
+    }
     let detail = match &reply {
         BuildReply::NotFabricPrimary { fabric_primary } => format!("the receiver is not the fabric-primary; it sees {}", fabric_primary.as_deref().unwrap_or("none")),
         BuildReply::NotExecutor { named, recipient } => format!("the claim names {named}, the recipient is {recipient}"),
@@ -233,6 +238,8 @@ impl BuildCarrier {
                 Err((other, _)) => return Err(ended(other).err().unwrap_or_else(|| CallEnd::Indeterminate { reason: "an early reply that is no refusal".into() })),
                 Ok((mut stream, _)) => match stream.next().await {
                     Some(StreamItem::Frame(_, f)) => (f, Some(stream)),
+                    // The reserved reset 421 is how a node that does not serve the op answers: nothing was dispatched.
+                    Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::Reset(code)))) if code == u64::from(ResetCode::UnservedOp.code()) => return Err(CallEnd::Unserved { op: Build::OP }),
                     Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { reason: format!("the stream broke before its Started frame: {f:?}") }),
                     None => return Err(CallEnd::Indeterminate { reason: "the stream ended before its Started frame".into() }),
                 },
