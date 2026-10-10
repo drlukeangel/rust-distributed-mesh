@@ -913,3 +913,35 @@ mod unheard_mesh_hold {
         assert!(started.iter().any(|k| k.2 == vec!["recovery".to_string(), peer_mesh.clone()]), "the release is recorded: {started:?}");
     }
 }
+
+/// CONTRACT: a live birth the accepted topology does not name is surplus, retired by an attempt of its
+/// own, UNLESS the Build already receipted its retirement (`NodeDeleting` of that exact birth): that
+/// operation retires it, and this view is only late in hearing it go.
+#[tokio::test]
+async fn a_birth_whose_retirement_the_build_receipted_is_not_surplus() {
+    use rafka_node_admin_core::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
+    for receipted in [false, true] {
+        let e = estate().await;
+        let current = e.accepted.current(&*e.builds).await.unwrap();
+        let extra = birth(&e.world, &e.book, &e.view.read().await.fabric.id.clone(), "mesh1.rpc.9", None);
+        e.view.write().await.nodes.push(extra.clone());
+        if receipted {
+            let op = rafka_mesh_entity::LifecycleOp {
+                build_id: current.build_id.to_string(),
+                attempt: current.attempt,
+                operation: "retire-node:mesh1.rpc.9".into(),
+                node_id: extra.node_id.clone(),
+                incarnation: extra.incarnation_id.clone().unwrap(),
+                name: extra.name.clone(),
+                event_at_rafka_ms: 0,
+            };
+            e.builds
+                .append_step_receipt(&BuildStepReceipt { build_id: current.build_id.clone(), attempt: current.attempt, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
+                .await
+                .unwrap();
+            assert_eq!(e.drift().await, None, "a receipted retirement is not surplus");
+        } else {
+            assert!(e.drift().await.is_some(), "an unreceipted live birth outside the accepted topology is surplus");
+        }
+    }
+}
