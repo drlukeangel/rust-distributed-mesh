@@ -56,7 +56,10 @@ struct Inner {
     write_gate: tokio::sync::Mutex<()>,
 }
 
-fn now_ms() -> u64 {
+/// The local OS clock: a writer orders its own rows by it and ages its owed retirements by it. No
+/// other node reads these stamps as a time; rafka-time is not adopted when a node first observes a
+/// connection (its join).
+fn local_now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -187,14 +190,14 @@ impl ConnectionsWriter {
             carrier: None,
             recovery: None,
             reason,
-            logged_at_ms: now_ms(),
+            logged_at_ms: local_now_ms(),
         }
     }
 
     /// The Proxy retirements this node owes now (connections.md §10), derived from the held
     /// projection's two latest rows per pair: never a queue.
     pub fn owed(&self) -> Vec<NodeConnection> {
-        owed_retirements(&self.inner.held.lock().unwrap(), now_ms())
+        owed_retirements(&self.inner.held.lock().unwrap(), local_now_ms())
     }
 
     /// Settle every Proxy retirement this node owes: each is written durably as
@@ -256,7 +259,7 @@ impl ConnectionsWriter {
     /// A strictly increasing stamp for this writer's rows.
     fn stamp(&self) -> u64 {
         let mut last = self.inner.last_stamp.lock().unwrap();
-        *last = now_ms().max(*last + 1);
+        *last = local_now_ms().max(*last + 1);
         *last
     }
 
@@ -351,12 +354,12 @@ impl ConnectionObserver for ConnectionsWriter {
                         Some(r) => NodeConnection {
                             recovery: Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: r.recovery_epoch, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),
                             reason: Some(reason),
-                            logged_at_ms: now_ms(),
+                            logged_at_ms: local_now_ms(),
                             ..p.clone()
                         },
-                        None => first_failure(w.inner.own.clone(), destination, previous.as_ref(), &reason, now_ms()),
+                        None => first_failure(w.inner.own.clone(), destination, previous.as_ref(), &reason, local_now_ms()),
                     },
-                    _ => first_failure(w.inner.own.clone(), destination, previous.as_ref(), &reason, now_ms()),
+                    _ => first_failure(w.inner.own.clone(), destination, previous.as_ref(), &reason, local_now_ms()),
                 }
             },
             "dial",

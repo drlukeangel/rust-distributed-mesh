@@ -18,6 +18,13 @@ pub fn enable_callsites() {
     HELD.get_or_init(|| tracing::Dispatch::new(tracing_subscriber::registry()));
 }
 
+/// The rafka-time a test admin holds, adopted from a reference nowhere near any OS clock.
+pub fn adopted_time() -> rafka_mesh_transport::clock::RafkaTime {
+    let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    t.adopt(1_000_000);
+    t
+}
+
 mod admin_serves_forward;
 mod build_catch_up;
 mod build_claim;

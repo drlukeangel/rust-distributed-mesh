@@ -202,7 +202,9 @@ fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey, String> {
     Ok(k)
 }
 
-fn now_ms() -> u64 {
+/// The local OS clock, for a read that measures time elapsed since a local event (a tickle
+/// round's spacing): never a stamp another node reads, which is rafka-time.
+fn local_now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -649,6 +651,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
 /// is not opened again and again; the adapter's insert-and-fail on the attempt keeps two
 /// authorities from opening it twice.
 pub async fn reconcile_drift(
+    time: &rafka_mesh_transport::clock::RafkaTime,
     me: &PathName,
     t: &Topology,
     accepted: &AcceptedStore,
@@ -854,7 +857,7 @@ pub async fn reconcile_drift(
         reason: crate::build_state::AttemptReason::ProvenDrift,
         action,
         opened_by: me.to_string(),
-        opened_at_ms: now_ms(),
+        opened_at_ms: time.now_ms(),
     };
     // The attempt's context is this span, on this fabric-primary, before the attempt is open to be claimed.
     if let Err(e) = contexts.put(&current.build_id, attempt, &span.in_scope(crate::build_claim::current_context)).await {
@@ -2392,6 +2395,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     }
     let shutdown_control = Arc::new(crate::shutdown::ShutdownControl::open(fabric_storage.clone(), name.to_string()).await.map_err(|e| e.to_string())?);
     let mut tasks_early: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    // When the fabric seat moves to another holder, this admin, if it is a mesh primary, pulls
+    // rafka-time once from the new fabric-primary.
+    tasks_early.push(tokio::spawn(crate::rafka_time::run_seat_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), membership.clone())));
     // The seat records this admin held before it stopped (`fabric.storage`): it enters knowing who
     // held the seats, and every record it hears from here on is written as its own row.
     for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
@@ -2514,7 +2520,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     build_id: crate::build::BuildId::mint(),
                     topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh),
                     submitted_change: None,
-                    submitted_at_ms: now_ms(),
+                    submitted_at_ms: rafka_time.now_ms(),
                 };
                 attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                 builds.publish_accepted(&b0).await.map_err(|e| e.to_string())?;
@@ -2578,7 +2584,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let book = membership.book.clone();
     let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
     let control = Arc::new(
-        ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)).with_contexts(attempt_contexts.clone()),
+        ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)).with_contexts(attempt_contexts.clone()).with_rafka_time(rafka_time.clone()),
     );
     // The claim door: this admin decides a claim only while it holds the fabric-primary seat.
     let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });
@@ -3192,7 +3198,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let own_name = me.clone();
                 let report = tickle
                     .tick(
-                        now_ms(),
+                        local_now_ms(),
                         holds_seat,
                         silent,
                         floor.as_millis() as u64 / 2,
@@ -3504,6 +3510,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
         let (me, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
         let frozen = shutdown_control.clone();
+        let drift_time = rafka_time.clone();
         let drift_nodes = nodes_storage.clone();
         let ladder = ladder.clone();
         executor = tokio::spawn(async move {
@@ -3525,7 +3532,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-let opened =                     reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh, round).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+let opened =                     reconcile_drift(&drift_time, &me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh, round).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                     // proven exited is not live there, and holds no seat.
                     if opened.is_some() {

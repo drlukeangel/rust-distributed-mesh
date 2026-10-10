@@ -47,13 +47,17 @@ struct Node {
     resolver: Arc<StaticResolver>,
     slot: TopologySlot,
     resolved: ResolvedNode,
+    /// The rafka-time this node adopted: 5 000 000 ms, nowhere near its OS clock.
+    time: rafka_mesh_transport::clock::RafkaTime,
     _router: Router,
 }
 
 async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Node {
     let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-    let membership = Membership::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), name, rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
+    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    time.adopt(5_000_000);
+    let membership = Membership::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), name, Arc::new(time.clone()), vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = NodeRpcClient::new(ep.clone(), resolver.clone());
     let slot: TopologySlot = Arc::new(OnceLock::new());
@@ -64,7 +68,7 @@ async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(Serv
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation };
-    Node { ep, membership, client, resolver, slot, resolved, _router: router }
+    Node { ep, membership, client, resolver, slot, resolved, time, _router: router }
 }
 
 fn own_digest(n: &Node, fabric: &FabricId) -> MeshDigest {
@@ -77,7 +81,7 @@ fn own_digest(n: &Node, fabric: &FabricId) -> MeshDigest {
 
 fn open(n: &Node, fabric: &FabricId) {
     let d = own_digest(n, fabric);
-    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.membership.clone(), Arc::new(move || d.clone()))));
+    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.membership.clone(), Arc::new(move || d.clone()), n.time.clone())));
 }
 
 fn publisher(node: &str) -> PublisherId {
@@ -466,7 +470,7 @@ fn open_with_stored(n: &Node, fabric: &FabricId, rows: Vec<rafka_node_rpc_contra
         let rows = rows.clone();
         Box::pin(async move { Ok(rafka_node_admin_core::topology_read::StoredMap { nodes: rows, mesh_ids: [("mesh1".to_string(), MeshId::parse("04raj09p3zp7").unwrap())].into_iter().collect() }) })
     });
-    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.membership.clone(), Arc::new(move || d.clone())).with_stored(source)));
+    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.membership.clone(), Arc::new(move || d.clone()), n.time.clone()).with_stored(source)));
 }
 
 // @feature: node-lifecycle
@@ -513,4 +517,88 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
     assert_eq!(rows, vec![("*", "served", "1", "1"), ("mesh1", "served", "1", "0"), ("mesh8", "unknown-mesh", "-", "-")], "{serves:?}");
     let installs = cap.named("rdm.mesh.topology.update.via-read-install");
     assert!(installs.iter().all(|a| a["mesh"] == "mesh3"), "nothing of the stored mesh was installed: {installs:?}");
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a read is served with the rafka-time the node adopted (never its own clock) and the
+/// seat it holds in its own seat records: none for a replica, the mesh's for its primary, the
+/// fabric's for the fabric-primary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_holds() {
+    use rafka_mesh_entity::{Seat, SeatHolder};
+    let fabric = FabricId::mint();
+    let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+    open(&server, &fabric);
+    let t = target_of(&caller, &server);
+    let held = |seat| (seat, SeatHolder { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), epoch: 1 });
+
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    let served = read.rafka_time.expect("every accepted read carries rafka-time");
+    assert!((5_000_000..5_060_000).contains(&served.ms), "the node's adopted time, not an OS clock: {}", served.ms);
+    assert_eq!(served.seat, None, "a node that holds no seat is a replica");
+
+    let (seat, holder) = held(Seat::MeshPrimary);
+    server.membership.seats().take(seat, &holder);
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    assert_eq!(read.rafka_time.unwrap().seat, Some(Seat::MeshPrimary));
+
+    let (seat, holder) = held(Seat::FabricPrimary);
+    server.membership.seats().take(seat, &holder);
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    assert_eq!(read.rafka_time.unwrap().seat, Some(Seat::FabricPrimary), "the fabric seat outranks the mesh seat it also holds");
+    server.ep.close().await;
+    caller.ep.close().await;
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a node that has adopted no rafka-time has none to serve: a read is NotReady naming
+/// why, and the stream never starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_holding_no_rafka_time_answers_not_ready_by_name() {
+    let fabric = FabricId::mint();
+    let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+    let d = own_digest(&server, &fabric);
+    let _ = server.slot.set(Arc::new(TopologyDoor::new(server.membership.clone(), Arc::new(move || d.clone()), rafka_mesh_transport::clock::RafkaTime::unadopted())));
+    let t = target_of(&caller, &server);
+    let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap_err();
+    assert!(matches!(&err, TopologyFailure::NotReady(r) if r.contains("holds no rafka-time")), "{err}");
+    server.ep.close().await;
+    caller.ep.close().await;
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a member adopts the rafka-time of whichever node answers; a mesh primary adopts only
+/// from a fabric-primary seat, and refuses the answer of a replica (`served-by-a-replica`) or of
+/// another mesh primary (`a-mesh-primary-takes-only-the-fabric-primary`) by name, keeping the
+/// time it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_fabric_primarys() {
+    use rafka_mesh_entity::{Seat, SeatHolder};
+    use rafka_node_admin_core::rafka_time::Refusal;
+    use rafka_node_admin_core::topology_read::TimeNotAdopted;
+    let fabric = FabricId::mint();
+    let (server, caller) = (node(&fabric, "mesh2", "mesh2.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.admin.2", |b| b).await);
+    open(&server, &fabric);
+    caller.time.adopt(9_000_000);
+    let t = target_of(&caller, &server);
+    let caller_id = NodeId::mint();
+    // The caller holds its mesh's primary seat in its own records.
+    caller.membership.seats().take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), epoch: 1 });
+    let pull = || async {
+        let read = get_topology(&caller.client, &t, "mesh2", &caller.membership, None, None).await.unwrap();
+        read.adopt_rafka_time(&caller.time, &caller.membership, "mesh1.admin.2", "mesh1", &caller_id, "mesh2.rpc.1")
+    };
+    assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::ServedByAReplica));
+    assert!(caller.time.now_ms() >= 9_000_000 && caller.time.now_ms() < 9_060_000, "the replica's 5 000 000 was not taken");
+
+    server.membership.seats().take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), epoch: 1 });
+    assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary));
+
+    server.membership.seats().take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), epoch: 1 });
+    let adopted = pull().await.unwrap();
+    assert_eq!(adopted.previous_ms.map(|p| p >= 9_000_000), Some(true));
+    assert!(adopted.stalls_ms > 3_000_000, "the fabric-primary's earlier time is behind: the reader stalls, it never steps back: {adopted:?}");
+    assert!(caller.time.now_ms() >= 9_000_000, "never back");
+    server.ep.close().await;
+    caller.ep.close().await;
 }

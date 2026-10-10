@@ -298,7 +298,9 @@ pub struct Watch {
     pub carriers: Mutex<BTreeMap<String, PathName>>,
 }
 
-fn now_ms() -> u64 {
+/// The local OS clock: the silence of a mesh is measured from a local event, and the read is only
+/// named in spans. No node reads it as a stamp.
+fn local_now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -377,7 +379,7 @@ fn restore(w: &Watch, view: &Topology) {
 }
 
 async fn investigate(w: &Watch, view: &Topology, mesh: String, rounds: u64, unheard: Duration) {
-    let at = now_ms().saturating_sub(unheard.as_millis() as u64);
+    let at = local_now_ms().saturating_sub(unheard.as_millis() as u64);
     let steps = w.ladder.lock().unwrap().step(&mesh, rounds);
     for step in steps {
         match step {
@@ -416,12 +418,12 @@ async fn investigate(w: &Watch, view: &Topology, mesh: String, rounds: u64, unhe
                     let verdict_ms = w.membership.clock().now_rafka_ms();
                     let lost = view.cohort(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
                     w.records.set_peer_recovery(Some(crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: verdict_ms, opened_at: Instant::now(), lost }));
-                    tracing::info_span!("rdm.node_admin.mesh.create.via-rebirth", node = %w.me, mesh = %mesh, at = now_ms(), fabric_status = "degraded", verdict_rafka_ms = verdict_ms)
+                    tracing::info_span!("rdm.node_admin.mesh.create.via-rebirth", node = %w.me, mesh = %mesh, at = local_now_ms(), fabric_status = "degraded", verdict_rafka_ms = verdict_ms)
                         .in_scope(|| tracing::info!("the existing Mesh Recovery opens; the fabric primary authors degraded"));
                 }
             }
             Step::Cancel { rounds, probes } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome = "heard-again", at = now_ms(), rounds, probes)
+                tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome = "heard-again", at = local_now_ms(), rounds, probes)
                     .in_scope(|| tracing::info!("the mesh is heard on the backbone again: the investigation is cancelled"));
             }
         }
@@ -429,7 +431,7 @@ async fn investigate(w: &Watch, view: &Topology, mesh: String, rounds: u64, unhe
 }
 
 fn verdict(w: &Watch, mesh: &str, outcome: &str, rounds: u64, _heard_at: u64, why: &str) {
-    tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome, at = now_ms(), rounds).in_scope(|| tracing::info!("{why}"));
+    tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome, at = local_now_ms(), rounds).in_scope(|| tracing::info!("{why}"));
 }
 
 /// What the carried `ProbeNodeState` found. Any reply from the node-admin means it is there. Only the

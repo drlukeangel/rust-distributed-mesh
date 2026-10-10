@@ -64,6 +64,8 @@ pub struct ControlPlane {
     pub fabric_shutdown: std::sync::OnceLock<Arc<ShutdownSeat>>,
     /// Where each attempt this admin brings into being keeps its context, for the claim to return.
     pub contexts: Arc<crate::build_claim::AttemptContexts>,
+    /// The rafka-time this admin stamps its Builds, attempts and shutdown with.
+    pub time: rafka_mesh_transport::clock::RafkaTime,
 }
 
 /// What `/api/shutdown` and `/api/fabric` need of this admin's fabric shutdown state.
@@ -94,7 +96,14 @@ impl ControlPlane {
             loads: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
+            time: rafka_mesh_transport::clock::RafkaTime::unadopted(),
         }
+    }
+
+    /// This control plane stamping with `time`: the rafka-time its admin adopted.
+    pub fn with_rafka_time(mut self, time: rafka_mesh_transport::clock::RafkaTime) -> Self {
+        self.time = time;
+        self
     }
 
     /// This control plane keeping attempt contexts in `contexts` (the admin's own data dir).
@@ -158,7 +167,7 @@ impl ControlPlane {
                 topology,
                 submitted_change: Some(change),
                 // Strictly after the Build it succeeds: pointer rows are ordered by this stamp.
-                submitted_at_ms: now_ms().max(current.submitted_at_ms + 1),
+                submitted_at_ms: self.time.now_ms().max(current.submitted_at_ms + 1),
             };
             // The attempt's context is on this fabric-primary before the Build exists to be claimed.
             self.contexts
@@ -186,7 +195,7 @@ impl ControlPlane {
             reason,
             action: Some(action),
             opened_by: self.me.to_string(),
-            opened_at_ms: now_ms(),
+            opened_at_ms: self.time.now_ms(),
         };
         span.record("build_id", current.build_id.0.as_str());
         span.record("attempt", opened.attempt);
@@ -321,10 +330,6 @@ fn reject_span(route: &'static str, reject: &BuildReject) {
         "provider-mismatch",
         "unheard-mesh"
     );
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// A refused request, rendered with every non-leaking detail.
@@ -593,7 +598,7 @@ async fn shutdown(State(cp): State<Shared>) -> Response {
     let begun = crate::fabric_storage::FabricShutdown {
         initiated_by: seat.me.to_string(),
         initiated_by_node_id: seat.node_id.as_str().to_string(),
-        initiated_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+        initiated_at_ms: cp.time.now_ms(),
     };
     match seat.control.initiate(begun).await {
         Ok(held) => {
