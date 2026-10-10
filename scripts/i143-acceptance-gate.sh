@@ -127,6 +127,8 @@ for i in $(seq 0 $((NCELLS - 1))); do
         cbin=$(echo "$command" | sed -nE 's/.*RDM_RSHAPE_CONSUMER_BIN_DIR=([^ ]+).*/\1/p')
         if [ ! -s "$cm" ]; then
             consumer_reason="the cell runs external consumer executables but their build manifest $cm does not exist"
+        elif [ "$(jq -r '.candidate_sha // empty' "$cm")" != "$SHA" ]; then
+            consumer_reason="the consumer executables were built from candidate $(jq -r '.candidate_sha // "none"' "$cm") (manifest $cm), not from this run's source $SHA: build them with scripts/i143-rshape-build-consumer.sh --candidate-sha $SHA"
         else
             for f in $(jq -r '.binaries | keys[]' "$cm"); do
                 want=$(jq -r --arg f "$f" '.binaries[$f]' "$cm")
