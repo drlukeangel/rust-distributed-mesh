@@ -518,11 +518,6 @@ async fn drain_node(State(cp): State<Shared>, Path(name): Path<String>) -> Resul
     Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/drain", AttemptReason::Drain, node, ActionKind::Drain, None).await?))
 }
 
-async fn start_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
-    let node = parse_path(&name)?;
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/start", AttemptReason::Start, node, ActionKind::Start, None).await?))
-}
-
 async fn stop_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
     Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, node, ActionKind::Stop, None).await?))
@@ -678,7 +673,6 @@ pub fn router(cp: Arc<ControlPlane>, runtime_routes: Router) -> Router {
         .route("/api/nodes/spawn", post(spawn_node))
         .route("/api/nodes/{name}", delete(delete_node))
         .route("/api/nodes/{name}/restart", post(restart_node))
-        .route("/api/nodes/{name}/start", post(start_node))
         .route("/api/nodes/{name}/replace", post(replace_node))
         .route("/api/nodes/{name}/drain", post(drain_node))
         .route("/api/nodes/{name}/stop", post(stop_node))

@@ -456,12 +456,6 @@ impl NodeAdminClient {
         Ok(a)
     }
 
-    /// `POST /api/nodes/{name}/start`: open an attempt that starts the parked exact birth.
-    pub async fn start(&self, node: &PathName) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.post(&format!("/api/nodes/{node}/start"), None).await?;
-        Ok(a)
-    }
-
     /// `GET /api/connections`: the connection facts the answering admin holds.
     pub async fn connections(&self) -> Result<ConnectionsView, ClientError> {
         self.get("/api/connections").await

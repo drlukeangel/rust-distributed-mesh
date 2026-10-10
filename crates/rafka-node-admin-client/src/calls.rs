@@ -12,7 +12,7 @@ use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
 use rafka_node_rpc::stream::StreamItem;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_contract::streaming::FrameKind;
 use rafka_node_rpc_contract::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
 
