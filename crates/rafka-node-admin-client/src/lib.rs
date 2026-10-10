@@ -9,6 +9,18 @@
 //! `client_contract` test pins that every route decodes into them.
 #![deny(missing_docs)]
 
+mod calls;
+mod names;
+mod objects;
+mod workflow;
+
+pub use calls::{CallEnd, DrainContext, ExactBirth, NodeRpc};
+pub use names::{BuildOp, NodeEvent, NodeOp, NodeStep};
+pub use objects::{
+    BuildPreset, BuildSpec, Builds, MetaField, MetaFieldIsRdmOwned, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter,
+};
+pub use workflow::{fold, BuildSource, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
+
 
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 /// The executable-binding contract an operator hands node-admin (`RDM_EXECUTABLE_BINDINGS`).
@@ -283,6 +295,9 @@ pub enum ClientError {
         url: String,
         /// Why the call failed.
         reason: String,
+        /// Whether the request was written to the connection. `false` only when the
+        /// connection was never made, so the request provably reached no handler.
+        request_written: bool,
     },
 }
 
@@ -290,7 +305,7 @@ impl fmt::Display for ClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Refused { status, error, detail } => write!(f, "node-admin refused ({status} {error}): {detail}"),
-            Self::Transport { url, reason } => write!(f, "node-admin at {url}: {reason}"),
+            Self::Transport { url, reason, .. } => write!(f, "node-admin at {url}: {reason}"),
         }
     }
 }
@@ -307,8 +322,41 @@ pub struct Accepted {
     pub attempt: u32,
 }
 
+/// One connection fact (`GET /api/connections`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionView {
+    /// The source node's `path.name`.
+    pub source: String,
+    /// The destination node's `path.name`.
+    pub destination: String,
+    /// `direct` or `proxy`.
+    pub kind: String,
+    /// `connected`, `disconnected` or `failed`.
+    pub state: String,
+    /// The carrier's `path.name`, for a proxy.
+    #[serde(default)]
+    pub carrier: Option<String>,
+    /// Why the connection is in its state, when known.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// When the fact was observed, in rafka-time milliseconds.
+    #[serde(default)]
+    pub logged_at_ms: u64,
+}
+
+/// The connection facts one admin holds (`GET /api/connections`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionsView {
+    /// The answering admin's `path.name`.
+    pub node: String,
+    /// Whether the admin holds the complete set.
+    pub complete: bool,
+    /// The facts.
+    pub connections: Vec<ConnectionView>,
+}
+
 #[derive(Deserialize)]
-struct Nodes {
+struct NodeList {
     nodes: Vec<NodeView>,
 }
 
@@ -339,8 +387,8 @@ impl NodeAdminClient {
     }
 
     async fn send<T: serde::de::DeserializeOwned>(&self, req: reqwest::RequestBuilder, url: &str) -> Result<T, ClientError> {
-        let transport = |reason: String| ClientError::Transport { url: url.to_string(), reason };
-        let res = req.send().await.map_err(|e| transport(e.to_string()))?;
+        let transport = |reason: String| ClientError::Transport { url: url.to_string(), reason, request_written: true };
+        let res = req.send().await.map_err(|e| ClientError::Transport { url: url.to_string(), reason: e.to_string(), request_written: !(e.is_connect() || e.is_builder()) })?;
         let status = res.status();
         let bytes = res.bytes().await.map_err(|e| transport(e.to_string()))?;
         if !status.is_success() {
@@ -389,6 +437,23 @@ impl NodeAdminClient {
         Ok(a)
     }
 
+    /// `POST /api/nodes/{name}/drain`: open an attempt that drains the exact live birth.
+    pub async fn drain(&self, node: &PathName) -> Result<Accepted, ClientError> {
+        let a: Accepted = self.post(&format!("/api/nodes/{node}/drain"), None).await?;
+        Ok(a)
+    }
+
+    /// `POST /api/nodes/{name}/stop`: open an attempt that stops the exact live birth.
+    pub async fn stop(&self, node: &PathName) -> Result<Accepted, ClientError> {
+        let a: Accepted = self.post(&format!("/api/nodes/{node}/stop"), None).await?;
+        Ok(a)
+    }
+
+    /// `GET /api/connections`: the connection facts the answering admin holds.
+    pub async fn connections(&self) -> Result<ConnectionsView, ClientError> {
+        self.get("/api/connections").await
+    }
+
     /// `POST /api/nodes/{name}/replace`: the next attempt of the accepted Build retires the live
     /// birth and creates a new node at the path.
     pub async fn replace(&self, node: &PathName) -> Result<Accepted, ClientError> {
@@ -405,7 +470,7 @@ impl NodeAdminClient {
 
     /// `POST /api/build`: reconcile the whole fabric to `desired`.
     pub async fn build(&self, desired: &FabricDesired) -> Result<Accepted, ClientError> {
-        let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string() })?;
+        let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string(), request_written: false })?;
         let a: Accepted = self.post("/api/build", Some(body)).await?;
         Ok(a)
     }
@@ -422,7 +487,7 @@ impl NodeAdminClient {
 
     /// `GET /api/nodes`.
     pub async fn nodes(&self) -> Result<Vec<NodeView>, ClientError> {
-        Ok(self.get::<Nodes>("/api/nodes").await?.nodes)
+        Ok(self.get::<NodeList>("/api/nodes").await?.nodes)
     }
 
     /// `GET /api/meshes/{id|name}`.
@@ -437,7 +502,7 @@ impl NodeAdminClient {
 
     /// `POST /api/meshes`.
     pub async fn create_mesh(&self, desired: &MeshDesired) -> Result<Accepted, ClientError> {
-        let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string() })?;
+        let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string(), request_written: false })?;
         let a: Accepted = self.post("/api/meshes", Some(body)).await?;
         Ok(a)
     }
