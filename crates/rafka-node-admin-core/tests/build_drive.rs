@@ -283,3 +283,37 @@ async fn an_executor_whose_view_lacks_a_just_launched_node_creates_only_what_the
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.3".to_string()], "only what the fabric-primary planned ran; mesh1.rpc.2 was launched already");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)]);
 }
+
+/// Seats `mesh2.admin.1` as mesh2's primary when its create has run, as the launch and join of the
+/// first admin of a mesh do.
+struct MeshBirth {
+    ran: Arc<Creates>,
+    topology: Arc<RwLock<Topology>>,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for MeshBirth {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        self.ran.run(build, attempt, op).await?;
+        if op.key() == "create-node:mesh2.admin.1" {
+            self.topology.write().await.nodes.push(node("mesh2.admin.1", true, false));
+        }
+        Ok(())
+    }
+}
+
+/// CONTRACT: the members of a mesh are run by that mesh's own primary once it exists. The
+/// fabric-primary creates mesh2's first admin; the view then names that admin the executor of the
+/// operations after it, so the fabric-primary's run ends there and the next attempt is claimed for
+/// mesh2's primary, which runs the rest.
+#[tokio::test]
+async fn a_run_that_seats_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)]) };
+    let r = rig_for(t, change, |ran, topology| Arc::new(MeshBirth { ran, topology })).await;
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string(), "create-node:mesh2.rpc.1".to_string()]);
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1), ("mesh2.admin.1".to_string(), 2)], "mesh2's own primary ran the members");
+}
