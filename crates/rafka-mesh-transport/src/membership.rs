@@ -459,6 +459,20 @@ pub enum Frame {
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
     },
+    /// The committed fabric-primary announces itself and its contact addresses on the backbone
+    /// (gossip.md, new-fabric-primary), after its explicit handover committed the fabric seat. The
+    /// contacts belong to the exact `holder` birth and nothing else; the frame grants no authority
+    /// beyond the committed record it carries, completes no handover and proves no runtime exit.
+    NewFabricPrimary {
+        /// The committed holder: mesh, node, incarnation and the seat's new epoch.
+        holder: SeatHolder,
+        /// The holder's endpoint key.
+        endpoint_id: String,
+        /// The holder's bound QUIC UDP address.
+        transport_addr: std::net::SocketAddr,
+        /// The holder's control API base URL with its bound HTTP port, when it runs one.
+        admin_api_base: Option<String>,
+    },
 }
 
 impl Frame {
@@ -776,10 +790,24 @@ impl Default for SeatBook {
 #[derive(Debug, Default)]
 struct HeldSeats {
     fabric: Option<SeatHolder>,
+    /// The contacts a new-fabric-primary announcement gave for the fabric holder's exact birth.
+    fabric_contacts: Option<(SeatHolder, FabricContacts)>,
     meshes: HashMap<String, SeatHolder>,
     /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
+}
+
+/// A fabric-primary's contact addresses as its new-fabric-primary announcement states them: the
+/// QUIC UDP address and the HTTP API base bind independently, neither derived from the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FabricContacts {
+    /// The holder's endpoint key.
+    pub endpoint_id: String,
+    /// The holder's bound QUIC UDP address.
+    pub transport_addr: std::net::SocketAddr,
+    /// The holder's control API base URL, when it runs one.
+    pub admin_api_base: Option<String>,
 }
 
 /// What [`SeatBook::take`] did with a record.
@@ -832,6 +860,23 @@ impl SeatBook {
     /// The fabric seat's held record.
     pub fn fabric(&self) -> Option<SeatHolder> {
         self.inner.lock().unwrap().fabric.clone()
+    }
+
+    /// Attach `contacts` to the held fabric holder when `holder` is that exact birth at that epoch.
+    /// `false` when the held record is another one (a delayed announcement attaches to nothing).
+    pub fn attach_fabric_contacts(&self, holder: &SeatHolder, contacts: FabricContacts) -> bool {
+        let mut held = self.inner.lock().unwrap();
+        if held.fabric.as_ref() != Some(holder) {
+            return false;
+        }
+        held.fabric_contacts = Some((holder.clone(), contacts));
+        true
+    }
+
+    /// The contacts announced for the fabric seat's current holder, when it announced any.
+    pub fn fabric_contacts(&self) -> Option<FabricContacts> {
+        let held = self.inner.lock().unwrap();
+        held.fabric_contacts.as_ref().filter(|(h, _)| held.fabric.as_ref() == Some(h)).map(|(_, c)| c.clone())
     }
 
     /// Hold that the peer proved `incarnation`, a seat holder's birth, gone.
@@ -1591,6 +1636,10 @@ impl View {
                 self.note_seat(*seat, holder, via);
                 Vec::new()
             }
+            Frame::NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base } => {
+                self.note_new_fabric_primary(holder, endpoint_id, *transport_addr, admin_api_base.as_deref(), via);
+                Vec::new()
+            }
             Frame::Concern { seat, node_id, incarnation, observer } => {
                 self.concerns.put(ConcernHeard { seat: *seat, node_id: node_id.clone(), incarnation: incarnation.clone(), observer: observer.clone() });
                 Vec::new()
@@ -1841,6 +1890,34 @@ impl View {
                 .in_scope(|| tracing::info!("a seat record was heard"));
         }
         taken
+    }
+
+    /// Hold the fabric seat record a new-fabric-primary announcement carries under the seat's own
+    /// acceptance rule (a stale holder is refused by name), and attach its contacts to that exact
+    /// holder birth unless this book holds a digest of the birth, which is the contact authority.
+    fn note_new_fabric_primary(&self, holder: &SeatHolder, endpoint_id: &str, transport_addr: std::net::SocketAddr, admin_api_base: Option<&str>, via: &'static str) {
+        let taken = self.book.seats.take(Seat::FabricPrimary, holder);
+        let outcome = match &taken {
+            SeatTaken::Held { .. } => "held",
+            SeatTaken::Same => "same",
+            SeatTaken::Refused { .. } => "refused-not-newer",
+        };
+        let has_digest = self.book.get(holder.node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == holder.incarnation);
+        let attached = !has_digest && !matches!(taken, SeatTaken::Refused { .. }) && self.book.seats.attach_fabric_contacts(holder, FabricContacts { endpoint_id: endpoint_id.to_string(), transport_addr, admin_api_base: admin_api_base.map(String::from) });
+        tracing::info_span!(
+            "rdm.mesh.seat.update.via-new-fabric-primary",
+            node = %self.node,
+            holder = %holder,
+            endpoint_id,
+            transport_addr = %transport_addr,
+            admin_api_base = admin_api_base.unwrap_or(""),
+            outcome,
+            previous = %match &taken { SeatTaken::Held { previous } => previous.as_ref().map(ToString::to_string).unwrap_or_default(), SeatTaken::Refused { held } => held.to_string(), SeatTaken::Same => String::new() },
+            contacts_attached = attached,
+            digest_held = has_digest,
+            via,
+        )
+        .in_scope(|| tracing::info!("the committed fabric-primary announced itself"));
     }
 }
 
@@ -2627,6 +2704,14 @@ impl Backbone {
         if seat == Seat::MeshPrimary {
             let _ = self.membership.forward(&frame).await;
         }
+    }
+
+    /// The committed fabric-primary announces itself and its contacts on the backbone, once, after
+    /// its seat record is committed locally. Nothing repeats it: a joiner is replayed the seat
+    /// record by a primary, like any seat.
+    pub async fn announce_new_fabric_primary(&self, holder: SeatHolder, endpoint_id: String, transport_addr: std::net::SocketAddr, admin_api_base: Option<String>) {
+        let frame = Frame::NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base };
+        let _ = self.channel.broadcast(&frame).await;
     }
 
     /// Say on the backbone that `seat`'s holder birth looks silent from here. A warning, once per

@@ -4,6 +4,7 @@
 mod build_claim_wire;
 mod build_facts_wire;
 mod forward_wire;
+mod handover_wire;
 mod join_wire;
 mod status_wire;
 mod topology_wire;
