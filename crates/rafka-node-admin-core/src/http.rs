@@ -223,7 +223,8 @@ impl ControlPlane {
 
     /// Open the next attempt of the accepted Build with a fenced action (a restart or a
     /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
-    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, replace: bool, named_birth: Option<crate::model::IncarnationId>) -> Result<Opened, Refusal> {
+    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind, named_birth: Option<crate::model::IncarnationId>) -> Result<Opened, Refusal> {
+        let replace = kind == ActionKind::Replace;
         let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
         let outer = tracing::Span::current();
         async {
@@ -265,7 +266,12 @@ impl ControlPlane {
                 // Dead): the decommission retires its exact runtime before the new node is created.
                 let unheard = matches!(n.status, crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
                 if !n.status.is_live() && !(replace && unheard) {
-                    let reason = if replace { "the node's status is neither live nor an unheard birth a replacement may retire" } else { "a restart needs a live node" };
+                    let reason = match kind {
+                        ActionKind::Replace => "the node's status is neither live nor an unheard birth a replacement may retire",
+                        ActionKind::Restart => "a restart needs a live node",
+                        ActionKind::Drain => "a drain needs a live node",
+                        ActionKind::Stop => "a stop needs a live node",
+                    };
                     return Err(not_live(&outer, route, &path, n.status, reason));
                 }
                 // A node of a peer mesh this fabric-primary holds unheard is not its to restart, replace or delete:
@@ -283,12 +289,30 @@ impl ControlPlane {
                 }
             };
             let node_name = path.to_string();
-            let action = if replace { AttemptAction::Replace { path, from_incarnation } } else { AttemptAction::Restart { path, from_incarnation } };
+            let action = match kind {
+                ActionKind::Restart => AttemptAction::Restart { path, from_incarnation },
+                ActionKind::Replace => AttemptAction::Replace { path, from_incarnation },
+                ActionKind::Drain => AttemptAction::Drain { path, from_incarnation },
+                ActionKind::Stop => AttemptAction::Stop { path, from_incarnation },
+            };
             self.open_with(&current, reason, action, route, &outer, &node_name, span.clone()).await
         }
         .instrument(span.clone())
         .await
     }
+}
+
+/// What an attempt opened at a node route does to the exact birth it is fenced to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionKind {
+    /// `restart-node:<path>`.
+    Restart,
+    /// `replace-node:<path>`.
+    Replace,
+    /// `drain-node:<path>`.
+    Drain,
+    /// `stop-node:<path>`.
+    Stop,
 }
 
 /// The restart/replace refusal `node-not-live`, spanned beside the request with the node, the
@@ -467,7 +491,17 @@ async fn delete_node(State(cp): State<Shared>, Path(name): Path<String>) -> Resu
 
 async fn restart_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, false, None).await?))
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, ActionKind::Restart, None).await?))
+}
+
+async fn drain_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
+    let node = parse_path(&name)?;
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/drain", AttemptReason::Drain, node, ActionKind::Drain, None).await?))
+}
+
+async fn stop_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
+    let node = parse_path(&name)?;
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, node, ActionKind::Stop, None).await?))
 }
 
 #[derive(Deserialize)]
@@ -479,7 +513,7 @@ struct ReplaceQuery {
 async fn replace_node(State(cp): State<Shared>, Path(name): Path<String>, Query(q): Query<ReplaceQuery>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
     let birth = q.incarnation.map(crate::model::IncarnationId);
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/replace", AttemptReason::Replace, node, true, birth).await?))
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/replace", AttemptReason::Replace, node, ActionKind::Replace, birth).await?))
 }
 
 async fn get_nodes(State(cp): State<Shared>) -> Json<Value> {
@@ -621,6 +655,8 @@ pub fn router(cp: Arc<ControlPlane>, runtime_routes: Router) -> Router {
         .route("/api/nodes/{name}", delete(delete_node))
         .route("/api/nodes/{name}/restart", post(restart_node))
         .route("/api/nodes/{name}/replace", post(replace_node))
+        .route("/api/nodes/{name}/drain", post(drain_node))
+        .route("/api/nodes/{name}/stop", post(stop_node))
         .route("/api/meshes", post(create_mesh))
         .route("/api/meshes/{id}", get(get_mesh).delete(delete_mesh))
         .route("/api/fabric", get(get_fabric))

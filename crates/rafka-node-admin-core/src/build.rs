@@ -204,6 +204,22 @@ pub enum BuildOperation {
         /// The birth the replacement is fenced to.
         from_incarnation: IncarnationId,
     },
+    /// Drain the exact birth `from_incarnation` of `node` and keep it running (node-drain.md): the
+    /// operation is `drain-node` and the birth's `node-drained`, nothing else.
+    DrainNode {
+        /// The node to drain.
+        node: PathName,
+        /// The birth drained.
+        from_incarnation: IncarnationId,
+    },
+    /// Stop the exact birth `from_incarnation` of `node` (node-stop.md): `stop-node`, the birth's
+    /// `node-left` and the provider's Exited proof. No implicit drain, no departure.
+    StopNode {
+        /// The node to stop.
+        node: PathName,
+        /// The birth stopped.
+        from_incarnation: IncarnationId,
+    },
     /// Remove the logical node through the retire pipeline; what happens to its storage is the
     /// accepted Build's StorageMeta for the path, decided there.
     RetireNode {
@@ -229,6 +245,8 @@ impl BuildOperation {
             Self::CreateNode { node } => format!("create-node:{node}"),
             Self::ReplaceNode { node, .. } => format!("replace-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),
+            Self::DrainNode { node, .. } => format!("drain-node:{node}"),
+            Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }

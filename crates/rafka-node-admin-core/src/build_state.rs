@@ -55,6 +55,10 @@ pub enum AttemptReason {
     Replace,
     /// The previous attempt's executor is gone; another admin continues the Build.
     AuthorityMoved,
+    /// A standalone drain of an exact birth was requested (`drain-node:<path>`).
+    Drain,
+    /// A standalone stop of an exact birth was requested (`stop-node:<path>`).
+    Stop,
 }
 
 impl AttemptReason {
@@ -66,6 +70,8 @@ impl AttemptReason {
             Self::Restart => "restart",
             Self::Replace => "replace",
             Self::AuthorityMoved => "authority-moved",
+            Self::Drain => "drain",
+            Self::Stop => "stop",
         }
     }
 }
@@ -541,6 +547,8 @@ fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
         Some(crate::accepted::AttemptAction::Restart { path, from_incarnation }) => format!("restart of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Replace { path, from_incarnation }) => format!("replace of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Drain { path, from_incarnation }) => format!("drain of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         None => "no fenced action".to_string(),
     };
     format!("{} ({action}, opened by {})", o.reason.as_str(), o.opened_by)

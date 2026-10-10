@@ -327,7 +327,7 @@ pub(crate) async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapN
                 continue;
             };
             let opened: Result<u32, String> = if fp.name == d.me {
-                d.control.open_attempt("sweep decommission", crate::build_state::AttemptReason::Replace, n.name.clone(), true, Some(n.incarnation.clone())).await.map(|o| o.attempt).map_err(|r| format!("{r:?}"))
+                d.control.open_attempt("sweep decommission", crate::build_state::AttemptReason::Replace, n.name.clone(), crate::http::ActionKind::Replace, Some(n.incarnation.clone())).await.map(|o| o.attempt).map_err(|r| format!("{r:?}"))
             } else {
                 match fp.admin_api_base.as_deref() {
                     Some(base) => rafka_node_admin_client::NodeAdminClient::new(base).replace_birth(&n.name, &n.incarnation.0).await.map(|a| a.attempt).map_err(|e| e.to_string()),

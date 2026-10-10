@@ -1373,6 +1373,52 @@ impl DeploymentPipeline<'_> {
         Ok(Created { node, handle })
     }
 
+    /// A standalone drain (node-drain.md): `drain-node:<path>` is the drain-node command, the wait for
+    /// the exact birth's `node-drained` and `Complete`, whose receipt names the birth. The process keeps
+    /// running; nothing stops it and nothing is deleted.
+    pub async fn drain(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("drain", &req.build_id, &req.node.name, req.attempt, false);
+        async {
+            let name = &req.node.name;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("drain-node:{name}")).await;
+            let mut node = req.node.clone();
+            self.drain_steps_with(&mut run, &mut node, &req.handle, true).await?;
+            self.complete_for_birth(&mut run, &node).await
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// A standalone stop (node-stop.md): `stop-node:<path>` is the stop-node command, the wait for the
+    /// exact birth's `node-left`, the provider's stop with its Exited proof, and `Complete`, whose receipt
+    /// names the birth. No drain is sent and no departure is published.
+    pub async fn stop(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt, false);
+        async {
+            let name = &req.node.name;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await;
+            let mut node = req.node.clone();
+            let terminal = self.stop_steps_with(&mut run, &mut node, &req.handle, true).await?;
+            self.complete_for_birth(&mut run, &node).await?;
+            Ok(terminal)
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// The `Complete` receipt of a standalone operation: it names the exact birth the operation
+    /// completed for, so a later attempt's plan reads it and plans nothing more for that birth.
+    async fn complete_for_birth(&self, run: &mut Run<'_>, node: &Node) -> Result<(), PipelineError> {
+        let birth = serde_json::json!({
+            "node_id": node.node_id,
+            "incarnation": node.incarnation_id,
+        });
+        let _: serde_json::Value = self.step(run, RetireStep::Complete.name(), async { Ok(birth) }).await?;
+        Ok(())
+    }
+
     /// Retire `req.node` through every step.
     pub async fn retire(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
@@ -1493,6 +1539,13 @@ impl DeploymentPipeline<'_> {
     /// wait for its `node-drained` completion call. The birth stays running. The completion wait
     /// ends at the lifecycle drain deadline (an arm, recorded) or at this runtime's exit.
     pub(crate) async fn drain_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<(), PipelineError> {
+        self.drain_steps_with(run, node, handle, false).await
+    }
+
+    /// [`Self::drain_steps`]; `strict` (a standalone drain) fails the wait step by name unless the
+    /// matching `node-drained` call was accepted: an admission acknowledgement, a deadline and an exit
+    /// are each indeterminate, never drain completion (node-drain.md).
+    async fn drain_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool) -> Result<(), PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Drain, node);
         node.status = NodeStatus::Draining;
@@ -1510,9 +1563,13 @@ impl DeploymentPipeline<'_> {
                 if !admission.admitted() {
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
-                tokio::select! {
-                    c = self.observer.await_completion(node, NodeCommand::Drain, &ctx, self.timeouts.drain) => Ok(c),
-                    () = self.until_exited(handle) => Ok(Completion::RuntimeExited),
+                let c = tokio::select! {
+                    c = self.observer.await_completion(node, NodeCommand::Drain, &ctx, self.timeouts.drain) => c,
+                    () = self.until_exited(handle) => Completion::RuntimeExited,
+                };
+                match (strict, &c) {
+                    (true, c) if *c != Completion::Received => Err(format!("{}: drain-node was admitted but no matching node-drained call was accepted ({c:?}); the drain is not complete", node.name)),
+                    _ => Ok(c),
                 }
             })
             .await?;
@@ -1523,6 +1580,12 @@ impl DeploymentPipeline<'_> {
     /// drain), the wait for its `node-left` completion call, then the provider's stop and
     /// inspection of the exact runtime: only its `Exited` is terminal proof.
     pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
+        self.stop_steps_with(run, node, handle, false).await
+    }
+
+    /// [`Self::stop_steps`]; `strict` (a standalone stop) fails the wait step by name unless the matching
+    /// `node-left` call was accepted (node-stop.md: the completion is NodeLeft plus the runtime's Exited).
+    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool) -> Result<TerminalReceipt, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
@@ -1539,9 +1602,13 @@ impl DeploymentPipeline<'_> {
                 if !admission.admitted() {
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
-                tokio::select! {
-                    c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.drain) => Ok(c),
-                    () = self.until_exited(handle) => Ok(Completion::RuntimeExited),
+                let c = tokio::select! {
+                    c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.drain) => c,
+                    () = self.until_exited(handle) => Completion::RuntimeExited,
+                };
+                match (strict, &c) {
+                    (true, c) if *c != Completion::Received => Err(format!("{}: stop-node was admitted but no matching node-left call was accepted ({c:?}); the stop is not complete", node.name)),
+                    _ => Ok(c),
                 }
             })
             .await?;

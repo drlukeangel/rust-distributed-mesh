@@ -720,6 +720,19 @@ pub async fn reconcile_drift(
     // The ladder's release of a mesh's first recovering node-admin ends with the silence.
     started.retain(|k| !(k.2.len() == 2 && k.2[0] == "recovery" && hold(&k.2[1]).is_none()));
     for n in candidates {
+        // A birth the Build stopped on request is not drift: its `stop-node:<path>` operation completed
+        // for this exact birth (node-stop.md: no bind, no JoinNode, no replacement), and the exit it
+        // proves is the one that was asked for.
+        let operation = format!("stop-node:{}", n.name);
+        let birth = serde_json::to_value(&n.incarnation_id).unwrap_or_default();
+        if current.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.output.as_ref().and_then(|o| o.get("incarnation")) == Some(&birth)) {
+            let key = (current.build_id.clone(), 0u32, vec![n.name.to_string(), n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(), "stopped-on-request".to_string()]);
+            if started.insert(key) {
+                tracing::info_span!("rdm.node_admin.build.reject.via-stopped-on-request", node = %me, birth = %n.name, node_id = %n.node_id, operation = %operation)
+                    .in_scope(|| tracing::info!("the birth's exit was asked for by a completed stop-node: no repair attempt"));
+            }
+            continue;
+        }
         // A peer mesh with no live node-admin is reborn on the investigation's decision
         // (`crate::investigate`), not on the first exit proof: every one of its births waits for it
         // (R-D1: provider evidence is not authority, and a node this authority replaces while the
@@ -866,7 +879,7 @@ pub async fn reconcile_drift(
         authority = %authority.name,
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
-        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace" }).unwrap_or("none"),
+        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop" }).unwrap_or("none"),
         exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
         exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
     );
@@ -1588,6 +1601,32 @@ impl AdminRunner {
         }
     }
 
+    /// `drain-node:<path>` / `stop-node:<path>` (node-drain.md, node-stop.md): the exact birth `from` at
+    /// `node`, fenced by incarnation, through its one half of the shutdown leg. A drain leaves the
+    /// process running; a stop ends with the provider's Exited proof and publishes no departure.
+    async fn standalone(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId, stop: bool) -> Result<(), String> {
+        let op = if stop { "stop-node" } else { "drain-node" };
+        let seen = self.topology.read().await.node(node).cloned();
+        let (record, handle) = match seen {
+            Some(n) => {
+                if n.incarnation_id.as_ref() != Some(from) {
+                    return Err(format!("{op}:{node} is fenced to birth {}, the view holds {} at that path", from.0, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("none")));
+                }
+                self.handle_for(&n).await?
+            }
+            None => self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from)).ok_or_else(|| format!("{op}:{node}: birth {} is not in this admin's view and no runtime handle of it is held", from.0))?,
+        };
+        let template = self.template_for(node.kind, &node.mesh).await?;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind: RetireKind::Restart };
+        if stop {
+            self.pipeline(&template).stop(&req).await.map_err(|e| e.to_string())?;
+            self.after_exit(&record, RetireKind::Restart);
+        } else {
+            self.pipeline(&template).drain(&req).await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
         self.retire_with(build_id, attempt, node, RetireKind::Removal).await
     }
@@ -1829,6 +1868,14 @@ impl AdminRunner {
                     tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt)
                 };
                 self.replace(build_id, attempt, node, from_incarnation).instrument(span).await
+            }
+            BuildOperation::DrainNode { node, from_incarnation } => {
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
+                self.standalone(build_id, attempt, node, from_incarnation, false).instrument(span).await
+            }
+            BuildOperation::StopNode { node, from_incarnation } => {
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
+                self.standalone(build_id, attempt, node, from_incarnation, true).instrument(span).await
             }
             BuildOperation::RetireNode { node } => {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);

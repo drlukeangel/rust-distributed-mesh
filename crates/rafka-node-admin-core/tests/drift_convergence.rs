@@ -705,7 +705,7 @@ mod one_attempt_number {
         let cp = door(&e, e.builds.clone()).await;
         let (drift, rest) = tokio::join!(drift_pass(&e, &*g), async {
             g.arrived.notified().await;
-            let r = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), false, None).await;
+            let r = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None).await;
             g.release.notify_one();
             r
         });
@@ -727,7 +727,7 @@ mod one_attempt_number {
         let k = lose_a_node(&e).await;
         let g = gate(&e, AttemptReason::Restart);
         let cp = door(&e, g.clone()).await;
-        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), false, None), async {
+        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None), async {
             g.arrived.notified().await;
             let d = drift_pass(&e, &*e.builds).await;
             g.release.notify_one();
