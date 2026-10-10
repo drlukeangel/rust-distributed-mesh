@@ -1,12 +1,13 @@
 //! i143.e4.s14 process E2E: the canonical cohort election (PRD §11;
 //! rafka-v2 `docs/architecture/node-lifecycle-elections.md`).
 //!
-//! Every seat is computed: a cohort's primary is its ready member with the
-//! lowest NodeId, a mesh's primary is its node-admin cohort's, and the fabric
-//! primary is the lowest-NodeId mesh primary. From public surfaces only (each
-//! admin's `GET /api/nodes`), the test computes the expected winner from the
-//! advertised NodeIds and statuses of the same view and compares; it never
-//! asserts that an incumbent stays. Through the matrix:
+//! A non-admin cohort's primary is its ready member with the lowest NodeId; a
+//! mesh's primary is its node-admin cohort's seat, and the fabric seat stays
+//! with its holder (ruling R-A2: a lower NodeId never displaces a living
+//! holder). From public surfaces only (each admin's `GET /api/nodes`), the test
+//! computes the expected non-admin winners from the advertised NodeIds and
+//! statuses of the same view and compares, and holds the fabric seat to the
+//! Day-0 admin. Through the matrix:
 //! - day 0: the one bootstrap admin holds the node-admin cohort, the mesh and
 //!   the fabric, by the same function (its own evidence says so);
 //! - settled, restart of a non-primary, grow, shrink: the seats are the
@@ -16,8 +17,8 @@
 //! - kill the primary (SIGKILL): the next-lowest ready NodeId succeeds; the
 //!   recreated path is a new NodeId and wins or not by it;
 //! - legal removal of the primary: the next-lowest succeeds;
-//! - partition: a transient split is permitted; heal: every admin's view
-//!   advertises the same computed seats.
+//! - partition: the side that cannot hear the admin primary elects no admin primary of its own
+//!   (a silent holder keeps its seat); heal: every admin's view advertises the same seats.
 //!
 //! Evidence: each successor is announced by a
 //! `rdm.mesh.election.resolve.via-recompute` span (`election_level =
@@ -29,7 +30,7 @@
 //! partition case is a named skip; `RDM_REQUIRE_NETFAULT=1` (CI) makes it a
 //! failure.
 
-use rafka_test_scenario::elections::{advertised_primaries, expected_fabric_primary, expected_primaries, seats_as_expected, Cohort};
+use rafka_test_scenario::elections::{advertised_primaries, expected_primaries, seats_as_expected, Cohort};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
@@ -176,14 +177,14 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     // day 0: one admin, every seat its own.
     let day0 = settle(&estate, &base1, "day 0").await;
     let boot = day0.iter().find(|n| n["kind"] == "node_admin").map(|n| (s(&n["name"]), s(&n["node_id"]))).unwrap();
-    assert_eq!(expected_fabric_primary(&day0).as_deref(), Some(boot.0.as_str()));
+    assert_eq!(advertised_fabric(&day0).as_deref(), Some(boot.0.as_str()), "day 0: the one admin holds the fabric seat");
 
     // settled MN -> the computed seats
     build(&estate, &[("mesh1", 2, 3)]).await;
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     let nodes = settle(&estate, &base1, "MN").await;
     let rpc_p = primary_of(&nodes, &rpc).unwrap();
-    assert_eq!(advertised_fabric(&nodes), expected_fabric_primary(&nodes), "the fabric primary is the lowest-NodeId mesh primary");
+    assert_eq!(advertised_fabric(&nodes).as_deref(), Some(boot.0.as_str()), "the Day-0 admin keeps the fabric seat whatever NodeId its mesh's second admin drew (R-A2)");
 
     // restart a non-primary -> it keeps its NodeId; the seats stay computed
     let other_rpc: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["is_primary"] == false).map(|n| s(&n["name"])).collect();
@@ -269,10 +270,11 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
                 (primary_of(&estate.nodes_at(&base_p).await, &rpc).as_deref() == Some(lone_rpc.as_str())).then_some(())
             })
             .await;
-            wait_for("side B elects its own admin primary", Duration::from_secs(30), || async {
-                (primary_of(&estate.nodes_at(&base2).await, &admin).as_deref() == Some(admin2_name.as_str())).then_some(())
-            })
-            .await;
+            // Side B has now heard nothing from the admin primary for longer than the staleness
+            // floor, and it elects no admin primary of its own: a silent holder keeps its seat, and
+            // silence is not proof of exit (R-A2).
+            let b_view = estate.nodes_at(&base2).await;
+            assert_ne!(primary_of(&b_view, &admin).as_deref(), Some(admin2_name.as_str()), "a cut-off holder keeps the admin seat: side B names no admin primary of its own: {b_view:#?}");
             for base in [&base_p, &base2] {
                 for (c, p) in advertised_primaries(&estate.nodes_at(base).await) {
                     assert!(p.len() <= 1, "{base}: a view never names two primaries of {c:?}: {p:?}");
@@ -354,7 +356,7 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     })
     .await;
     estate.artifact("successor-after-kill.json", &json!({"successor": succ, "successor_id": succ_id, "nodes": nodes}));
-    assert_eq!(advertised_fabric(&nodes), expected_fabric_primary(&nodes));
+    assert_eq!(advertised_fabric(&nodes).as_deref(), Some("mesh1.admin.1"), "the fabric seat stays with the Day-0 admin of mesh1 while mesh2 loses and regains admins (R-A2)");
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     settle(&estate, &base1, "mesh2's killed admin is back").await;
     steady(&estate, &base1, "mesh2's killed admin is back", hold).await;
@@ -372,7 +374,7 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     let succ2 = primary_of(&nodes, &admin2).unwrap();
     assert_eq!(expected_primaries(&nodes).get(&admin2), Some(&succ2));
     let succ2_id = id_of(&nodes, &succ2);
-    assert_eq!(advertised_fabric(&nodes), expected_fabric_primary(&nodes));
+    assert_eq!(advertised_fabric(&nodes).as_deref(), Some("mesh1.admin.1"), "the fabric seat stays with the Day-0 admin of mesh1 while mesh2 loses and regains admins (R-A2)");
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     settle(&estate, &base1, "mesh2 after removal").await;
     steady(&estate, &base1, "mesh2 after removal", hold).await;

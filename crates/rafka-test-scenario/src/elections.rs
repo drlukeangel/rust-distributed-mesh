@@ -29,16 +29,6 @@ pub fn expected_primaries(nodes: &[Value]) -> BTreeMap<Cohort, String> {
     best.into_iter().map(|(c, (_, name))| (c, name)).collect()
 }
 
-/// The expected fabric primary (path): the lowest-NodeId mesh primary.
-pub fn expected_fabric_primary(nodes: &[Value]) -> Option<String> {
-    let primaries = expected_primaries(nodes);
-    nodes
-        .iter()
-        .filter(|n| n["kind"] == "node_admin" && primaries.get(&(s(&n["mesh"]), "node_admin".into())) == Some(&s(&n["name"])))
-        .min_by_key(|n| s(&n["node_id"]))
-        .map(|n| s(&n["name"]))
-}
-
 /// The primaries a view advertises, per cohort.
 pub fn advertised_primaries(nodes: &[Value]) -> BTreeMap<Cohort, Vec<String>> {
     let mut out: BTreeMap<Cohort, Vec<String>> = BTreeMap::new();

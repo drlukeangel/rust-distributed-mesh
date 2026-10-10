@@ -706,9 +706,11 @@ pub async fn reconcile_drift(
     started.retain(|k| !(k.2.len() == 2 && k.2[0] == "recovery" && hold(&k.2[1]).is_none()));
     for n in candidates {
         // A peer mesh with no live node-admin is reborn on the investigation's decision
-        // (`crate::investigate`), not on the first exit proof: its node-admins wait for it. Any
-        // other birth, a node-admin of a mesh that still has one included, is proven here as ever.
-        if n.kind == NodeKind::NodeAdmin && n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
+        // (`crate::investigate`), not on the first exit proof: every one of its births waits for it
+        // (R-D1: provider evidence is not authority, and a node this authority replaces while the
+        // mesh's first admin is still to be reborn is a node that admin then replaces again from
+        // its own map). A node of a mesh that still has a live node-admin is proven here as ever.
+        if n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
             // The hold is named once per mesh and Build: an unnamed deferral is a rebirth nobody is
             // waiting on.
             let unheard = book.mesh_unheard(&n.mesh, std::time::Instant::now());
