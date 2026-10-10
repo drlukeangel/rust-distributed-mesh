@@ -216,6 +216,9 @@ async fn incumbent_hands_the_fabric_seat_over_and_the_transfer_is_confirmed_in_o
     let spans = capture();
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
     f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("the handover is confirmed");
+    // The incumbent holds the confirmation once the record is held; the serving task makes the
+    // confirmation span right after, so the span is read once it exists.
+    until("the incumbent's confirmation span", || spans.position(CONFIRMED).is_some()).await;
     let at = |n: &str| spans.position(n).unwrap_or_else(|| panic!("no {n} span among {:?}", spans.names()));
     let first_call = at(CALL);
     assert!(first_call < at(COMMITTED), "the command is sent before the successor commits");
@@ -257,6 +260,7 @@ async fn a_duplicate_command_or_completion_commits_one_epoch() {
     until("the replayed completion is sent again", || spans.named(CALL).len() > calls_before).await;
     assert_eq!(send(&f.successor, &f.incumbent, taken(&f, 7, 8, &op)).await, Reply::AlreadyApplied, "the identical completion replays");
     f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("a confirmed operation is confirmed");
+    until("the incumbent's confirmation span", || spans.position(CONFIRMED).is_some()).await;
     assert_eq!(spans.named(COMMITTED).len(), 1, "one commit");
     assert_eq!(spans.named(CONFIRMED).len(), 1, "one confirmation");
     for a in [&f.incumbent, &f.successor] {
@@ -560,6 +564,7 @@ async fn the_incumbent_stays_open_until_a_late_completion_and_confirms_on_the_ev
     f.incumbent.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&f.successor, 2));
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(20), attempt).await.expect("the event confirmed the attempt").unwrap();
     outcome.expect("confirmed on the late completion");
+    until("the incumbent's confirmation span", || spans.position(CONFIRMED).is_some()).await;
     assert_eq!(spans.named(CONFIRMED).len(), 1);
     assert_eq!(f.incumbent.door.membership.seats().fabric(), Some(holder_of(&f.successor, 8)));
 }
@@ -581,8 +586,11 @@ async fn concurrent_repeats_of_the_command_and_the_completion_commit_and_confirm
     until("the completion was refused while the incumbent's door is not serving", || spans.named(REJECTED).iter().any(|r| r["call"] == "taken")).await;
     let _ = f.incumbent.slot.set(f.incumbent.door.clone());
     let replies = futures_util::future::join_all((0..8).map(|_| send(&f.successor, &f.incumbent, taken(&f, 7, 8, &op)))).await;
-    assert_eq!(replies.iter().filter(|r| **r == Reply::Applied).count(), 1, "one call confirms: {replies:?}");
+    // The serving incumbent also hears the successor's own event-driven completion, which can be
+    // the call that confirms before these eight arrive: then every one of these replays.
+    assert!(replies.iter().filter(|r| **r == Reply::Applied).count() <= 1, "at most one call confirms: {replies:?}");
     assert!(replies.iter().all(|r| matches!(r, Reply::Applied | Reply::AlreadyApplied)), "{replies:?}");
+    until("the incumbent's confirmation span", || spans.position(CONFIRMED).is_some()).await;
     assert_eq!(spans.named(COMMITTED).len(), 1, "one commit");
     assert_eq!(spans.named(CONFIRMED).len(), 1, "one confirmation");
 }
