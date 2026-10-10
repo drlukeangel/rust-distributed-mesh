@@ -161,7 +161,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
             rafka_time.adopt(ms);
         }
         None => {
-            rafka_node_admin_core::rafka_time::adopt_own_clock(&rafka_time, "mesh1.admin.1");
+            rafka_node_admin_core::rafka_time::adopt_own_clock(&tracing::Span::current(), &rafka_time, "mesh1.admin.1");
         }
     }
     let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", Arc::new(rafka_time.clone()), vec![]).await.unwrap();

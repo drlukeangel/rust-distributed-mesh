@@ -2349,14 +2349,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             .map_err(|e| format!("the join to the launching admin {} failed: {e}", launcher.name))?;
         // The authority's rafka-time is adopted as the answer carries it, before this admin's
         // first gossip frame.
-        boot.in_scope(|| crate::rafka_time::adopt_join_answer(&rafka_time, &name.to_string(), &answer));
+        crate::rafka_time::adopt_join_answer(&boot, &rafka_time, &name.to_string(), &answer);
         entry_retrieval = Some((rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), anchor.id.fmt_short().to_string(), join_digest));
         pulled = Some(answer);
     }
     // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
     // once, here. A recovery start (a flag or a restart) takes it from the nodes it reaches below.
     if cfg.launch.is_none() && restart.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
-        boot.in_scope(|| crate::rafka_time::adopt_own_clock(&rafka_time, &name.to_string()));
+        crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string());
     }
     let mesh_id = match (&cfg.mesh_id, &pulled) {
         (Some(id), _) => id.clone(),
@@ -2999,7 +2999,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     let (client, target, anchor, digest, accepted, builds, floor, shutdown, rafka_time) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), builds.clone(), floor.clone(), shutdown.clone(), rafka_time.clone());
                     Box::pin(async move {
                         let answer = crate::join::call_join(&client, &target, &anchor, &digest, 1).await.map_err(|e| e.to_string())?;
-                        crate::rafka_time::adopt_join_answer(&rafka_time, &digest.node.name.to_string(), &answer);
+                        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), &rafka_time, &digest.node.name.to_string(), &answer);
                         take_entry_control(&answer, &accepted, &*builds, &floor).await;
                         if let Some(sd) = answer.control.shutdown.clone() {
                             shutdown.learn(sd, "hydration", &answer.served_by).await.map_err(|e| e.to_string())?;

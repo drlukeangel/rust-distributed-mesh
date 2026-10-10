@@ -106,9 +106,16 @@ pub fn verdict(puller: Puller, seat: Option<Seat>) -> Result<(), Refusal> {
 /// `rdm.mesh.entry.reject.via-rafka-time-from-non-primary{reason}` on a refusal, after which `time`
 /// is unchanged.
 pub fn adopt_pulled(time: &RafkaTime, puller: Puller, node: &str, served: Served<'_>) -> Result<Adopted, Refusal> {
+    adopt_pulled_in(&tracing::Span::current(), time, puller, node, served)
+}
+
+/// [`adopt_pulled`], its spans children of `parent` (a birth's boot span is never entered: a step
+/// of it names it as its parent).
+pub fn adopt_pulled_in(parent: &tracing::Span, time: &RafkaTime, puller: Puller, node: &str, served: Served<'_>) -> Result<Adopted, Refusal> {
     let seat = if served.via == "join" { "not-carried" } else { served.seat.map_or("none", Seat::name) };
     if let Err(refusal) = verdict(puller, served.seat) {
         tracing::info_span!(
+            parent: parent,
             "rdm.mesh.entry.reject.via-rafka-time-from-non-primary",
             node,
             via = served.via,
@@ -123,6 +130,7 @@ pub fn adopt_pulled(time: &RafkaTime, puller: Puller, node: &str, served: Served
     }
     let adopted = time.adopt(served.ms);
     tracing::info_span!(
+        parent: parent,
         "rdm.mesh.entry.update.via-rafka-time-adopted",
         node,
         source = "pull",
@@ -138,17 +146,18 @@ pub fn adopt_pulled(time: &RafkaTime, puller: Puller, node: &str, served: Served
 }
 
 /// A birth adopts the time its `JoinNode` answer carries: the one entry point of a join.
-pub fn adopt_join_answer(time: &RafkaTime, node: &str, answer: &crate::wire::JoinAnswer) -> Adopted {
-    adopt_pulled(time, Puller::Member, node, Served { via: "join", served_by: &answer.served_by, ms: answer.control.rafka_time_ms, seat: None })
+pub fn adopt_join_answer(parent: &tracing::Span, time: &RafkaTime, node: &str, answer: &crate::wire::JoinAnswer) -> Adopted {
+    adopt_pulled_in(parent, time, Puller::Member, node, Served { via: "join", served_by: &answer.served_by, ms: answer.control.rafka_time_ms, seat: None })
         .expect("a member adopts from whoever answers")
 }
 
 /// The Day-0 root adopts its own OS clock as rafka-time, once, at boot: there is no authority
 /// above it.
-pub fn adopt_own_clock(time: &RafkaTime, node: &str) -> Adopted {
+pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str) -> Adopted {
     let now = rafka_mesh_transport::clock::Clock::now_rafka_ms(&rafka_mesh_transport::clock::OsClock);
     let adopted = time.adopt(now);
     tracing::info_span!(
+        parent: parent,
         "rdm.mesh.entry.update.via-rafka-time-adopted",
         node,
         source = "own-clock",
@@ -367,7 +376,7 @@ mod tests {
     #[test]
     fn the_day0_root_adopts_its_own_clock_once() {
         let time = RafkaTime::unadopted();
-        let adopted = adopt_own_clock(&time, "mesh1.admin.1");
+        let adopted = adopt_own_clock(&tracing::Span::none(), &time, "mesh1.admin.1");
         assert_eq!(adopted.previous_ms, None);
         assert!(time.now_ms() >= adopted.reference_ms);
     }
