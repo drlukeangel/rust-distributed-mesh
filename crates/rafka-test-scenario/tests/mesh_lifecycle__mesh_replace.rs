@@ -207,7 +207,10 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a mesh2 node held mesh1's births departed on mesh-left: {left:?}");
     let last_exit = tier2_last.max(terminal_end(&final_name));
     assert!(left.iter().all(|sp| start_ns(sp) >= last_exit.saturating_sub(1)), "mesh-left was heard only after the last exact exit was proven");
-    assert!(leaving.iter().all(|sp| start_ns(sp) < drain_start("mesh1.rpc.1")), "mesh-leaving was heard before any member drained");
+    // Gossip delivers asynchronously: the order the spec fixes is publication before the first drain.
+    let published_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
+    let first_drain = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| drain_start(n)).min().unwrap();
+    assert!(published_leaving < first_drain, "mesh-leaving was published ({published_leaving}) before any member drained ({first_drain})");
 
     // A desired change, not a recovery.
     assert!(
