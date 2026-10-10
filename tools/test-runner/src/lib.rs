@@ -67,7 +67,7 @@ const GATE_SCENARIOS: &[&str] = &[
     "mesh_shapes__shape_reconcile", "mesh_shapes__live_resize", "mesh_shapes__role_build", "mesh_elections__role_cohort", "node_rpc__restart_fence",
     "node_rpc__role_routing", "node_rpc__role_context", "mesh_runtime__role_wedge", "mesh_elections__late_authority", "mesh_elections__sticky_seat",
     "mesh_lifecycle__mesh_create", "mesh_lifecycle__mesh_replace", "mesh_identity__canonical_ids", "mesh_elections__cohort_election", "mesh_elections__fabric_primary", "mesh_rpc__proof_store",
-    "fabric_build__accepted_topology", "i143_acceptance_2803", "node_rpc__rpc_certainty", "i143_acceptance_2803_detect", "i143_acceptance_rg6", "mesh_runtime__rafka_time_discipline",
+    "fabric_build__accepted_topology", "i143_acceptance_2803", "node_rpc__rpc_certainty", "i143_acceptance_2803_detect", "i143_acceptance_rg6", "mesh_runtime__rafka_time_discipline", "fabric_certs__issuance",
 ];
 /// Gate stems that only the release gate runs (`RELEASE_ONLY`).
 const GATE_RELEASE_ONLY: &[&str] = &[
