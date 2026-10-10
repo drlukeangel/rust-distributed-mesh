@@ -404,6 +404,21 @@ mod tests {
         assert_eq!(book.take_uncommanded(&k).len(), 1, "the new birth is commanded as itself");
     }
 
+    /// CONTRACT (R-S2): a command that was not delivered is sent again only on an eligible event, never
+    /// because the checklist was read again. Must NOT happen: an undelivered command back in the
+    /// next read of the checklist.
+    #[test]
+    fn an_undelivered_command_is_not_sent_again_by_reading_the_checklist_again() {
+        let (fabric, node, a) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
+        let book = RoundBook::default();
+        let k = key("bld_1", 1, &fabric);
+        book.open(&k);
+        book.expect(&k, planned(&node, &a, "mesh2.admin.1"), Vec::new());
+        assert_eq!(book.take_uncommanded(&k).len(), 1);
+        book.uncommand(&k, &node, &a);
+        assert!(book.take_uncommanded(&k).is_empty(), "nothing happened to the target: the command is not sent again");
+    }
+
     #[test]
     fn the_states_are_ordered_and_named_as_the_frame_carries_them() {
         assert!(FabricState::Pending < FabricState::StateSync && FabricState::StateSync < FabricState::StateCommit && FabricState::StateCommit < FabricState::ReadyForTraffic);
