@@ -87,6 +87,8 @@ pub(crate) fn offer(clock: &SharedClock, node: &str, source: &'static str, verdi
         }
         Verdict::Sample { authority, stamp_ms } => match clock.observe(stamp_ms) {
             Observed::Collecting => {}
+            // Under a millisecond ahead is the ordinary resolution of a stamp, not a step worth a span.
+            Observed::Stepped { by_ms: 0 } => {}
             Observed::Stepped { by_ms } => {
                 tracing::info_span!("rdm.mesh.entry.update.via-rafka-time-observed", node, authority = %authority, source, outcome = "stepped-forward", stamp_ms, by_ms)
                     .in_scope(|| tracing::info!("the authority's stamp was ahead of this clock: its reference stepped forward to it"));

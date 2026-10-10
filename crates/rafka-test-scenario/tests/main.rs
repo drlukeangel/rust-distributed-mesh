@@ -47,6 +47,7 @@ mod mesh_membership__backbone;
 mod mesh_rpc__proof_store;
 mod mesh_runtime__boot_trace;
 mod mesh_runtime__container_kill;
+mod mesh_runtime__rafka_time_discipline;
 mod mesh_runtime__role_wedge;
 mod mesh_runtime__successor_adoption;
 mod mesh_shapes__live_resize;

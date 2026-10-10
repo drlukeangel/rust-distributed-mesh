@@ -451,6 +451,9 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // Every topology read adopts the rafka-time it is served with, by the same rule as a join.
     read.adopt_rafka_time(&rafka_time, &membership, &name, &launch.name.mesh, &launch.node_id, &launcher.name.to_string())
         .map_err(|e| anyhow!("{} could not adopt rafka-time from {}: {e}", launch.name, launcher.name))?;
+    if let Some(root) = launch.data_dir.parent() {
+        crate::apply_rafka_time_knob(root, &launch.name.to_string(), &rafka_time, boot);
+    }
     let mesh_peers: Vec<EndpointAddr> = read
         .installed
         .iter()

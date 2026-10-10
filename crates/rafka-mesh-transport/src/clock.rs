@@ -5,7 +5,8 @@
 //! binary that composes a [`Membership`](crate::membership::Membership) supplies the clock, and
 //! every stamp on the gossip path reads it. Every RDM process composes one [`RafkaTime`]: the
 //! authority's time, adopted once at its join (or its own OS clock, once, by the fabric's Day-0
-//! root), then read as that reference plus monotonic elapsed time. Rafka-time says when a fact or
+//! root), then read as that reference plus monotonic elapsed time, kept on the authority's time by
+//! the heartbeats it publishes ([`RafkaTime`]'s discipline). Rafka-time says when a fact or
 //! publication happened and never decides liveness, order or `Gone`: silence is the receiver's
 //! own `Instant`, heartbeat order is `digest_seq`.
 
@@ -28,14 +29,37 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// The jitter allowance, in milliseconds: how far behind its local clock a sample may stand and
-/// still be ordinary delivery delay. Provisional.
+/// The jitter allowance, in milliseconds: how far behind its local clock the BEST sample of a
+/// window may stand and still be ordinary delivery delay. A gossip delivery on a healthy fabric
+/// takes milliseconds to tens of milliseconds; a heartbeat held for a whole 2 s round (a lazy-push
+/// graft) is the long tail, and a window's best sample is not that one. 500 ms is a quarter of
+/// the 2 s publication round and a tenth of `RAFKA_TIME_SPREAD_MS` (5000 ms).
+///
+/// The bound this gives, conditional on the measured delivery delay `D` (the delay of the least
+/// delayed sample of a window, `d_min`, and of the sample a step lands on, `d_max`): a node
+/// stands within `[-d_max - r*G, allowance + r*W]` of its authority's time, where `r` is the
+/// clock's rate error (50 ppm in the simulation), `G` the gap between accepted publications and
+/// `W` the window (`WINDOW_SAMPLES` publications). Two hops of the lineage (a member of a mesh
+/// primary of the fabric-primary) add: two nodes in different meshes differ by at most four of
+/// those intervals, `4 * max(d_max, allowance)`; the simulation measures 41 ms at 20 ms delay and
+/// +-50 ppm, and the bound stays under `RAFKA_TIME_SPREAD_MS` while `d_max <= 1250 ms` with this
+/// allowance.
+///
+/// Recovery: a window decision sheds `excess = -best - allowance`. At [`MAX_SLEW_PPM`] the shed
+/// takes `excess / 500e-6`: 1 s of excess takes 2000 s, 10 ms takes 20 s. The excess a real fast
+/// clock accumulates is `rate_error * G` per publication, far below that: the maximum rate is
+/// 10 times the 50 ppm the oscillator tolerance of the fabric's hosts allows, so a fast clock
+/// is brought back faster than it runs away. A constant delivery delay past the allowance is
+/// indistinguishable from a fast clock; the shed is bounded by its excess, so the clock rests
+/// `delay - allowance` behind its authority, never further.
 pub const JITTER_ALLOWANCE_MS: u64 = 500;
-/// The samples of one decision window.
+/// The samples of one decision window: 16 s of publications at the 2 s production cadence.
 pub const WINDOW_SAMPLES: usize = 8;
-/// A sample older than this (local monotonic time) no longer counts toward a window.
+/// A sample older than this (local monotonic time) no longer counts toward a window, so a
+/// partition leaves no stale evidence and a cadence up to 15 s still fills a window.
 pub const WINDOW_SPAN: std::time::Duration = std::time::Duration::from_secs(120);
-/// The most a clock's advancement is reduced while it sheds an excess, in parts per million.
+/// The most a clock's advancement is reduced while it sheds an excess, in parts per million (the
+/// ceiling RFC 5905 §11.3 gives its slew).
 pub const MAX_SLEW_PPM: u32 = 500;
 
 /// What one [`Clock::observe`] did.

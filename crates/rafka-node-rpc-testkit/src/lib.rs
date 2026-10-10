@@ -37,3 +37,30 @@ pub fn skew_os_clock_from_root(root: &std::path::Path, name: &str) -> Option<i64
     rafka_mesh_transport::clock::skew_os_clock_for_testkit(ms);
     Some(ms)
 }
+
+/// The directory under an estate's data root where a scenario records a rafka-time knob for one
+/// node: the file `<root>/rafka-time-knob/<path.name>` holds `ahead_ms=<signed ms>` and/or
+/// `drift_ppm=<signed ppm>` lines.
+pub fn rafka_time_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("rafka-time-knob")
+}
+
+/// Put this node's rafka-time off its authority's, as a scenario recorded for `name` under `root`
+/// (`rafka_time_knob_dir`): `ahead_ms` re-adopts a reference that far ahead of the reading, and
+/// `drift_ppm` runs the node's monotonic time that many parts per million fast from now on. Called
+/// only by testkit executables, once the node has adopted its authority's time, to prove the
+/// discipline brings a node back to it. Returns `(ahead_ms, drift_ppm)` applied.
+pub fn apply_rafka_time_knob(root: &std::path::Path, name: &str, time: &rafka_mesh_transport::clock::RafkaTime, parent: &tracing::Span) -> Option<(i64, i64)> {
+    let text = std::fs::read_to_string(rafka_time_knob_dir(root).join(name)).ok()?;
+    let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('=')?.trim().parse::<i64>().ok()).unwrap_or(0);
+    let (ahead_ms, drift_ppm) = (get("ahead_ms"), get("drift_ppm"));
+    if ahead_ms != 0 {
+        time.adopt((time.now_ms() as i64 + ahead_ms).max(0) as u64);
+    }
+    if drift_ppm != 0 {
+        time.drift_for_testkit(drift_ppm);
+    }
+    tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-rafka-time-knob", node = name, ahead_ms, drift_ppm)
+        .in_scope(|| tracing::info!("a scenario put this node's rafka-time off its authority's"));
+    Some((ahead_ms, drift_ppm))
+}
