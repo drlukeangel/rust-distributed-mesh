@@ -6,7 +6,7 @@
 //! Mesh and Fabric views publish the live owning node-admin's control API
 //! base; callers switch control only from these views.
 
-use crate::model::{Fabric, Mesh, Node, NodeKind, PathName};
+use crate::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -150,6 +150,32 @@ impl Topology {
     pub fn cohort(&self, mesh: &str, kind: NodeKind) -> impl Iterator<Item = &Node> {
         let mesh = mesh.to_string();
         self.members().filter(move |n| n.mesh == mesh && n.kind == kind)
+    }
+
+    /// Why `mesh` is not ready-for-traffic: a mesh is ready when it has a primary node-admin and
+    /// every node of the mesh is ready-for-traffic (states.md). The nodes of the mesh are the
+    /// accepted Build's planned births (`planned`), a planned birth the view does not hold yet
+    /// counting as not ready; with no accepted Build held, the members the view holds. Empty: the
+    /// mesh is ready. The one derivation of a mesh's state: the projection and the fabric's entry
+    /// check both read it.
+    pub fn mesh_unready(&self, mesh: &str, planned: Option<&std::collections::BTreeSet<PathName>>) -> Vec<crate::round::Missing> {
+        use crate::round::Missing;
+        let mut out = Vec::new();
+        if self.cohort_primary(mesh, NodeKind::NodeAdmin).is_none() {
+            out.push(Missing { who: mesh.to_string(), why: "no-primary" });
+        }
+        let paths: Vec<PathName> = match planned {
+            Some(p) => p.iter().cloned().collect(),
+            None => self.members().filter(|n| n.mesh == mesh).map(|n| n.name.clone()).collect(),
+        };
+        for path in paths {
+            match self.members().find(|n| n.name == path) {
+                None => out.push(Missing { who: path.to_string(), why: "no-birth-heard" }),
+                Some(n) if n.status != NodeStatus::ReadyForTraffic => out.push(Missing { who: path.to_string(), why: "not-ready" }),
+                Some(_) => {}
+            }
+        }
+        out
     }
 
     /// The single primary of a cohort, when exactly one live node claims it.

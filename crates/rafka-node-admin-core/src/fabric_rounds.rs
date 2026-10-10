@@ -341,25 +341,25 @@ impl FabricRounds {
         self.enter(climb, FabricState::StateSync);
     }
 
-    /// The planned births not ready-for-traffic and the mesh primaries that have not reported,
-    /// named. Empty: every mesh is ready-for-traffic (R-H1).
+    /// The meshes not ready-for-traffic and the mesh primaries that have not reported, named. Empty:
+    /// every mesh is ready-for-traffic (R-H1). A mesh's state is the one the view projects
+    /// (`Topology::mesh_unready` decides it); the nodes behind a mesh that is not ready are named
+    /// from that same function.
     fn entry_blockers(&self, view: &Topology, accepted: Option<&FabricTopology>) -> Vec<Missing> {
         let meshes: Vec<String> = match accepted {
             Some(t) => t.meshes.keys().cloned().collect(),
             None => view.meshes.iter().map(|m| m.name.clone()).collect(),
         };
+        let planned = self.env.records.planned();
         let mut out = Vec::new();
         for mesh in &meshes {
-            let paths: Vec<PathName> = match accepted {
-                Some(t) => crate::round::planned(t, mesh),
-                None => view.members().filter(|n| &n.mesh == mesh).map(|n| n.name.clone()).collect(),
-            };
-            for path in paths {
-                match view.members().find(|n| n.name == path) {
-                    None => out.push(Missing { who: path.to_string(), why: "no-birth-heard" }),
-                    Some(n) if n.status != NodeStatus::ReadyForTraffic => out.push(Missing { who: path.to_string(), why: "not-ready" }),
-                    Some(_) => {}
+            match view.meshes.iter().find(|m| &m.name == mesh) {
+                Some(m) if m.status == crate::model::ScopeStatus::ReadyForTraffic => {}
+                Some(_) => {
+                    let why = view.mesh_unready(mesh, planned.get(mesh));
+                    out.extend(if why.is_empty() { vec![Missing { who: mesh.clone(), why: "not-ready" }] } else { why });
                 }
+                None => out.push(Missing { who: mesh.clone(), why: "no-mesh" }),
             }
         }
         let primaries: Vec<(String, Option<IncarnationId>, bool)> =

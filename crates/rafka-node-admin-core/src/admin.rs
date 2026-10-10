@@ -267,6 +267,9 @@ pub struct Records {
     /// The fabric state the fabric-primary last put in a FabricStatus frame. The climb enters the
     /// next state only after the current one went out, so every state is its own frame.
     published_fabric_state: Mutex<Option<crate::fabric_state::FabricState>>,
+    /// The accepted Build's planned births per mesh: the nodes a mesh's readiness is counted over.
+    /// Empty until an accepted Build is held, when the members the view holds are counted.
+    planned: Mutex<BTreeMap<String, BTreeSet<PathName>>>,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -296,6 +299,21 @@ pub struct Seats {
 }
 
 impl Records {
+    /// Hold the accepted Build's planned births per mesh; whether they changed.
+    pub fn set_planned(&self, topology: &crate::accepted::FabricTopology) -> bool {
+        let planned: BTreeMap<String, BTreeSet<PathName>> = topology.meshes.iter().map(|(m, t)| (m.clone(), t.nodes.clone())).collect();
+        let changed = std::mem::replace(&mut *self.planned.lock().unwrap(), planned.clone()) != planned;
+        if changed {
+            self.wake.poke();
+        }
+        changed
+    }
+
+    /// The planned births per mesh of the accepted Build held (empty: none held).
+    pub fn planned(&self) -> BTreeMap<String, BTreeSet<PathName>> {
+        self.planned.lock().unwrap().clone()
+    }
+
     /// The fabric state this admin projects.
     pub fn fabric_state(&self) -> crate::fabric_state::FabricState {
         *self.fabric_state.lock().unwrap()
@@ -634,9 +652,10 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         meshes: Vec::new(),
         nodes: nodes.into_values().collect(),
     };
+    let planned = records.planned();
     // A mesh the accepted Build names, or one that still has members: a mesh that left (the Build
     // does not name it and it has no member) is not in the topology.
-    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| book.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).collect();
+    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| book.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).chain(planned.keys().cloned()).collect();
     // Every seat, by the one election function (`election`); through a fabric shutdown, the
     // seats held when it was learned (`Seats`).
     if records.is_entering() {
@@ -683,7 +702,8 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     }
     let leaving: BTreeSet<String> = book.leaving_meshes().into_iter().collect();
     for m in mesh_names {
-        let ready = topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some();
+        // A mesh is ready-for-traffic when every node of the mesh is (states.md).
+        let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty();
         let id = mesh_ids.get(&m).cloned();
         let status = match &id {
             Some(i) if leaving.contains(i.as_str()) => ScopeStatus::Leaving,
@@ -3692,6 +3712,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         }
                     }
                 }
+                // The accepted Build's planned births are what a mesh's readiness is counted over.
+                if let Some(b) = accepted.current(&*adapter).await {
+                    records.set_planned(&b.topology);
+                }
                 let t = topology.read().await.clone();
                 // The accepted Build is the authority on which meshes the fabric has: the book
                 // takes no old aggregate of a mesh it does not name, and a mesh it does not name
@@ -4029,6 +4053,34 @@ mod tests {
         let status = |m: &str| t.mesh_view(m).unwrap().status;
         assert_eq!(status("mesh1"), ScopeStatus::Pending, "a node of mesh1 is not ready: the mesh is not");
         assert_eq!(status("mesh2"), ScopeStatus::ReadyForTraffic, "every node of mesh2 is ready");
+    }
+
+    /// CONTRACT (states.md, "Resize and roll"): the nodes a mesh is counted over are the accepted
+    /// Build's planned births. A planned birth the view has not heard keeps its mesh `pending`, and a
+    /// mesh planned and entirely unheard is listed `pending`. Must NOT happen: a mesh ready because
+    /// the births that happen to be heard are ready.
+    #[test]
+    fn a_mesh_with_a_planned_birth_not_yet_heard_projects_pending() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        for d in [with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000"), with_id(digest("mesh1.rpc.1", ReadyForTraffic), "300000000000")] {
+            book.record(d);
+        }
+        let desired = |mesh: &str, rpc: u32| crate::build::MeshDesired::of(mesh, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, rpc)]);
+        let records = Records::default();
+        let mut plan = crate::accepted::FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
+        plan.meshes.insert("mesh1".into(), crate::accepted::MeshTopology::of(&desired("mesh1", 1)));
+        records.set_planned(&plan);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::ReadyForTraffic, "every planned birth of mesh1 is heard and ready");
+        plan.meshes.insert("mesh1".into(), crate::accepted::MeshTopology::of(&desired("mesh1", 2)));
+        plan.meshes.insert("mesh2".into(), crate::accepted::MeshTopology::of(&desired("mesh2", 1)));
+        records.set_planned(&plan);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::Pending, "mesh1.rpc.2 is planned and not heard");
+        assert_eq!(t.mesh_view("mesh2").unwrap().status, ScopeStatus::Pending, "mesh2 is planned and nothing of it is heard");
+        let why = t.mesh_unready("mesh1", records.planned().get("mesh1")).iter().map(|m| m.to_string()).collect::<Vec<_>>();
+        assert_eq!(why, ["mesh1.rpc.2(no-birth-heard)"], "the node behind a pending mesh is named");
     }
 
     /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the seat to a reborn
