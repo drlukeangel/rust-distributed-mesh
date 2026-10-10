@@ -19,8 +19,8 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
     let fixtures = [
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::AddNode { mesh: "m".into(), node_kind: NodeKind::RpcNode }) }, "00 00 02 01 6d 01"),
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }) }, "00 00 06 0b 6d657368312e7270632e31"),
-        (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into() } }, "00 01 01 62"),
-        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default() }, "01 01 62 02 01 65 00 00 00 00"),
+        (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
+        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![vec![0xAA, 0xBB], vec![]] }, "01 01 62 02 01 65 00 00 00 00 02 02 aabb 00"),
         (BuildRequest::Get { build_id: "b".into() }, "02 01 62"),
         (BuildRequest::Delete { build_id: "b".into() }, "03 01 62"),
     ];
@@ -120,6 +120,7 @@ fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() 
         attempt: u32::MAX,
         executor: "mesh1.admin.1".into(),
         context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("t".repeat(55)), tracestate: Some("s".repeat(512)), baggage: Some("b".repeat(8192)) },
+        intent: (0..32).map(|_| vec![0u8; 4096 - 64]).collect(),
     };
     assert!(Build::encode_request(&q).unwrap().len() <= Build::MAX_REQUEST_FRAME_BYTES);
 }

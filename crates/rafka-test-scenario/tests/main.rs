@@ -9,6 +9,7 @@ mod chaos_kit__restored_faults;
 mod estate_teardown;
 mod fabric_build__accepted_topology;
 mod fabric_build__await_attempt;
+mod fabric_build__build_op;
 mod fabric_certs__issuance;
 mod fabric_soak__seeded;
 mod fabric_states__rounds;

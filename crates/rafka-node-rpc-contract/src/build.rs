@@ -126,6 +126,9 @@ pub enum BuildSubmit {
     Resubmit {
         /// The Build.
         build_id: String,
+        /// The attempt the caller's first call opened: the stream carries the frames of this
+        /// attempt and later ones.
+        from_attempt: u32,
     },
 }
 
@@ -148,6 +151,12 @@ pub enum BuildRequest {
         executor: String,
         /// The attempt's observability context, as the claim returned it.
         context: CallContext,
+        /// The Build's intent as the fabric-primary holds it: its acceptance and every attempt it
+        /// opened, as postcard frames of the Build topic's message (the packing the topic's own
+        /// catch-up uses). The executor absorbs them before it plans, so the run never waits for the
+        /// Build topic to deliver what the claim was decided on. Empty when the fabric-primary runs
+        /// the attempt itself.
+        intent: Vec<Vec<u8>>,
     },
     /// `build.get`: the Build and its receipts, for reattachment after a cut.
     Get {
@@ -463,8 +472,9 @@ impl NodeProtocol for Build {
     const OP: u8 = 0x20;
     const NAME: &'static str = "build";
     /// A change with a fabric's meshes, or a claim with its attempt context (a traceparent, a
-    /// tracestate of 512 bytes and baggage of 8192 bytes), with room for the tags and lengths.
-    const MAX_REQUEST_FRAME_BYTES: usize = 16 * 1024;
+    /// tracestate of 512 bytes and baggage of 8192 bytes) and the Build's intent frames (each at most
+    /// the Build topic's message bound), with room for the tags and lengths.
+    const MAX_REQUEST_FRAME_BYTES: usize = 256 * 1024;
     /// A failed step's reason is the largest field; the sender bounds it below this.
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     /// A stream, decided by the fabric-primary itself or not at all.

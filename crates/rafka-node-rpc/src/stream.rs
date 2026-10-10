@@ -278,6 +278,14 @@ impl ServerBuilder {
     }
 }
 
+/// `f` under `deadline`, or unbounded when there is none (a `Budget::Stream` call).
+pub(crate) async fn bounded<F: Future>(deadline: Option<Instant>, f: F) -> Result<F::Output, tokio::time::error::Elapsed> {
+    match deadline {
+        Some(d) => timeout_at(d, f).await,
+        None => Ok(f.await),
+    }
+}
+
 /// Why a stream did not complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamFailure {
@@ -301,7 +309,7 @@ pub struct ReplyStream<P: StreamingProtocol> {
     recv: RecvStream,
     buf: Vec<u8>,
     order: FrameOrder,
-    deadline: Instant,
+    deadline: Option<Instant>,
     done: bool,
     _p: PhantomData<fn() -> P>,
 }
@@ -334,7 +342,7 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                 Err(e) => return Some(self.fail(StreamFailure::Violation(format!("reply frame: {e:?}")))),
             }
             let mut chunk = vec![0u8; 16 * 1024];
-            match timeout_at(self.deadline, self.recv.read(&mut chunk)).await {
+            match bounded(self.deadline, self.recv.read(&mut chunk)).await {
                 Err(_) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyDeadline))),
                 Ok(Ok(Some(n))) => self.buf.extend_from_slice(&chunk[..n]),
                 Ok(Ok(None)) => {

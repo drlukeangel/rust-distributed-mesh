@@ -1,30 +1,29 @@
-//! A workflow's typed reply stream, derived from the step receipts of the Build that runs it.
+//! A workflow's typed reply stream.
 //!
 //! A workflow (`node.create`, `node.stop`, `node.restart`, `node.delete`) is one call that RDM
-//! runs as several steps inside one Build. The caller gets a stream: `Started`, then one frame
-//! per step event as the Build records the step `Complete` (`node.created`, `node.joined`, …),
-//! ending in `Complete` or a typed `Failed { step, reason }` that names the workflow step that
-//! failed. [`fold`] is the one place a Build's receipt step keys meet the canonical names; the
-//! keys themselves are untouched.
+//! runs as several steps inside one Build. The caller gets a stream read from the fabric-primary's
+//! Build family (op `0x20`, `build.create`): `Started`, then one frame per step event as the
+//! step's `Complete` receipt becomes durable on the executor that wrote it (`node.created`,
+//! `node.joined`, ...), then `Complete` or a typed `Failed { step, reason }` that names the
+//! workflow step that failed. A `Blocked` frame is live progress and no step outcome. The caller
+//! reads no Build and no gossip: nothing on the path to a frame polls or sleeps.
 //!
-//! The commit cut over the control API: a submit that fails before its connection is made
-//! (`reqwest`'s connect error) provably reached no handler and ends `NotSent`; once the request
-//! was written, a transport failure is `Indeterminate`; a `202` is the cut. After it, every
-//! failed read of the Build is `Indeterminate`, whether or not that read's own request was
-//! written, because the call it belongs to is already committed.
+//! The commit cut: a submit that fails before its connection is made provably reached no handler
+//! and ends `NotSent`; once the request was written, a lost stream is `Indeterminate`, whether or
+//! not a frame had arrived, because missing frames prove nothing about the step in flight. The
+//! caller then re-submits by the Build id ([`crate::Nodes::resume`]): the Build is never created
+//! twice, a complete Build answers `AlreadyApplied` with its frames and terminal, and a running
+//! one streams from where it is.
 //!
-//! The Build is read over the control API today, so the stream polls it; node-RPC carries no
-//! Build op yet. A read that fails after the call was accepted ends the stream
-//! `Indeterminate`: missing frames prove nothing about the step in flight. The caller then
-//! re-attaches with `build.get` and [`Resume::from_view`] names the first step with no
-//! `Complete` receipt.
+//! [`fold`] is the one place a Build's receipt step keys meet the canonical names; the keys
+//! themselves are untouched. It maps the receipts `build.get` reads to the frames they justify,
+//! for a caller that reattaches by reading rather than by re-submitting.
 
 use crate::names::{NodeEvent, NodeOp, NodeStep};
-use crate::{Accepted, BuildId, BuildView, CallEnd, ClientError, NodeAdminClient};
+use crate::build_stream::{BuildFrame, BuildReceipts, BuildStream};
+use crate::{Accepted, BuildId, BuildView, CallEnd, StepView};
 use rafka_mesh_entity::PathName;
-use std::collections::VecDeque;
-use std::future::Future;
-use std::time::Duration;
+use rafka_node_rpc_contract::build::StepResult;
 
 /// A frame of a workflow's reply stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +37,15 @@ pub enum Frame {
     },
     /// A step completed.
     Event(NodeEvent),
+    /// The step in flight is blocked. Live progress: never a step outcome, and not terminal.
+    Blocked {
+        /// The Build operation the blocked step belongs to.
+        operation: String,
+        /// The blocked step.
+        step: String,
+        /// What it waits for.
+        reason: String,
+    },
     /// Every step completed. The terminal frame of a successful workflow.
     Complete,
     /// A step failed. The terminal frame of a failed workflow; nothing downstream of the step
@@ -184,6 +192,29 @@ pub struct Folded {
 /// `Failed` ends the stream `Failed` only when an attempt this call opened wrote it; a receipt
 /// no row names is refused by name.
 pub fn fold(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<Folded, CallEnd> {
+    fold_steps(kind, &view.steps, from_attempt)
+}
+
+/// [`fold`] over the receipts `build.get` read.
+pub fn fold_receipts(kind: &WorkflowKind, receipts: &BuildReceipts, from_attempt: u32) -> Result<Folded, CallEnd> {
+    let steps: Vec<StepView> = receipts
+        .steps
+        .iter()
+        .map(|s| StepView {
+            attempt: s.attempt,
+            operation: s.operation.clone(),
+            step: s.step.clone(),
+            outcome: match &s.result {
+                StepResult::Complete => serde_json::Value::String("complete".into()),
+                StepResult::Failed { reason } => serde_json::json!({ "failed": { "reason": reason } }),
+            },
+        })
+        .collect();
+    fold_steps(kind, &steps, from_attempt)
+}
+
+/// [`fold`] over bare receipts.
+pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) -> Result<Folded, CallEnd> {
     let rows = kind.rows();
     let prefixes: Vec<&str> = {
         let mut p: Vec<&str> = rows.iter().map(|r| r.operation).collect();
@@ -192,7 +223,7 @@ pub fn fold(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<
     };
     // The latest receipt of each (operation, step) among the attempts this call opened.
     let mut latest: Vec<(String, String, u32, Option<String>)> = Vec::new();
-    for s in view.steps.iter().filter(|s| s.attempt >= from_attempt) {
+    for s in steps.iter().filter(|s| s.attempt >= from_attempt) {
         let Some(prefix) = prefixes.iter().find(|p| kind.operation_matches(p, &s.operation)) else { continue };
         if !rows.iter().any(|r| r.operation == *prefix && r.step == s.step) {
             return Err(CallEnd::UnrecognisedReceipt { operation: s.operation.clone(), step: s.step.clone() });
@@ -256,44 +287,38 @@ pub struct Resume {
 impl Resume {
     /// What `build.get`'s `view` says of `kind` for the call that opened `from_attempt`.
     pub fn from_view(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<Self, CallEnd> {
-        let f = fold(kind, view, from_attempt)?;
+        Self::of(fold(kind, view, from_attempt)?)
+    }
+
+    /// What `build.get`'s `receipts` say of `kind` for the call that opened `from_attempt`.
+    pub fn from_receipts(kind: &WorkflowKind, receipts: &BuildReceipts, from_attempt: u32) -> Result<Self, CallEnd> {
+        Self::of(fold_receipts(kind, receipts, from_attempt)?)
+    }
+
+    fn of(f: Folded) -> Result<Self, CallEnd> {
         let from = f.frames.iter().all(|fr| !matches!(fr, Frame::Complete)).then_some(f.next).flatten();
         Ok(Self { completed: f.completed, from })
     }
 }
 
-/// Where the Build state of a call is read from.
-pub trait BuildSource {
-    /// `build.get`.
-    fn build_view(&self, id: &BuildId) -> impl Future<Output = Result<BuildView, ClientError>> + Send;
-}
-
-impl BuildSource for NodeAdminClient {
-    fn build_view(&self, id: &BuildId) -> impl Future<Output = Result<BuildView, ClientError>> + Send {
-        NodeAdminClient::build_view(self, id)
-    }
-}
-
 /// The reply stream of one accepted workflow call.
-pub struct WorkflowStream<S: BuildSource = NodeAdminClient> {
-    source: S,
+pub struct WorkflowStream {
+    inner: BuildStream,
     kind: WorkflowKind,
     accepted: Accepted,
-    poll: Duration,
     span: tracing::Span,
     started: bool,
-    emitted: usize,
-    queue: VecDeque<Frame>,
     ended: bool,
 }
 
-impl<S: BuildSource> WorkflowStream<S> {
-    /// The stream of the accepted call `accepted`, reading the Build from `source` every `poll`;
-    /// `span` is the call's span, opened when it was submitted and closed with the stream.
-    pub(crate) fn new(source: S, kind: WorkflowKind, accepted: Accepted, poll: Duration, span: tracing::Span) -> Self {
+impl WorkflowStream {
+    /// The stream of the accepted call `inner` follows; `span` is the call's span, opened when it
+    /// was submitted and closed with the stream.
+    pub(crate) fn new(inner: BuildStream, kind: WorkflowKind, span: tracing::Span) -> Self {
+        let accepted = Accepted { build_id: inner.build_id().clone(), attempt: inner.attempt() };
         span.record("build_id", accepted.build_id.0.as_str());
         span.record("attempt", accepted.attempt);
-        Self { source, kind, accepted, poll, span, started: false, emitted: 0, queue: VecDeque::new(), ended: false }
+        Self { inner, kind, accepted, span, started: false, ended: false }
     }
 
     /// The Build and attempt the call opened.
@@ -306,9 +331,15 @@ impl<S: BuildSource> WorkflowStream<S> {
         &self.kind
     }
 
+    /// How the call came to its Build: a new one, an attach to a running one, the next attempt of a
+    /// failed one, or a complete one (`AlreadyApplied`).
+    pub fn disposition(&self) -> rafka_node_rpc_contract::build::Disposition {
+        self.inner.disposition()
+    }
+
     /// The next frame, `None` after the terminal one, or the way the stream broke. A broken stream
-    /// is `Indeterminate`: the call was accepted, and a lost read proves nothing about the step in
-    /// flight.
+    /// is `Indeterminate`: the call was accepted, and a lost stream proves nothing about the step
+    /// in flight.
     pub async fn next(&mut self) -> Option<Result<Frame, CallEnd>> {
         if self.ended {
             return None;
@@ -318,40 +349,57 @@ impl<S: BuildSource> WorkflowStream<S> {
             self.span.in_scope(|| tracing::info!(build_id = %self.accepted.build_id, attempt = self.accepted.attempt, "the workflow call was accepted"));
             return Some(Ok(Frame::Started { build_id: self.accepted.build_id.clone(), attempt: self.accepted.attempt }));
         }
+        let rows = self.kind.rows();
         loop {
-            if let Some(f) = self.queue.pop_front() {
-                if let Frame::Event(e) = &f {
-                    e.span().in_scope(|| tracing::info!(build_id = %self.accepted.build_id, "a step event was delivered on the reply stream"));
-                }
-                if f.is_terminal() {
-                    self.ended = true;
-                    match &f {
-                        Frame::Failed { step, reason } => {
-                            self.span.record("outcome", "failed");
-                            self.span.record("failed_step", step.name());
-                            self.span.in_scope(|| tracing::info!(step = step.name(), reason = %reason, "the workflow failed at a step"));
-                        }
-                        _ => {
-                            self.span.record("outcome", "complete");
-                            self.span.in_scope(|| tracing::info!("the workflow completed"));
-                        }
-                    }
-                }
-                return Some(Ok(f));
-            }
-            let view = match self.source.build_view(&self.accepted.build_id).await {
-                Ok(v) => v,
-                Err(e) => return Some(Err(self.broke(CallEnd::from_read(e)))),
+            let frame = match self.inner.next().await {
+                None => return Some(Err(self.broke(CallEnd::Indeterminate { reason: "the stream ended without a terminal frame".into() }))),
+                Some(Err(e)) => return Some(Err(self.broke(e))),
+                Some(Ok(f)) => f,
             };
-            match fold(&self.kind, &view, self.accepted.attempt) {
-                Ok(folded) => {
-                    self.queue.extend(folded.frames.into_iter().skip(self.emitted));
-                    self.emitted += self.queue.len();
+            match frame {
+                BuildFrame::Step { attempt, operation, step } => {
+                    if attempt < self.accepted.attempt {
+                        continue;
+                    }
+                    let Some(prefix) = rows.iter().map(|r| r.operation).find(|p| self.kind.operation_matches(p, &operation)) else { continue };
+                    let Some(row) = rows.iter().find(|r| r.operation == prefix && r.step == step) else {
+                        return Some(Err(self.broke(CallEnd::UnrecognisedReceipt { operation, step })));
+                    };
+                    let Some(e) = row.event else { continue };
+                    e.span().in_scope(|| tracing::info!(build_id = %self.accepted.build_id, "a step event was delivered on the reply stream"));
+                    return Some(Ok(Frame::Event(e)));
                 }
-                Err(e) => return Some(Err(self.broke(e))),
-            }
-            if self.queue.is_empty() {
-                tokio::time::sleep(self.poll).await;
+                BuildFrame::Blocked { attempt, operation, step, reason } => {
+                    if attempt < self.accepted.attempt {
+                        continue;
+                    }
+                    self.span.in_scope(|| tracing::info!(operation = %operation, step = %step, reason = %reason, "the step in flight is blocked"));
+                    return Some(Ok(Frame::Blocked { operation, step, reason }));
+                }
+                BuildFrame::Complete { .. } => {
+                    self.ended = true;
+                    self.span.record("outcome", "complete");
+                    self.span.in_scope(|| tracing::info!("the workflow completed"));
+                    return Some(Ok(Frame::Complete));
+                }
+                BuildFrame::Failed { operation, step, reason, .. } => {
+                    self.ended = true;
+                    let node_step = rows
+                        .iter()
+                        .find(|r| r.step == step && operation.split(':').next() == Some(r.operation))
+                        .map(|r| r.node_step)
+                        .unwrap_or(match self.kind {
+                            WorkflowKind::Create => NodeStep::Create,
+                            WorkflowKind::Stop(_) => NodeStep::Stop,
+                            WorkflowKind::Restart(_) => NodeStep::Restart,
+                            WorkflowKind::Delete(_) => NodeStep::Delete,
+                        });
+                    self.span.record("outcome", "failed");
+                    self.span.record("failed_step", node_step.name());
+                    self.span.in_scope(|| tracing::info!(step = node_step.name(), reason = %reason, "the workflow failed at a step"));
+                    return Some(Ok(Frame::Failed { step: node_step, reason }));
+                }
+                other => return Some(Err(self.broke(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a workflow stream carried {other:?}") }))),
             }
         }
     }
@@ -364,13 +412,3 @@ impl<S: BuildSource> WorkflowStream<S> {
     }
 }
 
-impl CallEnd {
-    /// A read of an accepted call's Build that failed: the call is committed, so a transport loss
-    /// is `Indeterminate` whether or not the read's request was written.
-    fn from_read(e: ClientError) -> Self {
-        match CallEnd::from(e) {
-            CallEnd::NotSent { reason } => CallEnd::Indeterminate { reason },
-            other => other,
-        }
-    }
-}

@@ -1,20 +1,23 @@
-//! The `node` and `build` objects over the control API, for the calls that have no node-RPC op
-//! today: the workflows and the Build reads.
+//! The `node` and `build` objects.
 //!
-//! Workflows are accepted by the control API as a Build (or an attempt of the current Build)
-//! and answered with a reply stream ([`WorkflowStream`]). Calls whose request is valid but that
-//! no op carries yet end `NotBackedToday`, naming what will carry them; no request is invented
-//! for them.
+//! Workflows are submitted to the fabric-primary through the Build family (op `0x20`,
+//! `build.create`) and answered with a reply stream ([`WorkflowStream`]) read from the call itself.
+//! The `build` objects are that family's calls. The reads that have no node-RPC op yet (`node.get`,
+//! `node.connections.get`) go to one admin's control API. Calls whose request is valid but that no
+//! op carries yet end `NotBackedToday`, naming what will carry them; no request is invented for
+//! them.
 
+use crate::build_stream::{BuildCarrier, BuildReceipts, BuildStream};
 use crate::names::{BuildOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
-use crate::{Accepted, BuildId, BuildView, CallEnd, ConnectionsView, FabricDesired, MeshDesired, NodeAdminClient, NodeStatus, NodeView};
+use crate::{Accepted, BuildId, CallEnd, ConnectionsView, FabricDesired, MeshDesired, NodeAdminClient, NodeStatus, NodeView};
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
+use rafka_node_rpc_contract::build::{BuildChange, MeshCounts};
 use std::collections::BTreeSet;
-use std::time::Duration;
 
-/// The default interval at which a reply stream reads its Build.
-pub const DEFAULT_POLL: Duration = Duration::from_millis(50);
+fn counts(m: &MeshDesired) -> MeshCounts {
+    MeshCounts { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
+}
 
 /// What `node.create` is given: the mesh to add a node to and the node's kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,8 +179,13 @@ impl NodeMeta {
 pub enum BuildSpec {
     /// Reconcile the whole fabric to these meshes.
     Fabric(FabricDesired),
-    /// A named, fixed set of meshes.
-    Preset(BuildPreset),
+    /// A named, fixed set of meshes for the fabric named `fabric`.
+    Preset {
+        /// The preset.
+        preset: BuildPreset,
+        /// The fabric it reconciles.
+        fabric: String,
+    },
 }
 
 /// A preset `build.create` expands.
@@ -197,35 +205,44 @@ impl BuildPreset {
     }
 }
 
-/// The `node` objects over one admin's control API.
+/// The `node` objects: workflows through the fabric-primary's Build family, reads over one admin's
+/// control API.
 #[derive(Debug, Clone)]
 pub struct Nodes {
     admin: NodeAdminClient,
-    poll: Duration,
+    carrier: BuildCarrier,
 }
 
 impl Nodes {
-    /// The objects over `admin`.
-    pub fn new(admin: NodeAdminClient) -> Self {
-        Self { admin, poll: DEFAULT_POLL }
-    }
-
-    /// The same objects with reply streams reading their Build every `poll`.
-    pub fn polling_every(mut self, poll: Duration) -> Self {
-        self.poll = poll;
-        self
+    /// The objects over `admin` (reads) and `carrier` (workflows).
+    pub fn new(admin: NodeAdminClient, carrier: BuildCarrier) -> Self {
+        Self { admin, carrier }
     }
 
     /// Submit a workflow call. Its span opens here and closes with the returned stream; a call the
-    /// control API did not accept ends here, with the span saying how.
-    async fn workflow(&self, kind: WorkflowKind, submit: impl std::future::Future<Output = Result<Accepted, crate::ClientError>>) -> Result<WorkflowStream, CallEnd> {
+    /// fabric-primary did not accept ends here, with the span saying how.
+    async fn workflow(&self, kind: WorkflowKind, change: BuildChange) -> Result<WorkflowStream, CallEnd> {
         let span = kind.op().span();
-        match tracing::Instrument::instrument(submit, span.clone()).await {
-            Ok(accepted) => Ok(WorkflowStream::new(self.admin.clone(), kind, accepted, self.poll, span)),
-            Err(e) => {
-                let end = CallEnd::from(e);
+        match tracing::Instrument::instrument(self.carrier.create(change), span.clone()).await {
+            Ok(inner) => Ok(WorkflowStream::new(inner, kind, span)),
+            Err(end) => {
                 span.record("outcome", end.outcome());
                 span.in_scope(|| tracing::info!(op = kind.op().name(), reason = %end, "the workflow call was not accepted"));
+                Err(end)
+            }
+        }
+    }
+
+    /// Re-submit the workflow `kind` of the call that opened `accepted`: never a second Build. A
+    /// complete Build answers `AlreadyApplied` with its frames and terminal; a running one streams
+    /// from where it is; a failed one takes its next attempt.
+    pub async fn resume(&self, kind: WorkflowKind, accepted: &Accepted) -> Result<WorkflowStream, CallEnd> {
+        let span = kind.op().span();
+        match tracing::Instrument::instrument(self.carrier.resubmit(&accepted.build_id, accepted.attempt), span.clone()).await {
+            Ok(inner) => Ok(WorkflowStream::new(inner, kind, span)),
+            Err(end) => {
+                span.record("outcome", end.outcome());
+                span.in_scope(|| tracing::info!(op = kind.op().name(), reason = %end, "the workflow re-submit was not accepted"));
                 Err(end)
             }
         }
@@ -301,12 +318,12 @@ impl Nodes {
     /// `node.create(spec)`: add a node to a mesh. The stream is `Started`, then the step events
     /// of the create, ending `Complete` or `Failed { step, reason }`.
     pub async fn create(&self, spec: &NodeSpec) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Create, self.admin.spawn(&spec.mesh, spec.kind)).await
+        self.workflow(WorkflowKind::Create, BuildChange::AddNode { mesh: spec.mesh.clone(), node_kind: spec.kind }).await
     }
 
     /// `node.stop` of `node`.
     pub async fn stop(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Stop(node.clone()), self.admin.stop(node)).await
+        self.workflow(WorkflowKind::Stop(node.clone()), BuildChange::Stop { node: node.clone() }).await
     }
 
     /// `node.start`: the parked process joins. The steps that start a node run today only inside
@@ -317,30 +334,30 @@ impl Nodes {
 
     /// `node.restart` of `node`.
     pub async fn restart(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Restart(node.clone()), self.admin.restart(node)).await
+        self.workflow(WorkflowKind::Restart(node.clone()), BuildChange::Restart { node: node.clone() }).await
     }
 
     /// `node.delete` of `node`.
     pub async fn delete(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Delete(node.clone()), self.admin.remove(node)).await
+        self.workflow(WorkflowKind::Delete(node.clone()), BuildChange::RemoveNode { node: node.clone() }).await
     }
 }
 
-/// The `build` objects over one admin's control API.
+/// The `build` objects: the calls of the fabric-primary's Build family.
 #[derive(Debug, Clone)]
 pub struct Builds {
-    admin: NodeAdminClient,
+    carrier: BuildCarrier,
 }
 
 impl Builds {
-    /// The objects over `admin`.
-    pub fn new(admin: NodeAdminClient) -> Self {
-        Self { admin }
+    /// The objects over `carrier`.
+    pub fn new(carrier: BuildCarrier) -> Self {
+        Self { carrier }
     }
 
-    async fn call<T>(&self, op: BuildOp, call: impl std::future::Future<Output = Result<T, crate::ClientError>>) -> Result<T, CallEnd> {
+    async fn call<T>(&self, op: BuildOp, call: impl std::future::Future<Output = Result<T, CallEnd>>) -> Result<T, CallEnd> {
         let span = op.span();
-        let r = tracing::Instrument::instrument(call, span.clone()).await.map_err(CallEnd::from);
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
         span.record("outcome", match &r {
             Ok(_) => "ok",
             Err(e) => e.outcome(),
@@ -349,24 +366,24 @@ impl Builds {
         r
     }
 
-    /// `build.create`: accept a Build that reconciles the fabric to `spec`. A preset is expanded
-    /// against the fabric the answering admin reports.
-    pub async fn create(&self, spec: &BuildSpec) -> Result<Accepted, CallEnd> {
+    /// `build.create`: accept a Build that reconciles the fabric to `spec` and follow it. A preset
+    /// is expanded against the fabric it names.
+    pub async fn create(&self, spec: &BuildSpec) -> Result<BuildStream, CallEnd> {
         let desired = match spec {
             BuildSpec::Fabric(d) => d.clone(),
-            BuildSpec::Preset(p) => p.desired(&self.admin.fabric().await.map_err(CallEnd::from)?.name),
+            BuildSpec::Preset { preset, fabric } => preset.desired(fabric),
         };
-        self.call(BuildOp::Create, self.admin.build(&desired)).await
+        self.call(BuildOp::Create, self.carrier.create(BuildChange::ReconcileFabric { fabric: desired.fabric.clone(), meshes: desired.meshes.iter().map(counts).collect() })).await
     }
 
-    /// `build.get`: the Build with its attempts and step receipts.
-    pub async fn get(&self, id: &BuildId) -> Result<BuildView, CallEnd> {
-        self.call(BuildOp::Get, self.admin.build_view(id)).await
+    /// `build.get`: the Build with its attempts and step receipts, for reattachment after a cut.
+    pub async fn get(&self, id: &BuildId) -> Result<BuildReceipts, CallEnd> {
+        self.call(BuildOp::Get, self.carrier.get(id)).await
     }
 
     /// `build.delete`: drop a finished Build from history.
     pub async fn delete(&self, id: &BuildId) -> Result<(), CallEnd> {
-        self.call(BuildOp::Delete, self.admin.forget(id)).await
+        self.call(BuildOp::Delete, self.carrier.delete(id)).await
     }
 }
 
@@ -422,19 +439,6 @@ mod tests {
         assert_eq!(held.check_put(&old, true), Ok(()), "and takes it back");
         let renumbered = NodeMeta { name: PathName { ordinal: 9, ..held.name.clone() }, ..held.clone() };
         assert_eq!(renumbered.check_put(&held, true), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "no rename but .old exists");
-    }
-
-    /// CONTRACT: a valid put ends `NotBackedToday` naming the call, because no op carries the put;
-    /// an invalid one is refused before that. Calls whose request no op carries say so by name.
-    #[test]
-    fn calls_no_op_carries_today_say_so_by_name() {
-        let nodes = Nodes::new(NodeAdminClient::new("http://127.0.0.1:1"));
-        let held = held();
-        assert!(matches!(nodes.update(&held, &held, false), Ok(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
-        assert!(nodes.update(&NodeMeta { status: NodeStatus::Dead, ..held.clone() }, &held, false).is_err());
-        for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet), (nodes.config_update(), NodeOp::ConfigUpdate), (nodes.start(), NodeOp::Start)] {
-            assert!(matches!(end, CallEnd::NotBackedToday { op: got, .. } if got == op), "{end:?}");
-        }
     }
 
     /// CONTRACT: each op has one canonical name, rendered the same way everywhere: the name is

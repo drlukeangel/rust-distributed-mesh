@@ -71,6 +71,13 @@ pub enum CutSpec {
     },
     /// An accepted Build is durable (`publish_accepted` returned) and `Fabric.build_id` has not moved.
     AcceptedBuild,
+    /// An attempt's claim is durable on this admin's log and broadcast (`claim_attempt` decided
+    /// `Won`) and the fabric-primary has not yet dispatched the attempt to its executor. `attempt`
+    /// narrows the cut to one attempt number.
+    ClaimedAttempt {
+        /// The attempt, when the cut is for one.
+        #[serde(default)] attempt: Option<u32>,
+    },
     /// A write of the Fabric record to `fabric.storage` has begun and is not durable. With
     /// `moves_pointer`, only a write that names a Build (the `Fabric.build_id` pointer moving).
     PointerWrite {
@@ -126,6 +133,15 @@ pub enum Probe {
         /// The transition the hook belongs to.
         transition_id: String,
     },
+    /// An attempt's claim that is durable and broadcast, about to be returned to the drive.
+    Claimed {
+        /// The Build.
+        build_id: String,
+        /// The attempt.
+        attempt: u32,
+        /// The executor the claim names.
+        executor: String,
+    },
     /// An accepted Build about to move the pointer.
     Accepted {
         /// The Build.
@@ -166,6 +182,7 @@ impl CutSpec {
             (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node_is(node, &op.name.to_string()),
             (CutSpec::Hook { phase, node }, Probe::Hook { phase: ph, target, .. }) => phase == ph && node_is(node, target),
             (CutSpec::AcceptedBuild, Probe::Accepted { .. }) => true,
+            (CutSpec::ClaimedAttempt { attempt }, Probe::Claimed { attempt: a, .. }) => attempt.is_none_or(|w| w == *a),
             (CutSpec::PointerWrite { moves_pointer }, Probe::Pointer { build_id }) => !*moves_pointer || build_id.is_some(),
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
@@ -182,6 +199,7 @@ impl Probe {
             Probe::Event { event, op } => json!({"event": event, "operation": op.operation, "build_id": op.build_id, "attempt": op.attempt, "node": op.name.to_string(), "incarnation_id": op.incarnation.0}),
             Probe::Hook { phase, target, transition_id } => json!({"phase": phase, "target": target, "transition_id": transition_id}),
             Probe::Accepted { build_id } => json!({"build_id": build_id}),
+            Probe::Claimed { build_id, attempt, executor } => json!({"build_id": build_id, "attempt": attempt, "executor": executor}),
             Probe::Pointer { build_id } => json!({"pointer_to_build_id": build_id}),
             Probe::ProviderDomain => json!({"control_domain": "reported foreign"}),
             Probe::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
@@ -351,7 +369,11 @@ impl BuildStateAdapter for FaultedBuilds {
         self.inner.list_active().await
     }
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(claim).await
+        let outcome = self.inner.claim_attempt(claim).await?;
+        if outcome == ClaimOutcome::Won {
+            self.faults.hold(Probe::Claimed { build_id: claim.build_id.to_string(), attempt: claim.attempt, executor: claim.executor.clone() }).await;
+        }
+        Ok(outcome)
     }
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
         self.inner.adopt_claim(claim).await

@@ -36,6 +36,13 @@ pub enum Budget {
         /// The bound on the reply, counted from the commit cut.
         reply: Duration,
     },
+    /// A connect + complete-send bound, then no reply bound: the stream lives as long as the
+    /// transport does (idle and keepalive are the endpoint's liveness, R-T8). Only a server stream
+    /// has a reply direction that outlasts any one budget; a unary reply is read unbounded too.
+    Stream {
+        /// The bound on connecting and sending the complete request.
+        send: Duration,
+    },
 }
 
 /// How one call is made: its budget, its scope, its observability context and its failpoints.
@@ -147,7 +154,8 @@ pub(crate) struct Opened {
     pub(crate) key: PoolKey,
     pub(crate) conn: iroh::endpoint::Connection,
     pub(crate) node: ResolvedNode,
-    pub(crate) reply_deadline: Instant,
+    /// `None` for a `Budget::Stream` call: nothing bounds the reply but the transport's liveness.
+    pub(crate) reply_deadline: Option<Instant>,
     /// The fence the request named.
     pub(crate) target: Fence,
 }
@@ -248,7 +256,7 @@ impl NodeRpcClient {
         let start = Instant::now();
         let (send_deadline, overall) = match opts.budget {
             Budget::Overall(d) => (start + d, Some(start + d)),
-            Budget::Split { send, .. } => (start + send, None),
+            Budget::Split { send, .. } | Budget::Stream { send } => (start + send, None),
         };
         let pre = PreCommit::begin(op);
         let node = match self.resolver.resolve(target) {
@@ -335,6 +343,7 @@ impl NodeRpcClient {
                 let remaining = match (opts.budget, overall) {
                     (_, Some(d)) => d.saturating_duration_since(Instant::now()),
                     (Budget::Split { reply, .. }, None) => reply,
+                    (Budget::Stream { send }, None) => send,
                     (Budget::Overall(_), None) => unreachable!(),
                 };
                 tracing::info!(step = "remaining-measured", remaining_ms = remaining.as_millis() as u64, "the remaining budget at the request write");
@@ -398,8 +407,9 @@ impl NodeRpcClient {
         let committed = pre.commit(proof);
         evidence.committed = true;
         let reply_deadline = match (opts.budget, overall) {
-            (_, Some(d)) => d,
-            (Budget::Split { reply, .. }, None) => Instant::now() + reply,
+            (_, Some(d)) => Some(d),
+            (Budget::Split { reply, .. }, None) => Some(Instant::now() + reply),
+            (Budget::Stream { .. }, None) => None,
             (Budget::Overall(_), None) => unreachable!(),
         };
         Phase::Committed(Opened { committed, recv, evidence, key, conn, node, reply_deadline, target: request_target })
@@ -487,7 +497,7 @@ impl NodeRpcClient {
         let decode = take();
         tracing::info!(step = "request-written", "the request is written and finished; awaiting the reply");
         let read_at = Instant::now();
-        let got = match timeout_at(reply_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await {
+        let got = match crate::stream::bounded(reply_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await {
             Err(_) => Committed::Lost(IndeterminateReason::ReplyDeadline),
             Ok(Ok(bytes)) => Committed::Reply(bytes),
             Ok(Err(ReadToEndError::Read(ReadError::Reset(c)))) => Committed::Reset(c.into_inner()),

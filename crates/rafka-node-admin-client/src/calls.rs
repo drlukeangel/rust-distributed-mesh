@@ -52,6 +52,14 @@ pub enum CallEnd {
         /// The detail given with the reason.
         detail: String,
     },
+    /// The receiver refused the call by name; nothing was accepted. `reason` is the refusal's name
+    /// (`not-fabric-primary`, `build-in-progress`, `unknown-node`, ...) and `detail` what it carries.
+    Rejected {
+        /// The refusal's name.
+        reason: String,
+        /// What the refusal says.
+        detail: String,
+    },
     /// The typed object exists and its request is valid, and no op carries it today.
     NotBackedToday {
         /// The call.
@@ -77,6 +85,7 @@ impl std::fmt::Display for CallEnd {
             Self::Unserved { op } => write!(f, "unserved op {op:#04x}"),
             Self::RejectedStale { target_node_id } => write!(f, "stale target {target_node_id}"),
             Self::Refused { status, error, detail } => write!(f, "refused ({status} {error}): {detail}"),
+            Self::Rejected { reason, detail } => write!(f, "rejected ({reason}): {detail}"),
             Self::NotBackedToday { op, why } => write!(f, "{} is not backed by an op today: {why}", op.name()),
             Self::UnrecognisedReceipt { operation, step } => write!(f, "a receipt names operation {operation} step {step}, which this client does not recognise"),
         }
@@ -94,6 +103,7 @@ impl CallEnd {
             Self::Unserved { .. } => "unserved",
             Self::RejectedStale { .. } => "rejected-stale",
             Self::Refused { .. } => "refused",
+            Self::Rejected { .. } => "rejected",
             Self::NotBackedToday { .. } => "not-backed-today",
             Self::UnrecognisedReceipt { .. } => "unrecognised-receipt",
         }
@@ -124,7 +134,7 @@ impl From<ClientError> for CallEnd {
     }
 }
 
-fn ended<R>(out: RpcOutcome<R>) -> Result<R, CallEnd> {
+pub(crate) fn ended<R>(out: RpcOutcome<R>) -> Result<R, CallEnd> {
     match out {
         RpcOutcome::Reply(r) => Ok(r.into_value()),
         RpcOutcome::NotSent(n) => Err(CallEnd::NotSent { reason: format!("{:?}", n.reason()) }),

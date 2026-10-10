@@ -9,17 +9,19 @@
 //! `client_contract` test pins that every route decodes into them.
 #![deny(missing_docs)]
 
+mod build_stream;
 mod calls;
 mod names;
 mod objects;
 mod workflow;
 
+pub use build_stream::{BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, MeshCounts, StartDisposition};
 pub use calls::{CallEnd, DrainContext, ExactBirth, NodeRpc};
 pub use names::{BuildOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
     BuildPreset, BuildSpec, Builds, MetaField, MetaFieldIsRdmOwned, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter,
 };
-pub use workflow::{fold, BuildSource, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
+pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
 
 
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
