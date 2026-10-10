@@ -5013,6 +5013,31 @@ mod tests {
         assert_eq!(n.listeners, vec![("control".to_string(), "127.0.0.1:41777".parse().unwrap())]);
     }
 
+    /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
+    /// node's digest, only the stop overlay the mesh topology carries (`Members.in_flight`, read
+    /// by `GetTopology`). Its view lists the node `Leaving` and parked from that overlay.
+    #[test]
+    fn a_successor_admin_lists_a_parked_node_from_the_stop_overlay_it_read() {
+        let book = DigestBook::default();
+        let stopped = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        let stop = rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "stop-node:mesh1.rpc.1".into(),
+            node_id: stopped.node.node_id.clone(),
+            incarnation: stopped.node.incarnation.clone(),
+            name: stopped.node.name.clone(),
+            event_at_rafka_ms: 1,
+        };
+        assert!(book.stopped(stop));
+        assert!(book.get(stopped.node.node_id.as_str()).is_none(), "this admin never held the node's digest");
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let n = t.node(&stopped.node.name).expect("the stop overlay lists the parked node");
+        assert_eq!((n.status, n.parked, n.routable), (NodeStatus::Leaving, true, false));
+        assert_eq!(n.node_id, stopped.node.node_id);
+        assert_eq!(n.incarnation_id.as_ref(), Some(&stopped.node.incarnation));
+    }
+
     #[test]
     fn a_launch_record_never_revives_a_birth_that_another_admin_retired() {
         // This admin launched mesh1.rpc.1; another admin (the primary) retired
