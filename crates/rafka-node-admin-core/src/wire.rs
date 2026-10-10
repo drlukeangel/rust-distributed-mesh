@@ -304,7 +304,7 @@ pub(crate) enum WireCommandAdmission {
     NotSent { reason: String },
     Indeterminate { reason: String },
     Refused { reply: String },
-    Left { receipt: rafka_node_rpc_contract::status::DrainReceipt },
+    Stopped { receipt: rafka_node_rpc_contract::status::DrainReceipt },
     Started,
     StartFailed { step: String, reason: String },
 }
@@ -332,7 +332,7 @@ impl From<&CommandAdmission> for WireCommandAdmission {
             CommandAdmission::NotSent { reason } => Self::NotSent { reason: reason.clone() },
             CommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason: reason.clone() },
             CommandAdmission::Refused { reply } => Self::Refused { reply: reply.clone() },
-            CommandAdmission::Left { receipt } => Self::Left { receipt: *receipt },
+            CommandAdmission::Stopped { receipt } => Self::Stopped { receipt: *receipt },
             CommandAdmission::Started => Self::Started,
             CommandAdmission::StartFailed { step, reason } => Self::StartFailed { step: step.clone(), reason: reason.clone() },
         }
@@ -346,7 +346,7 @@ impl From<WireCommandAdmission> for CommandAdmission {
             WireCommandAdmission::NotSent { reason } => Self::NotSent { reason },
             WireCommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason },
             WireCommandAdmission::Refused { reply } => Self::Refused { reply },
-            WireCommandAdmission::Left { receipt } => Self::Left { receipt },
+            WireCommandAdmission::Stopped { receipt } => Self::Stopped { receipt },
             WireCommandAdmission::Started => Self::Started,
             WireCommandAdmission::StartFailed { step, reason } => Self::StartFailed { step, reason },
         }

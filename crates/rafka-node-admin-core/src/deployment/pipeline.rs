@@ -523,9 +523,9 @@ pub enum CommandAdmission {
     Admitted,
     /// The birth answered `AlreadyApplied`: the same operation was admitted before.
     AlreadyAdmitted,
-    /// The birth answered `stop-node` with `Left`: it drained, cut its mesh connections and is
+    /// The birth answered `stop-node` with `Stopped`: it drained, cut its mesh connections and is
     /// parked, and this is what its drain established.
-    Left {
+    Stopped {
         /// The drain's receipt.
         receipt: rafka_node_rpc_contract::status::DrainReceipt,
     },
@@ -559,14 +559,14 @@ pub enum CommandAdmission {
 impl CommandAdmission {
     /// Whether the birth holds the command.
     pub fn admitted(&self) -> bool {
-        matches!(self, Self::Admitted | Self::AlreadyAdmitted | Self::Left { .. } | Self::Started)
+        matches!(self, Self::Admitted | Self::AlreadyAdmitted | Self::Stopped { .. } | Self::Started)
     }
     /// The arm's name.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Admitted => "admitted",
             Self::AlreadyAdmitted => "already-admitted",
-            Self::Left { .. } => "left",
+            Self::Stopped { .. } => "stopped",
             Self::Started => "started",
             Self::StartFailed { .. } => "start-failed",
             Self::NotSent { .. } => "not-sent",
@@ -585,7 +585,7 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
         RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => CommandAdmission::Admitted,
             StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted,
-            StatusReply::Left { receipt } => CommandAdmission::Left { receipt: *receipt },
+            StatusReply::Stopped { receipt } => CommandAdmission::Stopped { receipt: *receipt },
             StatusReply::Started => CommandAdmission::Started,
             StatusReply::StartFailed { step, reason } => CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone() },
             other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
@@ -700,7 +700,7 @@ pub trait LifecycleEvents: Send + Sync {
     async fn deleted(&self, op: &LifecycleOp);
     /// A restart's pre-event (`NodeRestarting`): the birth is held through its Leaving.
     async fn restarting(&self, op: &LifecycleOp);
-    /// The exact birth answered `stop-node` with `left`: it is parked. The mesh primary publishes
+    /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
     /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
     async fn stopped(&self, _op: &LifecycleOp) {}
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
@@ -836,9 +836,9 @@ pub struct StartRequest {
     pub deployed: Deployed,
 }
 
-/// What follows a stop's `left`: the process stays parked (a standalone stop, a restart), or the
+/// What follows a stop's `stopped`: the process stays parked (a standalone stop, a restart), or the
 /// provider ends it and proves the exit (a delete, a replace, a mesh leave). `publish_stopped` is
-/// whether the mesh primary publishes `NodeStopped` from the `left` reply: a restart holds the birth
+/// whether the mesh primary publishes `NodeStopped` from the `stopped` reply: a restart holds the birth
 /// with `NodeRestarting` instead, and a mesh leave and a replace are announced by their own events.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StopEnd {
@@ -1463,7 +1463,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// A standalone stop (node-stop.md): `stop-node:<path>` is the stop-node command, whose reply is the
-    /// exact birth's `left`: it drained, cut its mesh connections and is parked, its process alive.
+    /// exact birth's `stopped`: it drained, cut its mesh connections and is parked, its process alive.
     /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth. No
     /// runtime exit is asked and no departure is published.
     pub async fn stop(&self, req: &RetireRequest) -> Result<(), PipelineError> {
@@ -1757,14 +1757,14 @@ impl DeploymentPipeline<'_> {
     }
 
     /// [`Self::stop_steps`]; `strict` (a standalone stop) fails the wait step by name unless the birth's
-    /// `left` reply was received. `end` says what follows: the process parks, or the provider ends it.
+    /// `stopped` reply was received. `end` says what follows: the process parks, or the provider ends it.
     async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
         let publish_stopped = matches!(end, StopEnd::Park { publish_stopped: true } | StopEnd::Terminate { publish_stopped: true });
-        // `stop-node` is held until the birth is parked, and its reply is `left`: the birth drained,
-        // cut its mesh connections and entered Leaving. The command is `Left` or it is not complete.
+        // `stop-node` is held until the birth is parked, and its reply is `stopped`: the birth drained,
+        // cut its mesh connections and entered Leaving. The command is `Stopped` or it is not complete.
         let admission: CommandAdmission = self
             .step(run, RetireStep::StopNode.name(), async {
                 self.sink.publish(node.clone());
@@ -1782,7 +1782,7 @@ impl DeploymentPipeline<'_> {
                     c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.drain) => c,
                     () = self.until_exited(handle) => Completion::RuntimeExited,
                 };
-                // The mesh primary publishes the departure from the matching `left`; the node gossips nothing.
+                // The mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
                 if publish_stopped && c == Completion::Received {
                     let op = self.command_op(&ctx, node)?;
                     self.lifecycle.stopped(&op).await;

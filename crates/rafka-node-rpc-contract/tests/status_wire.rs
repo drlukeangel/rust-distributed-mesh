@@ -82,7 +82,7 @@ fn replies_match_the_frozen_twenty_one_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "0e02"),
         (Unauthorized { reason: "u".into() }, "0f0175"),
         (RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, "1007617474656d707401310132"),
-        (Left { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
+        (Stopped { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
         (Started, "12"),
         (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
         (CurrentParked { node_id: node(), incarnation: birth() }, "140c303132333435363738396162056269727468"),
@@ -95,15 +95,15 @@ fn replies_match_the_frozen_twenty_one_variant_wire_schema() {
     }
 }
 
-/// CONTRACT: the drain receipt a `Left` carries is frozen: `Established` is variant 0, `Deadline` variant 1,
+/// CONTRACT: the drain receipt a `Stopped` carries is frozen: `Established` is variant 0, `Deadline` variant 1,
 /// each with its count as a varint.
 #[test]
 fn a_left_reply_carries_its_drain_receipt_in_frozen_bytes() {
-    use StatusReply::Left;
+    use StatusReply::Stopped;
     for (reply, hex) in [
-        (Left { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
-        (Left { receipt: DrainReceipt::Established { in_flight: 3 } }, "110003"),
-        (Left { receipt: DrainReceipt::Deadline { last_in_flight: 300 } }, "1101ac02"),
+        (Stopped { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
+        (Stopped { receipt: DrainReceipt::Established { in_flight: 3 } }, "110003"),
+        (Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 300 } }, "1101ac02"),
     ] {
         let expected = bytes(hex);
         assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");

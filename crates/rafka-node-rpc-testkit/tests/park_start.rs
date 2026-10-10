@@ -1,6 +1,6 @@
 //! A stopped node parks and a started node rejoins as itself (node-stop.md, node-start.md).
 //!
-//! CONTRACT: `stop-node` is answered `Left` on its own call, after the node drained, cut its mesh
+//! CONTRACT: `stop-node` is answered `Stopped` on its own call, after the node drained, cut its mesh
 //! connections and entered Leaving; the node gossips nothing for it, its process stays alive with its
 //! endpoint bound, and a probe answers `CurrentParked`. `start-node` is answered `Started` once the
 //! same birth (same node id, incarnation, endpoint key and port) rejoined through the admin that
@@ -79,9 +79,9 @@ async fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
     // A live node refuses a start: only a parked one starts.
     assert!(matches!(call(&admin, &target, &start).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "a start of a live node is refused naming its state");
 
-    // The stop is answered Left on its own call, with the drain's receipt.
+    // The stop is answered Stopped on its own call, with the drain's receipt.
     let left = call(&admin, &target, &stop).await;
-    assert!(matches!(left, StatusReply::Left { receipt: DrainReceipt::Established { .. } }), "{left:?}");
+    assert!(matches!(left, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{left:?}");
     assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentParked { .. }), "a parked node answers CurrentParked");
     assert_eq!(running.membership.neighbours(), 0, "the node left its gossip topic");
     // Stopping a parked node is done: the same receipt again.

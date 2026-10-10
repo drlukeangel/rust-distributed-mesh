@@ -106,24 +106,24 @@ macro_rules! create_rows {
             row($op, "RegisterExactRuntimeHandle", NodeStep::Create, &[], false),
             row($op, "ResolveProviderControlDomain", NodeStep::Create, &[], false),
             row($op, "MakeRuntimeFactAvailableToBirth", NodeStep::Create, &[], false),
-            row($op, "WaitForBind", NodeStep::Create, &[NodeEvent::Created], false),
-            row($op, "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata", NodeStep::Start, &[NodeEvent::Started], false),
+            row($op, "WaitForBind", NodeStep::Create, &[], false),
+            row($op, "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata", NodeStep::Start, &[], false),
             row($op, "ApplyMeshPending", NodeStep::Start, &[], false),
             row($op, "WaitForMeshJoin", NodeStep::Join, &[NodeEvent::Joined], false),
-            row($op, "WaitForNodeReady", NodeStep::Ready, &[NodeEvent::Ready], false),
+            row($op, "WaitForNodeReady", NodeStep::Start, &[NodeEvent::Started], false),
             row($op, "Complete", NodeStep::Create, $last, true),
         ]
     };
 }
 
 /// The start leg of a parked process under the operation prefix `op`: `start-node` answered
-/// `Started` means the same process rejoined (`node.started`, `node.joined`), then the wait for it
-/// to report ready; `last` is what the operation's `Complete` announces.
+/// `Started` means the same process rejoined (`node.joined`), then the wait for it
+/// to report hydrated (`node.started`); `last` is what the operation's `Complete` announces.
 macro_rules! start_rows {
     ($op:literal, $last:expr, $terminal_step:expr) => {
         [
-            row($op, "StartNode", NodeStep::Start, &[NodeEvent::Started, NodeEvent::Joined], false),
-            row($op, "WaitForNodeReady", NodeStep::Ready, &[NodeEvent::Ready], false),
+            row($op, "StartNode", NodeStep::Start, &[NodeEvent::Joined], false),
+            row($op, "WaitForNodeReady", NodeStep::Start, &[NodeEvent::Started], false),
             row($op, "Complete", $terminal_step, $last, true),
         ]
     };
@@ -139,7 +139,7 @@ macro_rules! retire_rows {
             row("retire-node", "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
             row("retire-node", "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
             row("retire-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
-            row("retire-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Left], false),
+            row("retire-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
         ]
     };
 }
@@ -159,12 +159,12 @@ impl WorkflowKind {
     /// The pipeline rows of the workflow in order.
     fn rows(&self) -> Vec<Row> {
         match self {
-            Self::Create => create_rows!("create-node", &[]).into(),
-            // The stop's one call drains, cuts the mesh connections and answers `left`: its receipts
+            Self::Create => create_rows!("create-node", &[NodeEvent::Created]).into(),
+            // The stop's one call drains, cuts the mesh connections and answers `stopped`: its receipts
             // announce all four events, and no runtime exits.
             Self::Stop(_) => vec![
                 row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
-                row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Left], false),
+                row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
                 row("stop-node", "Complete", NodeStep::Stop, &[], true),
             ],
             Self::Start(_) => start_rows!("start-node", &[], NodeStep::Start).into(),
@@ -180,7 +180,7 @@ impl WorkflowKind {
                 let mut rows: Vec<Row> = retire_rows!(&[], NodeStep::Delete).into();
                 rows.retain(|r| r.step != "NodeRestarting");
                 rows.extend([
-                    row("retire-node", "TerminateRuntime", NodeStep::Stop, &[NodeEvent::Stopped], false),
+                    row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
                     row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
                     row("retire-node", "ReleaseStorage", NodeStep::Delete, &[], false),
                     row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false),

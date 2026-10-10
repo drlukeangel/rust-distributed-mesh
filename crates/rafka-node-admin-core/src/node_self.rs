@@ -9,7 +9,7 @@
 //! - `StopNode`: drain (`Draining`; the receipt is `Established` or, at the bound, `Deadline`),
 //!   hard-cut the mesh connections (gossip neighbours, pooled and accepted peer connections; never
 //!   the endpoint and never the commander's connection the call rides), enter `Leaving`, and answer
-//!   [`StatusReply::Left`] on that same call. The node gossips nothing for the stop. The process
+//!   [`StatusReply::Stopped`] on that same call. The node gossips nothing for the stop. The process
 //!   stays alive and parked, its endpoint bound.
 //! - `StartNode`: a parked birth rejoins as itself (same node id, incarnation, endpoint key and
 //!   port) through its [`Session`], and answers `Started`, or `StartFailed` naming the step.
@@ -447,7 +447,7 @@ impl NodeSelf {
                 receipt
             }
         };
-        StatusReply::Left { receipt }
+        StatusReply::Stopped { receipt }
     }
 
     async fn park(&self, commander: &NodeId, spare: Option<iroh::PublicKey>, op: &LifecycleOp) -> DrainReceipt {

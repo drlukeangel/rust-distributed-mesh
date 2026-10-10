@@ -154,7 +154,7 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
             admission_of(rafka_node_admin_client::NodeRpc::new(client).drain(&birth, &drain, &CallOptions::default()).await)
         }
         // `node.stop` and `node.start` are held until the birth has parked or rejoined, and answer
-        // `Left` or `Started` on that call's own reply: the reply is the completion.
+        // `Stopped` or `Started` on that call's own reply: the reply is the completion.
         NodeCommand::Stop => {
             let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
             let stop = rafka_node_admin_client::StopContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
@@ -170,7 +170,7 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
     };
     // The reply of a stop is its completion. The connection it rode is closed now: the node cut every
     // other one, so its start reaches the parked node on a fresh dial.
-    if matches!(admission, CommandAdmission::Left { .. }) {
+    if matches!(admission, CommandAdmission::Stopped { .. }) {
         if let Some(peer) = node.endpoint_id.as_ref().and_then(|e| e.0.parse::<iroh::PublicKey>().ok()) {
             client.close_pooled_to(&peer, "node.stopped");
         }
@@ -188,7 +188,7 @@ fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> Com
     match r {
         Ok(StatusReply::Applied) => CommandAdmission::Admitted,
         Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted,
-        Ok(StatusReply::Left { receipt }) => CommandAdmission::Left { receipt },
+        Ok(StatusReply::Stopped { receipt }) => CommandAdmission::Stopped { receipt },
         Ok(StatusReply::Started) => CommandAdmission::Started,
         Ok(StatusReply::StartFailed { step, reason }) => CommandAdmission::StartFailed { step, reason },
         Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },

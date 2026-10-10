@@ -11,10 +11,6 @@ pub enum NodeOp {
     Get,
     /// `node.update`: the full meta entity, a blind put.
     Update,
-    /// `node.declare`: the node tells its authority its own status.
-    Declare,
-    /// `node.apply`: the authority sets a node's status.
-    Apply,
     /// `node.topology.get`: the node's held topology.
     TopologyGet,
     /// `node.connections.get`.
@@ -45,8 +41,6 @@ impl NodeOp {
         match self {
             Self::Get => "node.get",
             Self::Update => "node.update",
-            Self::Declare => "node.declare",
-            Self::Apply => "node.apply",
             Self::TopologyGet => "node.topology.get",
             Self::ConnectionsGet => "node.connections.get",
             Self::ConnectionsDelete => "node.connections.delete",
@@ -72,8 +66,6 @@ impl NodeOp {
         match self {
             Self::Get => tracing::info_span!("rdm.node_admin.node.get.via-call", op = "node.get", outcome = tracing::field::Empty),
             Self::Update => tracing::info_span!("rdm.node_admin.node.update.via-call", op = "node.update", outcome = tracing::field::Empty),
-            Self::Declare => tracing::info_span!("rdm.node_admin.node.declare.via-call", op = "node.declare", outcome = tracing::field::Empty),
-            Self::Apply => tracing::info_span!("rdm.node_admin.node.apply.via-call", op = "node.apply", outcome = tracing::field::Empty),
             Self::TopologyGet => tracing::info_span!("rdm.node_admin.node.topology.get.via-call", op = "node.topology.get", outcome = tracing::field::Empty),
             Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.node.connections.get.via-call", op = "node.connections.get", outcome = tracing::field::Empty),
             Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.node.connections.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),
@@ -123,23 +115,19 @@ impl BuildOp {
 /// A step event a workflow's reply stream carries, published when its step has completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeEvent {
-    /// `node.created`: identity minted, data dir prepared, process launched, port bound.
+    /// `node.created`: the node exists and is started; the last event of a create.
     Created,
-    /// `node.started`: the process is published and is about to join.
-    Started,
     /// `node.joined`: the node's own membership digest reached its authority.
     Joined,
-    /// `node.ready`: the node reports hydrated, nothing pending.
-    Ready,
+    /// `node.started`: the node reports hydrated, nothing pending.
+    Started,
     /// `node.draining`: the drain started.
     Draining,
     /// `node.drained`: in-flight work finished.
     Drained,
     /// `node.connections.deleted`: the hard cut.
     ConnectionsDeleted,
-    /// `node.left`: the node reported it left.
-    Left,
-    /// `node.stopped`: the process exited, with the provider's proof.
+    /// `node.stopped`: the node reported it is parked, on the stop call's own stream.
     Stopped,
     /// `node.deleted`: id and name released.
     Deleted,
@@ -154,13 +142,11 @@ impl NodeEvent {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Created => "node.created",
-            Self::Started => "node.started",
             Self::Joined => "node.joined",
-            Self::Ready => "node.ready",
+            Self::Started => "node.started",
             Self::Draining => "node.draining",
             Self::Drained => "node.drained",
             Self::ConnectionsDeleted => "node.connections.deleted",
-            Self::Left => "node.left",
             Self::Stopped => "node.stopped",
             Self::Deleted => "node.deleted",
             Self::Restarting => "node.restarting",
@@ -174,11 +160,9 @@ impl NodeEvent {
             Self::Created => tracing::info_span!("rdm.node_admin.node.created.via-reply-frame", event = "node.created"),
             Self::Started => tracing::info_span!("rdm.node_admin.node.started.via-reply-frame", event = "node.started"),
             Self::Joined => tracing::info_span!("rdm.node_admin.node.joined.via-reply-frame", event = "node.joined"),
-            Self::Ready => tracing::info_span!("rdm.node_admin.node.ready.via-reply-frame", event = "node.ready"),
             Self::Draining => tracing::info_span!("rdm.node_admin.node.draining.via-reply-frame", event = "node.draining"),
             Self::Drained => tracing::info_span!("rdm.node_admin.node.drained.via-reply-frame", event = "node.drained"),
             Self::ConnectionsDeleted => tracing::info_span!("rdm.node_admin.node.connections.deleted.via-reply-frame", event = "node.connections.deleted"),
-            Self::Left => tracing::info_span!("rdm.node_admin.node.left.via-reply-frame", event = "node.left"),
             Self::Stopped => tracing::info_span!("rdm.node_admin.node.stopped.via-reply-frame", event = "node.stopped"),
             Self::Deleted => tracing::info_span!("rdm.node_admin.node.deleted.via-reply-frame", event = "node.deleted"),
             Self::Restarting => tracing::info_span!("rdm.node_admin.node.restarting.via-reply-frame", event = "node.restarting"),
@@ -193,12 +177,10 @@ impl NodeEvent {
 pub enum NodeStep {
     /// `node.create`: identity, storage, network, launch and bind.
     Create,
-    /// `node.start`: the published process, before it joins.
+    /// `node.start`: the published process, before it joins, and its report that it is hydrated.
     Start,
     /// `node.join`: the node's digest reaching its authority.
     Join,
-    /// `node.ready`: the node reporting hydrated.
-    Ready,
     /// `node.drain`.
     Drain,
     /// `node.stop`.
@@ -216,7 +198,6 @@ impl NodeStep {
             Self::Create => "node.create",
             Self::Start => "node.start",
             Self::Join => "node.join",
-            Self::Ready => "node.ready",
             Self::Drain => "node.drain",
             Self::Stop => "node.stop",
             Self::Restart => "node.restart",

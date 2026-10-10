@@ -105,7 +105,7 @@ async fn serve(reply: StatusReply, delay: Duration) -> Served {
     Served { birth: ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id, incarnation }, seen, topology_seen, client, _router: router }
 }
 
-/// CONTRACT: `node.drain`, `node.declare`, `node.apply` and `node.get` each put today's Status
+/// CONTRACT: `node.drain` and `node.get` each put today's Status
 /// request on the wire for the exact birth, the birth's typed reply comes back, and each call
 /// leaves one `rdm.node_admin.node.<verb>.via-call` span carrying the reply's name. The drain
 /// request names the Build, the attempt and the operation key the context derives.
@@ -119,8 +119,6 @@ fn each_status_object_sends_todays_request_and_returns_the_typed_reply() {
         let ctx = DrainContext::new(BuildId("bld-7".into()), 3, "mesh1.rpc.1".parse().unwrap());
         let replies = vec![
             rpc.drain(&served.birth, &ctx, &opts).await.unwrap(),
-            rpc.declare(&served.birth, NodeState::ReadyForTraffic, &opts).await.unwrap(),
-            rpc.apply(&served.birth, NodeState::Draining, &opts).await.unwrap(),
             rpc.get(&served.birth, &opts).await.unwrap(),
         ];
         let seen = served.seen.lock().unwrap().clone();
@@ -131,13 +129,11 @@ fn each_status_object_sends_todays_request_and_returns_the_typed_reply() {
         seen,
         vec![
             StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld-7".into(), attempt: 3, operation: "drain-node:mesh1.rpc.1".into() },
-            StatusRequest::DeclareNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic },
-            StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining },
             StatusRequest::ProbeNodeState { node_id, incarnation },
         ]
     );
     assert!(replies.iter().all(|r| *r == StatusReply::Applied));
-    for verb in ["drain", "declare", "apply", "get"] {
+    for verb in ["drain", "get"] {
         let spans = cap.spans(&format!("rdm.node_admin.node.{verb}.via-call"));
         assert_eq!(spans.len(), 1, "node.{verb} left one span");
         assert_eq!(spans[0]["attributes"]["outcome"], "applied");
@@ -153,7 +149,7 @@ fn a_status_object_distinguishes_a_refusal_from_not_sent_and_indeterminate() {
     cap.run(async {
         let served = serve(StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, Duration::ZERO).await;
         let rpc = NodeRpc::new(&served.client);
-        let refused = rpc.apply(&served.birth, NodeState::Pending, &CallOptions::default()).await.unwrap();
+        let refused = rpc.get(&served.birth, &CallOptions::default()).await.unwrap();
         assert_eq!(refused, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
 
         let nowhere = ExactBirth { target: NodeTarget::ExactNode(NodeId::mint()), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };

@@ -167,7 +167,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // reply arrived, and no node-left call is made.
     let left_at = named(&spans, "rdm.node_admin.node.update.via-command-sent")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["command"] == "stop-node" && sp["attributes"]["admission"] == "left")
+        .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["command"] == "stop-node" && sp["attributes"]["admission"] == "stopped")
         .map(start)
         .min()
         .expect("the victim answered stop-node left");

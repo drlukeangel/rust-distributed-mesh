@@ -164,8 +164,8 @@ pub enum StatusRequest {
     },
     /// Downward: the owning mesh-admin tells the exact birth to stop (`stop-node`; node-stop.md):
     /// drain, hard-cut its mesh connections, enter `Leaving` and park, its process alive with its
-    /// endpoint bound. The reply is held until the stop is done and is [`StatusReply::Left`]:
-    /// `left` rides the stop call's own reply, never a gossip frame and never a second call.
+    /// endpoint bound. The reply is held until the stop is done and is [`StatusReply::Stopped`]:
+    /// `stopped` rides the stop call's own reply, never a gossip frame and never a second call.
     StopNode {
         /// The birth commanded.
         node_id: NodeId,
@@ -178,7 +178,7 @@ pub enum StatusRequest {
         /// The operation: `stop-node:<path>`.
         operation: String,
     },
-    /// Reserved: a stopped birth reports `left` on the reply of its `StopNode` call, so this call is
+    /// Reserved: a stopped birth reports `stopped` on the reply of its `StopNode` call, so this call is
     /// never sent and a receiver refuses it by name.
     NodeLeft {
         /// The birth that is leaving.
@@ -485,10 +485,10 @@ pub enum StatusReply {
         /// What the completion reported.
         reported: String,
     },
-    /// The reply of a `StopNode` call, sent when the stop is done (`left`): the birth drained, cut
+    /// The reply of a `StopNode` call, sent when the stop is done (`stopped`): the birth drained, cut
     /// its mesh connections and is `Leaving`, parked with its process alive. The receipt is what
     /// its drain established.
-    Left {
+    Stopped {
         /// What the drain established.
         receipt: DrainReceipt,
     },
@@ -532,7 +532,7 @@ impl StatusReply {
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::RejectedUnmatchedCompletion { .. } => "rejected-unmatched-completion",
-            Self::Left { .. } => "left",
+            Self::Stopped { .. } => "stopped",
             Self::Started => "started",
             Self::StartFailed { .. } => "start-failed",
             Self::CurrentParked { .. } => "current-parked",
@@ -562,7 +562,7 @@ impl NodeProtocol for Status {
             | StatusReply::NodeDrainingApplied { .. }
             | StatusReply::Current { .. }
             | StatusReply::CurrentParked { .. }
-            | StatusReply::Left { .. }
+            | StatusReply::Stopped { .. }
             | StatusReply::Started => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
             | StatusReply::RejectedStaleMesh { .. }
@@ -649,7 +649,7 @@ mod tests {
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
             (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::Left { receipt: DrainReceipt::Deadline { last_in_flight: 2 } }, ReplyKind::Success),
+            (StatusReply::Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 2 } }, ReplyKind::Success),
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),

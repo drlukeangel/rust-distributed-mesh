@@ -60,7 +60,7 @@ async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
 /// gossips nothing for the stop: the mesh primary publishes `NodeStopped`, and every other node of the
 /// mesh reports, through its own held view, that it dropped the parked birth and holds the stop
 /// overlay. `node.start` makes the same process rejoin through the mesh primary: the stream carries
-/// `node.started`, `node.joined`, `node.ready` and ends `Complete`, `node.get` shows the same birth
+/// `node.joined`, `node.started` and ends `Complete`, `node.get` shows the same birth
 /// `ready-for-traffic`, and every other node reports it holds that birth again with the overlay gone.
 /// No runtime exits, no node is created, nothing is repaired.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -96,7 +96,7 @@ async fn stop_then_start(test: &str, node: &str) {
     // The stop: the reply stream carries the drain, the cut and left.
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert!(matches!(stopped.first(), Some(Frame::Started { .. })), "{stopped:?}");
-    assert_eq!(events(&stopped), vec![NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Left], "{stopped:?}");
+    assert_eq!(events(&stopped), vec![NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     // Every other node reports that it dropped the parked birth and holds the stop overlay.
     for peer in &others {
@@ -112,7 +112,7 @@ async fn stop_then_start(test: &str, node: &str) {
 
     // The start: the same process rejoins.
     let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
-    assert_eq!(events(&started), vec![NodeEvent::Started, NodeEvent::Joined, NodeEvent::Ready], "{started:?}");
+    assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
     for peer in &others {
         peers

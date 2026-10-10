@@ -379,8 +379,8 @@ const ATTEMPT_ONE_STEPS: [&str; 10] = [
 ];
 
 /// CONTRACT (ops-naming acceptance 1, "A failure names its step"): a create whose process starts
-/// and whose join then fails ends its stream `Started`, `node.created`, `node.started`, then
-/// `Failed { step: node.join, reason }`. `node.joined` and `node.ready` are never emitted, the
+/// and whose join then fails ends its stream `Started`, then
+/// `Failed { step: node.join, reason }`. `node.created`, `node.joined` and `node.started` are never emitted, the
 /// node never reaches ready-for-traffic, and the call's span names the failed step.
 #[test]
 fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
@@ -407,10 +407,10 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     assert!(reason.contains("no membership digest"), "the failure carries the step's own reason: {reason}");
     assert_eq!(
         frames[..frames.len() - 1],
-        [Frame::Started { build_id: match &frames[0] { Frame::Started { build_id, .. } => build_id.clone(), f => panic!("{f:?}") }, attempt }, Frame::Event(NodeEvent::Created), Frame::Event(NodeEvent::Started)]
+        [Frame::Started { build_id: match &frames[0] { Frame::Started { build_id, .. } => build_id.clone(), f => panic!("{f:?}") }, attempt }]
     );
     assert!(end.is_none(), "a failed step ends the stream with its terminal frame, not a broken stream");
-    assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Joined | NodeEvent::Ready) | Frame::Complete)), "nothing downstream of the failed step is emitted: {frames:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Created | NodeEvent::Joined | NodeEvent::Started) | Frame::Complete)), "nothing downstream of the failed step is emitted: {frames:?}");
     assert!(published.iter().all(|n| n.status != NodeStatus::ReadyForTraffic), "the node never reached ready-for-traffic");
 
     let spans = cap.spans();
@@ -500,14 +500,8 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
         let mut frames = Vec::new();
-        while !frames.contains(&Frame::Event(NodeEvent::Started)) {
-            match tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the stream went quiet before node.started") {
-                Some(Ok(f)) => frames.push(f),
-                other => panic!("the stream ended before the cut: {other:?}"),
-            }
-        }
-        // The cut: the transport under the caller's stream goes down once the step before the join
-        // has its receipt.
+        // The cut: the executor's process dies at the join and the caller's wire is severed. The
+        // join is where it is cut once the step before it has its receipt.
         loop {
             let view = rig.builds.read_build(&build).await.unwrap();
             if view.steps.iter().any(|s| s.step == "ApplyMeshPending") {
@@ -540,7 +534,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     });
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a cut stream is Indeterminate, not {end:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Complete)), "no step is inferred failed or complete from a broken stream: {frames:?}");
-    assert!(frames.contains(&Frame::Event(NodeEvent::Started)) && !frames.contains(&Frame::Event(NodeEvent::Joined)));
+    assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Joined | NodeEvent::Started | NodeEvent::Created))), "no event past the join was delivered: {frames:?}");
 
     let completed_steps = |r: &rafka_node_admin_client::BuildReceipts, attempt: u32| -> Vec<String> {
         r.steps.iter().filter(|s| s.attempt == attempt && s.result == rafka_node_rpc_contract::build::StepResult::Complete).map(|s| s.step.clone()).collect()
@@ -557,7 +551,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     assert_eq!(receipts_after.attempt, 1, "the cut opened no second attempt");
     assert_eq!(completed_steps(&receipts_after, 1).len(), ATTEMPT_ONE_STEPS.len() + 3, "the same attempt went on through the join to its end");
     assert!(matches!(&final_frames[0], Frame::Started { .. }));
-    assert_eq!(final_frames[1..], [Frame::Event(NodeEvent::Created), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Ready), Frame::Complete]);
+    assert_eq!(final_frames[1..], [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
 
     let spans = cap.spans();
     let calls = spans_named(&spans, "rdm.node_admin.node.create.via-workflow");
@@ -673,8 +667,8 @@ fn calls_no_op_carries_today_say_so_by_name() {
 }
 
 /// CONTRACT: every step the create and retire pipelines record is one the client names. The
-/// receipts of a whole create fold to `node.created`, `node.started`, `node.joined`, `node.ready`
-/// and `Complete`; the receipts of a whole delete fold to the draining, drained, connections-deleted, left, stopped and
+/// receipts of a whole create fold to `node.joined`, `node.started`, `node.created`
+/// and `Complete`; the receipts of a whole delete fold to the draining, drained, connections-deleted, stopped and
 /// deleted events and `Complete`; the retire leg of a restart carries `node.restarting`. A step the
 /// client does not name is refused by name, never skipped.
 #[test]
@@ -690,13 +684,13 @@ fn every_pipeline_step_is_named_by_the_client() {
     };
     let create: Vec<&str> = CreateStep::ORDER.iter().map(|s| s.name()).collect();
     let f = rafka_node_admin_client::fold(&WorkflowKind::Create, &view("create-node:mesh1.rpc.3", create), 1).unwrap();
-    assert_eq!(f.frames, [Frame::Event(NodeEvent::Created), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Ready), Frame::Complete]);
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
     let name: rafka_mesh_entity::PathName = "mesh1.rpc.3".parse().unwrap();
     let retire: Vec<&str> = RetireStep::ORDER.iter().map(|s| s.name()).collect();
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(name.clone()), &view("retire-node:mesh1.rpc.3", retire), 1).unwrap();
     assert_eq!(
         f.frames,
-        [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Left), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
+        [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
     let restart = vec!["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "Complete"];
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", restart), 1).unwrap();

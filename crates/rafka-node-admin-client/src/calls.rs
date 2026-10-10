@@ -291,7 +291,7 @@ impl<'a> NodeRpc<'a> {
     }
 
     /// `node.stop`: tell the exact birth to drain, cut its mesh connections and park. The call is
-    /// held until the birth is parked; the reply is `Left` with the drain's receipt, on the stop
+    /// held until the birth is parked; the reply is `Stopped` with the drain's receipt, on the stop
     /// call's own stream. A birth already parked answers the same.
     pub async fn stop(&self, birth: &ExactBirth, ctx: &StopContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::StopNode {
@@ -315,18 +315,6 @@ impl<'a> NodeRpc<'a> {
             operation: ctx.operation(),
         };
         self.status(NodeOp::Start, birth, req, opts).await
-    }
-
-    /// `node.declare`: the birth tells its authority the status it committed.
-    pub async fn declare(&self, birth: &ExactBirth, state: NodeState, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::DeclareNodeState { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), state };
-        self.status(NodeOp::Declare, birth, req, opts).await
-    }
-
-    /// `node.apply`: the authority sets the exact birth's status.
-    pub async fn apply(&self, birth: &ExactBirth, state: NodeState, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::ApplyNodeState { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), state };
-        self.status(NodeOp::Apply, birth, req, opts).await
     }
 
     /// `node.get` of one exact birth: it reasserts its presence and answers its current state.
