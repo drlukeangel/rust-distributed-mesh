@@ -1458,7 +1458,6 @@ impl DeploymentPipeline<'_> {
     /// inspection of the exact runtime: only its `Exited` is terminal proof.
     pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<(), PipelineError> {
         use crate::node_commands::NodeCommand;
-        let name = node.name.clone();
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
         let admission: CommandAdmission = self

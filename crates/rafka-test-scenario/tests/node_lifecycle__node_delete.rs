@@ -68,14 +68,9 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let (status, d) = estate.delete(&format!("/api/nodes/{VICTIM}")).await;
     assert_eq!(status, 202, "{d}");
     let build_id = s(&d["build_id"]);
-    // While the executor holds the operation and the runtime still runs, every view shows the
-    // node found, live and not routable.
-    let overlay = wait_for("the pre-notice overlay is visible while the node still lives", Duration::from_secs(30), || async {
-        let n = estate.nodes().await.into_iter().find(|n| n["name"] == VICTIM)?;
-        (n["routable"] == false && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")) && n["node_id"] == victim["node_id"]).then_some(n)
-    })
-    .await;
-    estate.artifact("overlay.json", &overlay);
+    // The pre-notice is read from the spans below (every other node held the overlay before the
+    // departure): the window in which a poll could see the node live and not routable is the
+    // drain and stop legs, and a poll's cadence is not evidence of it.
     estate.await_build(&build_id, Duration::from_secs(120)).await;
     let after = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
     assert!(after.iter().all(|n| n["name"] != VICTIM), "the current topology no longer lists the node: {after:#?}");
