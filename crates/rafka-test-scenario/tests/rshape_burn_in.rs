@@ -4945,16 +4945,14 @@ async fn control_run(cell: &str, shape: Shape) {
     close_run(f, a, inv, nodes, launches, authorities, connections, &["C14"], json!({"events": events}), move |_f, spans, inv| {
         // Status frames are event-driven: every message is five identical sends (one changed_at) and nothing else.
         let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
-        let mut groups: BTreeMap<(String, String, String), usize> = BTreeMap::new();
-        for sp in &sends {
-            *groups.entry((s(&sp["attributes"]["node"]), s(&sp["attributes"]["scope"]), s(&sp["attributes"]["changed_at_rafka_ms"]))).or_default() += 1;
-        }
         // A message is five sends of one change. The sender may stop early only by losing the seat it publishes
-        // for (the formation moves each mesh's primary once, to the lowest NodeId); a sender that holds its seat
-        // at the end sent all five.
-        let seats: BTreeSet<String> = final_seats.clone();
-        let odd: Vec<_> = groups.iter().filter(|((sender, _, _), n)| **n > 5 || (**n < 5 && seats.contains(sender))).collect();
-        assert!(odd.is_empty(), "every status message is five sends of one change, unless its sender lost the seat: {odd:?}");
+        // for (the formation moves each mesh's primary once, to the lowest NodeId), or because a newer change of
+        // the same scope replaced it (`StatusReinforcement::observe`: a change replaces any change still being
+        // reinforced; a lifecycle climbing pending, state-sync, state-commit, ready-for-traffic within
+        // milliseconds sends only the last of them five times). A sender that holds its seat at the end sent all
+        // five of its newest change.
+        let (odd, status_messages) = odd_status_messages(&sends, &final_seats);
+        assert!(odd.is_empty(), "every status message is five sends of one change, unless its sender lost the seat or a newer change replaced it: {odd:?}");
         let quiet_after: Vec<&&Value> = sends.iter().filter(|sp| start_ns(sp) >= marks.2 && start_ns(sp) <= marks.3).collect();
         assert!(quiet_after.is_empty(), "the converged fabric is quiet: {} status sends in the closing window", quiet_after.len());
         // Versions: a publisher's topology_version never goes backward; one birth's digest_seq never goes backward
@@ -4984,11 +4982,34 @@ async fn control_run(cell: &str, shape: Shape) {
         inv.holds(
             "C14: with a node-admin's control traffic lost and a role node restarted under its stale coverage, every status message is exactly five sends, none in the quiet windows before or after, topology_version never goes backward, every birth's digest_seq starts at 1 and the restarted node's new birth is heard as a different birth",
             true,
-            json!({"status_messages": groups.len(), "publishers": tv.len(), "births_heard": digests.len(), "status_frames_heard": status_frames, "quiet_before_ms": (marks.5 - marks.4) / 1_000_000}),
+            json!({"status_messages": status_messages, "publishers": tv.len(), "births_heard": digests.len(), "status_frames_heard": status_frames, "quiet_before_ms": (marks.5 - marks.4) / 1_000_000}),
         );
-        json!({"status_messages": groups.len(), "refeeds": refeeds(spans, marks.0).len(), "births_heard": digests.len(), "status_frames_heard_by_observer": status_frames})
+        json!({"status_messages": status_messages, "refeeds": refeeds(spans, marks.0).len(), "births_heard": digests.len(), "status_frames_heard_by_observer": status_frames})
     })
     .await;
+}
+
+/// The status messages that are not five sends of one change, and how many messages there were. A sender may stop early by losing the seat it
+/// publishes for, or because a newer change of the same scope replaced it (`StatusReinforcement::observe`: a
+/// change replaces any change still being reinforced); a sender that holds its seat at the end sent all five of
+/// its newest change.
+fn odd_status_messages(sends: &[&Value], seats: &BTreeSet<String>) -> (Vec<((String, String, String), usize)>, usize) {
+    let mut groups: BTreeMap<(String, String, String), usize> = BTreeMap::new();
+    for sp in sends {
+        *groups.entry((s(&sp["attributes"]["node"]), s(&sp["attributes"]["scope"]), s(&sp["attributes"]["changed_at_rafka_ms"]))).or_default() += 1;
+    }
+    let mut newest: BTreeMap<(String, String), u64> = BTreeMap::new();
+    for (sender, scope, changed_at) in groups.keys() {
+        let at = changed_at.parse::<u64>().unwrap_or_else(|_| panic!("status send changed_at_rafka_ms '{changed_at}' is not a number"));
+        let n = newest.entry((sender.clone(), scope.clone())).or_default();
+        *n = (*n).max(at);
+    }
+    let messages = groups.len();
+    let odd = groups
+        .into_iter()
+        .filter(|((sender, scope, changed_at), n)| *n > 5 || (*n < 5 && seats.contains(sender) && newest[&(sender.clone(), scope.clone())] == changed_at.parse::<u64>().unwrap()))
+        .collect();
+    (odd, messages)
 }
 
 /// CONTRACT: in the formed estate, once the formation's status reinforcement is over, a quiet fabric sends no
@@ -5962,12 +5983,8 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     close_run(f, a, inv, nodes, launches, authorities, connections, scenarios, json!({"events": events}), move |_f, spans, inv| {
         // Status frames are event-driven: every message is five identical sends of one change; none in the closing quiet window.
         let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
-        let mut groups: BTreeMap<(String, String, String), usize> = BTreeMap::new();
-        for sp in &sends {
-            *groups.entry((s(&sp["attributes"]["node"]), s(&sp["attributes"]["scope"]), s(&sp["attributes"]["changed_at_rafka_ms"]))).or_default() += 1;
-        }
-        let odd: Vec<_> = groups.iter().filter(|((sender, _, _), n)| **n > 5 || (**n < 5 && final_seats.contains(sender))).collect();
-        assert!(odd.is_empty(), "every status message is five sends of one change, unless its sender lost the seat: {odd:?}");
+        let (odd, status_messages) = odd_status_messages(&sends, &final_seats);
+        assert!(odd.is_empty(), "every status message is five sends of one change, unless its sender lost the seat or a newer change replaced it: {odd:?}");
         let quiet_after: Vec<&&Value> = sends.iter().filter(|sp| start_ns(sp) >= after0 && start_ns(sp) <= after1).collect();
         assert!(quiet_after.is_empty(), "the converged fabric is quiet: {} status sends in the closing window", quiet_after.len());
         let tv = topology_versions(spans);
@@ -6005,9 +6022,9 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
         inv.holds(
             &format!("C14: with {vn2:?} cut from every node, every other node-admin marked each silent and the other mesh's admins re-fed each, once per window at most, nothing else; status messages were exactly five sends, none in the quiet windows; no Build, death, rebirth or terminate"),
             true,
-            json!({"status_messages": groups.len(), "refeed_pairs": per_pair.len(), "seat_moves_to_mate": seat_to_mate}),
+            json!({"status_messages": status_messages, "refeed_pairs": per_pair.len(), "seat_moves_to_mate": seat_to_mate}),
         );
-        json!({"status_messages": groups.len(), "refeed_attempts": att.len(), "refeed_pairs": per_pair.len(), "seat_moves_to_mate": seat_to_mate})
+        json!({"status_messages": status_messages, "refeed_attempts": att.len(), "refeed_pairs": per_pair.len(), "seat_moves_to_mate": seat_to_mate})
     })
     .await;
 }
