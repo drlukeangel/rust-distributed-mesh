@@ -135,7 +135,7 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     let owner_name = {
         let spans = estate.spans();
         let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
-        let r = reconciles.iter().find(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains("shutdown-mesh:"))).cloned().expect("a reconcile executed the shutdown-mesh operation");
+        let r = reconciles.iter().find(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["outcome"] == "converged" && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains("shutdown-mesh:"))).cloned().expect("a reconcile converged the shutdown-mesh operation");
         s(&r["attributes"]["executor"])
     };
     // The MeshLeft receipt, read from the live Build projection (the admin API): one Complete
@@ -211,6 +211,31 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     let published_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
     let first_drain = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| drain_start(n)).min().unwrap();
     assert!(published_leaving < first_drain, "mesh-leaving was published ({published_leaving}) before any member drained ({first_drain})");
+
+    // R-ST2: mesh1 held the fabric seat, so it was handed to an outside mesh-primary first. In
+    // order: the command, the successor's commit at the next epoch, new-fabric-primary, the
+    // completion, the incumbent's confirmation; only then leave-mesh, mesh-leaving and the tiers.
+    let one = |name: &str| -> Value {
+        let v = named(&spans, name);
+        assert_eq!(v.len(), 1, "exactly one {name} span: {v:?}");
+        v[0].clone()
+    };
+    let (committed, confirmed) = (one("rdm.node_admin.fabric.update.via-handover-committed"), one("rdm.node_admin.fabric.update.via-handover-confirmed"));
+    let announced = named(&spans, "rdm.mesh.seat.update.via-announce-new-fabric-primary");
+    assert_eq!(announced.len(), 1, "new-fabric-primary was published once: {announced:?}");
+    assert_eq!(attr_u(&committed, "committed_epoch"), attr_u(&committed, "expected_epoch") + 1, "{committed}");
+    assert_eq!(attr_u(&confirmed, "committed_epoch"), attr_u(&committed, "committed_epoch"), "the incumbent confirmed the committed epoch");
+    assert_eq!(s(&committed["attributes"]["operation"]), format!("fabric-primary-handover:{mesh1_id}"));
+    let first_call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21 && start_ns(sp) < start_ns(&committed)).map(|sp| start_ns(sp)).min().expect("TakeFabricPrimary was called before the commit");
+    assert!(first_call < start_ns(&committed) && start_ns(&committed) < start_ns(&announced[0]) && start_ns(&announced[0]) < start_ns(&confirmed), "command, commit, new-fabric-primary, confirmation in order");
+    let taken_calls = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21 && start_ns(sp) > start_ns(&announced[0]) && start_ns(sp) <= start_ns(&confirmed)).count();
+    assert!(taken_calls >= 1, "FabricPrimaryTaken was called after new-fabric-primary and before the confirmation");
+    let first_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
+    assert!(start_ns(&confirmed) < first_leaving, "the confirmation precedes mesh-leaving, LeaveMesh and every drain");
+    assert!(first_leaving < drain_start("mesh1.rpc.1").min(drain_start("mesh1.rpc.2")));
+    assert!(named(&spans, "rdm.node_admin.fabric.reject.via-handover").is_empty(), "no handover call was refused");
+    assert!(named(&spans, "rdm.node_admin.mesh.update.via-seat-inside-leaving-mesh").is_empty());
+    assert_eq!(s(&committed["attributes"]["successor"]).split(':').next(), Some(s(&fabric_now["fabric_primary"]).split('.').next().unwrap()), "the committed successor's mesh holds the seat afterwards");
 
     // A desired change, not a recovery.
     assert!(
