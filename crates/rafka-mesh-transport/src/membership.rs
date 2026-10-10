@@ -2285,6 +2285,19 @@ impl Membership {
         let mut held = self.held_sources();
         let current = self.book.current(self.book.staleness_floor());
         let mesh = &self.view.mesh;
+        // A mesh's primary that has not published yet still holds its members in its book: it serves
+        // them as its own source at version 0 (the version before any publication, the one its
+        // publisher reports), never as nothing. Its first publication supersedes it.
+        if self.view.primary.load(Ordering::Relaxed) && held.iter().all(|s| &s.mesh != mesh) {
+            held.push(SourceSnapshot {
+                mesh: mesh.clone(),
+                publisher: PublisherId { node: own.node.name.to_string(), incarnation: own.node.incarnation.clone() },
+                topology_version: 0,
+                digests: Vec::new(),
+                in_flight: Vec::new(),
+                departed: Vec::new(),
+            });
+        }
         if let Some(at) = held.iter_mut().find(|s| &s.mesh == mesh) {
             let mut members: Vec<MeshDigest> = current
                 .into_iter()
