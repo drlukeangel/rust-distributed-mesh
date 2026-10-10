@@ -3351,9 +3351,13 @@ name = "rafka-node-admin-client"
 version = "0.1.0"
 dependencies = [
  "rafka-mesh-entity",
+ "rafka-node-rpc",
+ "rafka-node-rpc-contract",
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

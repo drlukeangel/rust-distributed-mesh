@@ -178,10 +178,6 @@ pub struct Folded {
 /// `Failed` ends the stream `Failed` only when an attempt this call opened wrote it; a receipt
 /// no row names is refused by name.
 pub fn fold(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<Folded, CallEnd> {
-    if view.steps.is_empty() || from_attempt > 0 {
-        // RED stub: the receipts are not read yet.
-        return Ok(Folded { frames: Vec::new(), completed: Vec::new(), next: None });
-    }
     let rows = kind.rows();
     let prefixes: Vec<&str> = {
         let mut p: Vec<&str> = rows.iter().map(|r| r.operation).collect();
@@ -286,9 +282,9 @@ pub struct WorkflowStream<S: BuildSource = NodeAdminClient> {
 }
 
 impl<S: BuildSource> WorkflowStream<S> {
-    /// The stream of the accepted call `accepted`, reading the Build from `source` every `poll`.
-    pub(crate) fn new(source: S, kind: WorkflowKind, accepted: Accepted, poll: Duration) -> Self {
-        let span = kind.op().span();
+    /// The stream of the accepted call `accepted`, reading the Build from `source` every `poll`;
+    /// `span` is the call's span, opened when it was submitted and closed with the stream.
+    pub(crate) fn new(source: S, kind: WorkflowKind, accepted: Accepted, poll: Duration, span: tracing::Span) -> Self {
         span.record("build_id", accepted.build_id.0.as_str());
         span.record("attempt", accepted.attempt);
         Self { source, kind, accepted, poll, span, started: false, emitted: 0, queue: VecDeque::new(), ended: false }

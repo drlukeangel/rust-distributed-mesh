@@ -216,19 +216,19 @@ impl Nodes {
         self
     }
 
-    fn stream(&self, kind: WorkflowKind, accepted: Accepted) -> WorkflowStream {
-        WorkflowStream::new(self.admin.clone(), kind, accepted, self.poll)
-    }
-
-    async fn call<T>(&self, op: NodeOp, call: impl std::future::Future<Output = Result<T, crate::ClientError>>) -> Result<T, CallEnd> {
-        let span = op.span();
-        let r = tracing::Instrument::instrument(call, span.clone()).await.map_err(CallEnd::from);
-        span.record("outcome", match &r {
-            Ok(_) => "accepted",
-            Err(e) => e.outcome(),
-        });
-        span.in_scope(|| tracing::info!(op = op.name(), "a workflow call was answered"));
-        r
+    /// Submit a workflow call. Its span opens here and closes with the returned stream; a call the
+    /// control API did not accept ends here, with the span saying how.
+    async fn workflow(&self, kind: WorkflowKind, submit: impl std::future::Future<Output = Result<Accepted, crate::ClientError>>) -> Result<WorkflowStream, CallEnd> {
+        let span = kind.op().span();
+        match tracing::Instrument::instrument(submit, span.clone()).await {
+            Ok(accepted) => Ok(WorkflowStream::new(self.admin.clone(), kind, accepted, self.poll, span)),
+            Err(e) => {
+                let end = CallEnd::from(e);
+                span.record("outcome", end.outcome());
+                span.in_scope(|| tracing::info!(op = kind.op().name(), reason = %end, "the workflow call was not accepted"));
+                Err(end)
+            }
+        }
     }
 
     /// `node.get`: the nodes `selector` selects.
@@ -301,14 +301,12 @@ impl Nodes {
     /// `node.create(spec)`: add a node to a mesh. The stream is `Started`, then the step events
     /// of the create, ending `Complete` or `Failed { step, reason }`.
     pub async fn create(&self, spec: &NodeSpec) -> Result<WorkflowStream, CallEnd> {
-        let accepted = self.call(NodeOp::Create, self.admin.spawn(&spec.mesh, spec.kind)).await?;
-        Ok(self.stream(WorkflowKind::Create, accepted))
+        self.workflow(WorkflowKind::Create, self.admin.spawn(&spec.mesh, spec.kind)).await
     }
 
     /// `node.stop` of `node`.
     pub async fn stop(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        let accepted = self.call(NodeOp::Stop, self.admin.stop(node)).await?;
-        Ok(self.stream(WorkflowKind::Stop(node.clone()), accepted))
+        self.workflow(WorkflowKind::Stop(node.clone()), self.admin.stop(node)).await
     }
 
     /// `node.start`: the parked process joins. The steps that start a node run today only inside
@@ -319,14 +317,12 @@ impl Nodes {
 
     /// `node.restart` of `node`.
     pub async fn restart(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        let accepted = self.call(NodeOp::Restart, self.admin.restart(node)).await?;
-        Ok(self.stream(WorkflowKind::Restart(node.clone()), accepted))
+        self.workflow(WorkflowKind::Restart(node.clone()), self.admin.restart(node)).await
     }
 
     /// `node.delete` of `node`.
     pub async fn delete(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        let accepted = self.call(NodeOp::Delete, self.admin.remove(node)).await?;
-        Ok(self.stream(WorkflowKind::Delete(node.clone()), accepted))
+        self.workflow(WorkflowKind::Delete(node.clone()), self.admin.remove(node)).await
     }
 }
 
