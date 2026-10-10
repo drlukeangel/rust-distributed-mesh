@@ -198,22 +198,42 @@ pub fn held_for(own: &PathName) -> ConnectionsHeld {
     held
 }
 
-/// The one in-memory span exporter of this test executable, behind its one global subscriber.
-/// Every cell that reads spans reads them through this and filters to its own trace; a cell never
-/// installs a subscriber of its own, because one executable holds exactly one global.
-pub fn spans_exporter() -> opentelemetry_sdk::testing::trace::InMemorySpanExporter {
+/// The in-memory span capture of this test executable, behind its one global subscriber.
+///
+/// Spans end on threads a cell does not own (the endpoint's transport driver, tasks it spawns), so
+/// a per-cell dispatcher would not see them: the subscriber is global, and every cell that reads
+/// spans reads them through this and filters to its own trace. Ending a span only hands it to a
+/// thread of its own ([`rafka_mesh_telemetry::NonBlockingSpanProcessor`]); the thread that ends it
+/// never waits on another cell's reads or on the exporter.
+#[derive(Clone)]
+pub struct Spans {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    processor: rafka_mesh_telemetry::NonBlockingSpanProcessor,
+}
+
+impl Spans {
+    /// Every span ended before this call, whichever thread ended it.
+    pub fn get_finished_spans(&self) -> opentelemetry::trace::TraceResult<Vec<opentelemetry_sdk::export::trace::SpanData>> {
+        use opentelemetry_sdk::trace::SpanProcessor as _;
+        self.processor.force_flush()?;
+        self.exporter.get_finished_spans()
+    }
+}
+
+pub fn spans_exporter() -> Spans {
     use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
-    use opentelemetry_sdk::trace::{SimpleSpanProcessor, TracerProvider};
+    use opentelemetry_sdk::trace::TracerProvider;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    static EXPORTER: std::sync::OnceLock<InMemorySpanExporter> = std::sync::OnceLock::new();
-    EXPORTER
+    static SPANS: std::sync::OnceLock<Spans> = std::sync::OnceLock::new();
+    SPANS
         .get_or_init(|| {
             let exporter = InMemorySpanExporter::default();
-            let provider = TracerProvider::builder().with_span_processor(SimpleSpanProcessor::new(Box::new(exporter.clone()))).build();
+            let processor = rafka_mesh_telemetry::NonBlockingSpanProcessor::start("node-rpc-test-spans", exporter.clone()).expect("the span export thread");
+            let provider = TracerProvider::builder().with_span_processor(processor.clone()).build();
             let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "node-rpc-tests");
             tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer)).init();
-            exporter
+            Spans { exporter, processor }
         })
         .clone()
 }
