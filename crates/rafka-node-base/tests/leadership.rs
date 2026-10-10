@@ -22,6 +22,7 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
         transport_addr: None,
         listeners: vec![],
         declared: None,
+        parked: false,
         load: None,
         gossip: None,
     }

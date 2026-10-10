@@ -186,7 +186,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
             (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, None)
         }
         // Commands and completions are answered before the decision (`StatusAuthority::apply`).
-        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
+        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
             (StatusReply::NotReady { reason: format!("{} reached the declaration decision, which does not decide {}", auth.me, req.op()) }, None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -258,8 +258,11 @@ impl StatusAuthority {
             rounds.heard_from(&from.node_id);
         }
         match req {
-            StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } => return self.accept_completion(sender.as_ref(), req),
-            StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } => return self.serve_command(&view, sender.as_ref(), req).await,
+            StatusRequest::NodeDrained { .. } => return self.accept_completion(sender.as_ref(), req),
+            StatusRequest::NodeLeft { .. } => {
+                return StatusReply::NotReady { reason: format!("{}: node-left is not a call: a stopped birth reports left on the reply of its stop-node call", self.me) };
+            }
+            StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return self.serve_command(&view, sender.as_ref(), req).await,
             StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } => {
                 let Some(leaver) = self.leaver.get().cloned() else {
                     return StatusReply::NotReady { reason: format!("{} is still starting: it cannot serve {} yet", self.me, req.op()) };
@@ -316,6 +319,34 @@ impl StatusAuthority {
 }
 
 impl StatusAuthority {
+    /// A start begins `birth`'s next cycle (node-start.md): what it declared before its stop
+    /// (`Leaving`) is no longer where its next declarations are measured from, so `Pending` and
+    /// `ReadyForTraffic` run forward again from the start. The cleared state is a row put before it
+    /// is held, as every applied state is.
+    pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
+        let held = self.declared.lock().unwrap().node(&node.node_id).filter(|(inc, _)| inc == birth).map(|(_, s)| s);
+        let Some(state) = held else { return };
+        let row = NodeRecord {
+            node_id: node.node_id.clone(),
+            name: node.name.clone(),
+            incarnation_id: birth.clone(),
+            endpoint_id: node.endpoint_id.clone().unwrap_or_else(|| EndpointId(String::new())),
+            transport_addr: node.transport_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0))),
+            listeners: node.listeners.clone(),
+            declared: None,
+            status: None,
+        };
+        let outcome = match self.nodes_storage.put_contact(&row).await {
+            Ok(()) => {
+                self.declared.lock().unwrap().nodes.remove(&node.node_id);
+                "begun"
+            }
+            Err(_) => "refused",
+        };
+        tracing::info_span!("rdm.node_admin.status.update.via-cycle-begun", node = %node.name, node_id = %node.node_id, incarnation_id = %birth.0, held = ?state, outcome, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
+    }
+
     /// A birth's completion call (`node-drained`, `node-left`) at the admin that commanded it: it
     /// resolves the open command it names, by `(build_id, attempt, operation, node_id,
     /// incarnation)`. The sender must be the subject. A completion with no open command is
@@ -327,12 +358,15 @@ impl StatusAuthority {
     /// `drain-node` / `stop-node` naming this admin: served by the subject itself, from another
     /// node-admin (its owning mesh-admin).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
-        let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. }) = req else { unreachable!("serve_command is called for commands only") };
+        let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. } | StatusRequest::StartNode { node_id, incarnation, .. }) = req else { unreachable!("serve_command is called for commands only") };
         let me = view.members().find(|n| n.name == self.me);
         let reply = match (me, sender, self.own.get()) {
             (Some(me), _, _) if me.node_id != *node_id => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } },
             (Some(me), _, _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().expect("checked") },
-            (_, Some(from), Some(own)) if from.kind == NodeKind::NodeAdmin && from.name != self.me => own.serve(&from.node_id, req).await.expect("a command"),
+            (_, Some(from), Some(own)) if from.kind == NodeKind::NodeAdmin && from.name != self.me => {
+                let spare = from.endpoint_id.as_ref().and_then(|e| e.0.parse::<iroh::PublicKey>().ok());
+                own.serve(&from.node_id, spare, req).await.expect("a command")
+            }
             (_, Some(from), None) => StatusReply::NotReady { reason: format!("{} has not yet joined its mesh; {} from {} is refused", self.me, req.op(), from.name) },
             (_, other, _) => StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: other.map(|n| n.name.to_string()).unwrap_or_else(|| "unknown peer".into()) } },
         };
@@ -479,6 +513,12 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             // sent again, whatever its last outcome.
             if let Some(from) = sender {
                 wake.addressed_by(&from.node_id);
+            }
+            // A parked admin presents nothing: it says it is parked.
+            if crate::node_self::parking().is_parked() {
+                tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "parked", "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("probed by a node-admin: parked, nothing re-published"));
+                return Some(StatusReply::CurrentParked { node_id: me.node_id.clone(), incarnation: held.clone() });
             }
             if let Some(republish) = republish.get() {
                 republish().await;

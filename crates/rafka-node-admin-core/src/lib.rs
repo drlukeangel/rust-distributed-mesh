@@ -41,6 +41,7 @@ pub mod model;
 pub mod node_commands;
 pub mod node_rpc;
 pub mod node_self;
+pub mod park_gate;
 pub mod offline;
 pub mod rafka_time;
 pub mod readiness;

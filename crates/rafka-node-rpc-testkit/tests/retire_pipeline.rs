@@ -62,10 +62,11 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     // admitted; AwaitNodeDrained and AwaitNodeLeft carry the completion call the birth made back.
     use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion};
     let output = |step: RetireStep| view.steps.iter().find(|r| r.step == step.name()).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{} receipted with an output", step.name()));
-    for step in [RetireStep::DrainNode, RetireStep::StopNode] {
-        let admission: CommandAdmission = serde_json::from_value(output(step)).expect("a CommandAdmission");
-        assert_eq!(admission, CommandAdmission::Admitted, "{}", step.name());
-    }
+    let drained: CommandAdmission = serde_json::from_value(output(RetireStep::DrainNode)).expect("a CommandAdmission");
+    assert_eq!(drained, CommandAdmission::Admitted, "DrainNode");
+    // The stop is answered `Left` on its own call: the receipt names what its drain established.
+    let stopped: CommandAdmission = serde_json::from_value(output(RetireStep::StopNode)).expect("a CommandAdmission");
+    assert!(matches!(stopped, CommandAdmission::Left { receipt: rafka_node_rpc_contract::status::DrainReceipt::Established { .. } }), "StopNode: {stopped:?}");
     for step in [RetireStep::AwaitNodeDrained, RetireStep::AwaitNodeLeft] {
         let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
         assert_eq!(completion, Completion::Received, "{}", step.name());
@@ -75,7 +76,7 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
     assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic, NodeStatus::Draining, NodeStatus::Leaving]);
     let (digest, _) = admin.observer.membership.book.get(first.node.node_id.as_str()).expect("the node's digest");
-    assert_eq!(digest.status, MemberStatus::Leaving, "the node said Leaving on the fabric before it went");
+    assert_eq!(digest.status, MemberStatus::Draining, "the node gossips nothing for its stop: its last word on the fabric is Draining");
     assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
     assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
     assert!(!std::path::Path::new(first.node.data_dir.as_deref().unwrap()).exists(), "permanent: the data dir is gone");
@@ -99,10 +100,10 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         && f.get("pipeline").map(String::as_str) == Some("retire")));
     // Each command was sent under its own operation, and the birth's completion call for that
     // operation reached the commanding side (the server handler's own spans run on its tasks).
-    for (command, completion, operation) in [("drain-node", "node-drained", "drain-node:mesh1.rpc.1"), ("stop-node", "node-left", "stop-node:mesh1.rpc.1")] {
+    for (command, completion, operation, admission) in [("drain-node", "node-drained", "drain-node:mesh1.rpc.1", "admitted"), ("stop-node", "node-left", "stop-node:mesh1.rpc.1", "left")] {
         assert!(
-            all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some("admitted") && f.get("command").map(String::as_str) == Some(command)),
-            "no admitted {command} span"
+            all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some(admission) && f.get("command").map(String::as_str) == Some(command)),
+            "no {admission} {command} span"
         );
         assert!(
             all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-completion-awaited" && f.get("operation").map(String::as_str) == Some(operation) && f.get("received").map(String::as_str) == Some("true") && f.get("completion").map(String::as_str) == Some(completion)),

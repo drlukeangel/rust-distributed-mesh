@@ -141,6 +141,7 @@ enum WireAction {
     Replace { path: PathName, from_incarnation: IncarnationId },
     Drain { path: PathName, from_incarnation: IncarnationId },
     Stop { path: PathName, from_incarnation: IncarnationId },
+    Start { path: PathName, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -194,6 +195,7 @@ impl From<&AttemptAction> for WireAction {
             AttemptAction::Replace { path, from_incarnation } => Self::Replace { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Drain { path, from_incarnation } => Self::Drain { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
         }
     }
 }
@@ -204,6 +206,7 @@ impl From<WireAction> for AttemptAction {
             WireAction::Replace { path, from_incarnation } => Self::Replace { path, from_incarnation },
             WireAction::Drain { path, from_incarnation } => Self::Drain { path, from_incarnation },
             WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
+            WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
         }
     }
 }
@@ -301,6 +304,9 @@ pub(crate) enum WireCommandAdmission {
     NotSent { reason: String },
     Indeterminate { reason: String },
     Refused { reply: String },
+    Left { receipt: rafka_node_rpc_contract::status::DrainReceipt },
+    Started,
+    StartFailed { step: String, reason: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -326,6 +332,9 @@ impl From<&CommandAdmission> for WireCommandAdmission {
             CommandAdmission::NotSent { reason } => Self::NotSent { reason: reason.clone() },
             CommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason: reason.clone() },
             CommandAdmission::Refused { reply } => Self::Refused { reply: reply.clone() },
+            CommandAdmission::Left { receipt } => Self::Left { receipt: *receipt },
+            CommandAdmission::Started => Self::Started,
+            CommandAdmission::StartFailed { step, reason } => Self::StartFailed { step: step.clone(), reason: reason.clone() },
         }
     }
 }
@@ -337,6 +346,9 @@ impl From<WireCommandAdmission> for CommandAdmission {
             WireCommandAdmission::NotSent { reason } => Self::NotSent { reason },
             WireCommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason },
             WireCommandAdmission::Refused { reply } => Self::Refused { reply },
+            WireCommandAdmission::Left { receipt } => Self::Left { receipt },
+            WireCommandAdmission::Started => Self::Started,
+            WireCommandAdmission::StartFailed { step, reason } => Self::StartFailed { step, reason },
         }
     }
 }
@@ -417,7 +429,7 @@ fn produces(step: &str) -> Option<Produces> {
         Produces::MeshPending
     } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) {
         Produces::LifecycleOp
-    } else if ret(RetireStep::DrainNode) || ret(RetireStep::StopNode) {
+    } else if ret(RetireStep::DrainNode) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
         Produces::CommandAdmission
     } else if ret(RetireStep::AwaitNodeDrained) || ret(RetireStep::AwaitNodeLeft) {
         Produces::Completion

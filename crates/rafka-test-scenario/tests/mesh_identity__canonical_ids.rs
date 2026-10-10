@@ -101,17 +101,18 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
     }
 
-    // Restart keeps NodeId and FabricId; the incarnation moves.
+    // Restart keeps NodeId, FabricId and the incarnation: the process is stopped and started.
     let before = nodes.iter().find(|n| n["name"] == "mesh2.rpc.2").unwrap().clone();
     let (status, a) = estate.post("/api/nodes/mesh2.rpc.2/restart", &json!({})).await;
     assert_eq!(status, 202, "{a}");
     estate.await_attempt(a["build_id"].as_str().unwrap(), Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let after = wait_for("mesh2.rpc.2 ready under a new incarnation", Duration::from_secs(30), || async {
+    let after = wait_for("mesh2.rpc.2 ready after its restart", Duration::from_secs(30), || async {
         let n = estate.node_opt("mesh2.rpc.2").await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+        (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
     })
     .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
+    assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
     let spans = estate.spans();
     let reborn = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
@@ -126,19 +127,20 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(status, 202, "{again}");
     assert_eq!(again["build_id"], a["build_id"], "a restart is an attempt of the accepted Build: {again}");
     estate.await_attempt(again["build_id"].as_str().unwrap(), Estate::attempt_of(&again), Duration::from_secs(120)).await;
-    let third = wait_for("mesh2.rpc.2 ready under a third incarnation", Duration::from_secs(30), || async {
+    let third = wait_for("mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), || async {
         let n = estate.node_opt("mesh2.rpc.2").await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != after["incarnation_id"] && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+        (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
     })
     .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
+    assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
     let restart_build = s(&again["build_id"]);
-    wait_for("each restart ran DeployRuntime itself, none reused", Duration::from_secs(30), || async {
+    wait_for("each restart ran its own StartNode, none reused", Duration::from_secs(30), || async {
         let ran = named(&estate.spans(), "rdm.node_admin.deployment.update.via-step")
             .into_iter()
             .filter(|sp| {
                 let at = &sp["attributes"];
-                s(&at["build_id"]) == restart_build && at["node"] == "mesh2.rpc.2" && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
+                s(&at["build_id"]) == restart_build && at["node"] == "mesh2.rpc.2" && at["step"] == "StartNode" && at["outcome"] == "complete"
             })
             .count();
         (ran >= 2).then_some(())

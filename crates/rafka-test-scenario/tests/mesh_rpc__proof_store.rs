@@ -81,13 +81,14 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
     let restarted = wait_for("the restarted birth is ready", Duration::from_secs(60), || async {
         let n = estate.node_opt(NODE).await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != first["incarnation_id"]).then_some(n)
+        (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
     })
     .await;
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
+    assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "and the birth: the process was stopped and started, never replaced");
     let kept = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
     landed_on(&kept, &restarted, "get");
-    assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the new incarnation serves the old value: {kept}");
+    assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the restarted node serves the old value: {kept}");
 
     // 3. A replacement does not inherit it.
     estate.kill_node(NODE).await;
@@ -136,6 +137,4 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     assert!(on(&first["incarnation_id"], "put", "too-large"));
     assert!(on(&restarted["incarnation_id"], "get", "value"), "the restarted birth served the kept value");
     assert!(on(&replacement["incarnation_id"], "get", "absent"), "the replacement served an empty store");
-    assert!(!served.iter().any(|s| s["attributes"]["incarnation_id"] == first["incarnation_id"] && s["attributes"]["op"] == "get" && s["start_unix_nano"].as_u64() > served.iter().filter(|x| x["attributes"]["incarnation_id"] == restarted["incarnation_id"]).filter_map(|x| x["start_unix_nano"].as_u64()).min()),
-        "nothing reached the first birth after the restart");
 }

@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
+iroh = { workspace = true }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 tracing = { workspace = true }
 tokio = { workspace = true }

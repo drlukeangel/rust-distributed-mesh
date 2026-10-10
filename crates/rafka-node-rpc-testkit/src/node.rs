@@ -66,11 +66,11 @@ pub struct RunningNode {
     pub owed_state: Arc<Mutex<Option<rafka_node_rpc_contract::status::NodeState>>>,
     /// Cancelled when this birth is retired (drain-node, stop-node, its process stopping): the
     /// `hydrate_before_ready` hook and any pull it has in flight end.
-    pub cancel: rafka_node_rpc::CancelToken,
-    hydration: Option<rafka_node_admin_core::app_hydration::HydrationHandle>,
-    hydrating: Option<tokio::task::JoinHandle<()>>,
+    pub cancel: rafka_node_rpc::Retirement,
+    hydration: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>>,
+    hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     gossip: iroh_gossip::net::Gossip,
-    publisher: tokio::task::JoinHandle<()>,
+    publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     node_rpc_feed: tokio::task::JoinHandle<()>,
     declare_loop: tokio::task::JoinHandle<()>,
 }
@@ -84,10 +84,10 @@ pub struct RunningNode {
 /// node-admin's stop grace.
 pub use rafka_mesh_transport::membership::leave_linger_from_env;
 
-/// Whether this process was commanded to stop (`stop-node`): the shutdown that follows has no
-/// drain leg, and only a signal drains the node itself.
+/// Whether this process is parked (stopped by `stop-node`, not started again): the shutdown that
+/// follows has no drain leg, and only a live node drains itself on a signal.
 pub fn stop_commanded() -> bool {
-    rafka_node_admin_core::node_self::stop_command().commanded()
+    rafka_node_admin_core::node_self::parking().is_parked()
 }
 
 /// The drain deadline from `RDM_DRAIN_DEADLINE_MS`, 5000 ms when unset.
@@ -98,13 +98,14 @@ pub fn drain_deadline_from_env() -> Duration {
 impl RunningNode {
     /// Where this birth's `hydrate_before_ready` stands; `None` when no hook was registered.
     pub fn hydration(&self) -> Option<rafka_node_admin_core::app_hydration::HydrationHandle> {
-        self.hydration.clone()
+        self.hydration.lock().unwrap().clone()
     }
 
     /// Resolves with the reason once this node's hook failed after the node came up Pending; never
     /// resolves otherwise. A process selects on it beside its stop signal and ends by name.
     pub async fn hydration_failed(&self) -> String {
-        match &self.hydration {
+        let handle = self.hydration.lock().unwrap().clone();
+        match handle {
             Some(h) => h.failed().await,
             None => std::future::pending().await,
         }
@@ -113,12 +114,18 @@ impl RunningNode {
     /// End a node that never became ready: its tasks stop and its endpoint closes.
     async fn close(self) {
         self.cancel.cancel();
-        self.publisher.abort();
+        self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
         let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
+        }
+    }
+
+    fn abort_publisher(&self) {
+        if let Some(p) = self.publisher.lock().unwrap().take() {
+            p.abort();
         }
     }
 
@@ -156,19 +163,14 @@ impl RunningNode {
         }
     }
 
-    /// The shutdown that follows an admitted `stop-node` (node-stop.md): the node already entered
-    /// `Leaving`, published it and called `node-left` while its endpoint was open
-    /// (`node_self`), so nothing is announced again. The tasks end and the endpoints close.
+    /// The shutdown of a parked process (stopped by `stop-node`, not started again): its mesh
+    /// connections were cut and `Leaving` declared when it stopped, so nothing is announced. The
+    /// tasks end and the endpoints close once every reply it owes is settled.
     pub async fn stop_commanded(self) {
-        // The provider's stop signal can arrive before `node-left` is sent: it is sent first, while
-        // the endpoint is open.
-        rafka_node_admin_core::node_self::stop_command().wait().await;
-        // The `stop-node` answer itself is among the replies this node owes: the endpoint closes
-        // after every answered call is settled with its caller.
         self.server.settled().await;
         self.cancel.cancel();
-        self.publisher.abort();
-        if let Some(h) = &self.hydrating {
+        self.abort_publisher();
+        if let Some(h) = self.hydrating.lock().unwrap().take() {
             h.abort();
         }
         self.node_rpc_feed.abort();
@@ -200,7 +202,7 @@ impl RunningNode {
             }
         })
         .await;
-        self.publisher.abort();
+        self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
         let _ = self.gossip.shutdown().await;
@@ -239,14 +241,12 @@ pub async fn wait_for_signal(binary: &str) {
         tokio::select! {
             _ = term.recv() => {}
             _ = tokio::signal::ctrl_c() => {}
-            () = rafka_node_admin_core::node_self::stop_command().wait() => {}
             () = stopped => {}
         }
     }
     #[cfg(not(unix))]
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        () = rafka_node_admin_core::node_self::stop_command().wait() => {}
         () = stopped => {}
     }
 }
@@ -494,7 +494,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // From here the node is on the mesh, Pending: it answers status, drain-node and stop-node, and
     // says Pending on the membership cadence while its `hydrate_before_ready` hook runs. It is
     // published ReadyForTraffic only once the hook has passed ("born full").
-    let cancel = rafka_node_rpc::CancelToken::new();
+    let cancel = rafka_node_rpc::Retirement::new();
     let addressed = rafka_node_admin_core::app_hydration::Addressed::new();
     let owed_state: Arc<Mutex<Option<rafka_node_rpc_contract::status::NodeState>>> = Arc::new(Mutex::new(None));
     let own = {
@@ -518,15 +518,33 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         };
         Arc::new(rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), membership.clone(), set_status, current, Some(declare)).with_retire(cancel.clone()))
     };
+    let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
+    let hydration_cell: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>> = Arc::default();
+    let hydrating_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
+    own.set_session(Arc::new(NodeSession {
+        name: launch.name.clone(),
+        node_id: launch.node_id.clone(),
+        incarnation: launch.incarnation.clone(),
+        fabric_id: launch.fabric_id.clone(),
+        mesh_id: mesh_id.clone(),
+        runtime: runtime.clone(),
+        membership: membership.clone(),
+        client: client.clone(),
+        resolver: resolver.clone(),
+        server: server.clone(),
+        digest: digest.clone(),
+        status: status.clone(),
+        owed: owed_state.clone(),
+        rafka_time: rafka_time.clone(),
+        hydration: hydration.clone(),
+        addressed: addressed.clone(),
+        publisher: publisher.clone(),
+        hydration_cell: hydration_cell.clone(),
+        hydrating: hydrating_cell.clone(),
+    }));
     let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own, addressed: addressed.clone() }));
     ready.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
-    let publisher = membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || {
-        let mut d = d.clone();
-        d.status = *st.lock().unwrap();
-        d.in_flight = Some(rafka_node_rpc::ServerStats::get(&stats.in_flight));
-        d
-    });
+    *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
     // cadence until an authority answers by name. An authority that does not yet hold this
     // birth answers `sender-not-subject`; the next cadence carries the digest and the retry lands.
@@ -577,6 +595,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         client: node_rpc.client.clone(),
     };
     let ctx = rafka_node_admin_core::app_hydration::HydrateCtx {
+        start_kind: rafka_node_admin_core::app_hydration::StartKind::FirstStart,
         birth: rafka_node_admin_core::app_hydration::Birth {
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
@@ -588,13 +607,14 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         authority: rafka_node_admin_core::app_hydration::Authority::Accepted(rafka_node_admin_core::app_hydration::AcceptingAuthority { name: launcher.name.clone(), node_id: launcher.node_id.clone(), incarnation: launcher.incarnation.clone() }),
         client: client.clone(),
         membership: membership.clone(),
-        cancel: cancel.clone(),
+        cancel: cancel.token(),
         rafka_time: rafka_time.clone(),
         member_cert: Some(member_cert.clone()),
         attempt: 0,
     };
     let driver = hydration.driver(ctx, rafka_node_admin_core::app_hydration::Events::new(membership.book.clone(), addressed), boot.clone());
-    let mut running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: driver.as_ref().map(|d| d.handle()), hydrating: None, gossip: g, publisher, node_rpc_feed, declare_loop };
+    let mut running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: hydration_cell.clone(), hydrating: hydrating_cell.clone(), gossip: g, publisher, node_rpc_feed, declare_loop };
+    *hydration_cell.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     use rafka_node_admin_core::app_hydration::{End, Step};
     let Some(driver) = driver else {
         becoming.go().await;
@@ -615,13 +635,168 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         }
         Step::Retired => Ok(running),
         blocked @ Step::Blocked(_) => {
-            running.hydrating = Some(tokio::spawn(async move {
+            *running.hydrating.lock().unwrap() = Some(tokio::spawn(async move {
                 if driver.run(blocked).await == End::Passed {
                     becoming.go().await;
                     driver.spawn_after_ready();
                 }
             }));
             Ok(running)
+        }
+    }
+}
+
+/// The digest cadence of a node: its digest as it stands, its status and its in-flight count.
+fn spawn_publisher(membership: &Membership, digest: &MeshDigest, status: &Arc<Mutex<MemberStatus>>, server: &NodeRpcServer) -> tokio::task::JoinHandle<()> {
+    let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
+    membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || {
+        let mut d = d.clone();
+        d.status = *st.lock().unwrap();
+        d.in_flight = Some(rafka_node_rpc::ServerStats::get(&stats.in_flight));
+        d
+    })
+}
+
+/// How an rpc node or role node leaves its mesh when parked and joins it again when started
+/// (`node_self::Session`): the parts it was born with, kept for the rejoin.
+struct NodeSession {
+    name: rafka_mesh_entity::PathName,
+    node_id: NodeId,
+    incarnation: IncarnationId,
+    fabric_id: rafka_mesh_entity::FabricId,
+    mesh_id: rafka_mesh_entity::MeshId,
+    runtime: rafka_mesh_entity::runtime::RuntimeFact,
+    membership: Membership,
+    client: Arc<rafka_node_rpc::NodeRpcClient>,
+    resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
+    server: NodeRpcServer,
+    digest: MeshDigest,
+    status: Arc<Mutex<MemberStatus>>,
+    owed: Arc<Mutex<Option<rafka_node_rpc_contract::status::NodeState>>>,
+    rafka_time: rafka_mesh_transport::clock::RafkaTime,
+    hydration: rafka_node_admin_core::app_hydration::Hydration,
+    addressed: Arc<rafka_node_admin_core::app_hydration::Addressed>,
+    publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    hydration_cell: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>>,
+    hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::node_self::Session for NodeSession {
+    async fn cut(&self, spare: Option<iroh::PublicKey>) -> rafka_node_admin_core::node_self::CutReport {
+        if let Some(p) = self.publisher.lock().unwrap().take() {
+            p.abort();
+        }
+        if let Some(h) = self.hydrating.lock().unwrap().take() {
+            h.abort();
+        }
+        // A parked node serves no app op until a start has hydrated it again.
+        self.hydration.gate().close();
+        let neighbours = self.membership.neighbours();
+        self.membership.park().await;
+        let pooled = self.client.close_pooled("node.connections.delete");
+        let accepted = self.server.close_connections_except(spare, "node.connections.delete");
+        rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted }
+    }
+
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
+        use rafka_node_admin_core::node_self::StartFailed;
+        let name = self.name.to_string();
+        let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %self.name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
+        let join_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-join-admitted", node = %self.name, launcher = %authority);
+        let Some((auth, _)) = self.membership.book.get(authority.as_str()) else {
+            return Err(StartFailed { step: "node.join", reason: format!("{name}: the admin that commanded the start ({authority}) is not held by this node, so it cannot be joined through") });
+        };
+        let key = auth.node.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| StartFailed { step: "node.join", reason: format!("{}: its endpoint id is not an iroh key: {e}", auth.node.name) })?;
+        self.resolver.apply(rafka_node_rpc::ResolvedNode { node_id: auth.node.node_id.clone(), name: auth.node.name.clone(), endpoint_id: key, transport_addr: auth.node.transport_addr, incarnation: auth.node.incarnation.clone() }, None);
+        // 1. The join: the same digest this birth was admitted with, Pending, to the admin that commanded the start.
+        let mut join_digest = self.digest.clone();
+        join_digest.status = MemberStatus::Pending;
+        let joined = match rafka_node_admin_core::join::call_join(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &key.fmt_short().to_string(), &join_digest, 5).await {
+            Ok(a) => a,
+            Err(rafka_node_admin_core::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} was refused its join by {}: {why}", auth.node.name) }),
+            Err(rafka_node_admin_core::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} could not join through {}: unreached: {why}", auth.node.name) }),
+        };
+        // The join answer carries rafka-time and the cert before the hook runs.
+        rafka_node_admin_core::rafka_time::adopt_join_answer(&join_step, &self.rafka_time, &name, &joined);
+        let member_cert = joined.control.member_cert.clone();
+        drop(join_step);
+        // 2. The mesh channel and the topology: rafka-time again last, so both are current the moment the node re-enters.
+        let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %self.name, launcher = %authority);
+        self.membership.unpark().await;
+        self.membership.learn_statuses(&joined.statuses);
+        let read = rafka_node_admin_core::topology_read::get_topology(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &auth.node.name.mesh, &self.membership, None, None)
+            .await
+            .map_err(|e| StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {}: {e}", auth.node.name) })?;
+        read.adopt_rafka_time(&self.rafka_time, &self.membership, &name, &self.name.mesh, &self.node_id, &auth.node.name.to_string())
+            .map_err(|e| StartFailed { step: "node.topology", reason: format!("{name} could not adopt rafka-time from {}: {e}", auth.node.name) })?;
+        let mesh_peers: Vec<EndpointAddr> = read
+            .installed
+            .iter()
+            .flat_map(|m| m.members.iter())
+            .filter(|d| d.fabric_id == self.fabric_id && d.node.name != self.name && d.node.name.mesh == self.name.mesh)
+            .filter_map(rafka_mesh_transport::membership::gossip_addr)
+            .collect();
+        let _ = self.membership.join_peers(mesh_peers).await;
+        drop(topology);
+        // Back on the topic means a neighbour: only then does this node say it is back, once, as
+        // Pending, so every node that held it parked or restarting hears the rejoin.
+        self.membership.wait_for_neighbour().await;
+        let mut pending = self.digest.clone();
+        pending.status = MemberStatus::Pending;
+        let _ = self.membership.publish(&pending).await;
+        *self.publisher.lock().unwrap() = Some(spawn_publisher(&self.membership, &self.digest, &self.status, &self.server));
+        // 3. The hook, with `AfterStop` in its context; Ready waits on it.
+        let becoming = Becoming {
+            boot: boot.clone(),
+            name: name.clone(),
+            kind: self.name.kind.name(),
+            incarnation_id: self.incarnation.0.clone(),
+            node_id: self.node_id.clone(),
+            mesh_id: self.mesh_id.to_string(),
+            fabric_id: self.fabric_id.to_string(),
+            runtime: self.runtime.clone(),
+            membership: self.membership.clone(),
+            digest: self.digest.clone(),
+            status: self.status.clone(),
+            owed: self.owed.clone(),
+            client: self.client.clone(),
+        };
+        let ctx = rafka_node_admin_core::app_hydration::HydrateCtx {
+            start_kind: rafka_node_admin_core::app_hydration::StartKind::AfterStop,
+            birth: rafka_node_admin_core::app_hydration::Birth { name: self.name.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), fabric_id: self.fabric_id.clone(), mesh_id: self.mesh_id.clone(), kind: self.name.kind },
+            authority: rafka_node_admin_core::app_hydration::Authority::Accepted(rafka_node_admin_core::app_hydration::AcceptingAuthority { name: auth.node.name.clone(), node_id: auth.node.node_id.clone(), incarnation: auth.node.incarnation.clone() }),
+            client: self.client.clone(),
+            membership: self.membership.clone(),
+            cancel: retire,
+            rafka_time: self.rafka_time.clone(),
+            member_cert: Some(member_cert),
+            attempt: 0,
+        };
+        let driver = self.hydration.driver(ctx, rafka_node_admin_core::app_hydration::Events::new(self.membership.book.clone(), self.addressed.clone()), boot.clone());
+        *self.hydration_cell.lock().unwrap() = driver.as_ref().map(|d| d.handle());
+        use rafka_node_admin_core::app_hydration::{End, Step};
+        let Some(driver) = driver else {
+            becoming.go().await;
+            return Ok(());
+        };
+        match driver.attempt().await {
+            Step::Passed => {
+                becoming.go().await;
+                driver.spawn_after_ready();
+                Ok(())
+            }
+            Step::Failed(why) => Err(StartFailed { step: "node.hydrate", reason: format!("{name} failed hydrate_before_ready: {why}") }),
+            Step::Retired => Err(StartFailed { step: "node.hydrate", reason: format!("{name} was retired while hydrate_before_ready ran") }),
+            blocked @ Step::Blocked(_) => {
+                *self.hydrating.lock().unwrap() = Some(tokio::spawn(async move {
+                    if driver.run(blocked).await == End::Passed {
+                        becoming.go().await;
+                        driver.spawn_after_ready();
+                    }
+                }));
+                Ok(())
+            }
         }
     }
 }
@@ -776,11 +951,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
                 me.addressed.note(&from.node.node_id);
             }
-            if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. }) {
+            if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
                 let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) else {
                     return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
                 };
-                let reply = me.own.serve(&from.node.node_id, &req).await.expect("a command");
+                let reply = me.own.serve(&from.node.node_id, Some(peer.endpoint_id), &req).await.expect("a command");
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.digest.node.name, op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a node command naming this node was decided"));
                 return Ok(reply);
@@ -796,7 +971,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     Some(held) if !held.is_birth(&from.node.node_id, &from.node.incarnation) => {
                         StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: from.node.name.to_string() } }
                     }
-                    Some(_) => me.own.serve(&from.node.node_id, &req).await.expect("a round op"),
+                    Some(_) => me.own.serve(&from.node.node_id, None, &req).await.expect("a round op"),
                 };
                 tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.digest.node.name, op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a round command naming this node was decided"));
@@ -814,6 +989,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             }
             match req {
                 StatusRequest::ProbeNodeState { .. } => {
+                    // A parked node is Leaving with a live process: it says so and presents nothing.
+                    if me.own.is_parked() {
+                        return Ok(StatusReply::CurrentParked { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone() });
+                    }
                     let peers: Vec<EndpointAddr> = me.membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
                     let _ = me.membership.join_peers(peers).await;
                     let status = *me.status.lock().unwrap();

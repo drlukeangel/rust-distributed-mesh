@@ -4,11 +4,11 @@
 //! invokes the broker through it (`--via path:mesh1.gateway.1`), so the gateway's one
 //! `NodeRpcClient` holds the pooled connection to the broker's birth.
 //! 1. By `ExactNode` and by `CurrentPath`, the gateway reaches the broker: it served, nobody else.
-//! 2. The broker restarts (same NodeId, new incarnation, fresh ports).
-//! 3. The next call through the gateway reaches the new birth: the gateway evicted the old
-//!    incarnation's connection (`rdm.node_rpc.connection.evict.via-incarnation-superseded`,
-//!    naming the old incarnation) and dialed the new one; the value written before the restart is
-//!    read back from the broker's own data dir. Every call was the gateway's one inner invocation
+//! 2. The broker restarts (stop, then start, on the parked process: same NodeId, incarnation and port).
+//! 3. The next call through the gateway reaches the broker: its stop cut the connection the gateway
+//!    held (`rdm.node_rpc.connection.delete.via-hard-cut`, an accepted connection of the broker's), so
+//!    the gateway dialed afresh; the value written before the restart is read back from the broker's
+//!    own data dir. Every call was the gateway's one inner invocation
 //!    of exactly the broker (`rdm.node_rpc.request.serve.via-carried-inner`).
 //! The gateway learns a birth by membership, not from the admin's view: the cell calls through the
 //! gateway only once the gateway's own resolver holds the birth it is about to call (the probe's
@@ -58,14 +58,14 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     assert_eq!(by_path["reply"]["executing_node"], broker_id, "{by_path}");
     assert_eq!(by_path["reply"]["result"], json!({"found": true, "value": "before-restart"}));
 
-    // 2. The broker restarts: same NodeId, new incarnation, fresh ports.
+    // 2. The broker restarts: the same node, birth and port.
     let (status, restart) = estate.post("/api/nodes/mesh1.broker.1/restart", &json!({})).await;
     assert_eq!(status, 202, "{restart}");
     estate.await_attempt(restart["build_id"].as_str().unwrap(), Estate::attempt_of(&restart), Duration::from_secs(120)).await;
     let reborn = estate.settled(&want, Duration::from_secs(30)).await.into_iter().find(|n| n["name"] == "mesh1.broker.1").unwrap();
     assert_eq!(s(&reborn["node_id"]), broker_id, "a restart keeps the NodeId: {reborn}");
-    assert_ne!(s(&reborn["incarnation_id"]), old_birth, "a restart is a new birth: {reborn}");
-    assert_ne!(s(&reborn["transport_addr"]), addr, "a restart binds a fresh port: {reborn}");
+    assert_eq!(s(&reborn["incarnation_id"]), old_birth, "a restart keeps the birth: {reborn}");
+    assert_eq!(s(&reborn["transport_addr"]), addr, "a restart keeps the port: {reborn}");
 
     estate.witness_holds(via, "mesh1.broker.1").await;
 
@@ -78,11 +78,11 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
 
     estate.stop().await;
     let spans = estate.spans();
-    let evicted = named(&spans, "rdm.node_rpc.connection.evict.via-incarnation-superseded")
+    let evicted = named(&spans, "rdm.node_rpc.connection.delete.via-hard-cut")
         .into_iter()
-        .find(|sp| sp["attributes"]["incarnation_id"] == old_birth.as_str())
+        .find(|sp| sp["attributes"]["direction"] == "accepted")
         .cloned()
-        .unwrap_or_else(|| panic!("the gateway never evicted the old birth {old_birth}"));
+        .unwrap_or_else(|| panic!("the broker never cut a connection it had accepted"));
     let carried: Vec<&Value> = named(&spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| sp["attributes"]["target"] == broker_id.as_str()).collect();
     assert_eq!(carried.len(), 3, "the gateway carried the three calls to the broker: {carried:?}");
     estate.record_trace_url(evicted["trace_id"].as_str().unwrap_or(""));

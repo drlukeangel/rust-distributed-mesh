@@ -674,7 +674,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
 
 /// CONTRACT: every step the create and retire pipelines record is one the client names. The
 /// receipts of a whole create fold to `node.created`, `node.started`, `node.joined`, `node.ready`
-/// and `Complete`; the receipts of a whole delete fold to the draining, drained, left, stopped and
+/// and `Complete`; the receipts of a whole delete fold to the draining, drained, connections-deleted, left, stopped and
 /// deleted events and `Complete`; the retire leg of a restart carries `node.restarting`. A step the
 /// client does not name is refused by name, never skipped.
 #[test]
@@ -696,9 +696,9 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(name.clone()), &view("retire-node:mesh1.rpc.3", retire), 1).unwrap();
     assert_eq!(
         f.frames,
-        [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::Left), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
+        [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Left), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    let restart = vec!["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "RemoveTopologyMembership", "Complete"];
+    let restart = vec!["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "Complete"];
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", restart), 1).unwrap();
     assert_eq!(f.frames.first(), Some(&Frame::Event(NodeEvent::Restarting)));
     assert!(!f.frames.contains(&Frame::Complete), "the retire leg of a restart is not the restart's end");

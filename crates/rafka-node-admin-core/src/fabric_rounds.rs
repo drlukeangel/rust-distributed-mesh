@@ -761,7 +761,7 @@ impl FabricRounds {
             }
         } else if sender.kind == NodeKind::NodeAdmin && sender.is_primary && sender.mesh == me.mesh && sender.name != me.name {
             match own {
-                Some(own) => own.serve(&sender.node_id, req).await.expect("a round op"),
+                Some(own) => own.serve(&sender.node_id, None, req).await.expect("a round op"),
                 None => StatusReply::NotReady { reason: format!("{} has not yet joined its mesh; {} from {} is refused", self.env.me, req.op(), sender.name) },
             }
         } else {

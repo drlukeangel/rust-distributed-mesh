@@ -220,11 +220,19 @@ pub enum AttemptAction {
         /// The birth drained.
         from_incarnation: IncarnationId,
     },
-    /// Stop the exact birth at a path, with no implicit drain and no departure (node-stop.md).
+    /// Stop the exact birth at a path: it drains, cuts its mesh connections and parks, its process
+    /// alive; no departure (node-stop.md).
     Stop {
         /// The node.
         path: PathName,
         /// The birth stopped.
+        from_incarnation: IncarnationId,
+    },
+    /// Start the parked exact birth at a path: the same process rejoins as itself (node-start.md).
+    Start {
+        /// The node.
+        path: PathName,
+        /// The birth started.
         from_incarnation: IncarnationId,
     },
 }
@@ -314,7 +322,7 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
             // by name rather than accepting a Build it would close with nothing to do.
             match observed.node(node) {
                 None => return Err(BuildReject::UnknownNode { node: node.to_string() }),
-                Some(n) if !n.status.is_live() => return Err(BuildReject::NodeNotLive { node: node.to_string() }),
+                Some(n) if !n.status.is_live() && !n.parked => return Err(BuildReject::NodeNotLive { node: node.to_string() }),
                 Some(_) => {}
             }
             if node.kind == NodeKind::NodeAdmin && m.count(NodeKind::NodeAdmin) <= 1 {
@@ -375,9 +383,10 @@ impl ReplaceProgress {
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
         // A standalone drain or stop: its operation's `Complete` receipt names the exact birth it
         // completed for; its first step's receipt says the operation began.
-        if let Some(AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation }) = &build.action {
+        if let Some(AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation }) = &build.action {
             let (operation, first) = match &build.action {
                 Some(AttemptAction::Drain { .. }) => (format!("drain-node:{path}"), "DrainNode"),
+                Some(AttemptAction::Start { .. }) => (format!("start-node:{path}"), "StartNode"),
                 _ => (format!("stop-node:{path}"), "StopNode"),
             };
             let birth = serde_json::to_value(from_incarnation).unwrap_or_default();
@@ -415,11 +424,15 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
     // the view holds the exact birth, or while its receipts say it began (a stop's view drops the
     // Leaving birth), and not once its `Complete` receipt names the birth.
-    if let Some(AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation }) = action {
+    if let Some(AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation }) = action {
         let held = observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
         if !replace_progress.finished && (held || replace_progress.started) {
             let (node, from_incarnation) = (path.clone(), from_incarnation.clone());
-            ops.push(if matches!(action, Some(AttemptAction::Drain { .. })) { BuildOperation::DrainNode { node, from_incarnation } } else { BuildOperation::StopNode { node, from_incarnation } });
+            ops.push(match action {
+                Some(AttemptAction::Drain { .. }) => BuildOperation::DrainNode { node, from_incarnation },
+                Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, from_incarnation },
+                _ => BuildOperation::StopNode { node, from_incarnation },
+            });
         }
         return BuildPlan { operations: ops };
     }

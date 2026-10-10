@@ -13,6 +13,7 @@ mod build_stream;
 mod calls;
 mod names;
 mod objects;
+mod peers;
 mod workflow;
 
 pub use build_stream::{BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, MeshCounts, StartDisposition};
@@ -21,6 +22,7 @@ pub use names::{BuildOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
     BuildPreset, BuildSpec, Builds, MetaField, MetaFieldIsRdmOwned, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter,
 };
+pub use peers::Peers;
 pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
 
 
@@ -132,6 +134,9 @@ pub struct NodeView {
     /// The lifecycle state the birth declared to its authority, once applied.
     #[serde(default)]
     pub declared: Option<String>,
+    /// Stopped and parked: `leaving` with a live process, waiting for a start or a delete.
+    #[serde(default)]
+    pub parked: bool,
     /// The node's CPU and RAM from its latest digest, as the answering admin holds it.
     #[serde(default)]
     pub load: Option<rafka_mesh_entity::NodeLoad>,
@@ -448,6 +453,12 @@ impl NodeAdminClient {
     /// `POST /api/nodes/{name}/stop`: open an attempt that stops the exact live birth.
     pub async fn stop(&self, node: &PathName) -> Result<Accepted, ClientError> {
         let a: Accepted = self.post(&format!("/api/nodes/{node}/stop"), None).await?;
+        Ok(a)
+    }
+
+    /// `POST /api/nodes/{name}/start`: open an attempt that starts the parked exact birth.
+    pub async fn start(&self, node: &PathName) -> Result<Accepted, ClientError> {
+        let a: Accepted = self.post(&format!("/api/nodes/{node}/start"), None).await?;
         Ok(a)
     }
 

@@ -220,6 +220,14 @@ pub enum BuildOperation {
         /// The birth stopped.
         from_incarnation: IncarnationId,
     },
+    /// Start the parked exact birth `from_incarnation` of `node` (node-start.md): `start-node`,
+    /// whose reply is `Started` once the same process rejoined as itself, then the wait for ready.
+    StartNode {
+        /// The node to start.
+        node: PathName,
+        /// The birth started.
+        from_incarnation: IncarnationId,
+    },
     /// Remove the logical node through the retire pipeline; what happens to its storage is the
     /// accepted Build's StorageMeta for the path, decided there.
     RetireNode {
@@ -247,6 +255,7 @@ impl BuildOperation {
             Self::RestartNode { node } => format!("restart-node:{node}"),
             Self::DrainNode { node, .. } => format!("drain-node:{node}"),
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
+            Self::StartNode { node, .. } => format!("start-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }

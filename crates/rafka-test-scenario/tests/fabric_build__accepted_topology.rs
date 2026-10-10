@@ -148,9 +148,9 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     assert_eq!((status, r["build_id"].as_str()), (202, Some(r4.as_str())), "{r}");
     assert_eq!(r["attempt"].as_u64(), Some(attempts_before + 2), "the restart opens the attempt after the repair's: {r}");
     estate.await_attempt(&r4, Estate::attempt_of(&r), Duration::from_secs(120)).await;
-    wait_for("mesh1.rpc.1 runs a new incarnation", Duration::from_secs(60), || async {
+    wait_for("mesh1.rpc.1 is ready again as the same birth", Duration::from_secs(60), || async {
         let n = estate.node_opt("mesh1.rpc.1").await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
+        (n["status"] == "ready-for-traffic" && n["parked"] == false && n["incarnation_id"] == restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
     })
     .await;
     assert_eq!(pointer(&estate).await, r4);

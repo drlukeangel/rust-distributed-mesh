@@ -185,6 +185,73 @@ impl DrainContext {
     }
 }
 
+/// The membership one node holds of a mesh, read through `node.topology.get`: the births it holds
+/// and the open overlays and retained departures it knows. What a peer reports of another node.
+#[derive(Debug, Clone, Default)]
+pub struct HeldView {
+    /// The births the node holds.
+    pub members: Vec<rafka_mesh_entity::MeshDigest>,
+    /// The open lifecycle overlays (restart, stop, delete) the node holds.
+    pub in_flight: Vec<rafka_mesh_entity::LifecycleOp>,
+    /// The departures the node retains.
+    pub departed: Vec<rafka_mesh_entity::LifecycleOp>,
+}
+
+impl HeldView {
+    /// The birth the node holds of `node_id`, if it holds one.
+    pub fn birth(&self, node_id: &NodeId) -> Option<&rafka_mesh_entity::MeshDigest> {
+        self.members.iter().find(|d| &d.node.node_id == node_id)
+    }
+
+    /// The overlay the node holds for `node_id` whose operation starts with `prefix`
+    /// (`stop-node:`, `restart-node:`), if it holds one.
+    pub fn overlay(&self, node_id: &NodeId, prefix: &str) -> Option<&rafka_mesh_entity::LifecycleOp> {
+        self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.starts_with(prefix))
+    }
+}
+
+/// The Build, attempt and node a `node.stop` belongs to. The operation key (`stop-node:<path.name>`)
+/// is derived here and never written by a caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopContext {
+    build_id: BuildId,
+    attempt: u32,
+    node: PathName,
+}
+
+impl StopContext {
+    /// The stop of `node` that attempt `attempt` of Build `build_id` holds.
+    pub fn new(build_id: BuildId, attempt: u32, node: PathName) -> Self {
+        Self { build_id, attempt, node }
+    }
+
+    /// The operation key the Build records the stop under.
+    pub fn operation(&self) -> String {
+        format!("stop-node:{}", self.node)
+    }
+}
+
+/// The Build, attempt and node a `node.start` belongs to. The operation key (`start-node:<path.name>`)
+/// is derived here and never written by a caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartContext {
+    build_id: BuildId,
+    attempt: u32,
+    node: PathName,
+}
+
+impl StartContext {
+    /// The start of `node` that attempt `attempt` of Build `build_id` holds.
+    pub fn new(build_id: BuildId, attempt: u32, node: PathName) -> Self {
+        Self { build_id, attempt, node }
+    }
+
+    /// The operation key the Build records the start under.
+    pub fn operation(&self) -> String {
+        format!("start-node:{}", self.node)
+    }
+}
+
 /// The node-RPC half of the `node` objects: single calls to one exact birth.
 pub struct NodeRpc<'a> {
     client: &'a NodeRpcClient,
@@ -223,6 +290,33 @@ impl<'a> NodeRpc<'a> {
         self.status(NodeOp::Drain, birth, req, opts).await
     }
 
+    /// `node.stop`: tell the exact birth to drain, cut its mesh connections and park. The call is
+    /// held until the birth is parked; the reply is `Left` with the drain's receipt, on the stop
+    /// call's own stream. A birth already parked answers the same.
+    pub async fn stop(&self, birth: &ExactBirth, ctx: &StopContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::StopNode {
+            node_id: birth.node_id.clone(),
+            incarnation: birth.incarnation.clone(),
+            build_id: ctx.build_id.0.clone(),
+            attempt: ctx.attempt,
+            operation: ctx.operation(),
+        };
+        self.status(NodeOp::Stop, birth, req, opts).await
+    }
+
+    /// `node.start`: tell the parked exact birth to rejoin as itself. The call is held until the
+    /// birth has rejoined; the reply is `Started`, or `StartFailed` naming the step that failed.
+    pub async fn start(&self, birth: &ExactBirth, ctx: &StartContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::StartNode {
+            node_id: birth.node_id.clone(),
+            incarnation: birth.incarnation.clone(),
+            build_id: ctx.build_id.0.clone(),
+            attempt: ctx.attempt,
+            operation: ctx.operation(),
+        };
+        self.status(NodeOp::Start, birth, req, opts).await
+    }
+
     /// `node.declare`: the birth tells its authority the status it committed.
     pub async fn declare(&self, birth: &ExactBirth, state: NodeState, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::DeclareNodeState { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), state };
@@ -240,6 +334,25 @@ impl<'a> NodeRpc<'a> {
     pub async fn get(&self, birth: &ExactBirth, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::ProbeNodeState { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() };
         self.status(NodeOp::Get, birth, req, opts).await
+    }
+
+    /// `node.get` of what the node at `target` holds of `mesh`: its held births and overlays, read
+    /// through `node.topology.get`. A refusal the target answers is the call's end, named.
+    pub async fn held_view(&self, target: &NodeTarget, mesh: &str, opts: &CallOptions) -> Result<HeldView, CallEnd> {
+        let frames = self.topology_get(target, Some(mesh.to_string()), None, opts).await?;
+        let mut view = HeldView::default();
+        for f in frames {
+            match f {
+                TopologyReply::Snapshot { digests, in_flight, departed, .. } => {
+                    view.members.extend(digests.into_iter().map(rafka_mesh_entity::MeshDigest::from));
+                    view.in_flight.extend(in_flight);
+                    view.departed.extend(departed);
+                }
+                TopologyReply::Started | TopologyReply::End { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Seats { .. } | TopologyReply::RafkaTime { .. } => {}
+                other => return Err(CallEnd::Indeterminate { reason: format!("{} answered {other:?} to the topology read", target_name(target)) }),
+            }
+        }
+        Ok(view)
     }
 
     /// `node.topology.get`: the topology the node at `target` holds, `mesh` or every mesh, as the

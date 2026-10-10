@@ -36,6 +36,10 @@ fn s(v: &Value) -> String {
 
 /// The member certs the nodes named `node` recorded holding, in the order they started, with the
 /// incarnation each span names.
+fn s_u64(v: &Value) -> u64 {
+    v.as_str().and_then(|x| x.parse().ok()).or_else(|| v.as_u64()).unwrap_or(0)
+}
+
 fn held_by(spans: &[Value], node: &str) -> Vec<(String, TestMemberCert)> {
     let mut found: Vec<(u64, String, TestMemberCert)> = named(spans, "rdm.testkit.cert.resolve.via-running-node")
         .into_iter()
@@ -71,9 +75,9 @@ async fn every_join_is_issued_a_fresh_member_cert_and_a_new_meshs_first_admin_is
     let (status, restart) = estate.post("/api/nodes/mesh1.rpc.1/restart", &json!({})).await;
     assert_eq!(status, 202, "{restart}");
     estate.await_attempt(&s(&restart["build_id"]), Estate::attempt_of(&restart), SETTLE).await;
-    wait_for("mesh1.rpc.1 ready under a new incarnation", SETTLE, || async {
+    wait_for("mesh1.rpc.1 ready after its restart", SETTLE, || async {
         let n = estate.node_opt("mesh1.rpc.1").await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(())
+        (n["status"] == "ready-for-traffic" && n["parked"] == false && n["incarnation_id"] == before["incarnation_id"]).then_some(())
     })
     .await;
     estate.stop().await;
@@ -81,15 +85,17 @@ async fn every_join_is_issued_a_fresh_member_cert_and_a_new_meshs_first_admin_is
 
     // Every rpc node holds a cert for exactly its birth.
     let first = held_by(&spans, "mesh1.rpc.1");
-    assert_eq!(first.len(), 2, "mesh1.rpc.1 was born and restarted: {first:?}");
-    for (inc, cert) in &first {
-        assert_eq!((cert.name.as_str(), cert.mesh.as_str(), cert.incarnation.as_str()), ("mesh1.rpc.1", "mesh1", inc.as_str()), "the cert names the birth that holds it");
-    }
-    assert_eq!(first[0].1.node_id, first[1].1.node_id, "a restart is the same node");
-    assert_eq!(first[0].1.endpoint_key, first[1].1.endpoint_key, "and the same endpoint key");
-    assert_ne!(first[0].0, first[1].0, "in a new incarnation");
-    assert_ne!(first[0].1, first[1].1, "so its cert is fresh");
-    assert!(first[1].1.issued_at_ms > first[0].1.issued_at_ms, "issued later on rafka-time: {} then {}", first[0].1.issued_at_ms, first[1].1.issued_at_ms);
+    // The process holds the cert its birth was issued; the rejoin (start after stop) is a second JoinNode
+    // of the same birth, issued a fresh cert on the later rafka-time.
+    assert_eq!(first.len(), 1, "mesh1.rpc.1 booted once: {first:?}");
+    let (inc, cert) = &first[0];
+    assert_eq!((cert.name.as_str(), cert.mesh.as_str(), cert.incarnation.as_str()), ("mesh1.rpc.1", "mesh1", inc.as_str()), "the cert names the birth that holds it");
+    let issuances: Vec<&Value> = named(&spans, "rdm.node_admin.cert.create.via-join").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["incarnation_id"] == inc.as_str()).collect();
+    assert_eq!(issuances.len(), 2, "one issuance for the birth's join and one for its rejoin: {issuances:?}");
+    let issued_at = |sp: &Value| s_u64(&sp["attributes"]["issued_at_rafka_ms"]);
+    let (a, b) = (issuances.iter().map(|sp| issued_at(sp)).min().unwrap(), issuances.iter().map(|sp| issued_at(sp)).max().unwrap());
+    assert!(b > a, "the rejoin's cert is issued later on rafka-time: {a} then {b}");
+    assert_eq!(a, cert.issued_at_ms, "the process holds the cert of its first join");
     let second_mesh = held_by(&spans, "mesh2.rpc.1");
     assert_eq!(second_mesh.len(), 1);
     assert_eq!((second_mesh[0].1.name.as_str(), second_mesh[0].1.mesh.as_str()), ("mesh2.rpc.1", "mesh2"));
@@ -99,7 +105,7 @@ async fn every_join_is_issued_a_fresh_member_cert_and_a_new_meshs_first_admin_is
     for (inc, cert) in first.iter().chain(second_mesh.iter()) {
         let sp = issued
             .iter()
-            .find(|sp| sp["attributes"]["node"] == cert.name.as_str() && sp["attributes"]["incarnation_id"] == inc.as_str())
+            .find(|sp| sp["attributes"]["node"] == cert.name.as_str() && sp["attributes"]["incarnation_id"] == inc.as_str() && sp["attributes"]["issued_at_rafka_ms"] == cert.issued_at_ms.to_string().as_str())
             .unwrap_or_else(|| panic!("no issuance span for {} {inc}", cert.name));
         assert_eq!(sp["attributes"]["outcome"], "issued", "{sp}");
         assert_eq!(sp["attributes"]["issued_at_rafka_ms"], cert.issued_at_ms.to_string().as_str(), "the span's issue time is the cert's: {sp}");

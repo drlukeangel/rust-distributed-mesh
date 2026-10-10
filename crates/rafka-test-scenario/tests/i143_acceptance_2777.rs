@@ -81,26 +81,24 @@ async fn canary_cell(cell: &str, provider: &str) -> Value {
     facts
 }
 
-/// CONTRACT: on real processes, an RPC node restarted through Build is the same logical node
-/// (same node id and endpoint) under a new incarnation on fresh ports; the value written before the
-/// restart is read back from its own data dir; the old birth's process is gone; a request cut before
-/// it finished is NotSent and never applied; the restart's Build -> reconcile -> node -> deployment
-/// -> boot spans are parented in one trace.
+/// CONTRACT: on real processes, an RPC node restarted through Build is the same node, in the same
+/// process, under the same incarnation, endpoint and port (stop then start on the parked process);
+/// the value written before the restart is read back from its own data dir; a request cut before it
+/// finished is NotSent and never applied; the restart's Build -> reconcile -> node -> step -> start
+/// spans are parented in one trace.
 #[tokio::test(flavor = "multi_thread")]
 async fn proof_canary_restarts_same_node_preserves_state() {
     let facts = canary_cell("proof_canary_restarts_same_node_preserves_state", "process").await;
-    assert!(facts["old_birth"]["pid"].is_u64() && facts["new_birth"]["pid"].is_u64() && facts["old_birth"]["pid"] != facts["new_birth"]["pid"], "{facts}");
+    assert!(facts["process_before"]["pid"].is_u64() && facts["process_before"] == facts["process_after"], "a restart is stop then start on the same process: {facts}");
 }
 
-/// CONTRACT: the same canary on real containers: the restarted node's new birth is a different
-/// container from the old one, the old container no longer runs, and everything the process cell
-/// proves holds.
+/// CONTRACT: the same canary on real containers: the restarted node keeps its container, and
+/// everything the process cell proves holds.
 #[tokio::test(flavor = "multi_thread")]
 async fn proof_canary_restarts_container_preserves_state() {
     let facts = canary_cell("proof_canary_restarts_container_preserves_state", "container").await;
-    let (old, new) = (facts["old_birth"]["container"].as_str(), facts["new_birth"]["container"].as_str());
-    assert!(old.is_some() && new.is_some() && old != new, "the restart replaced the container: {facts}");
-    assert_eq!(facts["new_birth"]["provider"], "container", "{facts}");
+    assert!(facts["process_before"]["container"].is_string() && facts["process_before"] == facts["process_after"], "a restart is stop then start in the same container: {facts}");
+    assert_eq!(facts["process_after"]["provider"], "container", "{facts}");
 }
 
 /// The seed on `provider`: every operation applied and every assertion read back, with the

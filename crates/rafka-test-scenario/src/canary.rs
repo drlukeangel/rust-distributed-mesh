@@ -1,5 +1,6 @@
-//! The restart canary (i143 PRD §5): an RPC node restarted through Build is the same logical node
-//! on fresh ports under a new incarnation, serves the value written before the restart from its own
+//! The restart canary (i143 PRD §5): an RPC node restarted through Build is the same node, the same
+//! process, under the same incarnation, endpoint key and port (restart is stop then start on the
+//! parked process; nothing is deployed), serves the value written before the restart from its own
 //! data dir, resets an unfinished request with 499, and leaves a Build -> deployment -> node chain
 //! linked by ParentSpanId. `restart_canary` is run by `node_lifecycle__node_restart` and by the
 //! registered cells of `i143_acceptance_2777`, each under its own `Owner`.
@@ -13,6 +14,15 @@ const NODE: &str = "mesh1.rpc.2";
 
 fn ready(node: &Value) -> bool {
     node["status"] == "ready-for-traffic"
+}
+
+/// The runtime `node` runs in: its pid (process provider) or its container id (container provider).
+async fn runtime_of(estate: &Estate, node: &str) -> Value {
+    if estate.owner.provider == "container" {
+        json!({"container": estate.container_of(node), "provider": "container"})
+    } else {
+        json!({"pid": estate.pid_of(node).await, "provider": "process"})
+    }
 }
 
 /// Run the canary on `owner.provider` and return the facts it observed.
@@ -48,16 +58,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let incarnation_before = before["incarnation_id"].as_str().expect("incarnation_id").to_string();
     let deployment_before = before["deployment_id"].as_str().expect("deployment_id").to_string();
     estate.artifact("nodes-before.json", &json!(estate.nodes().await));
-    let old_birth = {
-        let (_, b) = estate.http_get(&control_before, &format!("/api/builds?id={birth_build}")).await;
-        b["steps"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|st| st["step"] == "DeployRuntime" && st["operation"] == format!("create-node:{NODE}").as_str())
-            .map(|st| st["output"].clone())
-            .expect("the birth's DeployRuntime output for rpc.2")
-    };
+    let process_before = runtime_of(&estate, NODE).await;
+    let transport_before = before["transport_addr"].clone();
 
     // 4. Restart through the route; it answers with a Build id and does no bespoke work.
     let (status, restart) = estate.post(&format!("/api/nodes/{NODE}/restart"), &json!({})).await;
@@ -70,19 +72,12 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(submitted["reason"], "restart", "{submitted}");
     assert_eq!(submitted["action"]["path"], NODE, "{submitted}");
     let status_after = estate.await_attempt(&restart_build, Estate::attempt_of(&restart), SETTLE).await;
-    let new_birth = status_after["steps"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|st| st["step"] == "DeployRuntime" && st["attempt"] == Estate::attempt_of(&restart) && st["operation"].as_str().is_some_and(|o| o.ends_with(NODE)))
-        .map(|st| st["output"].clone())
-        .expect("the restart attempt's DeployRuntime output for rpc.2");
     estate.artifact("build-status.json", &json!({"birth": birth_build, "restart": status_after}));
 
-    // The node comes back ready under a new process incarnation (observed, not slept on).
-    let after = wait_for("rpc.2 ready under a new incarnation", SETTLE, || async {
+    // The node is ready again (observed, not slept on), and no longer parked.
+    let after = wait_for("rpc.2 ready after its restart", SETTLE, || async {
         let n = estate.node_opt(NODE).await?;
-        (ready(&n) && n["incarnation_id"].as_str() != Some(incarnation_before.as_str())).then_some(n)
+        (ready(&n) && n["parked"] == false).then_some(n)
     })
     .await;
     estate.artifact("nodes-after.json", &json!(estate.nodes().await));
@@ -91,17 +86,20 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(after["node_id"], before["node_id"], "same logical node id");
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "same transport identity (data dir kept)");
     assert_eq!(after["name"], before["name"]);
-    assert_ne!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "a new runtime deployment");
+    assert_eq!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "the same runtime deployment: nothing was deployed");
+    assert_eq!(after["incarnation_id"].as_str(), Some(incarnation_before.as_str()), "the same incarnation: a restart is stop then start on the parked process");
 
-    // 6. A restart binds fresh ports, never its recorded ones (fabric-node-lifecycle.md).
-    assert_ne!(after["transport_addr"], before["transport_addr"], "a restart binds a fresh transport port");
+    // 6. The process never exited: it keeps its endpoint and its port.
+    assert_eq!(after["transport_addr"], transport_before, "a restart keeps the transport port");
+    let process_after = runtime_of(&estate, NODE).await;
+    assert_eq!(process_after, process_before, "the same process (or container) before and after the restart");
 
     // 7. The pre-restart value is still readable from the same node data dir, served by the new incarnation.
     let get = estate.probe(&["get", "--target", &exact, "--key", "41"]);
     assert_eq!(get["outcome"], "Reply", "{get}");
     assert_eq!(get["reply"]["result"]["value"], "before-restart", "{get}");
     assert_eq!(get["reply"]["executing_node"], node_id.as_str(), "{get}");
-    assert_eq!(get["reply"]["incarnation_id"], after["incarnation_id"], "served by the new incarnation: {get}");
+    assert_eq!(get["reply"]["incarnation_id"], after["incarnation_id"], "served by the same incarnation: {get}");
 
     // 8. A request cut before full send is reset with 499 and reports NotSent; it was never dispatched.
     let cut = estate.probe(&["put", "--target", &exact, "--key", "42", "--value", "never", "--cut-before-finish"]);
@@ -115,30 +113,13 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let (_, fabric_after) = estate.get("/api/fabric").await;
     assert_eq!(fabric_after["meshes"][0]["admin_api_base"].as_str(), Some(control_before.as_str()));
 
-    // The old birth is gone: its runtime (process, or container) no longer runs, and the path holds exactly one birth.
-    let old_gone = match old_birth["provider"].as_str() {
-        Some("container") => {
-            let old = old_birth["container"].as_str().expect("the container provider names the container");
-            let running = estate.live_containers().into_iter().any(|(_, id)| id == old);
-            assert!(!running, "the old birth's container {old} is not running: {old_birth}");
-            json!({"container": old, "running": running})
-        }
-        _ => {
-            let pid = old_birth["pid"].as_u64().expect("the process provider names the pid");
-            let alive = std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')));
-            assert!(!alive, "the old birth's process {pid} is gone: {old_birth}");
-            json!({"pid": pid, "alive": alive})
-        }
-    };
     assert_eq!(estate.nodes().await.iter().filter(|n| n["name"] == NODE).count(), 1, "the path holds exactly one birth");
 
-    // 11. OTLP evidence: Build -> deployment -> node lifecycle, linked by ParentSpanId.
+    // 11. OTLP evidence: Build -> node operation -> start step -> the node's start, linked by ParentSpanId.
     let spans = wait_for("restart span chain exported", SETTLE, || async {
         let spans = estate.spans();
-        let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
-            .into_iter()
-            .any(|s| s["attributes"]["incarnation_id"] == after["incarnation_id"]);
-        boot.then_some(spans)
+        let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().any(|s| s["attributes"]["node"] == NODE && s["attributes"]["outcome"] == "started");
+        served.then_some(spans)
     })
     .await;
     // The restart's attempt is the REST call that opened it: its reconcile is a child of that
@@ -166,21 +147,20 @@ pub async fn restart_canary(owner: Owner) -> Value {
         .expect("rdm.node_admin.node.update.via-build for rpc.2");
     assert!(descends_from(&spans, node_op, rest), "node.update.via-build descends from the restart call's build.update.via-rest");
     assert!(!descends_from(&spans, node_op, created), "and not from the Build's original create span");
-    let deploy = named(&spans, "rdm.node_admin.deployment.update.via-step")
-        .into_iter()
-        .find(|s| {
-            s["attributes"]["build_id"] == restart_build.as_str()
-                && s["attributes"]["step"] == "DeployRuntime"
-                && s["attributes"]["node"] == NODE
-                && s["attributes"]["attempt"] == Estate::attempt_of(&restart).to_string().as_str()
-        })
-        .expect("the DeployRuntime step span of the restart attempt for rpc.2");
-    assert!(descends_from(&spans, deploy, node_op), "the deployment step descends from the node Build operation");
-    let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
-        .into_iter()
-        .find(|s| s["attributes"]["incarnation_id"] == after["incarnation_id"])
-        .unwrap();
-    assert!(descends_from(&spans, boot, deploy), "the new process's boot span descends from DeployRuntime");
+    let attempt = Estate::attempt_of(&restart).to_string();
+    let step = |name: &str| {
+        named(&spans, "rdm.node_admin.deployment.update.via-step")
+            .into_iter()
+            .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == name && s["attributes"]["node"] == NODE && s["attributes"]["attempt"] == attempt.as_str())
+            .unwrap_or_else(|| panic!("the {name} step span of the restart attempt for rpc.2"))
+    };
+    for name in ["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady"] {
+        assert!(descends_from(&spans, step(name), node_op), "the {name} step descends from the node Build operation");
+        assert_eq!(step(name)["attributes"]["outcome"], "complete", "{name}");
+    }
+    assert!(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().all(|s| s["attributes"]["build_id"] != restart_build.as_str() || s["attributes"]["attempt"] != attempt.as_str() || !matches!(s["attributes"]["step"].as_str(), Some("DeployRuntime" | "TerminateRuntime"))), "a restart deploys nothing and terminates nothing");
+    let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().find(|s| s["attributes"]["node"] == NODE).unwrap();
+    assert!(descends_from(&spans, served, step("StartNode")), "the node's start descends from the StartNode step");
     estate.record_trace_url(rest["trace_id"].as_str().unwrap());
     let facts = json!({
         "node": NODE,
@@ -188,14 +168,13 @@ pub async fn restart_canary(owner: Owner) -> Value {
         "endpoint_id": after["endpoint_id"],
         "incarnation_before": incarnation_before,
         "incarnation_after": after["incarnation_id"],
-        "transport_before": before["transport_addr"],
+        "transport_before": transport_before,
         "transport_after": after["transport_addr"],
         "birth_build": birth_build,
         "restart_build": restart_build,
         "restart_attempt": Estate::attempt_of(&restart),
-        "old_birth": old_birth,
-        "new_birth": new_birth,
-        "old_birth_gone": old_gone,
+        "process_before": process_before,
+        "process_after": process_after,
         "get_after_restart": get,
         "cut": cut,
         "cut_key_absent": absent,
@@ -203,8 +182,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
         "build_update_via_rest_span": rest["span_id"],
         "reconcile_span": reconcile["span_id"],
         "node_update_via_build_span": node_op["span_id"],
-        "deploy_runtime_span": deploy["span_id"],
-        "boot_span": boot["span_id"],
+        "start_step_span": step("StartNode")["span_id"],
+        "start_served_span": served["span_id"],
     });
     estate.artifact("canary-facts.json", &facts);
     estate.shutdown().await;

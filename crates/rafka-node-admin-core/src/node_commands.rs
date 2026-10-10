@@ -9,10 +9,10 @@
 //! completion inbox of the executing admin: it reads no gossip and writes nothing durable (the
 //! pipeline's step receipt is the durable record).
 
-use crate::deployment::pipeline::{command_admission, CommandAdmission, CommandContext, Completion};
+use crate::deployment::pipeline::{CommandAdmission, CommandContext, Completion};
 use crate::model::{IncarnationId, Node, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
-use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -23,8 +23,10 @@ use tokio::sync::watch;
 pub enum NodeCommand {
     /// `drain-node`; completes with `node-drained`.
     Drain,
-    /// `stop-node`; completes with `node-left`.
+    /// `stop-node`; completes with `node-left`, which is the reply of the call.
     Stop,
+    /// `start-node`; completes with `node-started`, which is the reply of the call.
+    Start,
 }
 
 impl NodeCommand {
@@ -33,6 +35,7 @@ impl NodeCommand {
         match self {
             Self::Drain => "drain-node",
             Self::Stop => "stop-node",
+            Self::Start => "start-node",
         }
     }
     /// The completion's name.
@@ -40,6 +43,7 @@ impl NodeCommand {
         match self {
             Self::Drain => "node-drained",
             Self::Stop => "node-left",
+            Self::Start => "node-started",
         }
     }
 }
@@ -141,7 +145,7 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
         return CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) };
     };
     let _ = commands.open(CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() });
-    let (node_id, build_id, attempt, operation) = (node.node_id.clone(), ctx.build_id.clone(), ctx.attempt, ctx.operation.clone());
+    let (node_id, build_id, attempt) = (node.node_id.clone(), ctx.build_id.clone(), ctx.attempt);
     let admission = match cmd {
         // `node.drain` is the typed object: it builds `DrainNode` and ends the call as the transport did.
         NodeCommand::Drain => {
@@ -149,24 +153,44 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
             let drain = rafka_node_admin_client::DrainContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
             admission_of(rafka_node_admin_client::NodeRpc::new(client).drain(&birth, &drain, &CallOptions::default()).await)
         }
+        // `node.stop` and `node.start` are held until the birth has parked or rejoined, and answer
+        // `Left` or `Started` on that call's own reply: the reply is the completion.
         NodeCommand::Stop => {
-            let req = StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation };
-            let (out, _) = client.call::<Status>(target, &req, &CallOptions::default()).await;
-            command_admission(&out)
+            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
+            let stop = rafka_node_admin_client::StopContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
+            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: crate::node_self::drain_deadline_from_env() + Duration::from_secs(10) }, ..Default::default() };
+            admission_of(rafka_node_admin_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await)
+        }
+        NodeCommand::Start => {
+            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
+            let start = rafka_node_admin_client::StartContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
+            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..Default::default() };
+            admission_of(rafka_node_admin_client::NodeRpc::new(client).start(&birth, &start, &opts).await)
         }
     };
+    // The reply of a stop is its completion. The connection it rode is closed now: the node cut every
+    // other one, so its start reaches the parked node on a fresh dial.
+    if matches!(admission, CommandAdmission::Left { .. }) {
+        if let Some(peer) = node.endpoint_id.as_ref().and_then(|e| e.0.parse::<iroh::PublicKey>().ok()) {
+            client.close_pooled_to(&peer, "node.stopped");
+        }
+        let _ = commands.complete(&CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("checked above") });
+    }
     tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the command was sent to the exact birth"));
     admission
 }
 
-/// The arm a `node.drain` object call ended as: only `Applied` and `AlreadyApplied` admit it; every
+/// The arm a `node.drain`, `node.stop` or `node.start` object call ended as: only `Applied` and `AlreadyApplied` admit it; every
 /// other reply is `Refused` by its name, an unsent call `NotSent`, an unanswered one `Indeterminate`.
 fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> CommandAdmission {
     use rafka_node_admin_client::CallEnd;
     match r {
         Ok(StatusReply::Applied) => CommandAdmission::Admitted,
         Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted,
+        Ok(StatusReply::Left { receipt }) => CommandAdmission::Left { receipt },
+        Ok(StatusReply::Started) => CommandAdmission::Started,
+        Ok(StatusReply::StartFailed { step, reason }) => CommandAdmission::StartFailed { step, reason },
         Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
         Err(CallEnd::NotSent { reason }) => CommandAdmission::NotSent { reason },
         Err(CallEnd::Indeterminate { reason }) => CommandAdmission::Indeterminate { reason },

@@ -65,13 +65,6 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     let fabric_shutdown = tokio::select! {
         _ = &mut by_route => true,
         _ = signal() => false,
-        // A `stop-node` this admin admitted and answered with its `node-left`: it leaves with no
-        // drain leg.
-        () = crate::node_self::stop_command().wait() => {
-            let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown = false, commanded = true);
-            running.leave_after_stop().instrument(span).await;
-            return;
-        }
         // A hook that failed ends the node by name, as an unaccepted join does.
         why = running.hydration_failed() => {
             let node = running.digest.lock().unwrap().node.name.to_string();
@@ -91,11 +84,10 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
             rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
         }
     };
-    // A `stop-node` was admitted and the provider's stop signal arrived before its `node-left` was
-    // sent: the stop is still the commanded one, completed first, with no drain leg.
-    if crate::node_self::stop_command().commanded() {
-        crate::node_self::stop_command().wait().await;
-        let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown = false, commanded = true);
+    // A parked admin (stopped, its process alive) that is told to end has nothing to drain and no
+    // departure to announce: it closes at once.
+    if crate::node_self::parking().is_parked() {
+        let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown = false, parked = true);
         running.leave_after_stop().instrument(span).await;
         return;
     }

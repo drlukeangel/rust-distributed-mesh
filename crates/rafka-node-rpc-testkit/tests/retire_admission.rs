@@ -222,20 +222,20 @@ async fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             attempt: 1,
             node: b.node.clone(),
             handle: b.handle.clone(),
-            kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Restart,
+            kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
         })
         .await;
-    // B is live and admits its node-admin: its drain-node and stop-node were admitted, and its
-    // node-drained and node-left calls reached the commanding side. A's exit counts for nothing:
+    // B is live and admits its node-admin: its drain-node was admitted and its stop-node answered
+    // `left`, and its node-drained call reached the commanding side. A's exit counts for nothing:
     // every command and every proof is on B's own birth and handle.
     retired.unwrap_or_else(|e| panic!("retire B: {e}"));
     assert!(matches!(process.inspect(&b.handle).await, DeploymentStatus::Exited { .. }), "B's own runtime is terminal");
     let steps = builds.read_build(&build).await.unwrap().steps;
     let output = |name: &str| steps.iter().find(|r| r.step == name).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{name} receipted with an output"));
-    for step in ["DrainNode", "StopNode"] {
-        let admission: CommandAdmission = serde_json::from_value(output(step)).unwrap();
-        assert!(matches!(admission, CommandAdmission::Admitted), "B admitted {step}: {admission:?}");
-    }
+    let admission: CommandAdmission = serde_json::from_value(output("DrainNode")).unwrap();
+    assert!(matches!(admission, CommandAdmission::Admitted), "B admitted DrainNode: {admission:?}");
+    let admission: CommandAdmission = serde_json::from_value(output("StopNode")).unwrap();
+    assert!(matches!(admission, CommandAdmission::Left { .. }), "B answered StopNode left: {admission:?}");
     for step in ["AwaitNodeDrained", "AwaitNodeLeft"] {
         let completion: Completion = serde_json::from_value(output(step)).unwrap();
         assert!(matches!(completion, Completion::Received), "B's {step} completion call reached the commanding side: {completion:?}");

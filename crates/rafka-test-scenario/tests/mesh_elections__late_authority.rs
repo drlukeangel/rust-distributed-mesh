@@ -136,9 +136,9 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // It restarts and retires A's births.
     let (restarted, retired) = (a_births[0].clone(), a_births[1].clone());
     build(&estate, "POST", &format!("/api/nodes/{}/restart", s(&restarted["name"])), Value::Null).await;
-    let after = wait_for("the restarted birth is ready under a new incarnation", Duration::from_secs(30), || async {
+    let after = wait_for("the restarted node is ready and no longer parked", Duration::from_secs(30), || async {
         let n = estate.node_opt(&s(&restarted["name"])).await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != restarted["incarnation_id"]).then_some(n)
+        (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
     })
     .await;
     assert_eq!(after["node_id"], restarted["node_id"], "a restart keeps the NodeId");

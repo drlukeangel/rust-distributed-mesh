@@ -157,17 +157,26 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         .map(start)
         .min()
         .expect("the victim served stop-node");
-    let accepted = |completion: &str| -> u64 {
-        named(&spans, "rdm.node_admin.status.update.via-completion-accepted")
-            .into_iter()
-            .filter(|sp| sp["attributes"]["op"] == completion && sp["attributes"]["subject"] == victim_id.as_str() && sp["attributes"]["outcome"] == "applied")
-            .map(start)
-            .min()
-            .unwrap_or_else(|| panic!("the executor accepted no {completion} from the victim"))
-    };
-    let (node_drained_at, node_left_at) = (accepted("node-drained"), accepted("node-left"));
+    let node_drained_at = named(&spans, "rdm.node_admin.status.update.via-completion-accepted")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["op"] == "node-drained" && sp["attributes"]["subject"] == victim_id.as_str() && sp["attributes"]["outcome"] == "applied")
+        .map(start)
+        .min()
+        .expect("the executor accepted no node-drained from the victim");
+    // `left` is the reply of the stop-node call itself: the command-sent span records `left` when the
+    // reply arrived, and no node-left call is made.
+    let left_at = named(&spans, "rdm.node_admin.node.update.via-command-sent")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["command"] == "stop-node" && sp["attributes"]["admission"] == "left")
+        .map(start)
+        .min()
+        .expect("the victim answered stop-node left");
+    assert!(named(&spans, "rdm.node_admin.status.update.via-completion-accepted").into_iter().all(|sp| sp["attributes"]["op"] != "node-left"), "no node-left call is made: left rides the stop reply");
     assert!(drained_at < node_drained_at && node_drained_at < stopped_at, "stop-node follows the accepted node-drained: drain {drained_at} drained {node_drained_at} stop {stopped_at}");
-    assert!(stopped_at < node_left_at && node_left_at < terminal, "node-left is accepted before the terminal proof: stop {stopped_at} left {node_left_at} terminal {terminal}");
+    assert!(stopped_at < left_at && left_at < terminal, "left is answered before the terminal proof: stop {stopped_at} left {left_at} terminal {terminal}");
+    // The mesh primary publishes the departure from that reply, before the runtime exits.
+    let published = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).map(start).min().expect("the executor published NodeStopped from the left reply");
+    assert!(left_at <= published && published < terminal, "NodeStopped follows left and precedes the terminal proof");
     for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
         let done = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
@@ -175,8 +184,10 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
             .unwrap_or_else(|| panic!("{step} completed on the executor"));
         assert!(start(done) < terminal, "{step} precedes termination");
     }
-    // The command hooks: node-draining and node-leaving are heard by the other nodes of the fabric.
-    for kind in ["node-draining", "node-leaving", "node-left", "node-drained"] {
+    // The command hooks: node-draining and node-leaving are heard by the other nodes of the fabric; the
+    // node authors no node-left frame (it gossips nothing for its stop).
+    assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == VICTIM).count(), 0, "no node-left frame of the victim is heard by anyone");
+    for kind in ["node-draining", "node-leaving", "node-drained"] {
         let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
         assert!(heard >= 1, "{kind} for the victim was heard by another node: {heard}");
     }

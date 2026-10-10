@@ -137,6 +137,9 @@ pub struct Node {
     /// (`status_rpc`); `None` until it declares. Not `status`: that is what membership hears.
     #[serde(default)]
     pub declared: Option<String>,
+    /// Stopped and parked: `Leaving` with a live process, waiting for a start or a delete.
+    #[serde(default)]
+    pub parked: bool,
 }
 
 fn routable_default() -> bool {
@@ -164,6 +167,7 @@ impl Node {
             listeners: Vec::new(),
             routable: true,
             declared: None,
+            parked: false,
         }
     }
 }

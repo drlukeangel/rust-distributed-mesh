@@ -99,9 +99,21 @@ impl Authority {
     }
 }
 
+/// Why the hook runs: the birth's first start, or a start of the same birth after a stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartKind {
+    /// The birth joins for the first time (create).
+    FirstStart,
+    /// The parked birth rejoins as itself (`node.start` after `node.stop`): its data dir is its own
+    /// and what it held before the stop is still there.
+    AfterStop,
+}
+
 /// What the hook is handed.
 #[derive(Clone)]
 pub struct HydrateCtx {
+    /// Whether this is the birth's first start or a start after a stop.
+    pub start_kind: StartKind,
     /// The exact birth.
     pub birth: Birth,
     /// The authority to pull from, or why there is none.

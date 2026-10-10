@@ -72,6 +72,8 @@ pub enum WorkflowKind {
     Create,
     /// `node.stop` of this node: `stop-node:<path.name>`.
     Stop(PathName),
+    /// `node.start` of this parked node: `start-node:<path.name>`.
+    Start(PathName),
     /// `node.restart` of this node: `retire-node:<path.name>` then `restart-node:<path.name>`.
     Restart(PathName),
     /// `node.delete` of this node: `retire-node:<path.name>`.
@@ -83,12 +85,13 @@ struct Row {
     operation: &'static str,
     step: &'static str,
     node_step: NodeStep,
-    event: Option<NodeEvent>,
+    /// The step events the step's `Complete` receipt announces, in order.
+    events: &'static [NodeEvent],
     terminal: bool,
 }
 
-const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, event: Option<NodeEvent>, terminal: bool) -> Row {
-    Row { operation, step, node_step, event, terminal }
+const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, events: &'static [NodeEvent], terminal: bool) -> Row {
+    Row { operation, step, node_step, events, terminal }
 }
 
 /// The create leg, in pipeline order, under the operation prefix `op`; `last` is what the
@@ -96,38 +99,47 @@ const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, e
 macro_rules! create_rows {
     ($op:literal, $last:expr) => {
         [
-            row($op, "AllocateIdentity", NodeStep::Create, None, false),
-            row($op, "PrepareStorage", NodeStep::Create, None, false),
-            row($op, "PrepareNetwork", NodeStep::Create, None, false),
-            row($op, "DeployRuntime", NodeStep::Create, None, false),
-            row($op, "RegisterExactRuntimeHandle", NodeStep::Create, None, false),
-            row($op, "ResolveProviderControlDomain", NodeStep::Create, None, false),
-            row($op, "MakeRuntimeFactAvailableToBirth", NodeStep::Create, None, false),
-            row($op, "WaitForBind", NodeStep::Create, Some(NodeEvent::Created), false),
-            row($op, "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata", NodeStep::Start, Some(NodeEvent::Started), false),
-            row($op, "ApplyMeshPending", NodeStep::Start, None, false),
-            row($op, "WaitForMeshJoin", NodeStep::Join, Some(NodeEvent::Joined), false),
-            row($op, "WaitForNodeReady", NodeStep::Ready, Some(NodeEvent::Ready), false),
+            row($op, "AllocateIdentity", NodeStep::Create, &[], false),
+            row($op, "PrepareStorage", NodeStep::Create, &[], false),
+            row($op, "PrepareNetwork", NodeStep::Create, &[], false),
+            row($op, "DeployRuntime", NodeStep::Create, &[], false),
+            row($op, "RegisterExactRuntimeHandle", NodeStep::Create, &[], false),
+            row($op, "ResolveProviderControlDomain", NodeStep::Create, &[], false),
+            row($op, "MakeRuntimeFactAvailableToBirth", NodeStep::Create, &[], false),
+            row($op, "WaitForBind", NodeStep::Create, &[NodeEvent::Created], false),
+            row($op, "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata", NodeStep::Start, &[NodeEvent::Started], false),
+            row($op, "ApplyMeshPending", NodeStep::Start, &[], false),
+            row($op, "WaitForMeshJoin", NodeStep::Join, &[NodeEvent::Joined], false),
+            row($op, "WaitForNodeReady", NodeStep::Ready, &[NodeEvent::Ready], false),
             row($op, "Complete", NodeStep::Create, $last, true),
         ]
     };
 }
 
-/// The retire leg under `retire-node` (a delete, or the first half of a restart).
-macro_rules! retire_rows {
-    ($op:literal, $first:expr, $first_step:expr, $last:expr, $last_step:expr, $terminal:expr) => {
+/// The start leg of a parked process under the operation prefix `op`: `start-node` answered
+/// `Started` means the same process rejoined (`node.started`, `node.joined`), then the wait for it
+/// to report ready; `last` is what the operation's `Complete` announces.
+macro_rules! start_rows {
+    ($op:literal, $last:expr, $terminal_step:expr) => {
         [
-            row($op, "NodeDeleting", NodeStep::Delete, None, false),
-            row($op, "NodeRestarting", $first_step, $first, false),
-            row($op, "DrainNode", NodeStep::Drain, Some(NodeEvent::Draining), false),
-            row($op, "AwaitNodeDrained", NodeStep::Drain, Some(NodeEvent::Drained), false),
-            row($op, "StopNode", NodeStep::Stop, None, false),
-            row($op, "AwaitNodeLeft", NodeStep::Stop, Some(NodeEvent::Left), false),
-            row($op, "TerminateRuntime", NodeStep::Stop, Some(NodeEvent::Stopped), false),
-            row($op, "NodeDeleted", NodeStep::Delete, Some(NodeEvent::Deleted), false),
-            row($op, "ReleaseStorage", NodeStep::Delete, None, false),
-            row($op, "RemoveTopologyMembership", $last_step, None, false),
-            row($op, "Complete", $last_step, $last, $terminal),
+            row($op, "StartNode", NodeStep::Start, &[NodeEvent::Started, NodeEvent::Joined], false),
+            row($op, "WaitForNodeReady", NodeStep::Ready, &[NodeEvent::Ready], false),
+            row($op, "Complete", $terminal_step, $last, true),
+        ]
+    };
+}
+
+/// The retire leg under `retire-node` (a delete, or the first half of a restart): `park` is whether
+/// the process stays (a restart) or the provider ends it (a delete).
+macro_rules! retire_rows {
+    ($first:expr, $first_step:expr) => {
+        [
+            row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false),
+            row("retire-node", "NodeRestarting", $first_step, $first, false),
+            row("retire-node", "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
+            row("retire-node", "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
+            row("retire-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
+            row("retire-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Left], false),
         ]
     };
 }
@@ -138,6 +150,7 @@ impl WorkflowKind {
         match self {
             Self::Create => NodeOp::Create,
             Self::Stop(_) => NodeOp::Stop,
+            Self::Start(_) => NodeOp::Start,
             Self::Restart(_) => NodeOp::Restart,
             Self::Delete(_) => NodeOp::Delete,
         }
@@ -146,22 +159,33 @@ impl WorkflowKind {
     /// The pipeline rows of the workflow in order.
     fn rows(&self) -> Vec<Row> {
         match self {
-            Self::Create => create_rows!("create-node", None).into(),
+            Self::Create => create_rows!("create-node", &[]).into(),
+            // The stop's one call drains, cuts the mesh connections and answers `left`: its receipts
+            // announce all four events, and no runtime exits.
             Self::Stop(_) => vec![
-                row("stop-node", "StopNode", NodeStep::Stop, None, false),
-                row("stop-node", "AwaitNodeLeft", NodeStep::Stop, Some(NodeEvent::Left), false),
-                row("stop-node", "TerminateRuntime", NodeStep::Stop, Some(NodeEvent::Stopped), false),
-                row("stop-node", "Complete", NodeStep::Stop, None, true),
+                row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
+                row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Left], false),
+                row("stop-node", "Complete", NodeStep::Stop, &[], true),
             ],
+            Self::Start(_) => start_rows!("start-node", &[], NodeStep::Start).into(),
+            // A restart: the birth is held, drains and stops (it parks), then the same process starts.
             Self::Restart(_) => {
-                let mut rows: Vec<Row> = retire_rows!("retire-node", Some(NodeEvent::Restarting), NodeStep::Restart, None, NodeStep::Restart, false).into();
-                rows.retain(|r| !matches!(r.step, "NodeDeleting" | "NodeDeleted" | "ReleaseStorage"));
-                rows.extend(create_rows!("restart-node", Some(NodeEvent::Restarted)));
+                let mut rows: Vec<Row> = retire_rows!(&[NodeEvent::Restarting], NodeStep::Restart).into();
+                rows.retain(|r| r.step != "NodeDeleting");
+                rows.push(row("retire-node", "Complete", NodeStep::Restart, &[], false));
+                rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
             Self::Delete(_) => {
-                let mut rows: Vec<Row> = retire_rows!("retire-node", None, NodeStep::Delete, None, NodeStep::Delete, true).into();
+                let mut rows: Vec<Row> = retire_rows!(&[], NodeStep::Delete).into();
                 rows.retain(|r| r.step != "NodeRestarting");
+                rows.extend([
+                    row("retire-node", "TerminateRuntime", NodeStep::Stop, &[NodeEvent::Stopped], false),
+                    row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
+                    row("retire-node", "ReleaseStorage", NodeStep::Delete, &[], false),
+                    row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false),
+                    row("retire-node", "Complete", NodeStep::Delete, &[], true),
+                ]);
                 rows
             }
         }
@@ -171,7 +195,7 @@ impl WorkflowKind {
     fn operation_matches(&self, prefix: &str, key: &str) -> bool {
         match self {
             Self::Create => prefix == "create-node" && key.starts_with("create-node:"),
-            Self::Stop(n) | Self::Restart(n) | Self::Delete(n) => key == format!("{prefix}:{n}"),
+            Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) => key == format!("{prefix}:{n}"),
         }
     }
 }
@@ -250,9 +274,7 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
         match held {
             Some((op, st, _, None)) => {
                 completed.push((op.clone(), st.clone()));
-                if let Some(e) = r.event {
-                    frames.push(Frame::Event(e));
-                }
+                frames.extend(r.events.iter().map(|e| Frame::Event(*e)));
                 if r.terminal {
                     frames.push(Frame::Complete);
                     break;

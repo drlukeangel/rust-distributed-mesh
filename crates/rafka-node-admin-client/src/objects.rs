@@ -326,10 +326,11 @@ impl Nodes {
         self.workflow(WorkflowKind::Stop(node.clone()), BuildChange::Stop { node: node.clone() }).await
     }
 
-    /// `node.start`: the parked process joins. The steps that start a node run today only inside
-    /// `node.create` and `node.restart`.
-    pub fn start(&self) -> CallEnd {
-        CallEnd::NotBackedToday { op: NodeOp::Start, why: "a stop that parks the process lands with the node lifecycle; start steps run inside create and restart" }
+    /// `node.start` of the parked `node`: the same process rejoins as itself (same node id,
+    /// incarnation, endpoint key and port). The stream is `Started`, then `node.started`,
+    /// `node.joined` and `node.ready`, ending `Complete` or `Failed { step, reason }`.
+    pub async fn start(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
+        self.workflow(WorkflowKind::Start(node.clone()), self.admin.start(node)).await
     }
 
     /// `node.restart` of `node`.

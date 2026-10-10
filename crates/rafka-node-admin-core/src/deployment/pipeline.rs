@@ -142,6 +142,22 @@ impl CreateStep {
     }
 }
 
+/// The step a start adds to the wait for ready it shares with a create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartStep {
+    /// `start-node` to the parked birth: the reply is `Started` once it has rejoined as itself.
+    StartNode,
+}
+
+impl StartStep {
+    /// The step's name as it appears in receipts and spans.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::StartNode => "StartNode",
+        }
+    }
+}
+
 /// One step of retiring a node, in the order of [`RetireStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetireStep {
@@ -475,8 +491,11 @@ pub(crate) fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operati
 pub enum RetireKind {
     /// The logical node leaves the topology.
     Removal,
-    /// The birth stops; the logical node is reborn at the same path.
+    /// The birth drains and stops and its process stays, parked: the same process starts again.
     Restart,
+    /// The birth's process already exited (proven drift, or an exit the stop ladder ends): the
+    /// provider proves the exit and the logical node is relaunched over its data dir, a successor birth.
+    Relaunch,
 }
 
 /// What a removal did with the logical node's storage, by the accepted Build's
@@ -504,6 +523,22 @@ pub enum CommandAdmission {
     Admitted,
     /// The birth answered `AlreadyApplied`: the same operation was admitted before.
     AlreadyAdmitted,
+    /// The birth answered `stop-node` with `Left`: it drained, cut its mesh connections and is
+    /// parked, and this is what its drain established.
+    Left {
+        /// The drain's receipt.
+        receipt: rafka_node_rpc_contract::status::DrainReceipt,
+    },
+    /// The birth answered `start-node` with `Started`: it rejoined as itself.
+    Started,
+    /// The birth answered `start-node` with `StartFailed`: it is parked still, and nothing after
+    /// `step` ran.
+    StartFailed {
+        /// The step that failed.
+        step: String,
+        /// Why.
+        reason: String,
+    },
     /// The call never reached the birth (no route, dial refused, connection lost before the send).
     NotSent {
         /// Why the call was not sent.
@@ -524,13 +559,16 @@ pub enum CommandAdmission {
 impl CommandAdmission {
     /// Whether the birth holds the command.
     pub fn admitted(&self) -> bool {
-        matches!(self, Self::Admitted | Self::AlreadyAdmitted)
+        matches!(self, Self::Admitted | Self::AlreadyAdmitted | Self::Left { .. } | Self::Started)
     }
     /// The arm's name.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Admitted => "admitted",
             Self::AlreadyAdmitted => "already-admitted",
+            Self::Left { .. } => "left",
+            Self::Started => "started",
+            Self::StartFailed { .. } => "start-failed",
             Self::NotSent { .. } => "not-sent",
             Self::Indeterminate { .. } => "indeterminate",
             Self::Refused { .. } => "refused",
@@ -547,6 +585,9 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
         RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => CommandAdmission::Admitted,
             StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted,
+            StatusReply::Left { receipt } => CommandAdmission::Left { receipt: *receipt },
+            StatusReply::Started => CommandAdmission::Started,
+            StatusReply::StartFailed { step, reason } => CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone() },
             other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
         },
         RpcOutcome::NotSent(n) => CommandAdmission::NotSent { reason: format!("{:?}", n.reason()) },
@@ -659,6 +700,9 @@ pub trait LifecycleEvents: Send + Sync {
     async fn deleted(&self, op: &LifecycleOp);
     /// A restart's pre-event (`NodeRestarting`): the birth is held through its Leaving.
     async fn restarting(&self, op: &LifecycleOp);
+    /// The exact birth answered `stop-node` with `left`: it is parked. The mesh primary publishes
+    /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
+    async fn stopped(&self, _op: &LifecycleOp) {}
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
     /// channel and the backbone.
     async fn draining(&self, _op: &LifecycleOp) {}
@@ -775,6 +819,31 @@ pub struct RetireRequest {
     /// storage goes by the Build's StorageMeta), or the retire half of a restart (the birth stops,
     /// the logical node and its storage stay).
     pub kind: RetireKind,
+}
+
+/// A request to start (or restart) a parked birth: the same process rejoins as itself.
+#[derive(Debug, Clone)]
+pub struct StartRequest {
+    /// The Build.
+    pub build_id: BuildId,
+    /// The attempt.
+    pub attempt: u32,
+    /// The node's current record.
+    pub node: Node,
+    /// The runtime handle of the birth.
+    pub handle: DeploymentHandle,
+    /// What this admin deployed for the birth, held again for the rejoin's `JoinNode`.
+    pub deployed: Deployed,
+}
+
+/// What follows a stop's `left`: the process stays parked (a standalone stop, a restart), or the
+/// provider ends it and proves the exit (a delete, a replace, a mesh leave). `publish_stopped` is
+/// whether the mesh primary publishes `NodeStopped` from the `left` reply: a restart holds the birth
+/// with `NodeRestarting` instead, and a mesh leave and a replace are announced by their own events.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StopEnd {
+    Park { publish_stopped: bool },
+    Terminate { publish_stopped: bool },
 }
 
 /// A request to replace one birth with a new node at its path.
@@ -1393,22 +1462,109 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// A standalone stop (node-stop.md): `stop-node:<path>` is the stop-node command, the wait for the
-    /// exact birth's `node-left`, the provider's stop with its Exited proof, and `Complete`, whose receipt
-    /// names the birth. No drain is sent and no departure is published.
-    pub async fn stop(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
+    /// A standalone stop (node-stop.md): `stop-node:<path>` is the stop-node command, whose reply is the
+    /// exact birth's `left`: it drained, cut its mesh connections and is parked, its process alive.
+    /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth. No
+    /// runtime exit is asked and no departure is published.
+    pub async fn stop(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt, false);
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await;
             let mut node = req.node.clone();
-            let terminal = self.stop_steps_with(&mut run, &mut node, &req.handle, true).await?;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, true, StopEnd::Park { publish_stopped: true }).await?;
             self.complete_for_birth(&mut run, &node).await?;
-            Ok(terminal)
+            Ok(())
         }
         .instrument(span)
         .await
+    }
+
+    /// A standalone start (node-start.md): `start-node:<path>` is the start-node command to the parked
+    /// birth, whose reply is `Started` once it rejoined, then the wait for it to report ready.
+    pub async fn start(&self, req: &StartRequest) -> Result<(), PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("start", &req.build_id, &req.node.name, req.attempt, false);
+        async {
+            let name = &req.node.name;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("start-node:{name}")).await;
+            let mut node = req.node.clone();
+            self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
+            self.complete_for_birth(&mut run, &node).await?;
+            Ok(())
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// A restart (node-restart.md): `restart-node:<path>` holds the birth through its Leaving (the
+    /// pre-event), the birth drains and stops (it parks, its process alive), and the same process
+    /// starts again: the same node id, incarnation, endpoint key and port. `Complete` ends the restart.
+    pub async fn restart(&self, req: &StartRequest) -> Result<(), PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("restart", &req.build_id, &req.node.name, req.attempt, false);
+        async {
+            let name = &req.node.name;
+            let mut node = req.node.clone();
+            // The first half is the retire pipeline's, as a restart (the birth is held, not departed).
+            self.retire_steps(&RetireRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: req.node.clone(), handle: req.handle.clone(), kind: RetireKind::Restart }).await?;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("restart-node:{name}")).await;
+            self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
+            self.step(&mut run, CreateStep::Complete.name(), async {
+                self.sink.publish(node.clone());
+                Ok(())
+            })
+            .await?;
+            Ok(())
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// The start leg: the admin holds what it deployed for the birth again (its `JoinNode` is
+    /// verified against it), `start-node` goes to the parked birth and its reply is `Started`, then
+    /// the wait for the birth to report ready.
+    async fn start_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, deployed: &Deployed) -> Result<(), PipelineError> {
+        use crate::node_commands::NodeCommand;
+        let ctx = self.command_context(run, NodeCommand::Start, node);
+        // Held while this start runs, however it ends; a deployment that never heard its birth is remembered abandoned.
+        struct Forget<'j>(&'j Joins, NodeId, String, u32);
+        impl Drop for Forget<'_> {
+            fn drop(&mut self) {
+                self.0.end(&self.1, &self.2, self.3);
+            }
+        }
+        let _forget = Forget(self.joins, node.node_id.clone(), run.build_id.to_string(), run.attempt);
+        let _reported = self.joins.expect(deployed.clone());
+        let _ = handle;
+        let admission: CommandAdmission = self
+            .step(run, StartStep::StartNode.name(), async {
+                node.status = NodeStatus::Pending;
+                self.sink.publish(node.clone());
+                let admission = self.observer.send_command(node, NodeCommand::Start, &ctx).await;
+                match &admission {
+                    CommandAdmission::Started => Ok(admission),
+                    CommandAdmission::StartFailed { step, reason } => Err(format!("{}: node.start failed at {step}: {reason}", node.name)),
+                    other => Err(format!("{}: start-node was not answered Started ({other:?}); the birth is not known to have rejoined", node.name)),
+                }
+            })
+            .await?;
+        let _ = admission;
+        let until = Instant::now() + self.timeouts.ready;
+        let _: () = self
+            .step(run, CreateStep::WaitForNodeReady.name(), async {
+                loop {
+                    match self.observer.ready(node).await {
+                        Ok(()) => return Ok(()),
+                        Err(e) if Instant::now() >= until => return Err(e),
+                        Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+                    }
+                }
+            })
+            .await?;
+        node.status = NodeStatus::ReadyForTraffic;
+        Ok(())
     }
 
     /// The `Complete` receipt of a standalone operation: it names the exact birth the operation
@@ -1474,7 +1630,14 @@ impl DeploymentPipeline<'_> {
         // drain-node and its node-drained, then stop-node, its node-left and the provider's
         // terminal proof. A caller that puts other work between them (a replace) calls the halves.
         self.drain_steps(&mut run, &mut node, handle).await?;
-        let _terminal = self.stop_steps(&mut run, &mut node, handle).await?;
+        if req.kind == RetireKind::Restart {
+            // The birth parks and stays: its process is the one that starts again.
+            self.stop_steps_with(&mut run, &mut node, handle, false, StopEnd::Park { publish_stopped: false }).await?;
+            // The retire leg of this restart is finished: the next restart of the node runs it afresh.
+            self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
+            return Ok(());
+        }
+        let _terminal = self.stop_steps_with(&mut run, &mut node, handle, false, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.expect("a stop that terminates yields the provider's receipt");
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is.
         if let Some(op) = op {
@@ -1501,7 +1664,8 @@ impl DeploymentPipeline<'_> {
         // A drain's operation key has one source: the `node.drain` object derives it, and the receipt, the wire request and the completion all carry that key.
         let operation = match cmd {
             crate::node_commands::NodeCommand::Drain => rafka_node_admin_client::DrainContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
-            crate::node_commands::NodeCommand::Stop => format!("{}:{}", cmd.operation_prefix(), node.name),
+            crate::node_commands::NodeCommand::Stop => rafka_node_admin_client::StopContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::Start => rafka_node_admin_client::StartContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
         };
         CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation }
     }
@@ -1588,15 +1752,19 @@ impl DeploymentPipeline<'_> {
     /// drain), the wait for its `node-left` completion call, then the provider's stop and
     /// inspection of the exact runtime: only its `Exited` is terminal proof.
     pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        self.stop_steps_with(run, node, handle, false).await
+        let terminal = self.stop_steps_with(run, node, handle, false, StopEnd::Terminate { publish_stopped: false }).await?;
+        Ok(terminal.expect("a stop that terminates yields the provider's receipt"))
     }
 
-    /// [`Self::stop_steps`]; `strict` (a standalone stop) fails the wait step by name unless the matching
-    /// `node-left` call was accepted (node-stop.md: the completion is NodeLeft plus the runtime's Exited).
-    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool) -> Result<TerminalReceipt, PipelineError> {
+    /// [`Self::stop_steps`]; `strict` (a standalone stop) fails the wait step by name unless the birth's
+    /// `left` reply was received. `end` says what follows: the process parks, or the provider ends it.
+    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
+        let publish_stopped = matches!(end, StopEnd::Park { publish_stopped: true } | StopEnd::Terminate { publish_stopped: true });
+        // `stop-node` is held until the birth is parked, and its reply is `left`: the birth drained,
+        // cut its mesh connections and entered Leaving. The command is `Left` or it is not complete.
         let admission: CommandAdmission = self
             .step(run, RetireStep::StopNode.name(), async {
                 self.sink.publish(node.clone());
@@ -1614,13 +1782,21 @@ impl DeploymentPipeline<'_> {
                     c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.drain) => c,
                     () = self.until_exited(handle) => Completion::RuntimeExited,
                 };
+                // The mesh primary publishes the departure from the matching `left`; the node gossips nothing.
+                if publish_stopped && c == Completion::Received {
+                    let op = self.command_op(&ctx, node)?;
+                    self.lifecycle.stopped(&op).await;
+                }
                 match (strict, &c) {
-                    (true, c) if *c != Completion::Received => Err(format!("{}: stop-node was admitted but no matching node-left call was accepted ({c:?}); the stop is not complete", node.name)),
+                    (true, c) if *c != Completion::Received => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),
                     _ => Ok(c),
                 }
             })
             .await?;
-        self.terminate_step(run, node, handle).await
+        match end {
+            StopEnd::Park { .. } => Ok(None),
+            StopEnd::Terminate { .. } => Ok(Some(self.terminate_step(run, node, handle).await?)),
+        }
     }
 
     /// `TerminateRuntime`: the provider's stop and inspection of the exact runtime; only its `Exited`

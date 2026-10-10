@@ -271,12 +271,15 @@ impl ControlPlane {
                 // A requested replacement may name a birth that does not answer (PendingReconnect,
                 // Dead): the decommission retires its exact runtime before the new node is created.
                 let unheard = matches!(n.status, crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
-                if !n.status.is_live() && !(replace && unheard) {
+                // A start is the transition out of Leaving, and only for a parked process; every other action needs a live node.
+                let startable = kind == ActionKind::Start && n.parked;
+                if (kind == ActionKind::Start && !startable) || (kind != ActionKind::Start && !n.status.is_live() && !(replace && unheard)) {
                     let reason = match kind {
                         ActionKind::Replace => "the node's status is neither live nor an unheard birth a replacement may retire",
                         ActionKind::Restart => "a restart needs a live node",
                         ActionKind::Drain => "a drain needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
+                        ActionKind::Start => "a start needs a parked node",
                     };
                     return Err(not_live(&outer, route, &path, n.status, reason));
                 }
@@ -300,6 +303,7 @@ impl ControlPlane {
                 ActionKind::Replace => AttemptAction::Replace { path, from_incarnation },
                 ActionKind::Drain => AttemptAction::Drain { path, from_incarnation },
                 ActionKind::Stop => AttemptAction::Stop { path, from_incarnation },
+                ActionKind::Start => AttemptAction::Start { path, from_incarnation },
             };
             self.open_with(&current, reason, action, route, &outer, &node_name, span.clone()).await
         }
@@ -337,6 +341,8 @@ pub enum ActionKind {
     Drain,
     /// `stop-node:<path>`.
     Stop,
+    /// `start-node:<path>`.
+    Start,
 }
 
 /// The restart/replace refusal `node-not-live`, spanned beside the request with the node, the
@@ -512,6 +518,11 @@ async fn drain_node(State(cp): State<Shared>, Path(name): Path<String>) -> Resul
     Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/drain", AttemptReason::Drain, node, ActionKind::Drain, None).await?))
 }
 
+async fn start_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
+    let node = parse_path(&name)?;
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/start", AttemptReason::Start, node, ActionKind::Start, None).await?))
+}
+
 async fn stop_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
     Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, node, ActionKind::Stop, None).await?))
@@ -667,6 +678,7 @@ pub fn router(cp: Arc<ControlPlane>, runtime_routes: Router) -> Router {
         .route("/api/nodes/spawn", post(spawn_node))
         .route("/api/nodes/{name}", delete(delete_node))
         .route("/api/nodes/{name}/restart", post(restart_node))
+        .route("/api/nodes/{name}/start", post(start_node))
         .route("/api/nodes/{name}/replace", post(replace_node))
         .route("/api/nodes/{name}/drain", post(drain_node))
         .route("/api/nodes/{name}/stop", post(stop_node))
