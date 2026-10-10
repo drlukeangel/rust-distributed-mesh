@@ -753,6 +753,93 @@ fn held_births(book: &DigestBook, fabric: &FabricId, me: &NodeId) -> Vec<MeshDig
     book.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
 }
 
+/// The provider's proof that the exact birth a digest or a durable row names exited: the runtime
+/// fact is the digest's (when it is of this birth) or the row's, adopted in this provider's control
+/// domain and inspected, and only the runtime's own terminal status counts. `Ok` carries the exit
+/// code and where it came from; `Err` names why nothing is proven.
+pub(crate) async fn exit_proof_of(
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+    held_row: &Option<(MeshDigest, Duration)>,
+    row: Option<&crate::storage::RuntimeRow>,
+) -> Result<(Option<i32>, &'static str), String> {
+    let (fact, data_dir, birth) = match (held_row, row) {
+        (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
+        (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
+        _ => return Err(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })),
+    };
+    // Proof is the exact runtime's own terminal status, in this provider's control domain; anything
+    // else proves nothing.
+    let handle = crate::deployment::provider::adopt(provider, &fact).map_err(|e| format!("the provider refused to adopt its runtime: {e}"))?;
+    let inspected = provider.inspect(&handle).await;
+    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0);
+    match status {
+        crate::deployment::provider::DeploymentStatus::Exited { code } => {
+            let source = match (&inspected, code) {
+                (_, None) => "none",
+                (crate::deployment::provider::DeploymentStatus::Exited { code: Some(_) }, _) => "provider",
+                _ => "exit-record",
+            };
+            Ok((code, source))
+        }
+        other => Err(format!("its runtime is not proven exited: {other:?}")),
+    }
+}
+
+/// The gates of the fabric-primary's drive: the membership's cut-off rule and the Build log's
+/// sticky seat fence.
+struct SeatGate {
+    membership: Membership,
+    builds: Arc<FabricBuildStateAdapter>,
+    shutdown: Arc<crate::shutdown::ShutdownControl>,
+}
+
+#[async_trait::async_trait]
+impl crate::build_drive::Gate for SeatGate {
+    fn authorizes(&self) -> bool {
+        self.membership.authorizes()
+    }
+    async fn fence(&self) -> Result<(), crate::build_state::BuildStateError> {
+        self.builds.fence_check().await
+    }
+    fn frozen(&self) -> Option<String> {
+        self.shutdown.held().map(|_| "a fabric shutdown froze reconciliation: no claim and no dispatch from here on".to_string())
+    }
+}
+
+/// Proof that an executor's birth departed: the provider inspects the exact runtime the digest book
+/// or the durable runtime rows name for it, and only an exited runtime counts.
+struct ProviderDeparture {
+    topology: Arc<RwLock<Topology>>,
+    /// Projects this admin's view now and installs it, so a birth just proven exited holds no seat
+    /// in the view the next attempt is planned from.
+    refresh: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
+    book: DigestBook,
+    provider: Arc<dyn DeploymentProvider>,
+    nodes: Arc<dyn crate::storage::NodesStorage>,
+    records: Arc<Records>,
+}
+
+#[async_trait::async_trait]
+impl crate::build_drive::DepartureProof for ProviderDeparture {
+    async fn proven(&self, executor: &PathName) -> Result<(), String> {
+        let Some(n) = self.topology.read().await.node(executor).cloned() else {
+            return Err(format!("{executor} is not a node of this admin's view, so no exact birth is named to inspect"));
+        };
+        let Some(incarnation) = n.incarnation_id.clone() else {
+            return Err(format!("{executor} holds no incarnation id to inspect"));
+        };
+        let held_row = self.book.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
+        let durable = self.nodes.runtimes().await.map_err(|e| format!("the durable runtime rows could not be read: {e}"))?;
+        let row = durable.iter().find(|r| r.node_id == n.node_id && r.incarnation_id == incarnation);
+        let (code, source) = crate::admin::exit_proof_of(&*self.provider, &held_row, row).await?;
+        tracing::info_span!("rdm.node_admin.build.update.via-executor-exit-proof", node = %n.name, node_id = %n.node_id, incarnation_id = %incarnation.0, exit_code = code.map(|c| c.to_string()).unwrap_or_default(), exit_proof = source)
+            .in_scope(|| tracing::info!("the executor's exact runtime is inspected and exited"));
+        self.records.mark_exited(&n.node_id, &incarnation);
+        (self.refresh)().await;
+        Ok(())
+    }
+}
+
 /// The fabric authority's drift check (`crate::drift`): when this admin is the fabric primary,
 /// the accepted Build is settled, and a cohort the Build's topology names has fewer births than
 /// it should, at least one of them with its exact runtime inspected and found exited, it opens
@@ -865,31 +952,14 @@ pub async fn reconcile_drift(
                     .in_scope(|| tracing::info!("a silent birth the accepted topology names cannot be proven exited by this authority"));
             }
         };
-        let (fact, data_dir, birth) = match (&held_row, row) {
-            (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
-            (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
-            _ => {
-                unprovable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }));
+        let (code, source) = match exit_proof_of(provider, &held_row, row).await {
+            Ok(p) => p,
+            Err(why) => {
+                unprovable(why);
                 continue;
             }
         };
-        // Proof is the exact runtime's own terminal status, in this
-        // provider's control domain; anything else proves nothing.
-        let handle = match crate::deployment::provider::adopt(provider, &fact) {
-            Ok(h) => h,
-            Err(e) => {
-                unprovable(format!("the provider refused to adopt its runtime: {e}"));
-                continue;
-            }
-        };
-        let inspected = provider.inspect(&handle).await;
-        let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0);
-        if let crate::deployment::provider::DeploymentStatus::Exited { code } = status {
-            let source = match (&inspected, code) {
-                (_, None) => "none",
-                (crate::deployment::provider::DeploymentStatus::Exited { code: Some(_) }, _) => "provider",
-                _ => "exit-record",
-            };
+        {
             let incarnation = n.incarnation_id.clone().expect("filtered on it");
             if let Some(unheard_ms) = unheard_ms {
                 // The evidence is kept and named once per birth for as long as the hold lasts; the exit
@@ -914,8 +984,6 @@ pub async fn reconcile_drift(
             on_exit_proven(&n.node_id, &incarnation);
             exited.insert(incarnation.clone());
             proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source });
-        } else {
-            unprovable(format!("its runtime is not proven exited: {status:?}"));
         }
     }
     // A hold ends with the silence: a mesh heard again holds no birth, and the next silence is a new hold.
@@ -2511,6 +2579,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     let build_facts_slot: crate::build_facts_read::BuildFactsSlot = Arc::new(std::sync::OnceLock::new());
+    let build_slot: crate::build_op::BuildSlot = Arc::new(std::sync::OnceLock::new());
     let handover_slot: crate::fabric_handover::HandoverSlot = Arc::new(std::sync::OnceLock::new());
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
@@ -2518,7 +2587,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rpc_builder = crate::fabric_handover::serve(crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone()), handover_slot.clone());
+    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone()), handover_slot.clone()), build_slot.clone());
     // The app's own ops (each behind the gate of its hook), before the catalog seals.
     let rpc_builder = match wiring.serve_app.take() {
         Some(serve_app) => serve_app(rpc_builder),
@@ -2727,7 +2796,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     );
     // The Build state every consumer after hydration shares: the control routes, the executor, the
     // pipelines and the drift check.
-    let builds_dyn: Arc<dyn BuildStateAdapter> = crate::wiring::apply(wiring.builds.take(), builds.clone());
+    let runs = Arc::new(crate::build_run::AttemptRuns::default());
+    let builds_dyn: Arc<dyn BuildStateAdapter> = Arc::new(crate::build_run::FramedBuilds::new(crate::wiring::apply(wiring.builds.take(), builds.clone()), runs.clone()));
     {
         let b = builds.clone();
         shutdown_control.set_publish(Arc::new(move |sd| {
@@ -3027,6 +3097,43 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         issuer: issuer.clone(),
     });
     let _ = leaver.set(Arc::new(LeaveDoor { runner: runner.clone() }));
+    // The Build family on `0x20`: the executor's door for `build.attempt.run` and the fabric-primary's
+    // drive of every Build. The same admin holds both; which one a call reaches depends on the seat.
+    let drives = Arc::new(crate::build_drive::Drives::default());
+    let drive_env = {
+        let exec = Arc::new(BuildExecutor { executor: name.to_string(), builds: builds_dyn.clone(), topology: control.topology.clone(), runner: runner.clone() });
+        let run_door = Arc::new(crate::build_run::RunDoor {
+            me: name.clone(),
+            builds: builds_dyn.clone(),
+            exec,
+            runs: runs.clone(),
+            local: journal.clone(),
+        });
+        let env = Arc::new(crate::build_drive::DriveEnv {
+            me: name.clone(),
+            topology: control.topology.clone(),
+            accepted: accepted.clone(),
+            builds: builds_dyn.clone(),
+            door: claim_door.clone(),
+            dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
+            gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone() }),
+            departure: Arc::new(ProviderDeparture {
+                topology: control.topology.clone(),
+                refresh: {
+                    let (topology, records, book, fabric, fabric_id, provider) = (control.topology.clone(), records.clone(), book.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
+                    Arc::new(move || {
+                        let (topology, records, book, fabric, fabric_id) = (topology.clone(), records.clone(), book.clone(), fabric.clone(), fabric_id.clone());
+                        Box::pin(async move {
+                            records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                        })
+                    })
+                },
+                book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
+            verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
+        });
+        let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door }));
+        env
+    };
 
     // This birth's exact runtime. A launched admin takes the record its
     // launcher's pipeline made available; the bootstrap admin, which nobody
@@ -3954,28 +4061,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         tasks.push(tokio::spawn(crate::investigate::run(watch)));
     }
     let executor;
-    // The executor: continues every Build whose next operation this admin
-    // executes (`executor::executor_for`). A launched admin starts it only
-    // after its entry pull, so its first view is its launcher's.
+    // The reconcile loop: the drift check, and the fabric-primary's drive of every active Build
+    // (`build_drive`). Only the fabric-primary drives; an executor runs what it is called with
+    // (`build_run`) and picks nothing up from its projection. A launched admin starts it only after
+    // its entry pull, so its first view is its launcher's.
     {
-        let exec = BuildExecutor {
-            executor: name.to_string(),
-            accepted: accepted.clone(),
-            builds: builds_dyn.clone(),
-            topology: control.topology.clone(),
-            runner: runner.clone(),
-            claimer: Arc::new(crate::build_claim::FabricPrimaryClaimer {
-                me: name.clone(),
-                node_id: node_id.clone(),
-                incarnation: incarnation.clone(),
-                topology: control.topology.clone(),
-                door: claim_door.clone(),
-                client: node_rpc.client.clone(),
-            }),
-        };
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
         let (me, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
+        let (drives, drive_env) = (drives.clone(), drive_env.clone());
         let frozen = shutdown_control.clone();
         let drift_time = rafka_time.clone();
         let drift_nodes = nodes_storage.clone();
@@ -4005,7 +4099,9 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
                     if opened.is_some() {
                         records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
                     }
-                    exec.reconcile_active().await;
+                    if now.fabric_primary().is_some_and(|n| n.name == me) {
+                        crate::build_op::ensure_active(&drives, &drive_env).await;
+                    }
                 }
                 tokio::select! {
                     _ = submitted.notified() => {}
@@ -4017,7 +4113,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
     // A fabric shutdown: freeze (the executor stops, this admin says Draining), then this admin's
     // part of the drain. The fabric-primary stops itself last by waking the shutdown route.
     {
-        let (abort, digest_w, membership_w, me, records_w) = (executor.abort_handle(), digest.clone(), membership.clone(), name.clone(), records.clone());
+        let (abort, digest_w, membership_w, me, records_w, runs_w) = (executor.abort_handle(), digest.clone(), membership.clone(), name.clone(), records.clone(), runs.clone());
         let (seen, drain_control) = (shutdown_control.subscribe(), shutdown_control.clone());
         let stopper: Arc<dyn crate::shutdown::Stopper> = Arc::new(AdminStopper { runner: runner.clone(), topology: control.topology.clone() });
         let done = control.shutdown.clone();
@@ -4037,6 +4133,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
             // admin says Draining, so no view of its own moves them.
             records_w.hold_seats();
             abort.abort();
+            runs_w.abort_all();
             let d = {
                 let mut d = digest_w.lock().unwrap();
                 d.status = MemberStatus::Draining;

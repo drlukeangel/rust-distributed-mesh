@@ -369,6 +369,13 @@ impl FabricBuildStateAdapter {
         }
     }
 
+    /// Whether this admin's Build log still decides anything: refused by name once it yielded the
+    /// seat. The fabric-primary's drive passes this before every dispatch; it holds the gate only
+    /// for the check, because an attempt lasts as long as its steps and the fence is sticky.
+    pub async fn fence_check(&self) -> Result<(), BuildStateError> {
+        self.authority.enter().await.map(|_| ())
+    }
+
     /// The fabric-primary seat was yielded: set the sticky fence under the gate's lock (so a
     /// decision in flight has committed durably), then hand every active committed fact to the
     /// neighbours before the new holder acts. Returns how many facts were sent.

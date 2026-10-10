@@ -1,25 +1,33 @@
-//! The typed `node` objects, end to end: a workflow call over the control API returns a reply
-//! stream derived from the Build's receipts, and the receipts are written by the real create
+//! The typed `node` objects, end to end: a workflow call returns a reply stream read from the
+//! fabric-primary's Build family (op `0x20`), and the receipts are written by the real create
 //! pipeline running in the same process.
 //!
 //! The two acceptance contracts of ops-naming ("A failure names its step", "A broken stream is
 //! not a failure") are the first two cells. A workflow's `node.start` steps run today inside
 //! `node.create`, so the start whose join fails is a create whose join fails.
 
+use iroh::protocol::Router;
+use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
-use rafka_node_admin_client::{Builds, CallEnd, Frame, NodeAdminClient, NodeEvent, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
-use rafka_node_admin_core::build::BuildId;
-use rafka_node_admin_core::build_state::{BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
+use rafka_node_admin_client::{BuildCarrier, Builds, CallEnd, Frame, NodeAdminClient, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
+use rafka_node_admin_core::build::{BuildId, BuildOperation};
+use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
+use rafka_node_admin_core::build_drive::{Dispatched, Dispatcher, DriveEnv, Drives, OpenGate};
+use rafka_node_admin_core::build_op::{local_dispatched, BuildDoor, BuildSlot};
+use rafka_node_admin_core::build_run::{AttemptRuns, FramedBuilds, RunDoor};
+use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
+use rafka_node_admin_core::executor::{BuildExecutor, OperationRunner};
+use rafka_node_rpc::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::http::{router, ControlPlane};
+use rafka_node_admin_core::http::ControlPlane;
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, ProviderKind, ScopeStatus};
+use rafka_node_admin_core::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 struct Capture {
@@ -141,57 +149,88 @@ fn mn() -> Topology {
     }
 }
 
-/// The real control router over `builds`, on a loopback port.
-async fn serve(builds: Arc<MemoryBuildStateAdapter>) -> (String, Arc<ControlPlane>) {
+/// The fabric-primary's Build door over `rig`'s Build state: the control plane that accepts a change,
+/// the drive that claims on its own log, and the executor door that runs the create pipeline.
+async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
     let t = mn();
-    let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*builds, t.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds, accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
-    let app = router(cp.clone(), axum::Router::new());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (base, cp)
+    let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let control = Arc::new(ControlPlane::new(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
+    let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
+    let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone() });
+    let env = Arc::new(DriveEnv {
+        me: me.clone(),
+        topology: control.topology.clone(),
+        accepted,
+        builds: rig.builds.clone(),
+        door: Arc::new(ClaimDoor { me: me.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        dispatcher: Arc::new(Local(run.clone())),
+        gate: Arc::new(OpenGate),
+        departure: Arc::new(crate::loopback::Proofs::default()),
+        verdicts: Arc::new(crate::loopback::NoVerdicts),
+    });
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
 }
 
-/// A TCP hop between the client and the control API that the test can sever: every open
-/// connection is closed and no new one is accepted.
-struct Wire {
-    base: String,
-    tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
-    listener: tokio::task::JoinHandle<()>,
-}
+/// The one executor of the fixture is the fabric-primary itself.
+struct Local(Arc<RunDoor>);
 
-impl Wire {
-    async fn to(upstream: &str) -> Wire {
-        let upstream = upstream.trim_start_matches("http://").to_string();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> = Arc::default();
-        let held = tasks.clone();
-        let listener = tokio::spawn(async move {
-            while let Ok((mut down, _)) = listener.accept().await {
-                let upstream = upstream.clone();
-                let h = tokio::spawn(async move {
-                    if let Ok(mut up) = tokio::net::TcpStream::connect(&upstream).await {
-                        let _ = tokio::io::copy_bidirectional(&mut down, &mut up).await;
-                    }
-                });
-                held.lock().unwrap().push(h);
-            }
-        });
-        Wire { base, tasks, listener }
+#[async_trait::async_trait]
+impl Dispatcher for Local {
+    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>) -> Dispatched {
+        local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &intent).await)
     }
+}
 
-    fn sever(&self) {
-        self.listener.abort();
-        for t in self.tasks.lock().unwrap().drain(..) {
-            t.abort();
+/// Runs the create operation through the pipeline over the fixture's fakes, as the executing admin does.
+struct RigRunner {
+    rig: Arc<Rig>,
+    join: Duration,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for RigRunner {
+    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        match op {
+            BuildOperation::CreateNode { node } => self.rig.pipeline_create(build_id, attempt, &node.to_string(), self.join).await,
+            other => Err(format!("the fixture creates nodes only, not {other:?}")),
         }
     }
 }
 
+/// A node-RPC server on loopback that serves the Build family from `door`, and a carrier to it.
+struct Served {
+    router: Router,
+    carrier: BuildCarrier,
+}
+
+async fn serve(door: Arc<BuildDoor>) -> Served {
+    let (node_id, incarnation, key) = (NodeId::mint(), IncarnationId::mint(), SecretKey::generate());
+    let slot: BuildSlot = Arc::new(OnceLock::new());
+    let _ = slot.set(door);
+    let server = rafka_node_admin_core::build_op::serve(ServerBuilder::new(), slot)
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .unwrap();
+    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(ResolvedNode { node_id, name: "mesh1.admin.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation });
+    let caller = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let client = Arc::new(NodeRpcClient::new(caller, resolver).with_caller_system("rdm"));
+    Served { router, carrier: BuildCarrier::new(client, "mesh1.admin.1".parse().unwrap()) }
+}
+
+/// The reads of the node objects go to one admin's control API; no cell of this file reads one.
+fn nodes_over(carrier: &BuildCarrier) -> Nodes {
+    Nodes::new(NodeAdminClient::new("http://127.0.0.1:1"), carrier.clone())
+}
+
 struct Rig {
-    builds: Arc<MemoryBuildStateAdapter>,
+    builds: Arc<dyn BuildStateAdapter>,
+    local: Arc<MemoryBuildStateAdapter>,
+    runs: Arc<AttemptRuns>,
     joins: Arc<Joins>,
     membership: Arc<Membership>,
     sink: Arc<Published>,
@@ -212,14 +251,14 @@ impl Rig {
             data_root: data_root.clone(),
             mesh_issuer: None,
         };
-        Rig { builds: Arc::new(MemoryBuildStateAdapter::new()), joins: Arc::new(Joins::default()), membership: Arc::new(Membership { published: Mutex::new(None), joined: AtomicBool::new(false) }), sink: Arc::default(), template, data_root }
+        let runs = Arc::new(AttemptRuns::default());
+        let local = Arc::new(MemoryBuildStateAdapter::new());
+        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), membership: Arc::new(Membership { published: Mutex::new(None), joined: AtomicBool::new(false) }), sink: Arc::default(), template, data_root }
     }
 
-    /// Claim the next attempt of `build` and run the create pipeline for `name` in it, as the
-    /// executing admin would.
-    async fn create(&self, build: &BuildId, name: &str, join: Duration) -> Result<(), String> {
-        let attempt = self.builds.read_build(build).await.unwrap().attempt + 1;
-        self.builds.claim_attempt(&BuildAttemptClaim { build_id: build.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    /// Run the create pipeline for `name` in `attempt` of `build`, as the executing admin does once
+    /// the fabric-primary has claimed the attempt for it.
+    async fn pipeline_create(&self, build: &BuildId, attempt: u32, name: &str, join: Duration) -> Result<(), String> {
         let pipeline = DeploymentPipeline {
             provider: &Up,
             joins: &self.joins,
@@ -313,13 +352,15 @@ const ATTEMPT_ONE_STEPS: [&str; 10] = [
 fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     let cap = capture();
     let (frames, end, published) = cap.run(async {
-        let rig = Rig::new();
-        let (base, _cp) = serve(rig.builds.clone()).await;
-        let nodes = Nodes::new(NodeAdminClient::new(base));
+        let rig = Arc::new(Rig::new());
+        let served = serve(door(&rig, Duration::from_millis(300)).await).await;
+        let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
         let build = BuildId(stream.accepted().build_id.0.clone());
-        let (run, _) = tokio::join!(rig.create(&build, "mesh1.rpc.3", Duration::from_millis(300)), rig.report_bind(&build, "mesh1.rpc.3"));
-        assert!(run.unwrap_err().contains("WaitForMeshJoin"), "the pipeline failed at the join step");
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
+        });
         let (frames, end) = drain(&mut stream, Duration::from_secs(5)).await;
         let published = rig.sink.0.lock().unwrap().clone();
         (frames, end, published)
@@ -354,32 +395,27 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     assert_eq!(join_step[0]["attributes"]["outcome"], "failed", "and it failed there");
 }
 
-/// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the wire between the
-/// caller and the control API is cut while the create is at its join. The caller's stream ends
-/// `Indeterminate`, never `Failed`. `build.get` over a new connection returns the receipts of
-/// exactly the steps that completed, `Resume` names the join as the first step without a
-/// `Complete` receipt, and the next attempt re-runs none of the completed steps: each still has
-/// one receipt, the next attempt's receipts begin at the join, and the reused steps' spans say so.
+/// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
+/// the caller and the fabric-primary is cut while the create is at its join. The caller's stream
+/// ends `Indeterminate`, never `Failed`. The cut cancels nothing: `build.get` over a new transport
+/// returns the receipts of exactly the steps that completed, `Resume` names the join as the first
+/// step without a `Complete` receipt, and the re-submit by the Build id streams the same Build
+/// (never a second one) to its end once the birth is heard: no completed step runs again, each
+/// still has one receipt, and the steps' spans say the attempt ran them once.
 #[test]
 fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     let cap = capture();
-    let (frames, end, view_after_cut, resume, view_after, final_frames) = cap.run(async {
+    let (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let (base, _cp) = serve(rig.builds.clone()).await;
-        let wire = Wire::to(&base).await;
-        let nodes = Nodes::new(NodeAdminClient::new(wire.base.clone()));
+        let door = door(&rig, Duration::from_secs(60)).await;
+        let served = serve(door.clone()).await;
+        let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
         let build = BuildId(stream.accepted().build_id.0.clone());
         let accepted = stream.accepted().clone();
-        // The executor runs the create; the birth reports its bind; the join is never heard.
-        let executor = {
-            let rig = rig.clone();
-            let build = build.clone();
-            tokio::spawn(async move { let _ = rig.create(&build, "mesh1.rpc.3", Duration::from_secs(60)).await; })
-        };
+        // The birth reports its bind; the join is not heard yet.
         tokio::spawn({
-            let rig = rig.clone();
-            let build = build.clone();
+            let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
         let mut frames = Vec::new();
@@ -389,8 +425,8 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
                 other => panic!("the stream ended before the cut: {other:?}"),
             }
         }
-        // The cut: the executor's process dies at the join and the caller's wire is severed. The
-        // join is where it is cut once the step before it has its receipt.
+        // The cut: the transport under the caller's stream goes down once the step before the join
+        // has its receipt.
         loop {
             let view = rig.builds.read_build(&build).await.unwrap();
             if view.steps.iter().any(|s| s.step == "ApplyMeshPending") {
@@ -398,58 +434,91 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        executor.abort();
-        let _ = executor.await;
-        wire.sever();
+        served.router.shutdown().await.unwrap();
         let end = loop {
-            match tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the severed stream never ended") {
+            match tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the cut stream never ended") {
                 Some(Ok(f)) => frames.push(f),
                 Some(Err(end)) => break end,
                 None => panic!("the stream ended without saying how: {frames:?}"),
             }
         };
-        // Re-attach over a new connection.
-        let builds = Builds::new(NodeAdminClient::new(base.clone()));
-        let view_after_cut = builds.get(&accepted.build_id).await.unwrap();
-        let resume = Resume::from_view(&WorkflowKind::Create, &view_after_cut, accepted.attempt).unwrap();
-        // The next attempt resumes: the birth is heard this time.
+        // Re-attach over a new transport to the same fabric-primary.
+        let again = serve(door).await;
+        let builds = Builds::new(again.carrier.clone());
+        let receipts_after_cut = builds.get(&accepted.build_id).await.unwrap();
+        let resume = Resume::from_receipts(&WorkflowKind::Create, &receipts_after_cut, accepted.attempt).unwrap();
+        // The birth is heard this time: the Build the cut did not cancel goes on to its end, and the
+        // re-submit streams it.
+        let mut resumed = nodes_over(&again.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
+        let disposition = resumed.disposition();
         rig.membership.joined.store(true, Ordering::SeqCst);
-        rig.create(&build, "mesh1.rpc.3", Duration::from_secs(5)).await.unwrap();
-        let view_after = builds.get(&accepted.build_id).await.unwrap();
-        let folded = rafka_node_admin_client::fold(&WorkflowKind::Create, &view_after, accepted.attempt).unwrap();
-        (frames, end, view_after_cut, resume, view_after, folded.frames)
+        let (final_frames, resumed_end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        assert!(resumed_end.is_none(), "the resumed stream ends with its terminal frame: {resumed_end:?}");
+        let receipts_after = builds.get(&accepted.build_id).await.unwrap();
+        (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition)
     });
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a cut stream is Indeterminate, not {end:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Complete)), "no step is inferred failed or complete from a broken stream: {frames:?}");
     assert!(frames.contains(&Frame::Event(NodeEvent::Started)) && !frames.contains(&Frame::Event(NodeEvent::Joined)));
 
-    let completed_steps = |view: &rafka_node_admin_client::BuildView, attempt: u32| -> Vec<String> {
-        view.steps.iter().filter(|s| s.attempt == attempt && s.outcome == json!("complete")).map(|s| s.step.clone()).collect()
+    let completed_steps = |r: &rafka_node_admin_client::BuildReceipts, attempt: u32| -> Vec<String> {
+        r.steps.iter().filter(|s| s.attempt == attempt && s.result == rafka_node_rpc_contract::build::StepResult::Complete).map(|s| s.step.clone()).collect()
     };
-    assert_eq!(view_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", view_after_cut.steps);
-    assert_eq!(completed_steps(&view_after_cut, 1), ATTEMPT_ONE_STEPS);
+    assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
+    assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
     assert_eq!(resume.from, Some(("create-node".to_string(), "WaitForMeshJoin".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
+    assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::Attached, "the re-submit attached to the Build the cut left running");
 
     for step in ATTEMPT_ONE_STEPS {
-        assert_eq!(view_after.steps.iter().filter(|s| s.step == step).count(), 1, "{step} was not re-run: one receipt, from attempt 1");
+        assert_eq!(receipts_after.steps.iter().filter(|s| s.step == step).count(), 1, "{step} was not run again: one receipt, from attempt 1");
     }
-    assert_eq!(completed_steps(&view_after, 2), ["WaitForMeshJoin", "WaitForNodeReady", "Complete"], "attempt 2 begins at the join");
-    assert_eq!(final_frames, [Frame::Event(NodeEvent::Created), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Ready), Frame::Complete]);
+    assert_eq!(receipts_after.attempt, 1, "the cut opened no second attempt");
+    assert_eq!(completed_steps(&receipts_after, 1).len(), ATTEMPT_ONE_STEPS.len() + 3, "the same attempt went on through the join to its end");
+    assert!(matches!(&final_frames[0], Frame::Started { .. }));
+    assert_eq!(final_frames[1..], [Frame::Event(NodeEvent::Created), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Ready), Frame::Complete]);
 
     let spans = cap.spans();
-    let call = spans_named(&spans, "rdm.node_admin.node.create.via-workflow");
-    assert_eq!(call.len(), 1, "{spans:?}");
-    assert_eq!(call[0]["attributes"]["outcome"], "indeterminate");
-    let attempt_two: Vec<(String, String)> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step")
-        .into_iter()
-        .filter(|s| s["attributes"]["attempt"] == "2")
-        .map(|s| (s["attributes"]["step"].as_str().unwrap().to_string(), s["attributes"]["outcome"].as_str().unwrap().to_string()))
-        .collect();
+    let calls = spans_named(&spans, "rdm.node_admin.node.create.via-workflow");
+    assert_eq!(calls.len(), 2, "the create and its re-submit: {spans:?}");
+    assert_eq!(calls.iter().filter(|c| c["attributes"]["outcome"] == "indeterminate").count(), 1, "the cut call ended indeterminate");
+    assert_eq!(calls.iter().filter(|c| c["attributes"]["outcome"] == "complete").count(), 1, "the re-submit ended complete");
+    let steps = spans_named(&spans, "rdm.node_admin.deployment.update.via-step");
     for step in ATTEMPT_ONE_STEPS {
-        assert!(attempt_two.contains(&(step.to_string(), "reused".to_string())), "{step} was reused in attempt 2, not re-run: {attempt_two:?}");
+        let ran: Vec<_> = steps.iter().filter(|s| s["attributes"]["step"] == step).collect();
+        assert_eq!(ran.len(), 1, "{step} ran once: {ran:?}");
+        assert_eq!(ran[0]["attributes"]["outcome"], "complete");
     }
-    assert!(attempt_two.contains(&("WaitForMeshJoin".to_string(), "complete".to_string())));
+}
+
+/// CONTRACT: a valid put ends `NotBackedToday` naming the call, because no op carries the put;
+/// an invalid one is refused before that. Calls whose request no op carries say so by name.
+#[test]
+fn calls_no_op_carries_today_say_so_by_name() {
+    use rafka_node_admin_client::{MetaField, MetaFieldIsRdmOwned, NodeMeta};
+    let cap = capture();
+    cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let served = serve(door(&rig, Duration::from_secs(1)).await).await;
+        let nodes = nodes_over(&served.carrier);
+        let held = NodeMeta {
+            node_id: NodeId::mint(),
+            incarnation: Some(IncarnationId::mint()),
+            endpoint: Some("ep-1".into()),
+            transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
+            exe: Some("rpc-node@abc123".into()),
+            status: rafka_node_admin_client::NodeStatus::ReadyForTraffic,
+            name: "mesh1.rpc.1".parse().unwrap(),
+            mesh: "mesh1".into(),
+            kind: NodeKind::RpcNode,
+            otel_debug: false,
+        };
+        assert!(matches!(nodes.update(&held, &held, false), Ok(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
+        assert_eq!(nodes.update(&NodeMeta { status: rafka_node_admin_client::NodeStatus::Dead, ..held.clone() }, &held, false).unwrap_err(), MetaFieldIsRdmOwned { field: MetaField::Status });
+        for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet), (nodes.config_update(), NodeOp::ConfigUpdate), (nodes.start(), NodeOp::Start)] {
+            assert!(matches!(end, CallEnd::NotBackedToday { op: got, .. } if got == op), "{end:?}");
+        }
+    });
 }
 
 /// CONTRACT: every step the create and retire pipelines record is one the client names. The

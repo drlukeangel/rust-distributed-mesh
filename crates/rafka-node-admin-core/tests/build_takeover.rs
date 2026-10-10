@@ -1,11 +1,12 @@
 //! i143.e1.s5 functional: Build identity is fabric control state.
 //!
 //! Two node-admins of one fabric hold the fabric's Build facts over the Build
-//! topic (iroh-gossip). Admin A accepts a Build, claims attempt 1, completes
-//! one operation and dies in the middle of the next. Admin B continues the
-//! SAME build id from its own projection (A's state is gone with it): it
-//! claims attempt 2, re-plans against the observed topology, runs only what
-//! is left and completes the Build, under
+//! topic (iroh-gossip). Admin A is the fabric-primary: it accepts a Build, claims attempt 1 on its
+//! own log, runs it, completes one operation and dies in the middle of the next. Admin B takes the
+//! seat and drives the SAME build id from its own projection (A's state is gone with it): the
+//! attempt A held is dispatched to A, which answers nothing, and only after B holds proof of A's
+//! departure does it claim attempt 2 on its own log. B re-plans against the observed topology,
+//! runs only what is left and completes the Build, under
 //! `rdm.node_admin.build.update.via-reconcile`.
 
 use iroh::endpoint::presets;
@@ -14,7 +15,8 @@ use iroh::{Endpoint, SecretKey};
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build::{BuildId, BuildOperation, MeshDesired};
 use rafka_node_admin_core::build_state::{BuildState, BuildStateAdapter};
-use rafka_node_admin_core::executor::{BuildExecutor, OperationRunner, Reconciled};
+use rafka_node_admin_core::build_drive::{Drive, DriveEnv, DriveEnd, OpenGate};
+use rafka_node_admin_core::executor::OperationRunner;
 use rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter;
 use rafka_node_admin_core::http::ControlPlane;
 use rafka_node_admin_core::model::*;
@@ -118,20 +120,28 @@ impl OperationRunner for Runner {
     }
 }
 
-/// The claim of `me`, put to the door of the fabric-primary `me` is (its own Build log decides).
-fn door_of(me: &str, builds: &Arc<FabricBuildStateAdapter>, topology: &Arc<RwLock<Topology>>) -> Arc<dyn rafka_node_admin_core::build_claim::AttemptClaimer> {
-    Arc::new(rafka_node_admin_core::build_claim::DoorClaimer(Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
+/// A fabric-primary's drive of the Build over `builds`: its claim door is its own log, and
+/// `dispatch` reaches the executors that are still alive.
+fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, proofs: Arc<crate::loopback::Proofs>) -> Arc<DriveEnv> {
+    Arc::new(DriveEnv {
         me: me.parse().unwrap(),
         topology: topology.clone(),
-        builds: builds.clone(),
-        contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
-    })))
+        accepted: a.accepted.clone(),
+        builds: a.builds.clone(),
+        door: Arc::new(rafka_node_admin_core::build_claim::ClaimDoor { me: me.parse().unwrap(), topology: topology.clone(), builds: a.builds.clone(), contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()) }),
+        dispatcher: dispatch,
+        gate: Arc::new(OpenGate),
+        departure: proofs,
+        verdicts: Arc::new(crate::loopback::NoVerdicts),
+    })
 }
 
 struct Admin {
     endpoint: Endpoint,
     router: Router,
     builds: Arc<FabricBuildStateAdapter>,
+    /// The admin's own Build log, which the Build topic feeds and the intent a call carries is absorbed into.
+    local: Arc<rafka_node_admin_core::build_state::MemoryBuildStateAdapter>,
     /// `Fabric.build_id` as the admin holds it: what its Build topic feeds.
     accepted: Arc<AcceptedStore>,
 }
@@ -152,8 +162,9 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     let storage = Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new());
     rafka_node_admin_core::fabric_storage::FabricStorage::put_identity(&*storage, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()), accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin").await, "test-admin".into(), None).await.unwrap());
-    Admin { endpoint, router, builds, accepted }
+    let local = Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, local.clone(), accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin").await, "test-admin".into(), None).await.unwrap());
+    Admin { endpoint, router, builds, local, accepted }
 }
 
 fn addr(a: &Admin) -> iroh::EndpointAddr {
@@ -209,14 +220,18 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .unwrap()
         .build_id;
 
-    // A executes: mesh1.rpc.2 completes, A dies in mesh1.rpc.3.
+    // A drives: mesh1.rpc.2 completes, A dies in mesh1.rpc.3.
     let died = Arc::new(Notify::new());
     let a_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: Some("mesh1.rpc.3".parse().unwrap()), died: died.clone() });
-    let a_exec = BuildExecutor { executor: "mesh1.admin.1".into(), accepted: a.accepted.clone(), builds: a.builds.clone(), topology: topology.clone(), runner: a_runner.clone(), claimer: door_of("mesh1.admin.1", &a.builds, &topology) };
-    let view = a.builds.read_build(&build_id).await.unwrap();
-    let mut a_executing = Box::pin(a_exec.reconcile(&view));
+    let a_dispatch = crate::loopback::Loopback::new(a.builds.clone(), a.local.clone(), topology.clone(), a_runner.clone());
+    let a_env = drive_env("mesh1.admin.1", &a, &topology, a_dispatch.clone(), Arc::default());
+    let a_drive = Drive::detached(build_id.clone());
+    let mut a_driving = Box::pin({
+        let (env, drive) = (a_env.clone(), a_drive.clone());
+        async move { env.run(&drive).await }
+    });
     tokio::select! {
-        r = &mut a_executing => panic!("A was to stop inside mesh1.rpc.3, but finished: {r:?}"),
+        r = &mut a_driving => panic!("A was to stop inside mesh1.rpc.3, but its drive ended: {r:?}"),
         _ = died.notified() => {}
     }
     // While A is stuck in mesh1.rpc.3, the fabric projection carries the
@@ -227,39 +242,40 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     })
     .await;
     // A dies: its execution, endpoint, gossip and Build state go with it.
-    drop(a_executing);
+    drop(a_driving);
     let Admin { router, builds: a_builds, .. } = a;
-    drop(a_exec);
+    drop(a_env);
+    drop(a_dispatch);
     drop(a_builds);
     router.shutdown().await.unwrap();
     lose_a(&topology).await;
 
-    // B takes over: the same build id, the next attempt, only what is left.
+    // B drives the same Build: the same build id, the next attempt, only what is left.
     let b_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: None, died: Arc::new(Notify::new()) });
     // B's pointer names the Build through its Build topic, never set by hand: the successor may
-    // execute only what Fabric.build_id names.
+    // drive only what Fabric.build_id names.
     eventually("B's Fabric.build_id names the Build", || {
         let (accepted, id) = (b.accepted.clone(), build_id.clone());
         async move { accepted.build_id().await == Some(id) }
     })
     .await;
-    let b_exec = BuildExecutor { executor: "mesh1.admin.2".into(), accepted: b.accepted.clone(), builds: b.builds.clone(), topology: topology.clone(), runner: b_runner.clone(), claimer: door_of("mesh1.admin.2", &b.builds, &topology) };
-    let done = b_exec.reconcile_active().await;
-    let ours: Vec<_> = done.iter().filter(|(id, _)| *id == build_id).collect();
-    assert_eq!(
-        ours,
-        vec![&(
-            build_id.clone(),
-            Reconciled::Converged {
-                attempt: 2,
-                operations: vec![
-                    // A's admin is lost too: its path is part of what is left.
-                    BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap() },
-                    BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() },
-                ]
-            }
-        )]
-    );
+    let b_dispatch = crate::loopback::Loopback::new(b.builds.clone(), b.local.clone(), topology.clone(), b_runner.clone());
+    // A is gone: nothing answers at its address.
+    b_dispatch.lose("mesh1.admin.1");
+    let proofs = Arc::new(crate::loopback::Proofs::default());
+    let b_env = drive_env("mesh1.admin.2", &b, &topology, b_dispatch.clone(), proofs.clone());
+    let b_drive = Drive::detached(build_id.clone());
+    // Silence is not proof: A is unreachable, its departure is not proven, and the attempt it holds
+    // is not claimed for another admin.
+    match b_env.run(&b_drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("departure is not proven"), "{why}"),
+        other => panic!("an unreachable executor without proof stalls the drive: {other:?}"),
+    }
+    assert_eq!(b.builds.read_build(&build_id).await.unwrap().attempt, 1, "no attempt was claimed on silence");
+    assert!(b_runner.ran.lock().unwrap().is_empty(), "nothing ran on silence");
+    // The proof arrives: the exact runtime of A is inspected and exited.
+    proofs.exited.lock().unwrap().insert("mesh1.admin.1".into());
+    assert_eq!(b_env.run(&b_drive).await, DriveEnd::Terminal);
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
         vec![
@@ -270,29 +286,37 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(
         *b_runner.ran.lock().unwrap(),
         vec![
+            // A's admin is lost too: its path is part of what is left.
             (2, BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap() }),
             (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() }),
         ],
         "mesh1.rpc.2 is never created twice"
     );
+    assert_eq!(*b_dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "attempt 2 was dispatched to B alone");
     let rpcs = topology.read().await.nodes.iter().filter(|n| n.kind == NodeKind::RpcNode).count();
     assert_eq!(rpcs, 3);
 
     let view = b.builds.read_build(&build_id).await.unwrap();
     assert_eq!((view.state, view.attempt, view.executor.as_deref()), (BuildState::Complete, 2, Some("mesh1.admin.2")));
 
-    // The takeover is one reconcile span on B, naming A as the previous executor.
+    // The takeover is one reconcile span on B, and one departure proof span naming A.
     let all = spans.0.lock().unwrap().clone();
     let reconciles: Vec<&BTreeMap<String, String>> = all
         .values()
         .filter(|(n, f)| n == "rdm.node_admin.build.update.via-reconcile" && f.get("build_id") == Some(&build_id.0))
         .map(|(_, f)| f)
         .collect();
-    let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some("mesh1.admin.2")).expect("B's reconcile span");
+    let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some("mesh1.admin.2")).unwrap_or_else(|| panic!("B's reconcile span among {reconciles:?}"));
     assert_eq!(takeover.get("attempt").map(String::as_str), Some("2"));
-    assert_eq!(takeover.get("previous_executor").map(String::as_str), Some("mesh1.admin.1"));
     assert_eq!(takeover.get("operations").map(String::as_str), Some("create-node:mesh1.admin.1,create-node:mesh1.rpc.3"));
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
+    let proven = all
+        .values()
+        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-departure-proven" && f.get("build_id") == Some(&build_id.0))
+        .map(|(_, f)| f)
+        .collect::<Vec<_>>();
+    assert_eq!(proven.len(), 1, "the departure was proven once: {proven:?}");
+    assert_eq!(proven[0].get("executor").map(String::as_str), Some("mesh1.admin.1"));
     b.router.shutdown().await.unwrap();
 }
 

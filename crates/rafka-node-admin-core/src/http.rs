@@ -140,6 +140,11 @@ impl ControlPlane {
             change = %serde_json::to_string(&change).unwrap_or_default(),
             previous_build_id = tracing::field::Empty,
         );
+        self.submit_in(span, route, change).await
+    }
+
+    /// [`ControlPlane::submit`] under `span`, which names the surface the change came through.
+    pub async fn submit_in(&self, span: tracing::Span, route: &'static str, change: TopologyChange) -> Result<Opened, Refusal> {
         // The span is entered by the future on each poll, never by a guard held across an await
         // (a guard stays entered on the worker while the task is parked). A refusal is reported
         // beside the request span, in the caller's span.
@@ -220,8 +225,13 @@ impl ControlPlane {
     /// Open the next attempt of the accepted Build with a fenced action (a restart or a
     /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
     pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind, named_birth: Option<crate::model::IncarnationId>) -> Result<Opened, Refusal> {
-        let replace = kind == ActionKind::Replace;
         let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
+        self.open_attempt_in(span, route, reason, path, kind, named_birth).await
+    }
+
+    /// [`ControlPlane::open_attempt`] under `span`, which names the surface the request came through.
+    pub async fn open_attempt_in(&self, span: tracing::Span, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind, named_birth: Option<crate::model::IncarnationId>) -> Result<Opened, Refusal> {
+        let replace = kind == ActionKind::Replace;
         let outer = tracing::Span::current();
         async {
             self.authority(route).await?;
@@ -295,6 +305,24 @@ impl ControlPlane {
         }
         .instrument(span.clone())
         .await
+    }
+}
+
+impl ControlPlane {
+    /// A finished Build leaves history. The Build the pointer names, and a Build still reconciling,
+    /// stay.
+    pub async fn forget_build(&self, id: &BuildId) -> Result<(), Refusal> {
+        let p = self.builds.read_build(id).await.map_err(|e| match e {
+            BuildStateError::UnknownBuild(id) => Refusal::NotFound(format!("no Build {id}")),
+            e => Refusal::State(e),
+        })?;
+        if matches!(p.state, BuildState::Pending | BuildState::Running) {
+            return Err(Refusal::Conflict(format!("Build {id} is still {:?}; only finished Builds leave history", p.state)));
+        }
+        if self.accepted.build_id().await.as_ref() == Some(id) {
+            return Err(Refusal::Conflict(format!("Build {id} is the accepted topology (Fabric.build_id); it leaves history once the pointer moves")));
+        }
+        self.builds.forget(id).await.map_err(Refusal::State)
     }
 }
 
@@ -460,18 +488,7 @@ async fn get_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> Res
 }
 
 async fn delete_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> Result<Response, Refusal> {
-    let id = BuildId(q.id);
-    let p = cp.builds.read_build(&id).await.map_err(|e| match e {
-        BuildStateError::UnknownBuild(id) => Refusal::NotFound(format!("no Build {id}")),
-        e => Refusal::State(e),
-    })?;
-    if matches!(p.state, BuildState::Pending | BuildState::Running) {
-        return Err(Refusal::Conflict(format!("Build {id} is still {:?}; only finished Builds leave history", p.state)));
-    }
-    if cp.accepted.build_id().await.as_ref() == Some(&id) {
-        return Err(Refusal::Conflict(format!("Build {id} is the accepted topology (Fabric.build_id); it leaves history once the pointer moves")));
-    }
-    cp.builds.forget(&id).await.map_err(Refusal::State)?;
+    cp.forget_build(&BuildId(q.id)).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

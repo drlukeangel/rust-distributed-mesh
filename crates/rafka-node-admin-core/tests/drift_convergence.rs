@@ -3,7 +3,8 @@
 //!
 //! The real chain runs end to end — `admin::reconcile_drift` (the fabric-primary inspects each
 //! unheard birth's runtime and opens the next attempt of the accepted Build on proof),
-//! `BuildExecutor::reconcile_active` (claim, `accepted::plan`, `executor_for`, hand-off, receipts),
+//! the fabric-primary's drive (`DriveEnv::run`: the claim on its own log, `accepted::plan`, `executor_for`,
+//! `build.attempt.run` to each executor in turn, hand-off, receipts),
 //! `election::resolve` (the seats), and `fence::fence` before every create — over a world
 //! fixture: a provider whose runtimes run or have exited, and a probe answering whether a birth
 //! answers. Only the world is a fixture; every decision is the product code's.
@@ -21,7 +22,8 @@ use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, MeshTopolog
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
 use rafka_node_admin_core::build_state::{BuildState, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::executor::{BuildExecutor, OperationRunner};
+use rafka_node_admin_core::build_drive::{Drive, DriveEnv, OpenGate};
+use rafka_node_admin_core::executor::OperationRunner;
 use rafka_node_admin_core::fence::{fence, FenceOutcome, PathProbe};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
@@ -138,6 +140,7 @@ struct Estate {
     book: DigestBook,
     provider: Provider,
     runner: Arc<Runner>,
+    dispatch: Arc<crate::loopback::Loopback>,
 }
 
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
@@ -164,7 +167,8 @@ async fn estate() -> Estate {
     let fp = view.read().await.fabric_primary().unwrap().name.to_string();
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp).await.unwrap();
     let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), restarted: Mutex::new(Vec::new()), hear_after_birth: std::sync::atomic::AtomicBool::new(false) });
-    Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner }
+    let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), view.clone(), runner.clone());
+    Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner, dispatch }
 }
 
 /// A new birth at `path`: a runtime in the world, a digest in membership, a live node.
@@ -302,33 +306,38 @@ impl Estate {
         rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await
     }
 
-    /// Every live admin runs its executor until no Build is active: claims, hand-offs and
-    /// receipts are the product's. Between passes membership does what gossip does in the
-    /// product: a runtime that runs and answers, in a mesh that has a live admin to forward its
-    /// digests, is heard again and leaves `Dead` in the view.
+    /// The fabric-primary drives the accepted Build until no Build is active: the claim on its own
+    /// log, `build.attempt.run` to each executor `executor_for` names, hand-offs and receipts are
+    /// the product's. Between passes membership does what gossip does in the product: a runtime
+    /// that runs and answers, in a mesh that has a live admin to forward its digests, is heard
+    /// again and leaves `Dead` in the view.
     async fn converge(&self) {
         for _ in 0..8 {
-            let admins: Vec<String> = self.view.read().await.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.name.to_string()).collect();
-            for a in admins {
-                // The claim is put to the fabric-primary's door, as the product puts it over Node RPC.
-                let primary: PathName = self.fabric_primary().await.parse().expect("a fabric-primary");
-                let door = Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
-                    me: primary,
-                    topology: self.view.clone(),
-                    builds: self.builds.clone(),
-                    contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
-                });
-                let exec = BuildExecutor {
-                    executor: a.clone(),
-                    accepted: self.accepted.clone(),
-                    builds: self.builds.clone(),
-                    topology: self.view.clone(),
-                    runner: self.runner.clone(),
-                    claimer: Arc::new(rafka_node_admin_core::build_claim::DoorClaimer(door)),
-                };
-                let done = exec.reconcile_active().await;
-                if std::env::var("CONVERGE_TRACE").is_ok() {
-                    eprintln!("converge: {a} -> {done:?}");
+            // The claim is decided at the fabric-primary's door, as the product decides it.
+            let primary: PathName = self.fabric_primary().await.parse().expect("a fabric-primary");
+            let door = Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
+                me: primary.clone(),
+                topology: self.view.clone(),
+                builds: self.builds.clone(),
+                contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
+            });
+            let env = Arc::new(DriveEnv {
+                me: primary,
+                topology: self.view.clone(),
+                accepted: self.accepted.clone(),
+                builds: self.builds.clone(),
+                door,
+                dispatcher: self.dispatch.clone(),
+                gate: Arc::new(OpenGate),
+                departure: Arc::new(crate::loopback::Proofs::default()),
+                verdicts: Arc::new(crate::loopback::NoVerdicts),
+            });
+            if let Some(current) = self.accepted.current(&*self.builds).await {
+                if matches!(current.state, BuildState::Pending | BuildState::Running) {
+                    let done = env.run(&Drive::detached(current.build_id.clone())).await;
+                    if std::env::var("CONVERGE_TRACE").is_ok() {
+                        eprintln!("converge: {done:?}");
+                    }
                 }
             }
             self.hear().await;

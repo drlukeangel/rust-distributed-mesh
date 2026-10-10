@@ -1,10 +1,11 @@
 //! Who decides a Build attempt's claim, and the context the attempt carries (R-A1, R-T4, R-X1).
 //!
-//! An executor never claims from its own log. The claim of attempt `n` of a Build is an
-//! insert-and-fail on the FABRIC-PRIMARY's Build log, asked over Node RPC (`BuildClaim`, op
-//! `0x1C`); the executor runs the attempt only on `Won`. The fabric-primary's own executor asks
-//! the same door in process. A claim that cannot be put to the fabric-primary (no fabric-primary
-//! in the view, a transport failure, a refusal) is a claim not made: the attempt does not run.
+//! An executor never claims. The claim of attempt `n` of a Build is an insert-and-fail on the
+//! FABRIC-PRIMARY's Build log, decided by [`ClaimDoor::claim`] in process by the fabric-primary's
+//! drive (`build_drive`), which then calls the executor with `build.attempt.run` carrying the won
+//! claim. The door is also served on `BuildClaim` (op `0x1C`) for a caller that puts a claim over
+//! Node RPC; the product has no such caller. A fabric-primary whose seat was yielded decides no
+//! claim (the Build log's sticky fence).
 //!
 //! Context is attempt-scoped. The fabric-primary keeps one [`CallContext`] per `(build_id,
 //! attempt)` in a record of its own data dir (`attempt-context/`), written when the attempt comes
@@ -14,15 +15,14 @@
 
 use crate::build::BuildId;
 use crate::build_state::{BuildAttemptClaim, BuildStateAdapter, ClaimOutcome};
-use crate::model::{EndpointId, IncarnationId, NodeId, NodeKind, PathName};
+use crate::model::{EndpointId, NodeKind, PathName};
 use crate::record_store::{FileRecords, StorageError};
 use crate::topology::Topology;
-use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
+use rafka_node_rpc::ServerBuilder;
 use rafka_node_rpc_contract::build_claim::{BuildClaim, BuildClaimReply, BuildClaimRequest};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::context::CallContext;
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::Instrument as _;
@@ -212,162 +212,4 @@ pub fn serve(b: ServerBuilder, slot: ClaimSlot) -> ServerBuilder {
             Ok(door.serve(EndpointId(peer.endpoint_id.to_string()), req).await)
         }
     })
-}
-
-/// What an executor learns of its claim.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Claimed {
-    /// The attempt is the executor's; `context` is the attempt's.
-    Won {
-        /// The attempt's observability context.
-        context: CallContext,
-    },
-    /// The attempt is held by another executor.
-    Lost {
-        /// The executor holding the attempt.
-        holder: String,
-    },
-    /// The attempt is not the Build's next, or the Build is complete.
-    NotOpen {
-        /// The open attempt, when there is one.
-        next: Option<u32>,
-    },
-    /// The claim could not be put to the fabric-primary, or it answered something that is not a
-    /// decision. The attempt does not run.
-    Undecided {
-        /// Why the claim was not decided.
-        reason: String,
-    },
-}
-
-/// Puts an executor's claim to the fabric-primary.
-#[async_trait::async_trait]
-pub trait AttemptClaimer: Send + Sync {
-    /// Put the claim of `attempt` of `build_id` by `executor` to the fabric primary.
-    async fn claim(&self, executor: &str, build_id: &BuildId, attempt: u32) -> Claimed;
-}
-
-fn decided(reply: BuildClaimReply) -> Result<Claimed, BuildClaimReply> {
-    match reply {
-        BuildClaimReply::Won { context } => Ok(Claimed::Won { context: context.sanitized().0 }),
-        BuildClaimReply::Lost { holder } => Ok(Claimed::Lost { holder }),
-        BuildClaimReply::NotOpen { next } => Ok(Claimed::NotOpen { next }),
-        other => Err(other),
-    }
-}
-
-/// The claimer of an admin that holds the door itself and is the fabric-primary: the same door,
-/// in process. Fixtures with one log use it; a refused seat is `Undecided`.
-pub struct DoorClaimer(pub Arc<ClaimDoor>);
-
-#[async_trait::async_trait]
-impl AttemptClaimer for DoorClaimer {
-    async fn claim(&self, executor: &str, build_id: &BuildId, attempt: u32) -> Claimed {
-        match decided(self.0.claim(executor, build_id, attempt).await) {
-            Ok(c) => c,
-            Err(other) => Claimed::Undecided { reason: format!("{} did not decide the claim: {other:?}", self.0.me) },
-        }
-    }
-}
-
-/// The claimer of a running node-admin: the fabric-primary of its view decides, in process when
-/// that is this admin and over Node RPC otherwise.
-pub struct FabricPrimaryClaimer {
-    /// This admin's `path.name`.
-    pub me: PathName,
-    /// This admin's node id.
-    pub node_id: NodeId,
-    /// This admin's incarnation.
-    pub incarnation: IncarnationId,
-    /// This admin's observed topology.
-    pub topology: Arc<tokio::sync::RwLock<Topology>>,
-    /// The door that decides a claim in process when this admin is the fabric primary.
-    pub door: Arc<ClaimDoor>,
-    /// The client a claim to another fabric primary is made through.
-    pub client: Arc<NodeRpcClient>,
-}
-
-impl FabricPrimaryClaimer {
-    async fn ask(&self, target: &PathName, build_id: &BuildId, attempt: u32) -> Result<BuildClaimReply, String> {
-        if *target == self.me {
-            return Ok(self.door.claim(&self.me.to_string(), build_id, attempt).await);
-        }
-        let node_id = self
-            .topology
-            .read()
-            .await
-            .members()
-            .find(|n| n.name == *target)
-            .map(|n| n.node_id.clone())
-            .ok_or_else(|| format!("{target} is not a node of this admin's view"))?;
-        let req = BuildClaimRequest::ClaimAttempt {
-            build_id: build_id.0.clone(),
-            attempt,
-            executor_node_id: self.node_id.clone(),
-            executor_incarnation: self.incarnation.clone(),
-        };
-        let (out, _) = self.client.call::<BuildClaim>(&NodeTarget::ExactNode(node_id), &req, &rafka_node_rpc::CallOptions::default()).await;
-        match out {
-            RpcOutcome::Reply(r) => Ok(r.value().clone()),
-            other => Err(format!("the claim to {target} ended {}: {other:?}", other.name())),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl AttemptClaimer for FabricPrimaryClaimer {
-    /// Follow the fabric-primary: the one this view shows, then each one a `NotFabricPrimary`
-    /// names, once each. A redirect is not a retry; a failure to put the claim is `Undecided`.
-    async fn claim(&self, executor: &str, build_id: &BuildId, attempt: u32) -> Claimed {
-        let span = tracing::info_span!(
-            "rdm.node_admin.build.update.via-claim-request",
-            node = %self.me,
-            build_id = %build_id,
-            attempt,
-            executor,
-            decided_by = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-        );
-        let result = async {
-            let mut asked: BTreeSet<PathName> = BTreeSet::new();
-            let mut target = self.topology.read().await.fabric_primary().map(|n| n.name.clone());
-            loop {
-                let Some(t) = target.take() else {
-                    return (None, Claimed::Undecided { reason: format!("{}: no fabric-primary in this admin's view to decide attempt {attempt} of {build_id}", self.me) });
-                };
-                if !asked.insert(t.clone()) {
-                    return (Some(t.clone()), Claimed::Undecided { reason: format!("{}: the redirect to {t} came back to a fabric-primary already asked ({asked:?})", self.me) });
-                }
-                match self.ask(&t, build_id, attempt).await {
-                    Err(reason) => return (Some(t), Claimed::Undecided { reason }),
-                    Ok(BuildClaimReply::NotFabricPrimary { fabric_primary }) => match fabric_primary.map(|p| p.parse::<PathName>()) {
-                        Some(Ok(named)) => target = Some(named),
-                        Some(Err(e)) => return (Some(t.clone()), Claimed::Undecided { reason: format!("{t} is not the fabric-primary and names an unparseable one: {e}") }),
-                        None => return (Some(t.clone()), Claimed::Undecided { reason: format!("{t} is not the fabric-primary and sees none") }),
-                    },
-                    Ok(reply) => {
-                        return match decided(reply) {
-                            Ok(c) => (Some(t), c),
-                            Err(other) => (Some(t.clone()), Claimed::Undecided { reason: format!("{t} did not decide the claim: {other:?}") }),
-                        }
-                    }
-                }
-            }
-        }
-        .instrument(span.clone())
-        .await;
-        let (by, claimed) = result;
-        span.record("decided_by", by.map(|p| p.to_string()).unwrap_or_default().as_str());
-        span.record(
-            "outcome",
-            match &claimed {
-                Claimed::Won { .. } => "won",
-                Claimed::Lost { .. } => "lost",
-                Claimed::NotOpen { .. } => "not-open",
-                Claimed::Undecided { .. } => "undecided",
-            },
-        );
-        span.in_scope(|| tracing::info!(?claimed, "attempt claim put to the fabric-primary"));
-        claimed
-    }
 }

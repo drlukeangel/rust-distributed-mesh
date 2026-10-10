@@ -1,24 +1,13 @@
-//! The Build executor (PRD §1.2, §1.4, §7; mesh-control-plane.md §1, §3).
+//! The Build executor (PRD §1.2, §1.4, §7; mesh-control-plane.md §1, §3; node-rpc-envelope.md "Build,
+//! op `0x20`").
 //!
-//! A Build is not owned by the admin that accepted it. Whichever node-admin
-//! executes takes the next attempt by an insert-and-fail claim decided on the
-//! fabric-primary's Build log (`build_claim`), re-reads the Build's pinned intent and the observed topology, plans what is left and
-//! runs it; it never resumes from a saved instruction pointer and never
-//! mints a new build id. A successor after the executor's loss does exactly
-//! the same from its own fabric projection of the Build.
-//!
-//! Which admin executes an operation (PRD §12.1, `executor_for`): a mesh's
-//! admin primary runs the operations on that mesh's members, its node-admins included; the
-//! fabric primary runs everything else (mesh creation and retirement) and a mesh's members
-//! while that mesh has no admin primary. An admin claims a Build's next attempt only when it executes the
-//! first operation left; an attempt that reaches an operation another admin
-//! executes ends `HandedOff`, and that admin claims the next attempt of the
-//! same Build.
+//! A Build is driven by the fabric-primary alone (`build_drive`): it claims each attempt on its own
+//! log and calls the admin that [`executor_for`] names with `build.attempt.run` (`build_run`). The
+//! executor here runs what that call carries: it records the won claim, re-plans from the Build's
+//! pinned intent and the topology it observes now, and runs the operations whose executor it is.
 
-use crate::accepted::AcceptedStore;
 use crate::build::{BuildId, BuildOperation};
-use crate::build_claim::{AttemptClaimer, Claimed};
-use crate::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter};
+use crate::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildProjection, BuildStateAdapter};
 use crate::model::{NodeKind, PathName};
 use crate::topology::Topology;
 use std::sync::Arc;
@@ -106,14 +95,14 @@ fn successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
 
 /// The admin that executes what is left of a plan: the first operation's
 /// executor, or the fabric primary when nothing is left (it closes the Build).
-pub(crate) fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<PathName> {
+pub fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<PathName> {
     match ops.first() {
         Some(op) => executor_for(op, t),
         None => t.fabric_primary().map(|n| n.name.clone()),
     }
 }
 
-/// How one reconcile of one Build ended.
+/// How one attempt ended on its executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciled {
     /// Every remaining operation ran: the Build is complete.
@@ -123,24 +112,14 @@ pub enum Reconciled {
         /// The operations it ran.
         operations: Vec<BuildOperation>,
     },
-    /// The attempt stopped at an operation; a later attempt continues.
+    /// The attempt stopped at an operation; the fabric-primary claims a later attempt.
     Failed {
         /// The attempt that stopped.
         attempt: u32,
+        /// The operation key the attempt stopped at (empty when it stopped before any operation).
+        operation: String,
         /// Why it stopped.
         reason: String,
-    },
-    /// Another executor holds the attempt this one tried to claim.
-    Lost {
-        /// The attempt claimed.
-        attempt: u32,
-        /// The executor holding it.
-        holder: String,
-    },
-    /// The attempt is not open on this Build (complete, or not its next): nothing ran.
-    NotOpen {
-        /// The attempt tried.
-        attempt: u32,
     },
     /// The attempt ran `operations` and stopped where admin `to` executes.
     HandedOff {
@@ -151,187 +130,118 @@ pub enum Reconciled {
         /// The admin that executes the operation it stopped at.
         to: String,
     },
-    /// The Build is already complete: nothing to do.
-    Finished,
 }
 
-/// Runs the operations of the accepted Build, claiming each attempt before it runs.
+/// Runs the attempt of an accepted Build that the fabric-primary claimed for this admin.
+///
+/// An executor never claims and never picks a Build up from its projection: the fabric-primary
+/// decides the claim on its own log and calls [`BuildExecutor::run_attempt`] with the won claim
+/// (`build_run::RunDoor`, op `0x20` `build.attempt.run`). The executor records the claim, re-reads
+/// the Build's pinned intent and the observed topology, plans what is left and runs it; it never
+/// resumes from a saved instruction pointer and never mints a build id. A successor after the
+/// executor's loss runs exactly the same from its own projection of the Build.
+///
+/// Which admin executes an operation (PRD §12.1, `executor_for`): a mesh's admin primary runs the
+/// operations on that mesh's members, its node-admins included; the fabric primary runs everything
+/// else (mesh creation and retirement) and a mesh's members while that mesh has no admin primary.
+/// An attempt that reaches an operation another admin executes ends `HandedOff`, and the
+/// fabric-primary claims the next attempt of the same Build for that admin.
 pub struct BuildExecutor {
-    /// This node-admin's path.name: the claimant on every attempt it takes.
+    /// This node-admin's path.name: the executor on every attempt it runs.
     pub executor: String,
-    /// `Fabric.build_id` as this admin holds it. A Build is accepted when the pointer names it: a
-    /// Build persisted before the pointer moved, or never named by it (the accepting admin was lost
-    /// in between), is an orphan this admin does not execute.
-    pub accepted: Arc<AcceptedStore>,
     /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
     /// The runner that realises each operation.
     pub runner: Arc<dyn OperationRunner>,
-    /// Puts this admin's claim of an attempt to the fabric-primary. The attempt runs only on a
-    /// `Won` it returns; there is no claim from this admin's own log.
-    pub claimer: Arc<dyn AttemptClaimer>,
 }
 
 impl BuildExecutor {
-    /// Continue the accepted Build (the one `Fabric.build_id` names) when it is active in this
-    /// admin's projection and this admin executes its next operation.
-    pub async fn reconcile_active(&self) -> Vec<(BuildId, Reconciled)> {
-        let active = match self.builds.list_active().await {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::info!(error = %e, "Build state unreadable; nothing reconciled");
-                return Vec::new();
-            }
-        };
-        let accepted = self.accepted.build_id().await;
-        let mut out = Vec::new();
-        for b in active {
-            if accepted.as_ref() != Some(&b.build_id) {
-                continue;
-            }
-            if !self.leads(&b).await {
-                continue;
-            }
-            let r = self.reconcile(&b).await;
-            out.push((b.build_id, r));
-        }
-        out
-    }
-
-    /// Does this admin execute what is left of `build` in its view now? A
-    /// Build that no longer plans (its re-plan refuses) is closed by whoever
-    /// would execute its first operation: the fabric primary.
-    async fn leads(&self, build: &BuildProjection) -> bool {
-        let t = self.topology.read().await;
-        match build.state {
-            BuildState::Complete => return false,
-            // An attempt is in flight: only its holder's loss lets another
-            // admin take the Build over (an admin runs its own attempts to the
-            // end, so its own open attempt is one a previous birth left).
-            BuildState::Running => {
-                let holder_live = build.executor.as_deref().is_some_and(|h| {
-                    h != self.executor && t.members().any(|n| n.name.to_string() == h && n.status.is_live())
-                });
-                if holder_live {
-                    return false;
-                }
-            }
-            BuildState::Pending | BuildState::Failed => {}
-        }
-        let ops = crate::accepted::plan_for_build(build, &t).operations;
-        let lead = lead_for(&ops, &t);
-        // A mesh shutdown with no admin outside the mesh has no owner: no one executes it. The
-        // fabric-primary says so, once per Build, rather than leaving the Build to stall unnamed.
-        if lead.is_none() && t.fabric_primary().is_some_and(|f| f.name.to_string() == self.executor) {
-            if let Some(op @ BuildOperation::ShutdownMesh { mesh, .. }) = ops.first() {
-                static NAMED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-                let key = format!("{}/{}", build.build_id, op.key());
-                if NAMED.lock().unwrap().replace(key.clone()).as_deref() != Some(key.as_str()) {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-no-owner-outside-mesh", build_id = %build.build_id, operation = %op.key(), mesh = %mesh)
-                        .in_scope(|| tracing::info!("no ready admin primary exists outside the leaving mesh: nothing owns its shutdown, and the mesh is not dismantled"));
-                }
-            }
-        }
-        lead.is_some_and(|l| l.to_string() == self.executor)
-    }
-
-    /// Claim the next attempt of `build` from the fabric-primary, plan what is left and run it.
-    /// The reconcile span is parented to the attempt's context the claim returned, so a restart
-    /// reads under its REST request and a drift repair under the span that proved it.
-    pub async fn reconcile(&self, build: &BuildProjection) -> Reconciled {
+    /// Run attempt `attempt` of `build_id`, which the fabric-primary won for this admin. The span is
+    /// parented to the attempt's context the claim returned, so a restart reads under its request
+    /// and a drift repair under the span that proved it.
+    pub async fn run_attempt(&self, build_id: &BuildId, attempt: u32, context: &rafka_node_rpc_contract::context::CallContext) -> Reconciled {
         use tracing::Instrument;
-        // A failed attempt does not end a Build: a later attempt continues it.
-        if build.state == BuildState::Complete {
-            return Reconciled::Finished;
-        }
-        let attempt = build.attempt + 1;
-        let claimed = self.claimer.claim(&self.executor, &build.build_id, attempt).await;
+        let previous = self.builds.read_build(build_id).await.ok();
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-reconcile",
-            build_id = %build.build_id,
+            build_id = %build_id,
             attempt,
             executor = %self.executor,
-            previous_executor = build.executor.as_deref().unwrap_or(""),
-            reason = build.reason.as_str(),
-            action = %build.action.as_ref().map(|a| serde_json::to_string(a).unwrap_or_default()).unwrap_or_default(),
+            previous_executor = previous.as_ref().and_then(|b| b.executor.as_deref()).unwrap_or(""),
+            reason = previous.as_ref().map(|b| b.reason.as_str()).unwrap_or(""),
+            action = %previous.as_ref().and_then(|b| b.action.as_ref()).map(|a| serde_json::to_string(a).unwrap_or_default()).unwrap_or_default(),
             operations = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
-        let r = match claimed {
-            Claimed::Won { context } => {
-                if let Some(tp) = &context.traceparent {
-                    rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
-                }
-                self.reconcile_attempt(build, attempt, &span).instrument(span.clone()).await
-            }
-            Claimed::Lost { holder } => Reconciled::Lost { attempt, holder },
-            Claimed::NotOpen { .. } => Reconciled::NotOpen { attempt },
-            Claimed::Undecided { reason } => Reconciled::Failed { attempt, reason: format!("claiming attempt {attempt}: {reason}") },
-        };
+        if let Some(tp) = &context.traceparent {
+            rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
+        }
+        let r = self.run_claimed(build_id, attempt, &span).instrument(span.clone()).await;
         span.record(
             "outcome",
             match &r {
                 Reconciled::Converged { .. } => "converged",
                 Reconciled::Failed { .. } => "failed",
-                Reconciled::Lost { .. } => "lost",
-                Reconciled::NotOpen { .. } => "not-open",
                 Reconciled::HandedOff { .. } => "handed-off",
-                Reconciled::Finished => "finished",
             },
         );
         r
     }
 
-    async fn reconcile_attempt(&self, build: &BuildProjection, attempt: u32, span: &tracing::Span) -> Reconciled {
+    async fn run_claimed(&self, build_id: &BuildId, attempt: u32, span: &tracing::Span) -> Reconciled {
         // The fabric-primary decided the claim; this admin's own log takes the fact with it.
-        let claim = BuildAttemptClaim { build_id: build.build_id.clone(), attempt, executor: self.executor.clone() };
+        let claim = BuildAttemptClaim { build_id: build_id.clone(), attempt, executor: self.executor.clone() };
         if let Err(e) = self.builds.adopt_claim(&claim).await {
-            return Reconciled::Failed { attempt, reason: format!("recording the claim of attempt {attempt}: {e}") };
+            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording the claim of attempt {attempt}: {e}") };
         }
+        let build = match self.builds.read_build(build_id).await {
+            Ok(b) => b,
+            Err(e) => return Reconciled::Failed { attempt, operation: String::new(), reason: format!("reading Build {build_id} after the claim of attempt {attempt}: {e}") },
+        };
         // The accepted topology is the Build's; observed is read now, never remembered.
         let observed = self.topology.read().await.clone();
-        let operations = crate::accepted::plan_for_build(build, &observed).operations;
+        let operations = crate::accepted::plan_for_build(&build, &observed).operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
         for (i, op) in operations.iter().enumerate() {
             // The view moves as operations run (a new mesh's admins become
             // its primary): eligibility is decided on the view as it is now.
             if let Err(e) = self.runner.prepare(&build.build_id, attempt, op).await {
-                return self.finish(build, attempt, Err(format!("{}: {e}", op.key()))).await;
+                return self.finish(&build, attempt, Err((op.key(), e))).await;
             }
             let to = executor_for(op, &*self.topology.read().await);
             if let Some(to) = to.filter(|to| to.to_string() != self.executor) {
-                return self.hand_off(build, attempt, operations[..i].to_vec(), to.to_string()).await;
+                return self.hand_off(&build, attempt, operations[..i].to_vec(), to.to_string()).await;
             }
             if let Err(e) = self.runner.run(&build.build_id, attempt, op).await {
-                return self.finish(build, attempt, Err(format!("{}: {e}", op.key()))).await;
+                return self.finish(&build, attempt, Err((op.key(), e))).await;
             }
         }
-        self.finish(build, attempt, Ok(operations)).await
+        self.finish(&build, attempt, Ok(operations)).await
     }
 
     async fn hand_off(&self, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {
         let receipt = BuildAttemptReceipt { build_id: build.build_id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } };
         if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
-            return Reconciled::Failed { attempt, reason: format!("recording attempt {attempt}: {e}") };
+            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") };
         }
         tracing::info!(to = %to, "the next operation belongs to another admin; handed off");
         Reconciled::HandedOff { attempt, operations, to }
     }
 
-    async fn finish(&self, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, String>) -> Reconciled {
+    async fn finish(&self, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, (String, String)>) -> Reconciled {
         let outcome = match &r {
             Ok(_) => AttemptOutcome::Converged,
-            Err(reason) => AttemptOutcome::Failed { reason: reason.clone() },
+            Err((op, reason)) => AttemptOutcome::Failed { reason: format!("{op}: {reason}") },
         };
         let receipt = BuildAttemptReceipt { build_id: build.build_id.clone(), attempt, outcome };
         if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
-            return Reconciled::Failed { attempt, reason: format!("recording attempt {attempt}: {e}") };
+            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") };
         }
         match r {
             Ok(operations) => Reconciled::Converged { attempt, operations },
-            Err(reason) => Reconciled::Failed { attempt, reason },
+            Err((operation, reason)) => Reconciled::Failed { attempt, reason: format!("{operation}: {reason}"), operation },
         }
     }
 }
@@ -339,6 +249,7 @@ impl BuildExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build_state::BuildState;
     use crate::model::{Fabric, FabricId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
 
     fn node(name: &str, primary: bool, fabric: bool) -> Node {
