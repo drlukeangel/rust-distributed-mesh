@@ -109,6 +109,24 @@ if [ -n "$ON_CONTAINER" ]; then
     fi
 fi
 
+# The consumer executables are the product source of the candidate commit their build manifest names. A
+# cell tests this run's source, so the candidate's source must be this run's source for every RDM package the
+# consumer imports (its manifest's `rdm_packages`) and the workspace lockfile: a difference is refused by name.
+consumer_candidate_reason() {
+    local cm="$1" cand pkg paths="Cargo.toml Cargo.lock"
+    cand=$(jq -r '.candidate_sha // empty' "$cm")
+    if [ -z "$cand" ]; then echo "the consumer build manifest $cm names no candidate_sha"; return 1; fi
+    if ! git cat-file -e "$cand^{commit}" 2> /dev/null; then echo "the consumer executables were built from candidate $cand (manifest $cm), which this repository does not hold: build them with scripts/i143-rshape-build-consumer.sh --candidate-sha $SHA"; return 1; fi
+    for pkg in $(jq -r '.rdm_packages[]? | if type == "object" then .name else . end' "$cm"); do
+        paths="$paths crates/$pkg"
+    done
+    if ! git diff --quiet "$cand" "$SHA" -- $paths; then
+        echo "the consumer executables were built from candidate $cand (manifest $cm); the product source differs between it and this run's source $SHA ($(git diff --stat "$cand" "$SHA" -- $paths | tail -1)): build them with scripts/i143-rshape-build-consumer.sh --candidate-sha $SHA"
+        return 1
+    fi
+    return 0
+}
+
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT
 CELLS_JSON="[]"
@@ -127,8 +145,8 @@ for i in $(seq 0 $((NCELLS - 1))); do
         cbin=$(echo "$command" | sed -nE 's/.*RDM_RSHAPE_CONSUMER_BIN_DIR=([^ ]+).*/\1/p')
         if [ ! -s "$cm" ]; then
             consumer_reason="the cell runs external consumer executables but their build manifest $cm does not exist"
-        elif [ "$(jq -r '.candidate_sha // empty' "$cm")" != "$SHA" ]; then
-            consumer_reason="the consumer executables were built from candidate $(jq -r '.candidate_sha // "none"' "$cm") (manifest $cm), not from this run's source $SHA: build them with scripts/i143-rshape-build-consumer.sh --candidate-sha $SHA"
+        elif ! cand_reason=$(consumer_candidate_reason "$cm"); then
+            consumer_reason="$cand_reason"
         else
             for f in $(jq -r '.binaries | keys[]' "$cm"); do
                 want=$(jq -r --arg f "$f" '.binaries[$f]' "$cm")
