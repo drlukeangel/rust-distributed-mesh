@@ -228,6 +228,66 @@ pub enum StatusRequest {
         /// terminal receipts.
         receipt_manifest: String,
     },
+    /// Downward: the commanding authority tells the exact birth to publish what its scratchpad holds (`commit-state`; fabric-state-commit.md). The reply admits the command; completion is [`Self::StateCommitted`].
+    CommitState {
+        /// The fabric the round belongs to.
+        fabric_id: FabricId,
+        /// The subject: the commanded or reporting birth.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the round belongs to.
+        build_id: String,
+        /// The Build attempt that holds the round.
+        attempt: u32,
+        /// The operation: `commit-state:<fabric_id>`.
+        operation: String,
+    },
+    /// Upward: the exact birth, or a mesh primary for its mesh, checks in for the state-commit round (`state-committed`) after its required scratchpad writes are stored. A check-in, never a node or mesh state.
+    StateCommitted {
+        /// The fabric the round belongs to.
+        fabric_id: FabricId,
+        /// The subject: the commanded or reporting birth.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the round belongs to.
+        build_id: String,
+        /// The Build attempt that holds the round.
+        attempt: u32,
+        /// The operation: `commit-state:<fabric_id>`.
+        operation: String,
+    },
+    /// Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; fabric-open-traffic.md). The reply admits the command; completion is [`Self::TrafficOpened`].
+    OpenTraffic {
+        /// The fabric the round belongs to.
+        fabric_id: FabricId,
+        /// The subject: the commanded or reporting birth.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the round belongs to.
+        build_id: String,
+        /// The Build attempt that holds the round.
+        attempt: u32,
+        /// The operation: `open-traffic:<fabric_id>`.
+        operation: String,
+    },
+    /// Upward: the exact birth, or a mesh primary for its mesh, checks in for the open-traffic round (`traffic-opened`) after it completes traffic opening.
+    TrafficOpened {
+        /// The fabric the round belongs to.
+        fabric_id: FabricId,
+        /// The subject: the commanded or reporting birth.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the round belongs to.
+        build_id: String,
+        /// The Build attempt that holds the round.
+        attempt: u32,
+        /// The operation: `open-traffic:<fabric_id>`.
+        operation: String,
+    },
 }
 
 /// The longest `receipt_manifest` reference a `MeshLeave` carries.
@@ -249,6 +309,10 @@ impl StatusRequest {
             Self::NodeLeft { .. } => "node-left",
             Self::LeaveMesh { .. } => "leave-mesh",
             Self::MeshLeave { .. } => "mesh-leave",
+            Self::CommitState { .. } => "commit-state",
+            Self::StateCommitted { .. } => "state-committed",
+            Self::OpenTraffic { .. } => "open-traffic",
+            Self::TrafficOpened { .. } => "traffic-opened",
         }
     }
 }
@@ -410,7 +474,7 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 12;
+    const REQUEST_VARIANTS: u32 = 16;
     const REPLY_VARIANTS: u32 = 17;
 
     type Request = StatusRequest;
@@ -532,6 +596,10 @@ mod tests {
                 final_runtime: RuntimeFact { deployment_id: "dep".into(), provider: rafka_mesh_entity::RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: rafka_mesh_entity::RuntimeLocator::Process { pid: 4321, start: 123456 } },
                 receipt_manifest: "bld_1/1/shutdown-mesh:m/other-members-exited".into(),
             },
+            StatusRequest::CommitState { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "commit-state:fabric1".into() },
+            StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "commit-state:fabric1".into() },
+            StatusRequest::OpenTraffic { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
+            StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

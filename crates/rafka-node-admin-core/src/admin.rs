@@ -259,6 +259,14 @@ pub struct Records {
     /// This admin is entering an existing mesh and has not yet been told who holds the seats: it
     /// computes none until its entry read has (ruling R-A2).
     entering: std::sync::atomic::AtomicBool,
+    /// The fabric state this admin projects: authoritative on the fabric-primary, the last
+    /// published state on every other admin (`crate::fabric_rounds`).
+    fabric_state: Mutex<crate::fabric_state::FabricState>,
+    /// What keeps the fabric in its state, named (`None`: nothing, or not the fabric-primary).
+    fabric_blocker: Mutex<Option<String>>,
+    /// The fabric state the fabric-primary last put in a FabricStatus frame. The climb enters the
+    /// next state only after the current one went out, so every state is its own frame.
+    published_fabric_state: Mutex<Option<crate::fabric_state::FabricState>>,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -288,6 +296,40 @@ pub struct Seats {
 }
 
 impl Records {
+    /// The fabric state this admin projects.
+    pub fn fabric_state(&self) -> crate::fabric_state::FabricState {
+        *self.fabric_state.lock().unwrap()
+    }
+
+    /// Hold the fabric state; the view follows at its next projection.
+    pub fn set_fabric_state(&self, state: crate::fabric_state::FabricState) {
+        let changed = std::mem::replace(&mut *self.fabric_state.lock().unwrap(), state) != state;
+        if changed {
+            self.wake.poke();
+        }
+    }
+
+    /// The fabric state last put in a FabricStatus frame by this admin as the fabric-primary.
+    pub fn published_fabric_state(&self) -> Option<crate::fabric_state::FabricState> {
+        *self.published_fabric_state.lock().unwrap()
+    }
+
+    /// Record the fabric state a FabricStatus frame carried (or `None`: this admin publishes none);
+    /// whether the record changed.
+    pub fn set_published_fabric_state(&self, state: Option<crate::fabric_state::FabricState>) -> bool {
+        std::mem::replace(&mut *self.published_fabric_state.lock().unwrap(), state) != state
+    }
+
+    /// What keeps the fabric-primary's fabric in its state, named.
+    pub fn fabric_blocker(&self) -> Option<String> {
+        self.fabric_blocker.lock().unwrap().clone()
+    }
+
+    /// Name (or clear) what keeps the fabric in its state.
+    pub fn set_fabric_blocker(&self, blocker: Option<String>) {
+        *self.fabric_blocker.lock().unwrap() = blocker;
+    }
+
     /// The peer mesh being reborn after the investigation's decision (`None`: no recovery is open).
     pub fn peer_recovery(&self) -> Option<PeerRecovery> {
         self.peer_recovery.lock().unwrap().clone()
@@ -635,7 +677,9 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         // reborn mesh's primary reports for its round (`crate::investigate`), and a successor holder
         // keeps an adopted `degraded` until every mesh primary reports (`crate::round`). An admin
         // that holds no seat serves the `degraded` the holder published.
-        topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() || records.published_degraded() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
+        let held = records.fabric_state();
+        let degraded = records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() || records.published_degraded();
+        topology.fabric.status = if held == crate::fabric_state::FabricState::ReadyForTraffic && degraded { ScopeStatus::Degraded } else { held.scope() };
     }
     let leaving: BTreeSet<String> = book.leaving_meshes().into_iter().collect();
     for m in mesh_names {
@@ -2226,6 +2270,13 @@ pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Resu
 }
 
 async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, boot: tracing::Span) -> Result<Running, String> {
+    // The `sync_state` choice is made on purpose: an embedding with no application work says so
+    // (`SyncState::NoAppWork`); one that registered nothing would skip its day 0 and seed unnoticed.
+    if wiring.fabric_hooks.sync_state.is_none() {
+        return Err("refusing to start: no `sync_state` choice was made; pass SyncState::NoAppWork for an embedding with no application work in state-sync, or the application's sync_state hook".into());
+    }
+    let fabric_hooks = wiring.fabric_hooks.clone();
+    let round_actions: Arc<dyn crate::fabric_rounds::RoundActions> = wiring.round_actions.take().unwrap_or_else(|| Arc::new(crate::fabric_rounds::NoScratchpad));
     // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
     // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
     // reads this one reader.
@@ -2798,6 +2849,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let commands = Arc::new(crate::node_commands::CommandBook::default());
     let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
     let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
+    let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
     let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
     *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage, &*nodes_storage).await?;
     {
@@ -2816,8 +2868,28 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             leaver: leaver.clone(),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
+            rounds: rounds_slot.clone(),
         }));
     }
+    // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
+    // a fabric round is owed through it.
+    let declarer = crate::status_declare::Declarer::new();
+    let _ = rounds_slot.set(crate::fabric_rounds::FabricRounds::new(crate::fabric_rounds::RoundEnv {
+        me: name.clone(),
+        node_id: node_id.clone(),
+        incarnation: incarnation.clone(),
+        fabric_id: cfg.fabric_id.clone(),
+        topology: control.topology.clone(),
+        client: node_rpc.client.clone(),
+        accepted: accepted.clone(),
+        builds: builds_dyn.clone(),
+        contexts: attempt_contexts.clone(),
+        declarer: declarer.clone(),
+        wake: records.wake.clone(),
+        records: records.clone(),
+        hooks: fabric_hooks,
+        actions: round_actions.clone(),
+    }));
 
     // The deployment hand (used while this admin is fabric primary). A provider's host-wide
     // resources (a container fabric's network and labels) are keyed by the Fabric's id: a Fabric
@@ -3394,7 +3466,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 })
             })
         };
-        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat).with_retire(hydrate_cancel.clone())));
+        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone())));
     }
     // A node's own `node-drained` / `node-left`, heard on this mesh's channel: this admin carries
     // it onto the backbone when it holds the command (gossip.md, node-drained, node-left).
@@ -3418,7 +3490,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // when owed and again only on an eligible event, woken by its inputs; nothing it does gates
     // gossip or readiness.
     {
-        let declarer = crate::status_declare::Declarer::new();
+        let declarer = declarer.clone();
         let (digest, topology, records, me, me_id, incarnation, client, authority) =
             (digest.clone(), control.topology.clone(), records.clone(), name.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone(), authority.clone());
         tasks.push(tokio::spawn(async move {
@@ -3594,6 +3666,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
         let adapter = runner.builds.clone();
         let (records, accepted, rpc_client) = (records.clone(), accepted.clone(), node_rpc.client.clone());
+        let fabric_rounds = rounds_slot.get().cloned().expect("the rounds are built before the hierarchy runs");
         hierarchy = tokio::spawn(async move {
             // The round a new primary runs before it republishes the status it adopted (`crate::round`).
             let mut rounds = crate::round::RoundDriver::new(me.clone());
@@ -3651,6 +3724,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     records.set_adopted_degraded(false);
                 }
                 was_fabric_primary = fabric_primary;
+                // The fabric-primary's climb through the fabric states, one non-blocking turn per round
+                // of this loop; every other admin serves the state the holder published.
+                fabric_rounds.climb_step(crate::fabric_rounds::ClimbInputs { is_fabric_primary: fabric_primary, heard: membership.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t }).await;
                 // A seat taken is announced once, when it changes hands: the mesh primary first, then
                 // the fabric primary (R-A2). The record this admin already holds for itself needs no
                 // announcement.
@@ -3676,11 +3752,17 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                 // The fabric's status as the live records state it: a round that just cleared the adopted
                 // degraded must not be answered by the older projection `t`.
-                let fabric_status = |records: &Records| match t.fabric.status {
-                    crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::ReadyForTraffic => {
-                        status_of(if records.adopted_degraded() || records.peer_recovery().is_some() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::ReadyForTraffic })
+                // The fabric-primary publishes the state it holds now, not the projection's last refresh:
+                // every state the climb enters is its own frame.
+                let held_state = records.fabric_state();
+                let fabric_status = |records: &Records| {
+                    let basis = if fabric_primary { held_state.scope() } else { t.fabric.status };
+                    match basis {
+                        crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::ReadyForTraffic => {
+                            status_of(if records.adopted_degraded() || records.peer_recovery().is_some() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::ReadyForTraffic })
+                        }
+                        other => status_of(other),
                     }
-                    other => status_of(other),
                 };
                 let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), false, false).await;
                 // A status adopted from the previous publisher is republished only when its round is
@@ -3697,6 +3779,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 } else {
                     rounds.end();
                 }
+                // The state just announced is the one the climb may move on from.
+                if records.set_published_fabric_state((fabric_primary && !announced.fabric_awaiting_round).then_some(held_state)) && fabric_primary {
+                    fabric_rounds.poke_climb();
+                }
                 records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_round);
                 // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
                 rounds.address_changed_mesh_primaries(&t, fabric_primary, Some(&rpc_client));
@@ -3705,7 +3791,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 builds.join_admins(admins.clone()).await;
                 backbone.join_admins(admins).await;
                 let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
-                tokio::time::sleep(gossip_interval()).await;
+                // The next round is due after one gossip interval, or at once when a checklist the
+                // fabric-primary waits on, or the application's answer, moved.
+                tokio::select! {
+                    _ = tokio::time::sleep(gossip_interval()) => {}
+                    _ = fabric_rounds.climb_due() => {}
+                }
             }
         });
     }
@@ -3933,6 +4024,7 @@ mod tests {
             book.record(d);
         }
         let records = Records::default();
+        records.set_fabric_state(crate::fabric_state::FabricState::ReadyForTraffic);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(t.fabric.status, ScopeStatus::ReadyForTraffic, "nothing published degraded: ready");
         records.set_published_degraded(true);
@@ -4042,7 +4134,7 @@ mod tests {
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh2.admin.1"), "not the lowest-named mesh");
         assert!(t.violations().is_empty(), "{:?}", t.violations());
         assert_eq!(t.mesh_view("mesh2").unwrap().id, Some(mesh_id("mesh2")));
-        assert_eq!(t.fabric.status, ScopeStatus::ReadyForTraffic);
+        assert_eq!(t.fabric.status, ScopeStatus::Pending, "a fabric-primary existing does not make the fabric ready: the view carries the held fabric state");
     }
 
     /// CONTRACT (fabric-mesh-lifecycle.md §11.1, FML-26): a fabric shutdown runs no election
@@ -4251,6 +4343,7 @@ mod tests {
             leaver: Arc::new(std::sync::OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
+            rounds: Default::default(),
         };
         let _ = Declared::default();
 

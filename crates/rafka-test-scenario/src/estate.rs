@@ -543,7 +543,7 @@ impl Estate {
     /// and wait for its advertised control API base.
     pub async fn bootstrap(owner: Owner, fabric: &str, mesh: &str) -> Self {
         refuse_built_ins_in_consumer_mode("Estate::bootstrap");
-        Self::born(owner, fabric, mesh, None).await
+        Self::born(owner, fabric, mesh, None, &[]).await
     }
 
     /// Start the first node-admin of `fabric` from an explicit executable binding set: every
@@ -552,13 +552,19 @@ impl Estate {
     /// `candidate_sha`, the launch ids the run `required` and the provider's image BEFORE any
     /// file is made or any process started; a refusal is returned by name with nothing launched.
     pub async fn bootstrap_external(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str]) -> Result<Self, BindingError> {
+        Self::bootstrap_external_with_env(owner, fabric, mesh, set, candidate_sha, required, &[]).await
+    }
+
+    /// [`Estate::bootstrap_external`], the first node-admin also given `extra_env` (what an
+    /// embedding's application reads, such as the testkit application's `RDM_TEST_APP`).
+    pub async fn bootstrap_external_with_env(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str], extra_env: &[(&str, &str)]) -> Result<Self, BindingError> {
         let image = if owner.provider == "container" { ProviderImage::Container(RUNTIME_IMAGE) } else { ProviderImage::Process };
         let validated = set.validate(&Expect { candidate_sha, required, provider_image: image })?;
         // The file is written under the estate root once `born` makes it.
-        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string()))).await)
+        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string())), extra_env).await)
     }
 
-    async fn born(owner: Owner, fabric: &str, mesh: &str, external: Option<(Validated, String)>) -> Self {
+    async fn born(owner: Owner, fabric: &str, mesh: &str, external: Option<(Validated, String)>, extra_env: &[(&str, &str)]) -> Self {
         let artifacts = artifacts_root().join(&owner.feature).join(&owner.test);
         let _ = std::fs::remove_dir_all(&artifacts);
         let evidence = artifacts.join("spans");
@@ -583,6 +589,7 @@ impl Estate {
             ("RDM_EVIDENCE_DIR", evidence.display().to_string()),
             ("RDM_ESTATE_ROOT", root.display().to_string()),
         ];
+        env.extend(extra_env.iter().map(|(k, v)| (*k, v.to_string())));
         let admin_exe = match &external {
             Some(x) => {
                 env.retain(|(k, _)| *k != "RDM_BIN_DIR");

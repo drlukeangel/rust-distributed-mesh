@@ -27,6 +27,8 @@ pub mod election;
 pub mod executor;
 pub mod fence;
 pub mod fabric_builds;
+pub mod fabric_rounds;
+pub mod fabric_state;
 pub mod fabric_storage;
 pub mod http;
 pub mod investigate;

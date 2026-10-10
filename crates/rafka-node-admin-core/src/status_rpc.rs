@@ -102,6 +102,9 @@ pub struct StatusAuthority {
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
     /// Wakes this admin's declarer: a view this authority changed, and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
+    /// This admin's rounds (commit-state, open-traffic); filled once the admin holds the handles
+    /// they act through.
+    pub rounds: Arc<OnceLock<Arc<crate::fabric_rounds::FabricRounds>>>,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -183,7 +186,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
             (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, None)
         }
         // Commands and completions are answered before the decision (`StatusAuthority::apply`).
-        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } => {
+        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
             (StatusReply::NotReady { reason: format!("{} reached the declaration decision, which does not decide {}", auth.me, req.op()) }, None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -262,6 +265,12 @@ impl StatusAuthority {
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %self.me, op = req.op(), sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a mesh-leave call naming this admin was decided"));
                 return reply;
+            }
+            StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
+                return match self.rounds.get() {
+                    Some(rounds) => rounds.serve(&view, sender.as_ref(), req, self.own.get()).await,
+                    None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
+                };
             }
             _ => {}
         }

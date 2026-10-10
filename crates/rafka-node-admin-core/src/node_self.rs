@@ -65,6 +65,17 @@ pub type YieldSeat = Arc<dyn Fn(&'static str) -> std::pin::Pin<Box<dyn std::futu
 /// Declares a state this birth entered to its authority.
 pub type Declare = Arc<dyn Fn(NodeState) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
+/// How far this birth took a round it was commanded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RoundProgress {
+    /// The action is running.
+    Acting,
+    /// The action is stored; the check-in is not yet answered.
+    Acted,
+    /// The commander took the check-in.
+    CheckedIn,
+}
+
 /// The surface a node kind gives the commands.
 pub struct NodeSelf {
     /// This birth's logical node.
@@ -95,6 +106,10 @@ pub struct NodeSelf {
     /// `hydrate_before_ready` hook and any pull it has in flight end.
     pub retire: Option<rafka_node_rpc::CancelToken>,
     seen: Mutex<HashSet<String>>,
+    /// What this birth completes before it checks in to a commit-state or open-traffic round.
+    round_actions: Mutex<Arc<dyn crate::fabric_rounds::RoundActions>>,
+    /// The rounds this birth took from a commander, and whether its check-in was made.
+    rounds_seen: Mutex<std::collections::HashMap<(crate::fabric_state::RoundKey, NodeId), RoundProgress>>,
 }
 
 impl NodeSelf {
@@ -111,7 +126,7 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, yield_seat: None, retire: None, seen: Mutex::new(HashSet::new()) }
+        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, yield_seat: None, retire: None, seen: Mutex::new(HashSet::new()), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// This surface, fencing its seat before it publishes `Draining` or `Leaving`.
@@ -126,9 +141,92 @@ impl NodeSelf {
         self
     }
 
-    /// Serve `DrainNode` or `StopNode` from `commander` (a node-admin the caller resolved).
-    /// `None` for any other request.
+    /// This surface, completing `actions` before it checks in to a round.
+    pub fn with_round_actions(self, actions: Arc<dyn crate::fabric_rounds::RoundActions>) -> Self {
+        *self.round_actions.lock().unwrap() = actions;
+        self
+    }
+
+    /// Serve `commit-state` or `open-traffic` from `commander`, the primary of this birth's mesh
+    /// (the caller resolved it). The command is admitted at once; the birth then completes its
+    /// action and calls the matching completion at `commander`. A command this birth already took
+    /// is answered `AlreadyApplied`, and when its check-in was made, the check-in is made again:
+    /// that is how a new primary's checklist rebuilds itself.
+    fn serve_round(self: &Arc<Self>, commander: &NodeId, req: &StatusRequest) -> StatusReply {
+        let op = crate::fabric_state::RoundOp::of(req).expect("a round op");
+        if *op.node_id != self.node_id {
+            return StatusReply::RejectedNotAuthority { why: rafka_node_rpc_contract::status::NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } };
+        }
+        if *op.incarnation != self.incarnation {
+            return StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() };
+        }
+        let want = op.kind.operation(op.fabric_id);
+        if op.operation != want {
+            return StatusReply::NotReady { reason: format!("{}: {} names operation {}, the round's is {want}", self.name, req.op(), op.operation) };
+        }
+        let key = op.key();
+        let done = {
+            let mut seen = self.rounds_seen.lock().unwrap();
+            match seen.get(&(key.clone(), commander.clone())).copied() {
+                Some(progress) => Some(progress),
+                None => {
+                    seen.insert((key.clone(), commander.clone()), RoundProgress::Acting);
+                    None
+                }
+            }
+        };
+        let (me, commander) = (self.clone(), commander.clone());
+        let parent = tracing::Span::current();
+        match done {
+            None => {
+                tokio::spawn(async move { me.round(commander, key, true, parent).await });
+                StatusReply::Applied
+            }
+            Some(RoundProgress::Acted | RoundProgress::CheckedIn) => {
+                tokio::spawn(async move { me.round(commander, key, false, parent).await });
+                StatusReply::AlreadyApplied
+            }
+            Some(RoundProgress::Acting) => StatusReply::AlreadyApplied,
+        }
+    }
+
+    /// The round of this birth: its action (once), then the completion call at its commander.
+    async fn round(self: Arc<Self>, commander: NodeId, key: crate::fabric_state::RoundKey, act: bool, parent: tracing::Span) {
+        use tracing::Instrument;
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-round", node = %self.name, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = act, "otel.kind" = "internal");
+        async {
+            if act {
+                let actions = self.round_actions.lock().unwrap().clone();
+                if let Err(e) = crate::fabric_rounds::run_action(&*actions, &self.name, key.kind).await {
+                    tracing::info_span!("rdm.node_admin.fabric.update.via-round-action-failed", node = %self.name, round = key.kind.command(), error = %e, "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("this birth's action failed: it owes no check-in"));
+                    self.rounds_seen.lock().unwrap().remove(&(key.clone(), commander.clone()));
+                    return;
+                }
+            }
+            self.rounds_seen.lock().unwrap().insert((key.clone(), commander.clone()), RoundProgress::Acted);
+            let req = key.kind.up(&key, self.node_id.clone(), self.incarnation.clone());
+            let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
+            let answer = match &out {
+                rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
+                other => other.name().to_string(),
+            };
+            if matches!(&out, rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied)) {
+                self.rounds_seen.lock().unwrap().insert((key.clone(), commander.clone()), RoundProgress::CheckedIn);
+            }
+            tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.name, completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, answer = %answer, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the completion call was made to the commanding primary"));
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Serve `DrainNode` or `StopNode` from `commander` (a node-admin the caller resolved), or a
+    /// round command from its mesh primary. `None` for any other request.
     pub async fn serve(self: &Arc<Self>, commander: &NodeId, req: &StatusRequest) -> Option<StatusReply> {
+        if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
+            return Some(self.serve_round(commander, req));
+        }
         let (node_id, incarnation, build_id, attempt, operation, stop) = match req {
             StatusRequest::DrainNode { node_id, incarnation, build_id, attempt, operation } => (node_id, incarnation, build_id, attempt, operation, false),
             StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } => (node_id, incarnation, build_id, attempt, operation, true),

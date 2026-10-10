@@ -17,6 +17,7 @@ pub mod faults;
 pub mod originate;
 pub mod admin_faults;
 pub mod test_certs;
+pub mod test_app;
 
 /// The launcher half of a functional fabric, shared by test crates.
 #[cfg(feature = "rig")]

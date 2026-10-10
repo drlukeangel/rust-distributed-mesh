@@ -11,6 +11,7 @@ mod fabric_build__accepted_topology;
 mod fabric_build__await_attempt;
 mod fabric_certs__issuance;
 mod fabric_soak__seeded;
+mod fabric_states__rounds;
 mod i143_acceptance_2775;
 mod i143_acceptance_2776;
 mod i143_acceptance_2777;

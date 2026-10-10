@@ -752,6 +752,23 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     .in_scope(|| tracing::info!("a node command naming this node was decided"));
                 return Ok(reply);
             }
+            if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
+                // A round command is the mesh primary's: the node-admin holding this node's mesh seat.
+                let mesh = me.digest.node.name.mesh.clone();
+                let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.node.name.mesh == mesh) else {
+                    return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
+                };
+                let reply = match me.membership.seats().mesh(&mesh) {
+                    None => StatusReply::NotReady { reason: format!("{} has not yet heard who holds the primary seat of {mesh}", me.digest.node.name) },
+                    Some(held) if !held.is_birth(&from.node.node_id, &from.node.incarnation) => {
+                        StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: from.node.name.to_string() } }
+                    }
+                    Some(_) => me.own.serve(&from.node.node_id, &req).await.expect("a round op"),
+                };
+                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.digest.node.name, op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("a round command naming this node was decided"));
+                return Ok(reply);
+            }
             let (node_id, incarnation) = match &req {
                 StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } => (node_id, incarnation),
                 _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),

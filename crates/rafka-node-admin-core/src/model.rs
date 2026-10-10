@@ -77,6 +77,12 @@ pub enum ScopeStatus {
     Dead,
     /// The fabric primary has decided a peer mesh is reborn (`investigate`).
     Degraded,
+    /// A fabric state: every mesh is ready-for-traffic and the application does its day-0 and seed
+    /// work (fabric-state-sync.md).
+    StateSync,
+    /// A fabric state: the commit-state round publishes what the scratchpads hold
+    /// (fabric-state-commit.md); the open-traffic round runs inside it.
+    StateCommit,
 }
 
 /// Deployment provider kind, fabric policy (PRD §1.7).

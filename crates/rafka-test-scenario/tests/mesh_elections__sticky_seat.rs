@@ -277,7 +277,13 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     }
     assert!(done, "the replaced admin's path is ready again under a new birth");
     assert!(worst <= 1, "a view showed {worst} fabric primaries");
-    let (_, after) = estate.get("/api/fabric").await;
+    // The fabric is ready-for-traffic once its planned births are all ready and the state-sync,
+    // state-commit and open-traffic rounds have run under the new fabric-primary.
+    let after = wait_for("the fabric is ready-for-traffic under the new fabric-primary", Duration::from_secs(60), || async {
+        let f = estate.get("/api/fabric").await.1;
+        (f["status"] == "ready-for-traffic").then_some(f)
+    })
+    .await;
     estate.stop().await;
     let spans = estate.spans();
     let fence: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-fence").into_iter().filter(|sp| attr(sp, "node") == p).collect();

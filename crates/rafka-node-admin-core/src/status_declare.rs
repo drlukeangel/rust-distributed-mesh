@@ -35,6 +35,7 @@ use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{FabricEvent, MeshState, NodeState, Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use tracing::Instrument;
 
 /// What wakes the declarer: ONE notify, poked by its inputs (the topology, this admin's own
 /// digest status, the declare gate, the meshes it holds and a down op's receipt), and the
@@ -127,6 +128,9 @@ pub(crate) enum Key {
     Mesh(String, MeshState),
     /// A fabric event at one mesh primary: `(receiver mesh, event)`.
     FabricEventAt(String, String),
+    /// A mesh primary's completion of a fabric round (`state-committed`, `traffic-opened`) to the
+    /// fabric-primary: `(completion/fabric/build/attempt)`.
+    Round(String),
 }
 
 /// Who receives a declaration: resolved from the view at each attempt.
@@ -146,6 +150,9 @@ pub struct Pending {
     pub last: Option<String>,
     /// The last send; `None` until the first.
     pub sent: Option<Sent>,
+    /// The `traceparent` the declaration continues (a round's completion keeps the round's trace). A
+    /// string, never a span: a stored span handle would hold its parents open and unexported.
+    pub trace: Option<String>,
 }
 
 /// The declarer's state: what is owed, and what was answered by name, and by which authority. A
@@ -156,7 +163,7 @@ pub(crate) struct Declarer {
     pending: Mutex<BTreeMap<Key, Pending>>,
     done: Mutex<BTreeMap<Key, (String, NodeId, Option<IncarnationId>)>>,
     /// Every declaration ever owed, by key: what is re-owed when the authority moves.
-    requests: Mutex<BTreeMap<Key, (Authority, StatusRequest)>>,
+    requests: Mutex<BTreeMap<Key, (Authority, StatusRequest, Option<String>)>>,
 }
 
 impl Declarer {
@@ -166,11 +173,16 @@ impl Declarer {
 
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.
     pub(crate) fn owe(&self, key: Key, to: Authority, request: StatusRequest) {
-        self.requests.lock().unwrap().entry(key.clone()).or_insert((to.clone(), request.clone()));
+        self.owe_in(key, to, request, None)
+    }
+
+    /// [`Declarer::owe`], sent under `trace`: the declaration continues that `traceparent`.
+    pub(crate) fn owe_in(&self, key: Key, to: Authority, request: StatusRequest, trace: Option<String>) {
+        self.requests.lock().unwrap().entry(key.clone()).or_insert((to.clone(), request.clone(), trace.clone()));
         if self.done.lock().unwrap().contains_key(&key) {
             return;
         }
-        self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None });
+        self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None, trace });
     }
 
     #[cfg(test)]
@@ -194,7 +206,7 @@ impl Declarer {
             .iter()
             .filter(|(key, (_, by, by_birth))| {
                 let now = match key {
-                    Key::OwnState(..) | Key::Mesh(..) => view.fabric_primary(),
+                    Key::OwnState(..) | Key::Mesh(..) | Key::Round(..) => view.fabric_primary(),
                     Key::FabricEventAt(mesh, _) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
                 };
                 now.is_some_and(|n| &n.node_id != by || matches!((&n.incarnation_id, by_birth), (Some(now), Some(then)) if now != then))
@@ -203,12 +215,12 @@ impl Declarer {
             .collect();
         for key in moved {
             if let Some((_, by, _)) = done.remove(&key) {
-                let (to, request) = match self.requests.lock().unwrap().get(&key) {
+                let (to, request, trace) = match self.requests.lock().unwrap().get(&key) {
                     Some(r) => r.clone(),
                     None => continue,
                 };
                 tracing::info!(node = %me, key = ?key, was = %by, "the authority moved: the declaration is owed again to the current one");
-                pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None, sent: None });
+                pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None, sent: None, trace });
             }
         }
     }
@@ -279,7 +291,7 @@ impl Declarer {
                     }
                 }
             } else {
-                let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &CallOptions::default()).await;
+                let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &CallOptions::default()).instrument(completion_span(&p, &target)).await;
                 match &out {
                     RpcOutcome::Reply(r) => {
                         let (o, f) = classify(r.value());
@@ -317,7 +329,7 @@ impl Declarer {
     pub(crate) fn withdraw_unowned(&self, me: &PathName, view: &Topology) {
         let holder = |key: &Key| match key {
             Key::OwnState(..) => None,
-            Key::Mesh(..) => Some(view.cohort_primary(&me.mesh, NodeKind::NodeAdmin)),
+            Key::Mesh(..) | Key::Round(..) => Some(view.cohort_primary(&me.mesh, NodeKind::NodeAdmin)),
             Key::FabricEventAt(..) => Some(view.fabric_primary()),
         };
         let lost: Vec<(Key, String)> = self
@@ -351,6 +363,19 @@ impl Declarer {
             p.attempts += add;
             p.last = Some(last.to_string());
         }
+    }
+}
+
+/// The span a declaration is sent under: a round's completion is a new caller span in the round's
+/// trace; any other declaration is sent under no span.
+fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
+    match &p.trace {
+        Some(traceparent) => {
+            let span = tracing::info_span!("rdm.node_admin.status.update.via-round-completion", key = ?p.key, to = %target.name, "otel.kind" = "internal");
+            rafka_mesh_telemetry::set_parent(&span, traceparent);
+            span
+        }
+        None => tracing::Span::none(),
     }
 }
 
@@ -440,6 +465,37 @@ mod tests {
         d.withdraw_unowned(&me, &view("mesh1.admin.2", "mesh2.admin.1"));
         let left: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
         assert_eq!(left, vec![Key::OwnState("inc".into(), NodeState::ReadyForTraffic)], "the fabric event is the new fabric-primary's; its own birth stays owed");
+    }
+
+    /// CONTRACT: a mesh primary's completion of a fabric round is owed to the fabric-primary the view
+    /// names. Once the fabric-primary took it, a successor fabric-primary is owed it again (the
+    /// checklist a new primary opens rebuilds from fresh check-ins), and a former mesh primary
+    /// withdraws it whole.
+    #[test]
+    fn a_round_completion_is_owed_again_to_a_successor_fabric_primary_and_withdrawn_with_the_mesh_seat() {
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        let d = Declarer::new();
+        let key = Key::Round("state-committed/fabric/bld/1".into());
+        d.owe_in(key.clone(), Authority::FabricPrimary, StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId("inc".into()), build_id: "bld".into(), attempt: 1, operation: "commit-state:f".into() }, Some("00-f16a8b75a1b2c3d4e5f60718293a4b5c-1111111111111111-01".into()));
+        let first = view("mesh1.admin.1", "mesh1.admin.1");
+        let holder = first.fabric_primary().unwrap().clone();
+        // The fabric-primary took the completion.
+        d.pending.lock().unwrap().remove(&key);
+        d.done.lock().unwrap().insert(key.clone(), ("applied".into(), holder.node_id.clone(), holder.incarnation_id.clone()));
+        d.reowe_moved(&me, &first);
+        assert_eq!(d.owed(), 0, "the same holder, the same birth: nothing is owed again");
+        d.reowe_moved(&me, &view("mesh1.admin.2", "mesh1.admin.2"));
+        assert_eq!(d.owed(), 1, "a successor fabric-primary is owed the completion");
+        assert!(d.pending.lock().unwrap().get(&key).unwrap().trace.is_some(), "the completion keeps the round's trace");
+        d.withdraw_unowned(&me, &view("mesh2.admin.1", "mesh1.admin.2"));
+        assert_eq!(d.owed(), 1, "this admin is still its mesh's primary");
+        let mut v = view("mesh2.admin.1", "mesh1.admin.2");
+        for n in v.nodes.iter_mut().filter(|n| n.mesh == "mesh2") {
+            n.is_primary = false;
+        }
+        v.nodes.push({ let mut n = node("mesh2.admin.2", true, false); n.mesh = "mesh2".into(); n });
+        d.withdraw_unowned(&me, &v);
+        assert_eq!(d.owed(), 0, "a former mesh primary withdraws the completion whole");
     }
 
     #[test]

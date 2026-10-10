@@ -150,10 +150,10 @@ fn client_status_enums_decode_every_state_the_core_publishes() {
         let wire = serde_json::to_value(s).unwrap();
         serde_json::from_value::<NodeStatus>(wire.clone()).unwrap_or_else(|e| panic!("the client cannot decode node status {wire}: {e}"));
     }
-    let scopes = [CoreScope::Pending, CoreScope::ReadyForTraffic, CoreScope::Leaving, CoreScope::Dead, CoreScope::Degraded];
+    let scopes = [CoreScope::Pending, CoreScope::ReadyForTraffic, CoreScope::Leaving, CoreScope::Dead, CoreScope::Degraded, CoreScope::StateSync, CoreScope::StateCommit];
     for s in scopes {
         match s {
-            CoreScope::Pending | CoreScope::ReadyForTraffic | CoreScope::Leaving | CoreScope::Dead | CoreScope::Degraded => {}
+            CoreScope::Pending | CoreScope::ReadyForTraffic | CoreScope::Leaving | CoreScope::Dead | CoreScope::Degraded | CoreScope::StateSync | CoreScope::StateCommit => {}
         }
         let wire = serde_json::to_value(s).unwrap();
         serde_json::from_value::<rafka_node_admin_client::ScopeStatus>(wire.clone()).unwrap_or_else(|e| panic!("the client cannot decode scope status {wire}: {e}"));

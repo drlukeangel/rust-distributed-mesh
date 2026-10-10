@@ -20,7 +20,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_twelve_variant_wire_schema() {
+fn requests_match_the_frozen_sixteen_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c30313233343536373839616205626972746803"),
@@ -47,6 +47,10 @@ fn requests_match_the_frozen_twelve_variant_wire_schema() {
             },
             "0b0c3131323334353637383961620c626c645f3161326233633464011a73687574646f776e2d6d6573683a3131323334353637383961620c303132333435363738396162056269727468106465705f6d657368315f61646d696e31001670726f636573733a626f6f742d613a7069646e732d6100e121c0c4073e626c645f31613262336334642f312f73687574646f776e2d6d6573683a3131323334353637383961622f6f746865722d6d656d626572732d657869746564",
         ),
+        (CommitState { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "commit-state:fabric1".into() }, "0c0c3231323334353637383961620c3031323334353637383961620562697274680c626c645f31613262336334640114636f6d6d69742d73746174653a66616272696331"),
+        (StateCommitted { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "commit-state:fabric1".into() }, "0d0c3231323334353637383961620c3031323334353637383961620562697274680c626c645f31613262336334640114636f6d6d69742d73746174653a66616272696331"),
+        (OpenTraffic { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "open-traffic:fabric1".into() }, "0e0c3231323334353637383961620c3031323334353637383961620562697274680c626c645f316132623363346401146f70656e2d747261666669633a66616272696331"),
+        (TrafficOpened { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "open-traffic:fabric1".into() }, "0f0c3231323334353637383961620c3031323334353637383961620562697274680c626c645f316132623363346401146f70656e2d747261666669633a66616272696331"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {

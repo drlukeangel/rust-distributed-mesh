@@ -30,7 +30,7 @@ use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle,
 use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError};
 use rafka_node_admin_core::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
 use rafka_node_admin_core::model::ProviderKind;
-use rafka_node_admin_core::wiring::Wiring;
+use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -535,6 +535,8 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         hydration: Default::default(),
         certs: CertChoice::NoCerts,
         serve_app: None,
+        fabric_hooks: FabricHooks::no_app_work(),
+        round_actions: None,
         hooks: NODE_READY_PHASES
             .iter()
             .map(|&phase| {

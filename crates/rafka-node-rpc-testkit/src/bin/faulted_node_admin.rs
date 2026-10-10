@@ -5,6 +5,7 @@
 
 use rafka_mesh_entity::{NodeKind, PathName};
 use rafka_node_rpc_testkit::admin_faults::{self, AdminFaults};
+use rafka_node_rpc_testkit::test_app;
 
 #[tokio::main]
 async fn main() {
@@ -34,7 +35,10 @@ async fn main() {
             )
             .in_scope(|| tracing::info!(target: "rafka_node_rpc_testkit", "the launch's issuing material"));
         }
+        // The testkit's application answers the fabric's hooks as `RDM_TEST_APP` says.
+        let mode = test_app::Mode::from_env(|k| std::env::var(k).ok()).unwrap_or_else(|e| fail("test app", e));
         let mut wiring = admin_faults::wiring(faults);
+        wiring.fabric_hooks = test_app::hooks(mode);
         wiring.certs = rafka_node_admin_core::certs::CertChoice::Signer(std::sync::Arc::new(rafka_node_rpc_testkit::test_certs::TestCertSigner));
         wiring
     })
