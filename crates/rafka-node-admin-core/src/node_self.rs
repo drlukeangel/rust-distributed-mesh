@@ -91,6 +91,9 @@ pub struct NodeSelf {
     /// "the old holder fences claims and transfers committed Build facts BEFORE the new holder
     /// acts"). `None` for a node that holds no seat.
     pub yield_seat: Option<YieldSeat>,
+    /// Cancelled when `drain-node` or `stop-node` is admitted: the birth is retired, so its
+    /// `hydrate_before_ready` hook and any pull it has in flight end.
+    pub retire: Option<rafka_node_rpc::CancelToken>,
     seen: Mutex<HashSet<String>>,
 }
 
@@ -108,12 +111,18 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, yield_seat: None, seen: Mutex::new(HashSet::new()) }
+        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, yield_seat: None, retire: None, seen: Mutex::new(HashSet::new()) }
     }
 
     /// This surface, fencing its seat before it publishes `Draining` or `Leaving`.
     pub fn with_yield_seat(mut self, yield_seat: YieldSeat) -> Self {
         self.yield_seat = Some(yield_seat);
+        self
+    }
+
+    /// This surface, cancelling `retire` when a drain or a stop is admitted.
+    pub fn with_retire(mut self, retire: rafka_node_rpc::CancelToken) -> Self {
+        self.retire = Some(retire);
         self
     }
 
@@ -171,6 +180,9 @@ impl NodeSelf {
             commander = %commander, in_flight_at_zero = tracing::field::Empty, "otel.kind" = "internal"
         );
         async {
+            if let Some(retire) = &self.retire {
+                retire.cancel();
+            }
             if let Some(yield_seat) = &self.yield_seat {
                 yield_seat("drain-node").await;
             }
@@ -219,6 +231,9 @@ impl NodeSelf {
         );
         async {
             stop_command().admit();
+            if let Some(retire) = &self.retire {
+                retire.cancel();
+            }
             if let Some(yield_seat) = &self.yield_seat {
                 yield_seat("stop-node").await;
             }

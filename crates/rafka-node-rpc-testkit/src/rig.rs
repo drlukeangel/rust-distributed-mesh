@@ -107,8 +107,8 @@ pub struct AdminSide {
     pub joins: Arc<rafka_node_admin_core::join::Joins>,
     /// The admin every launch from `template` names as its launcher.
     pub launcher: rafka_mesh_entity::launch::Launcher,
-    /// The digest this admin side publishes as itself.
-    digest: std::sync::Mutex<rafka_mesh_entity::digest::MeshDigest>,
+    /// The digest this admin side publishes as itself, on the membership cadence as a node-admin does.
+    digest: Arc<std::sync::Mutex<rafka_mesh_entity::digest::MeshDigest>>,
     _router: Router,
 }
 
@@ -116,9 +116,11 @@ impl AdminSide {
     /// Say `status` as this admin side's own digest: how a test moves its authority from Pending
     /// to ReadyForTraffic.
     pub async fn publish_status(&self, status: rafka_mesh_entity::digest::MemberStatus) {
-        let mut d = self.digest.lock().unwrap().clone();
-        d.status = status;
-        *self.digest.lock().unwrap() = d.clone();
+        let d = {
+            let mut held = self.digest.lock().unwrap();
+            held.status = status;
+            held.clone()
+        };
         self.observer.membership.publish(&d).await.expect("the admin's digest publishes");
     }
 
@@ -281,7 +283,11 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
         gossip: None,
     };
     membership.publish(&admin_digest).await.expect("the admin's digest publishes");
-    let admin_digest_for_status = admin_digest.clone();
+    let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
+    let _publisher = {
+        let cell = digest_cell.clone();
+        membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone())
+    };
     let _ = own_digest_slot.set(admin_digest.clone());
     let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
@@ -290,7 +296,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
         seed: (admin_ep.id().to_string(), addr),
         joins,
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
-        digest: std::sync::Mutex::new(admin_digest_for_status),
+        digest: digest_cell,
         _router: router,
     }
 }

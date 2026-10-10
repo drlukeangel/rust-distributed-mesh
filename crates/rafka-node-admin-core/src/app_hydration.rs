@@ -114,8 +114,8 @@ pub struct HydrateCtx {
     /// Cancelled when the birth is retired (drain-node, stop-node, its process stopping): the hook
     /// and any pull it has in flight end.
     pub cancel: CancelToken,
-    /// The Rafka-time source this process composes.
-    pub rafka_time: Option<rafka_mesh_transport::clock::SharedClock>,
+    /// Rafka-time: the process's one instance, adopted by the join that was accepted.
+    pub rafka_time: rafka_mesh_transport::clock::RafkaTime,
     /// Which attempt this is, from 1.
     pub attempt: u32,
 }
