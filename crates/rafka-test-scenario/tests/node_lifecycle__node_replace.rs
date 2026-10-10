@@ -154,9 +154,9 @@ async fn any_other_unplanned_exit_is_replaced_by_a_new_node() {
     assert_eq!(s(&drift["attributes"]["exit_code"]), "", "a killed runtime proves no reason: {drift}");
     assert_eq!(s(&drift["attributes"]["exit_proof"]), "none", "{drift}");
     let attempt = s(&drift["attributes"]["attempt"]);
-    let spans = wait_for("the recovery operation's last step is exported", Duration::from_secs(60), || async {
+    let spans = wait_for("the recovery operation's last step and its reconcile span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        step_span(&spans, &birth_build, &attempt, NODE, "Complete").is_some().then_some(spans)
+        (step_span(&spans, &birth_build, &attempt, NODE, "Complete").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some()).then_some(spans)
     })
     .await;
     assert_replace_followed_the_spec(&spans, &birth_build, &attempt, NODE, &before, &after, &RECOVERY_ORDER);
@@ -172,6 +172,12 @@ async fn any_other_unplanned_exit_is_replaced_by_a_new_node() {
     estate.record_trace_url(drift["trace_id"].as_str().unwrap_or(""));
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     estate.shutdown().await;
+}
+
+/// The attempt's reconcile span. It closes after the attempt's last step, so it is exported after
+/// that step's span.
+fn reconcile_span<'a>(spans: &'a [Value], build: &str, attempt: &str) -> Option<&'a Value> {
+    named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt)
 }
 
 /// The `deployment.update.via-step` span of `step` for `node` in `attempt` of `build`.
@@ -233,9 +239,7 @@ const REPLACE_ORDER: [&str; 15] = [
 /// `order` is [`REPLACE_ORDER`] for a planned replace; for the recovery of a birth already proven
 /// terminal ([`RECOVERY_ORDER`]) no drain is sent to it.
 fn assert_replace_followed_the_spec(spans: &[Value], build: &str, attempt: &str, node: &str, old: &Value, new: &Value, order: &[&str]) {
-    let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
-        .into_iter()
-        .find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt)
+    let reconcile = reconcile_span(spans, build, attempt)
         .unwrap_or_else(|| panic!("the attempt's reconcile span is exported"));
     assert_eq!(s(&reconcile["attributes"]["operations"]), format!("replace-node:{node}"), "one replace operation, never retire then create: {reconcile}");
     let mut last = 0u64;
@@ -303,9 +307,9 @@ async fn a_planned_replace_admits_the_successor_before_the_old_identity_is_delet
     estate.await_attempt(&birth_build, attempt_no, SETTLE).await;
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new node has a new transport key");
     let attempt = attempt_no.to_string();
-    let spans = wait_for("the replace operation's last step is exported", Duration::from_secs(60), || async {
+    let spans = wait_for("the replace operation's last step and its reconcile span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        step_span(&spans, &birth_build, &attempt, NODE, "Complete").is_some().then_some(spans)
+        (step_span(&spans, &birth_build, &attempt, NODE, "Complete").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some()).then_some(spans)
     })
     .await;
     assert_replace_followed_the_spec(&spans, &birth_build, &attempt, NODE, &before, &after, &REPLACE_ORDER);
