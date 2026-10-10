@@ -8,7 +8,7 @@
 //! wrote.
 
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
-use rafka_test_scenario::faults::{binding_set, candidate_sha};
+use rafka_test_scenario::faults::{binding_set, binding_set_with_roles, candidate_sha};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -42,6 +42,14 @@ async fn estate_with(test: &str, app: &str) -> Estate {
         .expect("the faulted-admin binding set is accepted")
 }
 
+/// [`estate_with`] whose launch ids also bind the product role binaries (broker, gateway, compute).
+async fn estate_with_roles(test: &str, app: &str) -> Estate {
+    let sha = candidate_sha();
+    Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set_with_roles(&sha), &sha, &["broker", "gateway", "compute"], &[("RDM_TEST_APP", app)])
+        .await
+        .expect("the faulted-admin binding set is accepted")
+}
+
 async fn fabric_state(estate: &Estate) -> String {
     s(&estate.get("/api/fabric").await.1["status"])
 }
@@ -64,8 +72,78 @@ fn climb_of<'a>(spans: &'a [Value], build_id: &str) -> (&'a Value, Vec<&'a Value
 /// and checks in; the application's one traffic-opened notice follows ready-for-traffic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_two_mesh_fabric_is_ready_only_through_state_sync_state_commit_and_open_traffic() {
-    let mut estate = estate_with("a_two_mesh_fabric_is_ready_only_through_state_sync_state_commit_and_open_traffic", "answer:300").await;
-    let mesh = |m: &str| json!({"name": m, "node_admin": 2, "rpc_node": 3});
+    let test = "a_two_mesh_fabric_is_ready_only_through_state_sync_state_commit_and_open_traffic";
+    let estate = estate_with(test, "answer:300").await;
+    let members = ["rpc.1", "rpc.2", "rpc.3"];
+    two_mesh_climb(estate, json!({"node_admin": 2, "rpc_node": 3}), &members).await;
+}
+
+/// CONTRACT: a two-mesh fabric whose meshes each hold the product role nodes (a broker, a gateway
+/// and a compute) climbs to ready-for-traffic exactly as the rpc-node fabric does: every role node
+/// takes both round commands, acts through the one member-round path, publishes its check-in hook
+/// on its mesh channel and completes at its mesh primary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_two_mesh_fabric_of_role_nodes_is_ready_only_through_the_commit_state_and_open_traffic_rounds() {
+    let test = "a_two_mesh_fabric_of_role_nodes_is_ready_only_through_the_commit_state_and_open_traffic_rounds";
+    let estate = estate_with_roles(test, "answer:300").await;
+    let members = ["broker.1", "gateway.1", "compute.1"];
+    two_mesh_climb(estate, json!({"node_admin": 2, "broker": 1, "gateway": 1, "compute": 1}), &members).await;
+}
+
+/// CONTRACT: the mesh primary of a role-node mesh dies and its mesh's other admin takes the seat.
+/// Each role node of that mesh (broker, gateway, compute) sees the seat move to another birth, owes
+/// its state again (`via-authority-moved`, naming the new holder) and declares it to the new primary
+/// (`via-declare-own`, definitive), the same re-owe the rpc node makes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn role_nodes_owe_their_state_again_to_the_mesh_primary_that_took_the_seat() {
+    let test = "role_nodes_owe_their_state_again_to_the_mesh_primary_that_took_the_seat";
+    let mut estate = estate_with_roles(test, "answer:0").await;
+    let mesh = |m: &str| json!({"name": m, "node_admin": 2, "broker": 1, "gateway": 1, "compute": 1});
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
+    assert_eq!(status, 202, "{a}");
+    let build = s(&a["build_id"]);
+    estate.await_build(&build, Duration::from_secs(120)).await;
+    let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain(["broker.1", "gateway.1", "compute.1"].iter().map(move |n| format!("{m}.{n}")))).collect();
+    let nodes = estate.settled(&want, Duration::from_secs(60)).await;
+    wait_for("the fabric is ready-for-traffic", Duration::from_secs(60), || async { (fabric_state(&estate).await == "ready-for-traffic").then_some(()) }).await;
+    // The mesh that does not hold the fabric seat loses its primary.
+    let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let lost_mesh = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+    let old = nodes.iter().find(|n| n["mesh"] == lost_mesh && n["is_primary"] == true && n["kind"] == "node_admin").map(|n| s(&n["name"])).expect("a primary admin");
+    let heir = if old.ends_with(".1") { format!("{lost_mesh}.admin.2") } else { format!("{lost_mesh}.admin.1") };
+    let heir_id = s(&nodes.iter().find(|n| n["name"] == heir.as_str()).unwrap()["node_id"]);
+    if old == "mesh1.admin.1" {
+        estate.kill_bootstrap();
+    } else {
+        let pid = estate.pid_of(&old).await;
+        assert!(std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success(), "kill -9 {pid}");
+    }
+    let roles: Vec<String> = ["broker.1", "gateway.1", "compute.1"].iter().map(|n| format!("{lost_mesh}.{n}")).collect();
+    wait_for("every role node of the mesh declared its state to the new primary", Duration::from_secs(90), || {
+        let spans = estate.spans();
+        let done = roles.iter().all(|r| {
+            named(&spans, "rdm.node_rpc.status.update.via-declare-own").iter().any(|d| s(&d["attributes"]["node"]) == *r && s(&d["attributes"]["to"]) == heir && flag(&d["attributes"]["definitive"]))
+        });
+        async move { done.then_some(()) }
+    })
+    .await;
+    estate.stop().await;
+    let spans = estate.spans();
+    for r in &roles {
+        let moved: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-authority-moved").into_iter().filter(|m| s(&m["attributes"]["node"]) == *r).collect();
+        assert!(moved.iter().any(|m| s(&m["attributes"]["to"]) == heir_id), "{r} saw the seat move to {heir} ({heir_id}): {:?}", moved.iter().map(|m| &m["attributes"]).collect::<Vec<_>>());
+    }
+    estate.record_trace_url(&s(&named(&spans, "rdm.node_rpc.status.update.via-authority-moved").first().expect("a re-owe")["trace_id"]));
+}
+
+/// The two-mesh climb over meshes of `shape` (their node-admins and members), whose members are named
+/// `members` under each mesh.
+async fn two_mesh_climb(mut estate: Estate, shape: Value, members: &[&str]) {
+    let mesh = |m: &str| {
+        let mut v = shape.clone();
+        v["name"] = json!(m);
+        v
+    };
     let (_, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1")]})).await;
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
@@ -74,7 +152,7 @@ async fn a_two_mesh_fabric_is_ready_only_through_state_sync_state_commit_and_ope
     estate.await_build(&two_meshes, Duration::from_secs(120)).await;
     let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"]
         .iter()
-        .flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=3).map(move |i| format!("{m}.rpc.{i}"))))
+        .flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain(members.iter().map(move |n| format!("{m}.{n}"))))
         .collect();
     estate.settled(&want, Duration::from_secs(60)).await;
     wait_for("the fabric is ready-for-traffic under the two-mesh Build", Duration::from_secs(60), || async {

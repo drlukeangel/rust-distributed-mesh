@@ -92,3 +92,17 @@ pub fn binding_set(sha: &str) -> BindingSet {
         bindings: vec![bind("node_admin", "faulted-node-admin"), bind("rpc_node", "rafka-rpc-node")],
     }
 }
+
+/// [`binding_set`] with the product role executables bound too: the broker, gateway and compute
+/// binaries the node base builds, launched as `broker`, `gateway` and `compute`.
+pub fn binding_set_with_roles(sha: &str) -> BindingSet {
+    let mut set = binding_set(sha);
+    for role in ["broker", "gateway", "compute"] {
+        let path = bin_dir().join(format!("rafka-{role}"));
+        assert!(path.exists(), "RED: executable `rafka-{role}` is not built at {} (cargo build -p rafka-broker -p rafka-gateway -p rafka-compute)", path.display());
+        let path = path.canonicalize().unwrap();
+        set.launch_ids.push(role.into());
+        set.bindings.push(Binding { launch_id: role.into(), sha256: sha256_file(&path).unwrap(), executable: path, image: None });
+    }
+    set
+}
