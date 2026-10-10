@@ -257,14 +257,12 @@ for i in $(seq 0 $((NCELLS - 1))); do
           --arg command "$command" --arg provider "$provider" --arg start "$start" --arg finish "$finish" --arg outcome "$outcome" --arg reason "$reason" \
           '{job:$job, cell:$cell, layer:$layer, issue:$issue, source_sha:$sha, dirty_paths:$dirty, command:$command, provider:$provider, started:$start, finished:$finish, outcome:$outcome, refusal:(if $reason == "" then null else $reason end)}' \
           > "$dir/manifest.json"
-    artifacts="{}"
-    for f in $(find "$dir" -type f | sort); do
-        h=$(sha256sum "$f" | cut -d' ' -f1)
-        artifacts=$(echo "$artifacts" | jq --arg p "$f" --arg h "$h" '. + {($p): $h}')
-    done
-    # The artifact map of a twenty-node cell is far past the 128 KiB a single argument can carry
-    # (MAX_ARG_STRLEN): it goes to jq as a file, never as an argument.
-    echo "$artifacts" > "$TMPD/artifacts.json"
+    # One pass over the cell's files: sha256sum hashes them all, one jq builds the path -> hash map. (A map
+    # grown one file at a time re-parses it for every file: thousands of files took minutes.) The map of a
+    # twenty-node cell is far past the 128 KiB a single argument can carry (MAX_ARG_STRLEN): it goes to jq as
+    # a file, never as an argument.
+    find "$dir" -type f -print0 | sort -z | xargs -0 -r sha256sum \
+        | jq -R -s 'split("\n") | map(select(length > 0) | {key: .[66:], value: .[0:64]}) | from_entries' > "$TMPD/artifacts.json"
     CELLS_JSON=$(echo "$CELLS_JSON" | jq --arg cell "$cell" --arg evidence "$evidence" --arg outcome "$outcome" --arg reason "$reason" --slurpfile artifacts "$TMPD/artifacts.json" \
         '. + [{name:$cell, evidence:$evidence, outcome:$outcome, refusal:(if $reason == "" then null else $reason end), artifacts:$artifacts[0]}]')
     echo "i143-acceptance-gate: $JOB/$cell $outcome"
