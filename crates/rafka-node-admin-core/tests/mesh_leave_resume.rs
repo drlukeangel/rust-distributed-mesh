@@ -882,3 +882,90 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
     assert!(named("rdm.node_admin.mesh.update.via-predecessor-exit-recorded").iter().any(|s| s["attributes"]["predecessor"].as_str().is_some_and(|p| p.contains(FINAL))));
     assert!(named("rdm.node_admin.mesh.update.via-roster-amended").iter().any(|s| s["attributes"]["outcome"] == "applied" && s["attributes"]["final_primary"].as_str().is_some_and(|p| p.contains(OTHER_ADMIN))));
 }
+
+/// CONTRACT: when no admin of the leaving mesh survives, the one node-admin the fabric-primary
+/// creates for it admits `LeaveMesh` over the roster the owner admitted plus the amendment that
+/// names it, and never captures a roster of its own (mesh-leave.md, "Resume after the primary's
+/// loss": "The accepted roster is captured once and never recaptured"; step 2: "or, when none
+/// survives, the one node-admin the fabric-primary created for it"). mesh2 held one admin,
+/// `mesh2.admin.1`, lost mid ordinary tier after `mesh2.rpc.2` exited. The fabric-primary recorded
+/// the lost primary's exact Exited and `RosterAmended { mesh2.admin.1 -> mesh2.admin.3 }`; the new
+/// admin is created at the next free admin ordinal above every one the roster and the view hold.
+/// Its own Build facts hold no `LeavingRoster`: it reads the owner's, records no roster naming
+/// itself, runs only `mesh2.rpc.1`, and its manifest passes the owner's hand-off validation.
+#[test]
+fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_captures_none() {
+    let cap = capture();
+    let records: Vec<Node> = [FINAL, EXITING, FAILING, NEW_ADMIN].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 48_000 + i as u32))).collect();
+    let birth = |name: &str| RosterBirth::of(records.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();
+    let runtime = |name: &str| RuntimeProof::of(&handles[name].fact().unwrap());
+    let (lost, created) = (birth(FINAL), birth(NEW_ADMIN));
+    let admitted_births: Vec<Node> = records.iter().filter(|n| n.name.to_string() != NEW_ADMIN).cloned().collect();
+    // The path: above every admin ordinal the roster and the view hold, departed births included.
+    let held: Vec<PathName> = ["mesh2.admin.1", "mesh2.admin.2.old", "mesh2.rpc.4"].iter().map(|p| p.parse().unwrap()).collect();
+    let path = rafka_node_admin_core::mesh_leave::leaving_mesh_admin_path("mesh2", &live_roster(&admitted_births).unwrap(), &held);
+    let ran: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let (out, own_steps, verdict, trace_id) = cap.run(async {
+        let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
+        let build_id = BuildId::mint();
+        let mesh_id = MeshId::mint();
+        let outer = operation(&mesh_id);
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        for b in [&owner, &own] {
+            b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        }
+        accepted_roster(&owner, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &runtime(FINAL), || live_roster(&admitted_births)).await.unwrap();
+        // mesh2.rpc.2's exact exit, recorded by the lost primary and gossiped to the owner.
+        owner
+            .append_step_receipt(&BuildStepReceipt {
+                build_id: build_id.clone(),
+                attempt: 1,
+                operation: rafka_node_admin_core::mesh_leave::member_operation(&outer, EXITING),
+                step: "TerminateRuntime".into(),
+                outcome: rafka_node_admin_core::build_state::StepOutcome::Complete,
+                output: serde_json::to_value(exited(&birth(EXITING), &runtime(EXITING))).ok(),
+                executor: Some(FINAL.into()),
+            })
+            .await
+            .unwrap();
+        let root = tracing::info_span!("cell.mesh-leave-created-admin", build_id = %build_id, operation = %outer);
+        let trace_id = trace_id(&root);
+        let _in_root = root.enter();
+        record_predecessor_exit(&owner, &key(2), "mesh1.admin.1", &exited(&lost, &runtime(FINAL))).await.expect("the lost primary's exact exit is recorded first");
+        amend_roster(&owner, &key(2), "mesh1.admin.1", &RosterAmended { predecessor: lost.clone(), final_primary: created.clone(), final_runtime: runtime(NEW_ADMIN) }).await.expect("the amendment admits the created admin");
+        // mesh2.admin.3 admits LeaveMesh; its capture would be the live members it sees now.
+        let owner_facts = owner.facts().await.unwrap();
+        let live_now: Vec<Node> = records.iter().filter(|n| [FAILING, NEW_ADMIN].contains(&n.name.to_string().as_str())).cloned().collect();
+        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &key(2), NEW_ADMIN, &created, &runtime(NEW_ADMIN), || live_roster(&live_now), || async { Ok(owner_facts) }).await;
+        let out = match roster {
+            Ok((roster, known)) => members_exited(&own, &key(2), NEW_ADMIN, &roster, &created, runtime(NEW_ADMIN), &records, &known, |n: Node| {
+                let (ran, t) = (&ran, exited(&RosterBirth::of(&n).unwrap(), &runtime(&n.name.to_string())));
+                async move {
+                    ran.lock().unwrap().push(n.name.to_string());
+                    Ok::<TerminalReceipt, String>(t)
+                }
+            })
+            .await,
+            Err(e) => Err(e),
+        };
+        let own_steps = own.read_build(&build_id).await.unwrap().steps;
+        let admitted = admitted_of(&owner.read_build(&build_id).await.unwrap().steps, &outer).unwrap().unwrap();
+        let verdict = handoff_verdict(&own.facts().await.unwrap(), &key(2), &admitted, &manifest_reference(&build_id.0, 2, &outer, false));
+        (out, own_steps, verdict, trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("created_admin");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    assert_eq!(path.map(|p| p.to_string()), Ok(NEW_ADMIN.to_string()), "the created admin takes the next admin ordinal above every one held");
+    let manifest = out.unwrap_or_else(|e| panic!("the created admin runs the owner's admitted roster: {e}"));
+    assert!(!own_steps.iter().any(|r| r.step == STEP_LEAVING_ROSTER), "the created admin captures no roster of its own: {:?}", own_steps.iter().map(|r| r.step.clone()).collect::<Vec<_>>());
+    assert_eq!(*ran.lock().unwrap(), vec![FAILING.to_string()], "only the member without an exit receipt runs");
+    assert_eq!(sorted(manifest.roster.clone()), sorted(vec![lost.clone(), birth(EXITING), birth(FAILING), created.clone()]), "the roster is the admitted one plus the amendment");
+    assert!(matches!(verdict, HandoffVerdict::Accept(_)), "the owner accepts the hand-off: {verdict:?}");
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    assert!(named("rdm.node_admin.mesh.resolve.via-owner-admitted-roster").iter().any(|s| s["attributes"]["amendments"] == "1" && s["attributes"]["roster"] == "4" && s["attributes"]["me"].as_str().is_some_and(|m| m.contains(NEW_ADMIN))), "the admission took the owner's admitted roster");
+    assert!(named("rdm.node_admin.mesh.resolve.via-retained-receipts").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "2" && s["attributes"]["remaining"] == "1"));
+}
