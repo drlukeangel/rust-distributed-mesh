@@ -809,3 +809,242 @@ fn a_fabric_primary_whose_view_never_names_the_old_path_admits_and_writes_the_pa
     let a = &rows[0]["attributes"];
     assert_eq!((a["subject"].as_str(), a["node_id"].as_str(), a["held_from"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1.old"), Some(pred.node_id.as_str()), Some("node-deleting"), Some("row-deleted")), "{a:#?}");
 }
+
+// The writer of a mesh's rows (R13): the mesh's primary node-admin, the fabric-primary only as the
+// acting primary of a mesh with no primary; the name claim of a `node.create` before anything is
+// launched (lifecycles/node-create.md step 1).
+
+mod writer {
+    use super::*;
+    use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
+    use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts};
+    use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
+    use rafka_node_admin_core::join::Joins;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The rows writer of the admin `me` in view `t`, over `storage`, fed by `records`.
+    fn writer_of(me: &str, t: &Topology, storage: &Arc<MemoryNodesStorage>) -> (Arc<Records>, Arc<RwLock<Topology>>) {
+        let me: PathName = me.parse().unwrap();
+        let me_id = t.node(&me).expect("the admin is in the view").node_id.clone();
+        let records = Arc::new(Records::default());
+        records.set_rows(Arc::new(NodeRows::new(me, me_id, storage.clone())));
+        (records, Arc::new(RwLock::new(t.clone())))
+    }
+
+    /// Three meshes: `mesh1` has no node-admin (only `mesh1.rpc.1`), `mesh2.admin.1` is the
+    /// fabric-primary and `mesh2`'s primary, `mesh3.admin.1` is `mesh3`'s primary.
+    fn three_meshes() -> Topology {
+        let mut t = view();
+        t.meshes = ["mesh1", "mesh2", "mesh3"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect();
+        t.nodes = vec![node("mesh1.rpc.1", false, false), node("mesh2.admin.1", true, true), node("mesh3.admin.1", true, false)];
+        t
+    }
+
+    /// CONTRACT: no fabric-primary writes a row of a mesh that has a primary (R13 acceptance): a
+    /// birth of `mesh1`, whose primary is `mesh1.admin.2`, entering the fabric-primary
+    /// `mesh1.admin.1`'s view gets no row from it, and gets its row from `mesh1.admin.2` when its
+    /// view holds it. One `via-node-row` span, the mesh primary's.
+    #[test]
+    fn a_fabric_primary_writes_no_row_of_a_mesh_that_has_a_primary_and_the_mesh_primary_does() {
+        let cap = capture();
+        let (fp_row, mp_row, born) = cap.run(async {
+            let (fp_store, mp_store) = (Arc::new(MemoryNodesStorage::default()), Arc::new(MemoryNodesStorage::default()));
+            let t = view();
+            let (fp, fp_view) = writer_of("mesh1.admin.1", &t, &fp_store);
+            let (mp, mp_view) = writer_of("mesh1.admin.2", &t, &mp_store);
+            let birth = node("mesh1.rpc.2", false, false);
+            let born = birth.node_id.clone();
+            let again = birth.clone();
+            install(&fp, &fp_view, move |v| v.nodes.push(birth)).await;
+            install(&mp, &mp_view, move |v| v.nodes.push(again)).await;
+            let name: PathName = "mesh1.rpc.2".parse().unwrap();
+            (fp_store.node_row_at(&name).await.unwrap(), mp_store.node_row_at(&name).await.unwrap(), born)
+        });
+        assert_eq!(fp_row, None, "the fabric-primary writes no row of a mesh that has a primary");
+        assert_eq!(mp_row.map(|r| r.node_id), Some(born.clone()), "the mesh's primary writes its member's row");
+        let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        let ours: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
+        assert_eq!(ours.len(), 1, "{spans:#?}");
+        assert_eq!((ours[0]["attributes"]["node"].as_str(), ours[0]["attributes"]["outcome"].as_str()), (Some("mesh1.admin.2"), Some("row-written")), "{ours:#?}");
+        eprintln!("trace {}: rdm.node_admin.node.create.via-node-row node=mesh1.admin.2 subject=mesh1.rpc.2 outcome=row-written; the fabric-primary mesh1.admin.1 wrote none", ours[0]["trace_id"].as_str().unwrap_or(""));
+    }
+
+    /// CONTRACT: no node writes its own row (R12): an admin that takes its mesh's seat (and the
+    /// fabric seat) rebuilds the rows of its mesh's members from its view, every member but itself.
+    #[test]
+    fn an_admin_that_takes_its_meshs_seat_writes_every_members_row_but_its_own() {
+        let cap = capture();
+        let (own, others) = cap.run(async {
+            let storage = Arc::new(MemoryNodesStorage::default());
+            let mut before = view();
+            for n in before.nodes.iter_mut() {
+                n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";
+            }
+            let (records, topology) = writer_of("mesh1.admin.1", &before, &storage);
+            install(&records, &topology, |v| {
+                for n in v.nodes.iter_mut() {
+                    let me = n.name.to_string() == "mesh1.admin.1";
+                    n.is_fabric_primary = me;
+                    n.is_primary = me;
+                }
+            })
+            .await;
+            let own = storage.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
+            let others = [storage.node_row_at(&"mesh1.admin.2".parse().unwrap()).await.unwrap(), storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap()];
+            (own, others)
+        });
+        assert_eq!(own, None, "the admin writes no row of its own");
+        assert!(others.iter().all(Option::is_some), "every other member's row is written: {others:?}");
+        let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        assert!(spans.iter().all(|s| s["attributes"]["subject"] != "mesh1.admin.1"), "{spans:#?}");
+    }
+
+    /// Launches nothing: each spawn is counted and refused, so a create that reaches
+    /// `DeployRuntime` fails there.
+    #[derive(Default)]
+    struct Counted {
+        spawned: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for Counted {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            "node-rows".into()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+            self.spawned.fetch_add(1, Ordering::SeqCst);
+            Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this provider launches nothing".into() })
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+            DeploymentStatus::Unknown
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+            Ok(None)
+        }
+    }
+
+    struct Unheard;
+    #[async_trait::async_trait]
+    impl NodeObserver for Unheard {
+        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+            None
+        }
+        async fn ready(&self, _: &Node) -> Result<(), String> {
+            Err("nothing is launched here".into())
+        }
+    }
+
+    /// `create-node:<name>` run by the executor whose rows writer `records` feeds, over `provider`:
+    /// its error, if it failed.
+    async fn create(records: &Records, provider: &Counted, name: &str) -> Result<(), String> {
+        let data_root = std::env::temp_dir().join(format!("node-rows-create-{}", NodeId::mint()));
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            executable: "/nonexistent/node-rows".into(),
+            seeds: vec![],
+            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            env: Default::default(),
+            data_root: data_root.clone(),
+            mesh_issuer: None,
+        };
+        let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
+        let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let req = CreateRequest { build_id: BuildId("build-node-rows".into()), attempt: 1, node: name.parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+        let r = pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string());
+        let _ = std::fs::remove_dir_all(&data_root);
+        r
+    }
+
+    /// CONTRACT: a `node.create` whose name another live node's row holds launches nothing
+    /// (lifecycles/node-create.md step 1): the mesh-primary claims the name after `AllocateIdentity`
+    /// and before `DeployRuntime`, the store adapter refuses it `NameHeld` naming the holder, the
+    /// create fails at `AllocateIdentity` saying so, the provider is never asked to spawn, and the
+    /// holder's row stands. One `via-node-row` span, `moment` `claim`, outcome `name-held`.
+    #[test]
+    fn a_create_whose_name_another_live_row_holds_launches_nothing() {
+        let cap = capture();
+        let (err, spawned, row, held) = cap.run(async {
+            let storage = Arc::new(MemoryNodesStorage::default());
+            let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver") };
+            storage.put_node_row(&held).await.unwrap().unwrap();
+            let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
+            let provider = Counted::default();
+            let err = create(&records, &provider, "mesh1.rpc.2").await;
+            (err, provider.spawned.load(Ordering::SeqCst), storage.node_row_at(&held.name).await.unwrap(), held)
+        });
+        let err = err.expect_err("the create is refused");
+        assert!(err.contains("AllocateIdentity") && err.contains(held.node_id.as_str()), "the create fails at AllocateIdentity naming the holder: {err}");
+        assert_eq!(spawned, 0, "nothing is launched");
+        assert_eq!(row, Some(held.clone()), "the holder's row stands");
+        let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        assert_eq!(spans.len(), 1, "{spans:#?}");
+        let a = &spans[0]["attributes"];
+        assert_eq!((a["moment"].as_str(), a["node"].as_str(), a["outcome"].as_str()), (Some("claim"), Some("mesh1.admin.2"), Some("name-held")), "{a:#?}");
+        eprintln!("trace {}: rdm.node_admin.node.create.via-node-row moment=claim outcome=name-held; spawn never called", spans[0]["trace_id"].as_str().unwrap_or(""));
+    }
+
+    /// CONTRACT: a `node.create` that fails after its claim withdraws it (the holder's own key, a
+    /// blind release), so the next birth at the name is not refused by it: the mesh-primary claims
+    /// the free name (row written), the spawn fails at `DeployRuntime`, and no row is left at the
+    /// name. A `via-node-row` span (`claim`, `row-written`) then a `via-claim-withdrawn` span
+    /// (`withdrawn`).
+    #[test]
+    fn a_create_that_fails_after_its_claim_withdraws_it() {
+        let cap = capture();
+        let (err, spawned, row) = cap.run(async {
+            let storage = Arc::new(MemoryNodesStorage::default());
+            let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
+            let provider = Counted::default();
+            let err = create(&records, &provider, "mesh1.rpc.2").await;
+            (err, provider.spawned.load(Ordering::SeqCst), storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap())
+        });
+        assert!(err.expect_err("the spawn fails").contains("DeployRuntime"), "the create fails at DeployRuntime");
+        assert_eq!(spawned, 1, "the claimed birth is launched");
+        assert_eq!(row, None, "the failed create's claim is withdrawn");
+        let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        assert_eq!(claims.iter().map(|s| (s["attributes"]["moment"].as_str().unwrap_or(""), s["attributes"]["outcome"].as_str().unwrap_or(""))).collect::<Vec<_>>(), vec![("claim", "row-written")], "{claims:#?}");
+        let withdrawn = cap.spans_named("rdm.node_admin.node.remove.via-claim-withdrawn");
+        assert_eq!(withdrawn.len(), 1, "{withdrawn:#?}");
+        assert_eq!(withdrawn[0]["attributes"]["outcome"].as_str(), Some("withdrawn"), "{withdrawn:#?}");
+        eprintln!("trace {}: via-node-row moment=claim outcome=row-written; trace {}: rdm.node_admin.node.remove.via-claim-withdrawn outcome=withdrawn", claims[0]["trace_id"].as_str().unwrap_or(""), withdrawn[0]["trace_id"].as_str().unwrap_or(""));
+    }
+
+    /// CONTRACT: another mesh's primary never writes a row of a mesh with no primary; the
+    /// fabric-primary does, as that mesh's acting primary (R13). `mesh1` has no node-admin: a create
+    /// of `mesh1.rpc.2` executed by `mesh3`'s primary is refused at its claim `not-mesh-primary`,
+    /// naming the fabric-primary as the writer, and nothing is launched; executed by the
+    /// fabric-primary `mesh2.admin.1`, the claim is written.
+    #[test]
+    fn another_meshs_primary_claims_no_name_in_a_mesh_with_no_primary_and_the_fabric_primary_does() {
+        let cap = capture();
+        let (refused, spawned_refused, fp_err, spawned_fp) = cap.run(async {
+            let t = three_meshes();
+            let (other, _v1) = writer_of("mesh3.admin.1", &t, &Arc::new(MemoryNodesStorage::default()));
+            let (fp, _v2) = writer_of("mesh2.admin.1", &t, &Arc::new(MemoryNodesStorage::default()));
+            let (p1, p2) = (Counted::default(), Counted::default());
+            let refused = create(&other, &p1, "mesh1.rpc.2").await;
+            let fp_err = create(&fp, &p2, "mesh1.rpc.2").await;
+            (refused, p1.spawned.load(Ordering::SeqCst), fp_err, p2.spawned.load(Ordering::SeqCst))
+        });
+        let refused = refused.expect_err("another mesh's primary is refused");
+        assert!(refused.contains("AllocateIdentity") && refused.contains("mesh2.admin.1"), "refused at the claim, naming the fabric-primary as the writer: {refused}");
+        assert_eq!(spawned_refused, 0, "nothing is launched");
+        assert!(fp_err.expect_err("the spawn fails").contains("DeployRuntime"), "the fabric-primary's claim passes and its create reaches DeployRuntime");
+        assert_eq!(spawned_fp, 1);
+        let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        let by = |n: &str| spans.iter().filter(|s| s["attributes"]["node"] == n).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        assert_eq!(by("mesh3.admin.1"), vec!["not-mesh-primary"], "{spans:#?}");
+        assert_eq!(by("mesh2.admin.1"), vec!["row-written"], "{spans:#?}");
+        eprintln!("trace {}: via-node-row node=mesh3.admin.1 outcome=not-mesh-primary; node=mesh2.admin.1 outcome=row-written", spans[0]["trace_id"].as_str().unwrap_or(""));
+    }
+}
