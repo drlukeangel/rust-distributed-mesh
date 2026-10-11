@@ -15,9 +15,11 @@
 //!   endpoints alone (no hidden map): the surviving mesh's admin answers, its
 //!   fabric view names one new fabric primary (the surviving mesh's primary)
 //!   and advertises that admin's control API;
-//! - control has moved: through that API the test grows the surviving mesh,
-//!   removes one of its nodes, and finally shuts the fabric down; no runtime
-//!   of the estate is left running.
+//! - control has moved: that API accepts a change and the new primary drives it, and the lost
+//!   mesh is held, not recovered: no member of it answers either probe of the new primary's
+//!   peer-mesh investigation, so its verdict is `unreachable` and the drive claims and dispatches
+//!   nothing for the lost mesh's nodes (R-D1, mesh-investigation.md step 5); the fabric then shuts
+//!   down from the new primary and no runtime of the estate is left running.
 //!
 //! A three-mesh fabric with shuffled names keeps the Day-0 holder whatever the other mesh
 //! primaries' NodeIds are; every mesh primary reports the same holder; losing every node-admin
@@ -26,7 +28,9 @@
 //! Evidence: the new fabric primary's election is announced as
 //! `rdm.mesh.election.resolve.via-fabric-recompute` (`election_level =
 //! fabric_primary`, the winner's NodeId, path and mesh) by a surviving mesh
-//! primary.
+//! primary; the hold is its `rdm.node_admin.mesh.update.via-probe-verdict` (`outcome =
+//! unreachable`) and `rdm.node_admin.build.reject.via-unheard-mesh-drive` (`rebirth_decided =
+//! false`) for the lost mesh.
 
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
 use rafka_test_scenario::estate::{named, own_fabric_at, wait_for, Estate, Owner};
@@ -53,6 +57,16 @@ fn kill(pid: u64) {
     assert!(Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success(), "kill -9 {pid}");
 }
 
+/// CONTRACT (R-A2; R-D1: loss of peer-mesh control-plane visibility fences lifecycle mutation for
+/// every node in that mesh; mesh-investigation.md step 5: "Recovery ONLY if the latest probe answers
+/// `carrier-edge-lost`: a mesh-x member reports that it cannot reach its own node-admin. No answer
+/// from any member in either probe means hold, with backbone refeed continuing. Timeout or
+/// unreachable alone grants no recovery"): every process of the fabric-primary's mesh is
+/// killed. Control moves to the surviving mesh's primary, found through the advertised endpoints
+/// alone; it accepts a change and drives it, and the lost mesh, of which no member answers, is held:
+/// both probes are `unreachable`, the verdict is `unreachable`, and the drive stops at the fence on
+/// the lost mesh's first node-admin with no recovery verdict. Must NOT happen: a recovery of the
+/// lost mesh, or any node of it created or replaced after the loss.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn losing_the_fabric_primary_mesh_moves_control() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
@@ -79,7 +93,6 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     assert!(advertised.iter().all(|b| b.starts_with("http://")), "every mesh advertises its control API: {fabric:#}");
 
     // Lose the fabric primary's mesh: every one of its processes.
-    let removed = format!("{survivor}.rpc.3");
     // Every pid first: an admin's view goes with it.
     let mut pids = Vec::new();
     for n in nodes.iter().filter(|n| n["mesh"] == lost.as_str() && n["name"] != "mesh1.admin.1") {
@@ -91,6 +104,7 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     if lost == "mesh1" {
         estate.kill_bootstrap();
     }
+    let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
     // Find control again through the advertised endpoints alone: ask each
     // advertised admin for the fabric, and take the primary it advertises
@@ -135,20 +149,48 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let held = fabric["meshes"].as_array().unwrap().iter().find(|m| m["name"] == survivor.as_str()).unwrap();
     assert_eq!(s(&held["admin_api_base"]), new_base, "the surviving mesh advertises its live owning admin");
 
-    // Control moved: grow the surviving mesh, and remove one of its nodes.
+    // Control moved: the new primary accepts a change and drives it. What is left of the accepted
+    // topology begins with the lost mesh's first node-admin, and no member of the lost mesh answers
+    // either probe, so the drive stops at the fence with no recovery verdict, and the change waits.
     let (status, a) = estate.post("/api/nodes/spawn", &json!({"mesh": survivor, "kind": "rpc_node"})).await;
     assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    assert_eq!(estate.node(&format!("{survivor}.rpc.4")).await["status"], "ready-for-traffic");
-    let (status, a) = estate.delete(&format!("/api/nodes/{removed}")).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    assert!(!estate.nodes().await.iter().any(|n| n["name"] == removed.as_str() && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))), "the node was retired");
+    let change = s(&a["build_id"]);
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let (fence, verdict) = wait_for("the new primary holds the lost mesh: its verdict is unreachable and its drive stops at the fence", Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        let fence = named(&spans, "rdm.node_admin.build.reject.via-unheard-mesh-drive")
+            .into_iter()
+            .find(|sp| attr(sp, "build_id") == change && attr(sp, "node") == new_primary && attr(sp, "mesh") == lost)
+            .cloned()?;
+        let verdict = named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict")
+            .into_iter()
+            .find(|sp| attr(sp, "node") == new_primary && attr(sp, "mesh") == lost && attr(sp, "outcome") == "unreachable")
+            .cloned()?;
+        Some((fence, verdict))
+    })
+    .await;
+    assert_eq!(attr(&fence, "rebirth_decided"), "false", "the fence names no recovery verdict: {fence}");
+    assert!(attr(&fence, "target").starts_with(&format!("{lost}.")), "the fence holds a node of the lost mesh: {fence}");
+    let (_, b) = estate.get(&format!("/api/builds?id={change}")).await;
+    assert_ne!(b["state"], "complete", "the change waits behind the held mesh: {b}");
 
     // And the whole fabric stops from the new primary.
     estate.stop().await;
     assert_eq!(estate.live_runtimes(), vec![], "no runtime of the estate is left running");
     let spans = estate.spans();
+    // Held, not recovered: both probes of the new primary found no member of the lost mesh, no
+    // recovery opened, and nothing of the lost mesh was created or replaced after the loss.
+    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "node") == new_primary && attr(p, "mesh") == lost).collect();
+    assert!(!probes.is_empty() && probes.iter().all(|p| attr(p, "outcome") == "unreachable"), "every probe of the lost mesh is unreachable: {probes:#?}");
+    let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|r| attr(r, "mesh") == lost).collect();
+    assert!(rebirths.is_empty(), "no recovery of a mesh no member of which answers: {rebirths:#?}");
+    let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
+        .into_iter()
+        .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
+        .filter(|sp| attr(sp, "node").starts_with(&format!("{lost}.")) && sp["start_unix_nano"].as_u64().unwrap_or(0) > killed_ns)
+        .map(|sp| attr(sp, "node"))
+        .collect();
+    assert!(touched.is_empty(), "no node of the held mesh is created or replaced: {touched:?}");
     // The new holder is announced by a surviving admin: a vacancy first (the lost mesh's holder is
     // silent, then proven gone), then the lowest remaining mesh primary takes the seat.
     let recomputes = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
@@ -168,6 +210,8 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
         recomputes.iter().any(|sp| sp["attributes"]["previous"].as_str().is_some_and(|p| p.starts_with(&format!("{lost}.admin.")))),
         "the lost mesh's holder was announced gone before the seat moved"
     );
+    eprintln!("hold: verdict trace {} | fence trace {}", s(&verdict["trace_id"]), s(&fence["trace_id"]));
+    estate.record_trace_url(&s(&fence["trace_id"]));
 }
 
 /// A member that is unheard (frozen: its process runs but says nothing) is dead in the view, but
