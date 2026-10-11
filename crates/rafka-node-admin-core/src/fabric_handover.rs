@@ -186,7 +186,12 @@ pub struct HandoverDoor {
     pub contacts: OnceLock<OwnContacts>,
     /// The handovers this node took part in.
     pub handovers: HandoverBook,
+    /// Fences this admin's Build log, naming why, when a committed transfer takes the seat from it.
+    pub fence_builds: FenceBuilds,
 }
+
+/// Sets the sticky fence of this admin's Build log; the argument names why.
+pub type FenceBuilds = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
     Some(HandoverBirth { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone()? })
@@ -534,6 +539,9 @@ impl HandoverDoor {
         if let SeatTaken::Refused { held } = self.membership.seats().take(Seat::FabricPrimary, &holder) {
             return refuse("stale-epoch", format!("a later seat record is held: {held}"), Reply::RejectedStaleEpoch { expected: committed, current: held.epoch });
         }
+        // The seat record moved: the Build log is fenced by that move itself, before anything else
+        // this admin does is answered, so no dispatch of the old seat follows the transfer.
+        (self.fence_builds)(format!("the seat is now {} {}", payload.successor.mesh, payload.successor.node_id)).await;
         if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
             return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
         }
