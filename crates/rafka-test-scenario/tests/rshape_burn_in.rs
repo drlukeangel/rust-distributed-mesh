@@ -3340,7 +3340,7 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
     let wanted: &[&str] = if replace {
-        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "RenamePredecessor", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "Complete"]
+        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "Complete"]
     } else {
         &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "RemoveTopologyMembership", "Complete"]
     };
