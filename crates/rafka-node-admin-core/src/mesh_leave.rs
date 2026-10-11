@@ -274,6 +274,15 @@ pub enum HandoffVerdict {
         /// What the handoff reported.
         reported: String,
     },
+    /// The leaving primary recorded no exit manifest for the leave: its member workflows are
+    /// incomplete. `without_exit` names every roster birth (the final primary aside) that holds
+    /// no exact Exited receipt.
+    Incomplete {
+        /// Why the handoff is refused, naming the births.
+        reason: String,
+        /// `<path.name> <incarnation>` of every birth without an Exited receipt.
+        without_exit: Vec<String>,
+    },
 }
 
 impl HandoffVerdict {
@@ -282,6 +291,7 @@ impl HandoffVerdict {
         match self {
             HandoffVerdict::Accept(_) => None,
             HandoffVerdict::Unmatched { field, expected, reported } => Some(StatusReply::RejectedUnmatchedCompletion { field: field.clone(), expected: expected.clone(), reported: reported.clone() }),
+            HandoffVerdict::Incomplete { reason, .. } => Some(StatusReply::NotReady { reason: reason.clone() }),
         }
     }
 }
@@ -296,7 +306,16 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
         _ => None,
     });
     let Some(receipt) = receipt else {
-        return unmatched("receipt_manifest", format!("a Complete {STEP_OTHER_MEMBERS_EXITED} receipt under {operation}, attempt {attempt}"), format!("{receipt_manifest}: none among the {} facts read", facts.len()));
+        // No manifest is recorded: the member workflows are incomplete. The refusal names every
+        // accepted birth the sender's facts hold no exact Exited receipt for.
+        let steps: Vec<BuildStepReceipt> = facts.iter().filter_map(|f| if let BuildFact::Step(r) = f { Some(r.clone()) } else { None }).collect();
+        let held = exit_receipts(&steps, operation, &admitted.roster);
+        let without_exit: Vec<String> = admitted.roster.iter().filter(|b| **b != admitted.final_primary && !held.contains_key(&(b.node_id.clone(), b.incarnation_id.clone()))).map(|b| format!("{} {}", b.node, b.incarnation_id)).collect();
+        let named = if without_exit.is_empty() { "none (every other birth exited, but no exit manifest is recorded)".to_string() } else { without_exit.join(", ") };
+        let reason = format!("{operation} (build {}, attempt {attempt}): the member workflows are incomplete: {receipt_manifest} names no Complete {STEP_OTHER_MEMBERS_EXITED} receipt among the {} facts read; roster births without an exact Exited receipt: {named}", key.build_id, facts.len());
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-incomplete-handoff", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt, operation = %operation, roster = admitted.roster.len(), exited = held.len(), without_exit = %named)
+            .in_scope(|| tracing::info!("the leaving primary's member workflows are incomplete: the handoff is refused not-ready and the open leave ends"));
+        return HandoffVerdict::Incomplete { reason, without_exit };
     };
     let manifest: ExitManifest = match receipt.output.clone().and_then(|v| serde_json::from_value(v).ok()) {
         Some(m) => m,
@@ -335,9 +354,13 @@ pub struct Admitted {
     pub final_runtime: RuntimeProof,
 }
 
+/// How an open leave ends at the fabric-primary: the validated manifest, or the named reason the
+/// leaving primary's member workflows are incomplete.
+pub type LeaveOutcome = Result<ExitManifest, String>;
+
 struct OpenLeave {
     admitted: Admitted,
-    handoff: watch::Sender<Option<ExitManifest>>,
+    handoff: watch::Sender<Option<LeaveOutcome>>,
 }
 
 /// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a `MeshLeave` for.
@@ -349,7 +372,7 @@ pub struct LeaveBook {
 impl LeaveBook {
     /// Open `key` before `LeaveMesh` is sent, holding what admission captured; returns what
     /// resolves when a validated handoff arrives. Opening again keeps the first capture.
-    pub fn open(&self, key: LeaveKey, admitted: Admitted) -> watch::Receiver<Option<ExitManifest>> {
+    pub fn open(&self, key: LeaveKey, admitted: Admitted) -> watch::Receiver<Option<LeaveOutcome>> {
         self.open.lock().unwrap().entry(key).or_insert_with(|| OpenLeave { admitted, handoff: watch::channel(None).0 }).handoff.subscribe()
     }
 
@@ -363,10 +386,27 @@ impl LeaveBook {
         self.open.lock().unwrap().keys().filter(|k| &k.mesh_id == mesh_id).map(|k| (k.build_id.clone(), k.attempt, k.operation.clone())).collect()
     }
 
-    /// A validated handoff for `key`: whether it was the first.
+    /// A validated handoff for `key`: whether it was the first outcome of the leave.
     pub fn resolve(&self, key: &LeaveKey, manifest: ExitManifest) -> bool {
+        self.end(key, Ok(manifest))
+    }
+
+    /// The leaving primary reported its member workflows incomplete for `key`: the leave ends
+    /// with `reason` at once (the owner's attempt ends inside the call, never on a wait); whether it
+    /// was the first outcome of the leave.
+    pub fn incomplete(&self, key: &LeaveKey, reason: String) -> bool {
+        self.end(key, Err(reason))
+    }
+
+    fn end(&self, key: &LeaveKey, outcome: LeaveOutcome) -> bool {
         match self.open.lock().unwrap().get(key) {
-            Some(o) => o.handoff.send_replace(Some(manifest)).is_none(),
+            Some(o) => o.handoff.send_if_modified(|held| {
+                if held.is_some() {
+                    return false;
+                }
+                *held = Some(outcome);
+                true
+            }),
             None => false,
         }
     }
@@ -492,6 +532,24 @@ mod tests {
         let third = NodeId::mint();
         assert_eq!(runs.admit(&key, &third), LeaveAdmission::Resend(manifest));
         assert_eq!(runs.incomplete(&key), Some(third), "a resend is owned by its sender");
+    }
+
+    /// CONTRACT: an open leave the leaving primary reports incomplete ends at once with the named
+    /// reason (the owner's wait resolves now, never on a deadline), and a later handoff for the same
+    /// leave does not overwrite that outcome.
+    #[test]
+    fn an_incomplete_report_ends_the_open_leave_at_once_with_its_reason() {
+        let book = LeaveBook::default();
+        let key = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let last = birth("mesh2.admin.1", "i3");
+        let runtime = receipt(&last).runtime.unwrap();
+        let rx = book.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime });
+        assert!(rx.borrow().is_none());
+        assert!(book.incomplete(&key, "roster births without an exact Exited receipt: mesh2.rpc.1 i1".into()));
+        assert_eq!(rx.borrow().clone(), Some(Err("roster births without an exact Exited receipt: mesh2.rpc.1 i1".into())), "the wait resolves now with the reason");
+        let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
+        assert!(!book.resolve(&key, manifest), "the first outcome stands");
+        assert!(matches!(rx.borrow().clone(), Some(Err(_))));
     }
 
     /// CONTRACT: a manifest covers the accepted roster exactly: a missing receipt, an extra or

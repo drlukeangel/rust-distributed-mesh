@@ -99,7 +99,7 @@ impl AdminRunner {
         final_handle: crate::deployment::provider::DeploymentHandle,
         key: &LeaveKey,
         admitted: &Admitted,
-        mut handoff: tokio::sync::watch::Receiver<Option<ExitManifest>>,
+        mut handoff: tokio::sync::watch::Receiver<Option<crate::mesh_leave::LeaveOutcome>>,
     ) -> Result<(), String> {
         let event = MeshLeaveEvent { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string(), receipt_manifest: None, final_primary: None };
         // Step 2: the accepted command's hook, then the command.
@@ -113,7 +113,10 @@ impl AdminRunner {
         }
         // Steps 3-4 run at the mesh-primary; its validated handoff is what this waits for.
         let manifest = match tokio::time::timeout(HANDOFF_WAIT, handoff.wait_for(|m| m.is_some())).await {
-            Ok(Ok(m)) => m.clone().expect("waited for Some"),
+            Ok(Ok(m)) => match m.clone().expect("waited for Some") {
+                Ok(manifest) => manifest,
+                Err(reason) => return Err(format!("{outer}: {} reported its member workflows incomplete: {reason}", primary.name)),
+            },
             Ok(Err(_)) => return Err(format!("{outer}: the open leave was closed while its handoff was awaited")),
             Err(_) => return Err(format!("{outer}: {} sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand", primary.name)),
         };
@@ -218,8 +221,13 @@ impl AdminRunner {
                     // The run ends; its receipts stand. Every member that exited holds its exact
                     // Exited step receipt, and the roster its LeavingRoster receipt: a repeated
                     // leave-mesh, or the Build's next attempt, runs only the members without one.
-                    self.leave_runs.incomplete(&key);
-                    tracing::info!(error = %e, "the member workflows are incomplete: no handoff is sent");
+                    tracing::info!(error = %e, "the member workflows are incomplete: the owner is told now");
+                    // The owner learns it inside the call: mesh-leave with no recorded manifest,
+                    // which it refuses not-ready naming the births without an Exited receipt and
+                    // ends its open leave with. No mesh-leave gossip runs: this is no handoff.
+                    if let Some(owner) = self.leave_runs.incomplete(&key) {
+                        self.call_mesh_leave(&key, &owner, "incomplete", 0).await;
+                    }
                 }
             }
         }
@@ -266,6 +274,27 @@ impl AdminRunner {
     async fn hand_off(&self, key: &LeaveKey, owner: &NodeId, manifest: &ExitManifest) {
         let reference = manifest_reference(&key.build_id, key.attempt, &key.operation, false);
         let view = self.topology.read().await.clone();
+        let Some(me) = view.nodes.iter().find(|n| n.name == self.me).cloned() else {
+            tracing::info!(operation = %key.operation, "this admin holds no view of itself: the handoff waits for a repeated leave-mesh");
+            return;
+        };
+        if self.held_runtime(&me).is_none() {
+            tracing::info!(node = %me.name, "this admin publishes no runtime fact: the handoff cannot name its exact runtime");
+            return;
+        }
+        let (Some(final_incarnation), final_node_id) = (me.incarnation_id.clone(), me.node_id.clone()) else { return };
+        self.lifecycle_events
+            .mesh_leave(&MeshLeaveEvent { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), receipt_manifest: Some(reference), final_primary: Some((final_node_id, final_incarnation)) })
+            .await;
+        self.call_mesh_leave(key, owner, "complete", manifest.receipts.len()).await;
+    }
+
+    /// The `MeshLeave` call up to the owner: this primary's exact birth and runtime, and the
+    /// reference of its exit manifest receipt. `manifest` says whether that receipt is recorded
+    /// (`complete`) or the member workflows ended without one (`incomplete`).
+    async fn call_mesh_leave(&self, key: &LeaveKey, owner: &NodeId, manifest: &'static str, manifest_receipts: usize) {
+        let reference = manifest_reference(&key.build_id, key.attempt, &key.operation, false);
+        let view = self.topology.read().await.clone();
         let (Some(me), Some(owner_node), Some(node_rpc)) = (view.nodes.iter().find(|n| n.name == self.me).cloned(), view.nodes.iter().find(|n| &n.node_id == owner).cloned(), self.node_rpc.as_ref()) else {
             tracing::info!(operation = %key.operation, owner = %owner, "the owner of this workflow is not held in this view: the handoff waits for a repeated leave-mesh");
             return;
@@ -275,16 +304,13 @@ impl AdminRunner {
             return;
         };
         let (Some(final_incarnation), final_node_id) = (me.incarnation_id.clone(), me.node_id.clone()) else { return };
-        self.lifecycle_events
-            .mesh_leave(&MeshLeaveEvent { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), receipt_manifest: Some(reference.clone()), final_primary: Some((final_node_id.clone(), final_incarnation.clone())) })
-            .await;
         let req = StatusRequest::MeshLeave { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), final_node_id, final_incarnation, final_runtime, receipt_manifest: reference };
         let (out, _) = node_rpc.client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(owner_node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
         let outcome = match &out {
             rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => format!("{} {:?}", r.value().name(), r.value()),
             other => format!("{} {other:?}", other.name()),
         };
-        tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-sent", mesh_id = %key.mesh_id, operation = %key.operation, owner = %owner_node.name, manifest_receipts = manifest.receipts.len(), outcome = %outcome)
+        tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-sent", mesh_id = %key.mesh_id, operation = %key.operation, owner = %owner_node.name, manifest, manifest_receipts, outcome = %outcome)
             .in_scope(|| tracing::info!("the mesh-leave handoff was called"));
     }
 
@@ -293,7 +319,7 @@ impl AdminRunner {
     /// workflow. A reference alone is not proof.
     pub(super) async fn validate_handoff(&self, _sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
         let StatusRequest::MeshLeave { mesh_id, build_id, attempt, operation, final_node_id, final_incarnation, final_runtime, receipt_manifest } = req else { unreachable!("validate_handoff serves mesh-leave") };
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-validated", mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, outcome = tracing::field::Empty, field = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-validated", mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, outcome = tracing::field::Empty, field = tracing::field::Empty, without_exit = tracing::field::Empty);
         let reply = self.validate_handoff_in(mesh_id, build_id, *attempt, operation, final_node_id, final_incarnation, final_runtime, receipt_manifest).instrument(span.clone()).await;
         span.record("outcome", reply.name());
         if let StatusReply::RejectedUnmatchedCompletion { field, .. } = &reply {
@@ -333,6 +359,13 @@ impl AdminRunner {
         };
         let manifest = match crate::mesh_leave::handoff_verdict(&facts, &key, &admitted, receipt_manifest) {
             crate::mesh_leave::HandoffVerdict::Accept(m) => m,
+            crate::mesh_leave::HandoffVerdict::Incomplete { reason, without_exit } => {
+                // The leaving primary recorded no manifest: the open leave ends now with the
+                // births named, and this attempt ends inside the call.
+                tracing::Span::current().record("without_exit", without_exit.join(", ").as_str());
+                self.leaves.incomplete(&key, reason.clone());
+                return StatusReply::NotReady { reason };
+            }
             refused => return refused.refusal().expect("a verdict other than Accept refuses"),
         };
         if self.leaves.resolve(&key, manifest) {
