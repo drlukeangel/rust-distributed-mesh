@@ -4904,6 +4904,109 @@ mod tests {
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a departed node never returns");
     }
 
+    /// CONTRACT (R-HB1, node-status-heartbeat-connections.md §B; gate red b05c303b, node_stop admin
+    /// cell): a heartbeat the stopped birth sent before its stop, arriving after NodeStopped, is
+    /// pre-stop evidence and changes nothing. The mesh-primary held the birth's heartbeat 13 when it
+    /// published NodeStopped; the birth had sent 14 (still ReadyForTraffic) and 15 (Draining) before
+    /// it stopped, so the boundary it captured after its stop quiesce is 15, and 14 and 15 reach the
+    /// receiver after the stop. Must NOT happen: the stop ended and the birth held again by a
+    /// heartbeat at or below the boundary.
+    #[test]
+    fn a_heartbeat_at_or_below_the_stop_boundary_arriving_after_node_stopped_leaves_the_stop_standing() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 13)));
+        let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        assert!(book.stopped(stop.clone()));
+        for late in [digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 14), digest(&id, &inc, None, MemberStatus::Draining, 15)] {
+            assert!(!book.record(late.clone()), "sent before the stop: {late:?}");
+            assert!(!book.record_forwarded(late.clone()), "{late:?}");
+            assert!(!book.record_topology(late.clone()), "{late:?}");
+        }
+        assert_eq!(book.in_flight(), vec![stop], "the stop overlay stands");
+        assert!(book.get(id.as_str()).is_none(), "the stopped birth is not held again");
+        let refused = spans.named("rdm.mesh.membership.reject.via-stopped-birth");
+        assert_eq!(refused.len(), 6, "each late copy refused by name: {refused:?}");
+        assert_eq!(
+            (refused[0]["digest_seq"].as_str(), refused[0]["status"].as_str(), refused[0]["held_digest_seq"].as_str(), refused[0].get("boundary").map(String::as_str)),
+            ("14", "ReadyForTraffic", "13", Some("15")),
+            "the refusal names the late heartbeat, what the receiver held at the stop, and the node's boundary"
+        );
+        assert!(spans.named("rdm.mesh.membership.update.via-node-started").is_empty(), "no late heartbeat was taken as the rejoin");
+        let parked = spans.named("rdm.mesh.membership.remove.via-node-stopped");
+        assert_eq!(parked.len(), 1, "{parked:?}");
+        assert_eq!((parked[0]["held_digest_seq"].as_str(), parked[0].get("boundary").map(String::as_str)), ("13", Some("15")), "the receiver held 13; the stop installs the node's own boundary");
+    }
+
+    /// CONTRACT (R-HB1): while the birth is stopped, a same-birth heartbeat above its boundary is its
+    /// rejoin only when it says Pending or ReadyForTraffic (the node was started); any other status
+    /// above the boundary leaves the stop standing. The rejoin ends the stop: the birth is held again
+    /// as itself, the overlay is gone, its ready-for-traffic restores selection, and a replay of the
+    /// ended stop opens nothing.
+    #[test]
+    fn a_heartbeat_above_the_stop_boundary_after_node_start_ends_the_stop() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let book = DigestBook::default();
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 13)));
+        let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        assert!(book.stopped(stop.clone()));
+        assert!(!book.record(digest(&id, &inc, None, MemberStatus::Draining, 15)), "15 is the boundary: pre-stop evidence");
+        assert!(!book.record(digest(&id, &inc, None, MemberStatus::Leaving, 16)), "above the boundary but neither Pending nor ReadyForTraffic: the stop holds");
+        assert_eq!(book.in_flight(), vec![stop.clone()]);
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 17)), "the started birth's Pending heartbeat above the boundary is its rejoin");
+        assert!(book.in_flight().is_empty(), "the rejoin ends the stop");
+        assert_eq!(book.get(id.as_str()).map(|(d, _)| (d.node.incarnation.clone(), d.digest_seq)), Some((inc.clone(), 17)), "held again as the same birth");
+        assert!(!book.routable(id.as_str()), "the rejoined birth is Pending: a routing stop until it says ready-for-traffic");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 18)));
+        assert!(book.routable(id.as_str()), "its ready-for-traffic restores selection");
+        assert!(!book.stopped(stop), "a replay of the ended stop opens nothing");
+        assert!(book.get(id.as_str()).is_some());
+        let started = spans.named("rdm.mesh.membership.update.via-node-started");
+        assert_eq!(started.len(), 1, "{started:?}");
+        assert_eq!((started[0]["digest_seq"].as_str(), started[0]["status"].as_str(), started[0].get("boundary").map(String::as_str)), ("17", "Pending", Some("15")));
+    }
+
+    /// CONTRACT (R-HB1): a NodeStopped that arrives after the birth was already started (the receiver
+    /// holds a same-birth Pending or ReadyForTraffic heartbeat above the stop's boundary) is
+    /// superseded: the birth stays held, no overlay opens, and the stop's operation key is recorded
+    /// as applied, so a replay of the same NodeStopped (a later aggregate, a forwarded copy) is a
+    /// no-op. Must NOT happen: a late NodeStopped dropping a birth that has already rejoined.
+    #[test]
+    fn a_node_stopped_arriving_after_the_birth_restarted_changes_nothing_and_its_replay_is_a_no_op() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let book = DigestBook::default();
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 13)));
+        // The birth stopped at boundary 15 and was started; its Pending 16 and ReadyForTraffic 17
+        // reach this receiver before its mesh-primary's NodeStopped does.
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 16)));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 17)));
+        let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        assert!(!book.stopped(stop.clone()), "superseded: the birth already rejoined");
+        assert!(book.in_flight().is_empty(), "no overlay opens");
+        assert_eq!(book.get(id.as_str()).map(|(d, _)| d.digest_seq), Some(17), "the rejoined birth stays held");
+        assert!(book.routable(id.as_str()));
+        assert!(!book.stopped(stop.clone()), "a replay is a no-op");
+        assert!(book.in_flight().is_empty() && book.get(id.as_str()).is_some());
+        let superseded = spans.named("rdm.mesh.membership.reject.via-stop-superseded");
+        assert_eq!(superseded.len(), 1, "named once; the replay is a copy of a stop already applied: {superseded:?}");
+        assert_eq!(
+            (superseded[0]["held_digest_seq"].as_str(), superseded[0]["held_status"].as_str(), superseded[0]["boundary"].as_str(), superseded[0]["operation"].as_str()),
+            ("17", "ReadyForTraffic", "15", "stop-node:mesh1.rpc.1")
+        );
+        assert!(spans.named("rdm.mesh.membership.remove.via-node-stopped").is_empty(), "nothing was parked");
+    }
+
     /// CONTRACT (membership.rs `restarts_from_facts`; node-restart.md: no event is inferred from
     /// gossip): the facts end a restart hold only by its own operation's `Complete` in its own Build,
     /// by its own attempt's `Converged` verdict in its own Build, or by its Build being forgotten.
