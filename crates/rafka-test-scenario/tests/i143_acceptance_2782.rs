@@ -284,7 +284,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
 use rafka_node_admin_core::lifecycle::HookPhase;
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, wait_for_observed, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -309,6 +309,11 @@ fn s(v: &Value) -> String {
 /// The steps of `operation` at `attempt` the Build holds a `complete` receipt for, in order.
 fn done_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
     build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["outcome"] == "complete" && r["attempt"] == attempt).map(|r| s(&r["step"])).collect()
+}
+
+/// The steps of `operation` at `attempt` the Build holds a `failed` receipt for, in order, each with its reason.
+fn failed_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
+    build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["attempt"] == attempt).filter_map(|r| r["outcome"].get("failed").map(|f| format!("{}: {}", s(&r["step"]), s(&f["reason"])))).collect()
 }
 
 /// How many receipts each step of `operation` holds at `attempt`.
@@ -664,10 +669,15 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let op = format!("create-node:{admin}");
     let want = create_order[..receipts_before].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
-    wait_for(&format!("`{id}`: the Build reaches the held admin"), Duration::from_secs(60), || async {
+    wait_for_observed(&format!("`{id}`: the Build reaches the held admin (complete receipts {want:?})"), Duration::from_secs(60), || async {
         let b = run.build(&exec, &build_id).await;
         let d = done_steps(&b, &op, 1);
-        (if exact { d == want } else { d.len() >= create_order.iter().position(|x| x == CreateStep::WaitForBind.name()).unwrap() }).then_some(())
+        let reached = if exact { d == want } else { d.len() >= create_order.iter().position(|x| x == CreateStep::WaitForBind.name()).unwrap() };
+        if reached {
+            Ok(())
+        } else {
+            Err(format!("attempt {} state {}: complete receipts {d:?}; failed {:?}", b["attempt"], b["state"], failed_steps(&b, &op, 1)))
+        }
     })
     .await;
     let mut reads = Vec::new();

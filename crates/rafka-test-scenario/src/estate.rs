@@ -383,6 +383,24 @@ where
     }
 }
 
+/// Poll `check` until it yields `Ok`, failing at `deadline` with `what` and the last `Err` it
+/// yielded: a wait that times out names what it last saw, never only what it wanted.
+pub async fn wait_for_observed<T, F, Fut>(what: &str, within: Duration, mut check: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let deadline = Instant::now() + within;
+    loop {
+        let last = match check().await {
+            Ok(v) => return v,
+            Err(seen) => seen,
+        };
+        assert!(Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; last seen: {last}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// The environment variable naming an external consumer's built executable directory. When it is
 /// set, every node-admin and node of a run launches from the consumer's executables through
 /// [`Estate::bootstrap_external`]; the built-in set is refused.
