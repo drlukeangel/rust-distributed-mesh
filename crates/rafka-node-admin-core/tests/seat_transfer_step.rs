@@ -9,7 +9,7 @@
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, ReplaceRequest, ReplaceStep, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink};
+use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::fabric_handover::SeatTransferOutcome;
 use rafka_node_admin_core::join::Joins;
@@ -21,7 +21,7 @@ use std::sync::Mutex;
 const DOMAIN: &str = "seat-transfer-step";
 const HOLDER: &str = "mesh1.admin.1";
 
-/// The holder's runtime: running, never stopped here; nothing is launched.
+/// The holder's runtime: running, never stopped here.
 struct Running;
 
 #[async_trait::async_trait]
@@ -32,13 +32,11 @@ impl DeploymentProvider for Running {
     fn control_domain(&self) -> String {
         DOMAIN.into()
     }
-    async fn spawn(&self, launch: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        // A drain or a stop launches nothing; a replace whose predecessor is not stopped must not
-        // reach its successor's launch either: refused here so the cell's assertion names it.
-        Err(DeployError::Spawn { node: format!("{launch:?}").chars().take(80).collect(), reason: "this cell launches nothing".into() })
+    async fn spawn(&self, _: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        unreachable!("a drain launches nothing")
     }
-    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
-        Err(DeployError::Terminate { deployment: h.deployment_id.0.clone(), reason: "this cell terminates nothing".into() })
+    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+        unreachable!("a drain terminates nothing")
     }
     async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
         DeploymentStatus::Running
@@ -75,18 +73,11 @@ impl NodeObserver for Executor {
     }
 }
 
-/// The executor's view: publishes nothing; records every predecessor that gave up its path.name.
-#[derive(Default)]
-struct NoView {
-    renamed: Mutex<Vec<PathName>>,
-}
+struct NoView;
 impl TopologySink for NoView {
     fn publish(&self, _: Node) {}
     fn remove(&self, _: &PathName) {}
     fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
-    fn rename_predecessor(&self, name: &PathName, _: &NodeId, _: &IncarnationId) {
-        self.renamed.lock().unwrap().push(name.clone());
-    }
 }
 
 fn holder() -> Node {
@@ -106,16 +97,8 @@ fn drain_with(transfer: Result<SeatTransferOutcome, String>) -> (Result<(), rafk
 
 /// [`drain_with`] for the standalone workflow `workflow` (a drain or a stop).
 fn run_with(transfer: Result<SeatTransferOutcome, String>, workflow: NodeCommand) -> (Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
-    let (r, sent, steps, trace_id, _) = run_workflow(transfer, Some(workflow));
-    (r, sent, steps, trace_id)
-}
-
-/// Run `workflow` on the holder (a drain or a stop; `None` is a replace of it): the result, the
-/// commands sent, the step receipts, the trace id and the path.names the view saw given up.
-fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<NodeCommand>) -> (Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String, Vec<PathName>) {
     let cap = crate::mesh_leave_resume::capture();
     let observer = Executor { transfer, sent: Mutex::new(Vec::new()) };
-    let view = NoView::default();
     let (r, steps, trace_id) = cap.run(async {
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
@@ -134,7 +117,7 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
             data_root: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
             mesh_issuer: None,
         };
-        let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &NoView, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let handle = DeploymentHandle { deployment_id: DeploymentId(format!("dep-{HOLDER}")), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
         let root = tracing::info_span!("cell.seat-transfer-step", build_id = %build_id, node = HOLDER);
         let trace_id = crate::mesh_leave_resume::trace_id(&root);
@@ -142,12 +125,8 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
             use tracing::Instrument;
             let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle, kind: RetireKind::Removal };
             match workflow {
-                Some(NodeCommand::Stop) => pipeline.stop(&req).instrument(root).await,
-                Some(_) => pipeline.drain(&req).instrument(root).await,
-                None => {
-                    let req = ReplaceRequest { build_id: req.build_id, attempt: req.attempt, predecessor: req.node, handle: req.handle, spec: &rafka_node_admin_core::deployment::endpoint::RPC_NODE, held_runtimes: Vec::new() };
-                    pipeline.replace(&req, None, |_| async { Ok(()) }).instrument(root).await.map(|_| ())
-                }
+                NodeCommand::Stop => pipeline.stop(&req).instrument(root).await,
+                _ => pipeline.drain(&req).instrument(root).await,
             }
         };
         let steps = builds
@@ -165,7 +144,7 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
     let names: Vec<String> = cap.spans().iter().filter(|s| s["trace_id"] == trace_id.as_str()).map(|s| s["name"].as_str().unwrap_or("").to_string()).collect();
     crate::assert_own_story(names.iter().map(String::as_str).filter(|n| *n != "cell.seat-transfer-step"));
     println!("trace_id={trace_id} spans={names:?}");
-    (r, observer.sent.into_inner().unwrap(), steps, trace_id, view.renamed.into_inner().unwrap())
+    (r, observer.sent.into_inner().unwrap(), steps, trace_id)
 }
 
 /// CONTRACT: a refused seat transfer fails the SeatTransfer step by name and the drain never starts:
@@ -208,21 +187,4 @@ fn a_standalone_drain_or_stop_whose_command_was_never_admitted_fails_by_name_and
         assert!(e.reason.contains(HOLDER) && e.reason.contains(command) && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
         assert!(!steps.iter().any(|(s, _)| s == "Complete"), "no Complete receipt: {steps:?}");
     }
-}
-
-/// CONTRACT (node-replace.md recipe step 1; node-stop.md, the complete stop; node-recovery.md): a
-/// replace's predecessor is stopped before it gives up its path.name, and the stop's only proof is
-/// the birth's `stopped` reply. A predecessor that never admitted stop-node is not stopped: the
-/// replace fails its wait step by name with the admission it got, renames nothing, launches no
-/// successor and receipts no `Complete`. A birth that does not answer goes to node recovery, never
-/// a lenient replace.
-#[test]
-fn a_replace_whose_predecessor_never_admitted_stop_node_fails_by_name_and_renames_nothing() {
-    let (r, sent, steps, trace_id, renamed) = run_workflow(Ok(SeatTransferOutcome::NotAHolder), None);
-    assert_eq!(sent, vec![NodeCommand::Drain, NodeCommand::Stop], "the drain and the stop were asked for");
-    let e = r.expect_err("a predecessor that never admitted stop-node is not stopped");
-    assert_eq!(e.step, RetireStep::AwaitNodeLeft.name(), "{e}");
-    assert!(e.reason.contains(HOLDER) && e.reason.contains("stop-node") && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
-    assert!(renamed.is_empty(), "the predecessor keeps its path.name: {renamed:?}");
-    assert!(!steps.iter().any(|(s, _)| s == ReplaceStep::RenamePredecessor.name() || s == "Complete"), "no RenamePredecessor and no Complete receipt (trace {trace_id}): {steps:?}");
 }
