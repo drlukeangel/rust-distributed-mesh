@@ -396,6 +396,23 @@ pub enum BuildReject {
         /// What the Build would do to it (`restart`, `replace`, `drain`, `stop`, `retire`).
         action: String,
     },
+    /// The stopped-node garbage collector's delete of a birth that is no longer the one stopped
+    /// past the ttl at its admission (fabric-node-lifecycle.md §6.9 Recheck): started, replaced, or
+    /// its current stopped period no longer the one the scan aged.
+    NodeNotStopped {
+        /// The node.
+        node: String,
+        /// What its admission found instead.
+        found: String,
+    },
+    /// The stopped-node garbage collector's delete of a birth an open Build references
+    /// (fabric-node-lifecycle.md §6.9 Selection and Recheck).
+    ReferencedByOpenBuild {
+        /// The node.
+        node: String,
+        /// The open Build.
+        build_id: String,
+    },
 }
 
 impl BuildReject {
@@ -418,6 +435,8 @@ impl BuildReject {
             Self::UnheardMesh { .. } => "unheard-mesh",
             Self::NodeAdminNotNodeRecovered { .. } => "node-admin-not-node-recovered",
             Self::LastAdmin { .. } => "last-admin",
+            Self::NodeNotStopped { .. } => "node-not-stopped",
+            Self::ReferencedByOpenBuild { .. } => "referenced-by-open-build",
         }
     }
 }
@@ -445,6 +464,8 @@ impl fmt::Display for BuildReject {
                 f,
                 "node `{node}` is in mesh `{mesh}`, which this fabric-primary has not heard for {unheard_ms} ms: a peer mesh held unheard is held as a mesh, and its nodes are not restarted, replaced or deleted from here until it is heard again"
             ),
+            Self::NodeNotStopped { node, found } => write!(f, "node `{node}` is not the birth the stopped-node collector selected at its delete's admission: {found}; nothing is deleted from the scan's decision"),
+            Self::ReferencedByOpenBuild { node, build_id } => write!(f, "node `{node}`'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds"),
             Self::LastAdmin { node, mesh, action } => write!(
                 f,
                 "node `{node}` holds the fabric-primary seat and no other live node-admin of mesh `{mesh}` can take its seats: a {action} of it is refused; TakeSeats moves seats inside the holder's mesh only, and the fabric seat leaves mesh `{mesh}` only through TakeFabricPrimary inside a mesh-leave"

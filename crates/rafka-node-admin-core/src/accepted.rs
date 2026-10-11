@@ -554,14 +554,15 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     if let Some((path, from_incarnation)) = replaced {
         ops.push(BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from_incarnation.clone() });
     }
-    // A live node of a kept mesh that the topology no longer names is retired; a mesh the
-    // topology no longer names is retired whole (every member, dead or live, by the retire
-    // pipeline), never member by member.
+    // A live or stopped (parked) node of a kept mesh that the topology no longer names is retired
+    // (a node.delete of a stopped node retires it: node-decommission.md); a node leaving under
+    // another operation is that operation's. A mesh the topology no longer names is retired whole
+    // (every member, dead or live, by the retire pipeline), never member by member.
     // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
     let mut extra: Vec<&PathName> = observed
         .members()
-        .filter(|n| action.is_none() && n.status.is_live() && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
+        .filter(|n| action.is_none() && (n.status.is_live() || n.parked) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
         .map(|n| &n.name)
         .collect();
     extra.sort();
@@ -813,6 +814,25 @@ mod tests {
         assert_eq!(plan(&cur, &o2, None).operations, vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2 }]);
     }
 
+    /// CONTRACT (node-decommission.md, fabric-node-lifecycle.md 6.9 Effect): a stopped node (Leaving,
+    /// parked, its process alive) that the accepted topology no longer names, the topology a
+    /// node.delete of it accepts, is retired: the plan is its one `RetireNode`. A node leaving under
+    /// another operation (Leaving, not parked) is that operation's, never retired beside it. Must NOT
+    /// happen: a node.delete of a stopped node that converges with nothing planned while its process
+    /// lives on.
+    #[test]
+    fn a_stopped_node_the_topology_no_longer_names_is_retired() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let mut o = mn();
+        let mut stopped = n("mesh1.rpc.7", NodeStatus::Leaving, false);
+        stopped.parked = true;
+        o.nodes.push(stopped);
+        assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap() }]);
+        let mut leaving = mn();
+        leaving.nodes.push(n("mesh1.rpc.7", NodeStatus::Leaving, false));
+        assert_eq!(plan(&cur, &leaving, None).operations, vec![], "a departure already under way is not retired again");
+    }
+
     /// CONTRACT: a replaced predecessor (`<path>.old`) is neither the live birth at `<path>` nor a missing
     /// node nor a surplus one: the plan of the settled topology is empty with it in the view, and a
     /// successor at the path is the one birth the plan counts.
@@ -823,6 +843,7 @@ mod tests {
             let mut o = mn();
             let mut old = n("mesh1.rpc.2", status, false);
             old.name = old.name.renamed();
+            old.parked = status == NodeStatus::Leaving;
             o.nodes.push(old);
             assert_eq!(plan(&cur, &o, None).operations, vec![], "{status:?}");
             let mut missing = mn();

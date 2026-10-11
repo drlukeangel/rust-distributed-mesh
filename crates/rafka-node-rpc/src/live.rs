@@ -38,7 +38,7 @@ pub enum Applied {
         /// The incarnation the new birth supersedes.
         old: IncarnationId,
     },
-    /// The held birth's address changed.
+    /// The held birth's address or name changed, or a parked birth is held again.
     Updated,
     /// The fact matches what is held.
     Unchanged,
@@ -109,9 +109,9 @@ impl Live {
     }
 
     /// The path's holder after `gone` left it: another live node heard at the
-    /// same path, if any.
+    /// same path, if any. A holder is kept only while it is live and still at `path`.
     fn rehold(&mut self, path: &PathName) {
-        if self.by_path.get(path).and_then(|id| self.nodes.get(id)).is_some_and(|n| !self.is_parked(n)) {
+        if self.by_path.get(path).and_then(|id| self.nodes.get(id)).is_some_and(|n| &n.name == path && !self.is_parked(n)) {
             return;
         }
         self.by_path.remove(path);
@@ -166,7 +166,7 @@ impl LiveNodeResolver {
             None => Applied::Joined,
             Some(held) if held.endpoint_id != birth.endpoint_id => return Applied::Refused(Refusal::TransportChanged { node_id: id }),
             Some(held) if held.incarnation == birth.incarnation => {
-                if held.transport_addr == birth.transport_addr && !unparked {
+                if held.transport_addr == birth.transport_addr && held.name == birth.name && !unparked {
                     return Applied::Unchanged;
                 }
                 Applied::Updated
@@ -181,10 +181,15 @@ impl LiveNodeResolver {
             live.retired.entry(id.clone()).or_default().insert(old.clone());
             live.exited.remove(&(id.clone(), old.clone()));
         }
+        // A birth that took another name (`ApplyNodeName`, R12) gives up the one it held.
+        let gave_up = live.nodes.get(&id).map(|held| held.name.clone()).filter(|held| *held != birth.name);
         let path = birth.name.clone();
         live.nodes.insert(id.clone(), birth);
         live.by_path.entry(path.clone()).or_insert(id);
         live.rehold(&path);
+        if let Some(old) = gave_up {
+            live.rehold(&old);
+        }
         drop(live);
         self.tick();
         applied
@@ -434,6 +439,31 @@ mod tests {
         assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), t0), Err(ResolveFailure::Gone));
         let after = t0 + Duration::from_millis(50);
         assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), after), Err(ResolveFailure::Unknown), "Gone is what this process holds now, not an archive");
+    }
+
+    /// CONTRACT (R12; node-rpc-envelope.md "Meta and config"; node-replace.md: `path.name` resolves to
+    /// the successor the moment its Applied lands): a held birth that took another name
+    /// (`ApplyNodeName`) is the same birth at its new `path.name`: it resolves there by path and by
+    /// its exact id, nobody holds the name it gave up, and the change ticks. The same fact again is
+    /// unchanged. What must NOT happen: the birth kept under the name it gave up, or its new name
+    /// resolving to nobody.
+    #[tokio::test]
+    async fn a_birth_that_takes_another_name_resolves_at_it_and_gives_up_the_old_one() {
+        let r = LiveNodeResolver::default();
+        let born = birth("mesh1.rpc.1.new", 7000);
+        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        assert_eq!(r.apply(born.clone(), None), Applied::Joined);
+        let mut rx = r.changes().unwrap();
+        rx.borrow_and_update();
+        let renamed = ResolvedNode { name: taken.clone(), ..born.clone() };
+        assert_eq!(r.apply(renamed.clone(), None), Applied::Updated, "the held birth took another name");
+        assert!(rx.has_changed().unwrap(), "the name moved");
+        assert_eq!(exact(&r, &born).map(|n| n.name), Ok(taken.clone()));
+        assert_eq!(r.resolve(&NodeTarget::CurrentPath(taken.clone())).map(|n| n.node_id), Ok(born.node_id.clone()));
+        assert!(r.resolve(&NodeTarget::CurrentPath(born.name.clone())).is_err(), "nobody holds the name the birth gave up");
+        rx.borrow_and_update();
+        assert_eq!(r.apply(renamed, None), Applied::Unchanged);
+        assert!(!rx.has_changed().unwrap(), "nothing moved");
     }
 
     #[tokio::test]

@@ -431,7 +431,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
     seams.connections.drain().await;
     let end = |n: &rafka_node_rpc::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
-        source: seams.connections.own().clone(),
+        source: seams.connections.own(),
         destination: end(&dest),
         kind: ConnectionKind::Proxy,
         state: ConnectionState::Connected,

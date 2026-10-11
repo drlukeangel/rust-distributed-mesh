@@ -126,6 +126,19 @@ fn evict_span(_reason: &'static str, key: &PoolKey, outcome: &str, elapsed_ms: u
     .in_scope(|| tracing::info!("superseded birth: {outcome}"));
 }
 
+/// The dial's outcome in the transport diagnostic file (R-QH1): the peer key the dial expected, the
+/// address it dialled, the endpoint's own socket, the dial's trace (its `traceparent`, so the line
+/// and the flame name each other) and, on failure, the full error chain. Observation only.
+fn diag_connect<E: std::error::Error>(key: &PoolKey, spec: &DialSpec, r: &Result<Connection, E>, started: Instant, span: &tracing::Span) {
+    let trace = rafka_mesh_telemetry::traceparent_of(span).unwrap_or_default();
+    let (peer, addr, local, elapsed_ms) = (&key.peer, spec.addr, spec.endpoint.bound_sockets(), started.elapsed().as_millis() as u64);
+    let me = spec.endpoint.id();
+    match r {
+        Ok(c) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "connect-completed", %me, %peer, %addr, ?local, incarnation = %key.incarnation.0, connection = c.stable_id(), elapsed_ms, %trace, "the dial's handshake completed"),
+        Err(e) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "connect-failed", %me, %peer, %addr, ?local, incarnation = %key.incarnation.0, elapsed_ms, %trace, error = %format_args!("{e:#}"), error_debug = ?e, "the dial's handshake failed"),
+    }
+}
+
 impl Pool {
     /// Every pooled key (diagnostics and tests).
     pub fn keys(&self) -> Vec<PoolKey> {
@@ -287,6 +300,7 @@ impl Pool {
             tracing::info!(parent: span, step = "direct-addrs-replaced", elapsed_ms = started.elapsed().as_millis() as u64, "every other direct address for the peer is retired");
             let r = spec.endpoint.connect(EndpointAddr::new(key.peer).with_ip_addr(spec.addr), crate::ALPN).await;
             tracing::info!(parent: span, step = "connect-returned", ok = r.is_ok(), elapsed_ms = started.elapsed().as_millis() as u64, "the endpoint's connect returned");
+            diag_connect(key, &spec, &r, started, span);
             r
         };
         let res = tokio::select! {

@@ -391,3 +391,100 @@ async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
     assert_eq!(index.len(), 1);
     assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 3)), "the index holds the latest observation: {index:?}");
 }
+
+/// CONTRACT (fabric-node-lifecycle.md §8: `source` is the end's path.name and `source_node_id` the
+/// instance that wrote the entry; R12: the node owns its name): a writer reading its name from the
+/// process's held name writes its next row under a name the node took, with the same node id and
+/// birth, and holds that row as its own Direct; the row it wrote under the birth's name stays in the
+/// raw log exactly as written and is no longer its own. The writer reads its name from one place: a
+/// second binding is refused by name. What must NOT happen: a row after the rename naming the name
+/// the node gave up, or the earlier row rewritten.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_rows_written_before() {
+    let dir = data_dir("held-name");
+    let (me, peer) = (end("mesh1.rpc.1.new"), end("mesh1.rpc.2"));
+    let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &me.name, &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
+    let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
+    // The process's held name, as its membership holds it: none told yet, so the birth's.
+    let told: Arc<Mutex<Option<PathName>>> = Arc::default();
+    let (cell, birth) = (told.clone(), me.name.clone());
+    writer.follow_held_name(move || cell.lock().unwrap().clone().unwrap_or_else(|| birth.clone())).unwrap();
+    assert!(writer.follow_held_name(|| "mesh1.rpc.9".parse().unwrap()).is_err_and(|e| e.contains("mesh1.rpc.1.new") && e.contains("already reads its name")), "one place holds the name");
+    writer.hydrate().await.unwrap();
+    let target = resolved(&peer);
+    writer.direct_connected(&target);
+    writer.drain().await;
+    let before = storage.history().await.unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!((&before[0].source.name, &before[0].source.node_id), (&me.name, &me.node_id), "the row before the rename names the birth's name: {:?}", before[0]);
+
+    *told.lock().unwrap() = Some(taken.clone());
+    assert_eq!(writer.own(), ConnectionEnd { name: taken.clone(), ..me.clone() }, "the source end is the name the node holds, with its node id and birth");
+    writer.direct_broken(&target, "the pooled connection closed");
+    writer.drain().await;
+    let after = storage.history().await.unwrap();
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0], before[0], "the row written before the rename stays exactly as written");
+    assert_eq!((&after[1].source, &after[1].destination.name, after[1].state), (&ConnectionEnd { name: taken.clone(), ..me.clone() }, &peer.name, ConnectionState::Disconnected), "{:?}", after[1]);
+    let own: Vec<NodeConnection> = held.lock().unwrap().own_latest_directs().into_iter().cloned().collect();
+    assert_eq!(own, vec![after[1].clone()], "the row under the held name is this node's own Direct, the birth name's is not");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// CONTRACT (fabric-node-lifecycle.md §8: `source_node_id` is the instance at each end when the
+/// entry was written; connections.md §13 C, the backoff survives a restart): a restarted birth of
+/// `mesh1.rpc.1` (same node id, next incarnation) hydrates the previous birth's failing Direct and
+/// its next failure continues the series one ordinal up in the same epoch, naming its OWN birth as
+/// the source. What must NOT happen: the continued row naming the previous birth's incarnation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
+    let dir = data_dir("restart-series");
+    let (previous, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let me = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..previous.clone() };
+    let open = || async { FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap() };
+    {
+        let storage = open().await;
+        let mut failed = row(&previous, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
+        failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 4, attempt_ordinal: 2 });
+        storage.append_history(&failed).await.unwrap();
+        storage.put_connection(&failed).await.unwrap();
+    }
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(open().await);
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
+    assert_eq!(writer.hydrate().await.unwrap(), 1);
+    writer.direct_failed(&resolved(&dest), "refused after the restart");
+    writer.drain().await;
+    let history = storage.history().await.unwrap();
+    let next = history.last().unwrap();
+    assert_eq!(next.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((4, 3)), "the series continues: {next:?}");
+    assert_eq!(next.source, me, "the continued row names the birth that wrote it: {next:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// CONTRACT (fabric-node-lifecycle.md §8: `destination_node_id` is the instance at that end when the
+/// entry was written; connections.md §9.1 and §9.4: a reconnect series is for the current destination
+/// incarnation): a failing series against `mesh1.rpc.3`'s birth, then a failed dial to its next
+/// birth (same node id, next incarnation), is a new incident: a new epoch at ordinal one, naming the
+/// birth that was dialled. What must NOT happen: the series of the gone birth continued one ordinal
+/// up, or a row naming the gone birth as the destination of a dial to its successor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth() {
+    let dir = data_dir("next-birth-series");
+    let (me, gone) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let next = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..gone.clone() };
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &me.name, &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
+    writer.hydrate().await.unwrap();
+    for i in 0..2 {
+        writer.direct_failed(&resolved(&gone), &format!("refused {i}"));
+        writer.drain().await;
+    }
+    writer.direct_failed(&resolved(&next), "refused by the next birth");
+    writer.drain().await;
+    let history = storage.history().await.unwrap();
+    assert_eq!(history.iter().map(|r| r.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal))).collect::<Vec<_>>(), vec![Some((1, 1)), Some((1, 2)), Some((2, 1))], "the next birth's failure is a new incident: {history:#?}");
+    assert_eq!(history[2].destination, next, "the row names the birth that was dialled: {:?}", history[2]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -260,6 +260,11 @@ impl ConnectionsHeld {
         }
     }
 
+    /// This node's own path, as last named ([`Self::set_own_source`]): `None` until it is named.
+    pub fn own_source(&self) -> Option<&PathName> {
+        self.own_source.as_ref()
+    }
+
     /// Give the holder the membership its incarnation judgements read.
     pub fn set_membership(&mut self, membership: std::sync::Arc<dyn CurrentIncarnations>) {
         self.membership = Some(membership);

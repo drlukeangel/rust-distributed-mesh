@@ -37,7 +37,17 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
         .transport_config(transport_config())
         .clear_ip_transports()
         .bind_addr(addr)?;
-    Ok(builder.bind().await?)
+    bound(addr, builder.bind().await)
+}
+
+/// The bind's outcome in the transport diagnostic file (R-QH1): the endpoint's identity and the
+/// UDP sockets it holds, or the full error chain. Observation only; the outcome is returned as is.
+fn bound<E: std::error::Error + Send + Sync + 'static>(requested: SocketAddr, r: Result<Endpoint, E>) -> Result<Endpoint> {
+    match &r {
+        Ok(ep) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "endpoint-bound", endpoint_id = %ep.id(), %requested, bound = ?ep.bound_sockets(), "the endpoint is bound"),
+        Err(e) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "endpoint-bind-failed", %requested, error = %format_args!("{e:#}"), error_debug = ?e, "the endpoint did not bind"),
+    }
+    Ok(r?)
 }
 
 /// Bind an endpoint holding exactly one socket, at `addr`. Iroh's builder
@@ -57,7 +67,7 @@ pub async fn bind_exact(secret: SecretKey, addr: SocketAddr, alpns: Vec<Vec<u8>>
         .transport_config(transport)
         .clear_ip_transports()
         .bind_addr(addr)?;
-    Ok(builder.bind().await?)
+    bound(addr, builder.bind().await)
 }
 
 #[cfg(test)]

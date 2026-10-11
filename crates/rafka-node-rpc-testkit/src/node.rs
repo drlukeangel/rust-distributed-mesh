@@ -449,6 +449,12 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     drop(join_step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-membership-joined", node = %launch.name, mesh_id = %mesh_id, seeds = seeds.len());
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds).await?;
+    // The name this birth holds is its membership's (R12): its connections rows name it as their
+    // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
+    {
+        let (held, birth) = (membership.clone(), launch.name.clone());
+        connections.follow_held_name(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
+    }
     // The row's name and config the join answer handed are held before this node publishes
     // anything or declares readiness: every digest from its first carries them (R-JN1).
     install_handed(&membership, &joined.control);
