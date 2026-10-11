@@ -6079,7 +6079,7 @@ mod tests {
     /// from: a committed handover that lands while the loop awaits (its round climb) is not
     /// answered by the incumbent taking the seat back at the next epoch. Must NOT happen: the
     /// yielded incumbent announcing itself over the committed successor (the e3..e12 seat flap of
-    /// mesh_replace on f06c8197).
+    /// the fabric-primary handover stem on f06c8197).
     #[test]
     fn a_handover_committed_while_the_loop_awaits_is_not_taken_back_by_the_incumbent() {
         use MemberStatus::*;

@@ -1,11 +1,26 @@
-//! i143.e4.s8 process E2E: the mesh replacement contract (PRD §12.3).
+//! i143.e4.s8 process E2E: deleting the fabric-primary's own mesh hands the fabric-primary seat to a
+//! surviving mesh first, then deletes the mesh. The fabric does not move; its primary does.
 //!
-//! desired {mesh1, mesh2} -> {mesh2, mesh3} through one Build: mesh1 leaves (mesh-leave.md: the
-//! owner outside mesh1 runs `shutdown-mesh:<mesh_id>`, mesh1's primary drains and stops every other
-//! member, the owner drains and stops mesh1's final primary and records `MeshLeft`), and mesh3 is
-//! created under a new identity. This is a desired change, never a recovery: no proven-drift Build
-//! names mesh1, nothing recreates a mesh1 node, and the scenario carries its own manifest
-//! (subfeature `mesh-replace`).
+//! fabric-primary-handover.md: "R-ST2 transfers fabric leadership before the incumbent mesh leaves.
+//! It completes before any mesh teardown. The new fabric-primary then runs the existing mesh-leave
+//! workflow, including the final departing primary's stop."
+//!
+//! mesh-leave.md: the owner outside the mesh runs `shutdown-mesh:<mesh_id>`; the mesh's primary
+//! drains and stops every other member; the owner drains and stops the mesh's final primary and
+//! records `MeshLeft`.
+//!
+//! desired {mesh1, mesh2, mesh3} -> {mesh2, mesh3} through one Build, mesh1 holding the fabric seat.
+//! A desired change, never a recovery: no proven-drift Build names mesh1 and nothing recreates a
+//! mesh1 node (subfeature `fabric-primary-handover`).
+//!
+//! R-NS1 (gossip.md, mesh-leave section): after mesh.deleted the last admin, still its mesh's
+//! primary, keeps publishing its aggregate; from its stop on the fabric-primary is that mesh's
+//! publisher of record and publishes the mesh's own Members aggregate on the backbone, publisher
+//! itself, `digests` empty, the stopped admin in `in_flight` as NodeStopped. A node of the surviving
+//! mesh that does not hold the fabric seat holds the deleted mesh with its last admin, then holds it
+//! stopped, then gone after MeshLeft. The seat lands on the lowest NodeId among mesh2's and mesh3's
+//! primaries; mesh2 and mesh3 are both born before the leave, so either placement is the same
+//! receiver path and the cell asserts it against whichever mesh does not hold the seat.
 
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -16,10 +31,10 @@ fn owner() -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-lifecycle".into(),
-        subfeature: "mesh-replace".into(),
+        subfeature: "fabric-primary-handover".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity".into(),
+        test: "deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it".into(),
     }
 }
 
@@ -55,17 +70,18 @@ fn alive(pid: u64) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
+async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2"), mesh("mesh3")]})).await;
     assert_eq!(status, 202, "{a}");
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
-    let before = estate.settled(&names(&["mesh1", "mesh2"]), Duration::from_secs(30)).await;
+    let before = estate.settled(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await;
     let (_, fabric) = estate.get("/api/fabric").await;
     let fabric_id = s(&fabric["id"]);
     let (_, m1) = estate.get("/api/meshes/mesh1").await;
     let (_, m2) = estate.get("/api/meshes/mesh2").await;
-    let (mesh1_id, mesh2_id) = (s(&m1["id"]), s(&m2["id"]));
+    let (_, m3) = estate.get("/api/meshes/mesh3").await;
+    let (mesh1_id, mesh2_id, mesh3_id) = (s(&m1["id"]), s(&m2["id"]), s(&m3["id"]));
     let mesh1_pids: Vec<(String, u64)> = {
         let mut v = Vec::new();
         for n in before.iter().filter(|n| n["mesh"] == "mesh1") {
@@ -92,21 +108,20 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
         .expect("a ready mesh2 admin");
     estate.admin = mesh2_admin.clone();
 
-    // {mesh1, mesh2} -> {mesh2, mesh3}: one Build.
+    // {mesh1, mesh2, mesh3} -> {mesh2, mesh3}: one Build.
     let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh2"), mesh("mesh3")]})).await;
     assert_eq!(status, 202, "{b}");
     let b = s(&b["build_id"]);
     estate.await_build(&b, Duration::from_secs(240)).await;
     let after = estate.settled(&names(&["mesh2", "mesh3"]), Duration::from_secs(60)).await;
 
-    // Identities: the Fabric and mesh2 keep theirs; mesh3 is a new mesh; mesh1 is gone.
+    // Identities: the Fabric, mesh2 and mesh3 keep theirs; mesh1 is gone.
     let (_, fabric_after) = estate.get("/api/fabric").await;
     assert_eq!(s(&fabric_after["id"]), fabric_id, "the Fabric keeps its id");
     let (_, m2_after) = estate.get("/api/meshes/mesh2").await;
     assert_eq!(s(&m2_after["id"]), mesh2_id, "an untouched mesh keeps its id");
-    let (_, m3) = estate.get("/api/meshes/mesh3").await;
-    let mesh3_id = s(&m3["id"]);
-    assert!(!mesh3_id.is_empty() && mesh3_id != mesh1_id && mesh3_id != mesh2_id, "mesh3 is a new identity: {m3}");
+    let (_, m3_after) = estate.get("/api/meshes/mesh3").await;
+    assert_eq!(s(&m3_after["id"]), mesh3_id, "an untouched mesh keeps its id");
     let (status, gone) = estate.get("/api/meshes/mesh1").await;
     assert_eq!(status, 404, "mesh1 is no longer a mesh of the fabric: {gone}");
     assert!(!after.iter().any(|n| n["mesh"] == "mesh1"), "no mesh1 node remains: {after:#?}");
@@ -224,8 +239,7 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
     // The final primary's Leaving and parked state reach every node from its stopped reply (node-stop.md
     // steps 4-5): the owner, the fabric-primary, publishes NodeStopped for it, and an admin and an ordinary
-    // node of the fabric-primary's own mesh hold it Leaving and parked, not routable anywhere. Whether a mesh
-    // that does not hold the fabric seat hears that overlay over the backbone waits on ruling R-NS1 (#3067).
+    // node of the fabric-primary's own mesh hold it Leaving and parked, not routable anywhere.
     let fabric_primary = s(&fabric_now["fabric_primary"]).to_string();
     let fp_mesh = fabric_primary.split('.').next().unwrap_or_default().to_string();
     let final_parked: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && parked(sp)).collect();
@@ -233,6 +247,34 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     assert!(held_in("admin"), "an admin of the fabric-primary's mesh {fp_mesh} held the final primary {final_name} parked: {final_parked:?}");
     assert!(held_in("rpc"), "an ordinary node of the fabric-primary's mesh {fp_mesh} held the final primary {final_name} parked: {final_parked:?}");
     assert!(final_parked.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "the parked final primary is not routable anywhere: {final_parked:?}");
+    // R-NS1 (gossip.md, mesh-leave section): "After mesh.deleted the mesh's last node-admin, still its
+    // primary, keeps publishing its aggregate on the backbone with itself as the only member ... From the
+    // stop on the fabric-primary is that mesh's publisher of record ...: it publishes the dead mesh's own
+    // Members aggregate on the backbone, publisher itself, `digests` empty, the stopped admin in
+    // `in_flight` as NodeStopped ... Receivers handle it as that mesh's aggregate". Read at the surviving
+    // mesh that does not hold the fabric seat, which hears the fabric-primary's own mesh channel never.
+    let other_mesh = if fp_mesh == "mesh2" { "mesh3" } else { "mesh2" };
+    let at_other = |sp: &Value, kind: &str| s(&sp["attributes"]["node"]).starts_with(&format!("{other_mesh}.{kind}."));
+    let installed = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed");
+    let mesh1_installed = |publisher: &str, members: u64| -> Vec<&Value> {
+        installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "backbone" && at_other(sp, "admin") && s(&sp["attributes"]["publisher"]).starts_with(&format!("{publisher}@")) && attr_u(sp, "members") == members).collect()
+    };
+    // 1. While it lives: its own aggregate, itself the only member.
+    assert!(!mesh1_installed(&final_name, 1).is_empty(), "an admin of {other_mesh} held mesh1 with its last admin {final_name} the only member, from {final_name}'s own aggregate");
+    // 2. Stopped: the fabric-primary publishes mesh1's own aggregate (no digests, the stop in in_flight),
+    // and the other mesh holds the last admin parked from it: its admins from the backbone, its ordinary
+    // nodes from their mesh primary (forwarded, or the entry pull it served).
+    let acting: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-acting-primary").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == fabric_primary && attr_u(sp, "in_flight") >= 1).collect();
+    assert!(!acting.is_empty(), "the fabric-primary {fabric_primary} published mesh1's own aggregate as its publisher of record once mesh1 had no primary");
+    assert!(!mesh1_installed(&fabric_primary, 0).is_empty(), "an admin of {other_mesh} installed mesh1's aggregate published by the fabric-primary {fabric_primary}, no digests: {:?}", installed.iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && at_other(sp, "admin")).collect::<Vec<_>>());
+    assert!(final_parked.iter().any(|sp| at_other(sp, "admin") && sp["attributes"]["channel"] == "backbone"), "an admin of {other_mesh} held the final primary {final_name} parked from mesh1's aggregate on the backbone: {final_parked:?}");
+    assert!(final_parked.iter().any(|sp| at_other(sp, "rpc") && matches!(s(&sp["attributes"]["channel"]).as_str(), "mesh-channel" | "topology-read")), "an ordinary node of {other_mesh} held the final primary {final_name} parked from its own mesh primary: {final_parked:?}");
+    // 3. Gone after delete, and 4. nothing resurrects it: once a node of the other mesh applied mesh-left,
+    // no mesh1 birth is held by it again (a late frame is refused by the departed fence, by name).
+    let mesh_left_at: Vec<(String, u64)> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{other_mesh}.")) && attr_u(sp, "births_departed") > 0).map(|sp| (s(&sp["attributes"]["node"]), start_ns(sp))).collect();
+    assert!(mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{other_mesh}.admin."))) && mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{other_mesh}.rpc."))), "an admin and an ordinary node of {other_mesh} departed mesh1's births on mesh-left: {mesh_left_at:?}");
+    let resurrected: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]).starts_with("mesh1.") && mesh_left_at.iter().any(|(n, at)| s(&sp["attributes"]["node"]) == *n && start_ns(sp) > *at)).collect();
+    assert!(resurrected.is_empty(), "a mesh1 birth was held again after mesh-left: {resurrected:?}");
     // A stopped birth gossips nothing (node-stop.md step 4): once its connections are cut, the parked
     // final primary announces no Leaving on any channel when its process is ended.
     let cut_at = named(&spans, "rdm.node_admin.node.connections.delete.via-stop-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's connections were cut by its stop");
@@ -327,9 +369,6 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     );
     let created = named(&spans, "rdm.node_admin.node.create.via-build");
     assert!(!created.iter().any(|sp| sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.")), "B recreates nothing in mesh1");
-    for n in names(&["mesh3"]) {
-        assert!(created.iter().any(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["node"] == n.as_str()), "B created {n}");
-    }
 
     // rafka-time: the fabric seat moved from the retired mesh1 to the lowest NodeId among the
     // remaining mesh primaries (R-A2), mesh2's or mesh3's whichever drew it. The other remaining

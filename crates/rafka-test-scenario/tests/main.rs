@@ -74,7 +74,7 @@ mod mesh_lifecycle__mesh_create;
 mod mesh_lifecycle__mesh_leave_no_survivor;
 mod mesh_lifecycle__mesh_leave_resume;
 mod mesh_lifecycle__mesh_recover;
-mod mesh_lifecycle__mesh_replace;
+mod mesh_lifecycle__fabric_primary_handover;
 mod mesh_membership__backbone;
 mod mesh_rpc__proof_store;
 mod mesh_runtime__boot_trace;
