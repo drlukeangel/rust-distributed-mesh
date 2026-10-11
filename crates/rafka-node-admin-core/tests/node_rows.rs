@@ -409,7 +409,6 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
     let cap = capture();
     let (old_row, row, pred, succ) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
-        let pred = view().nodes.into_iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap();
         let successor = node("mesh1.rpc.1", false, false);
         let succ = successor.node_id.clone();
         let op = "replace-node:mesh1.rpc.1";
@@ -433,6 +432,7 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
             Act::Frame(op, "Complete"),
         ];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
+        let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
         r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ)
