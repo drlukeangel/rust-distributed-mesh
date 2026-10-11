@@ -434,14 +434,14 @@ async fn each_stage_of_the_handover_is_a_durable_row_on_both_admins() {
     let _spans = capture();
     let (incumbent_dir, successor_dir) = (DataDir::new("handover-incumbent"), DataDir::new("handover-successor"));
     let fabric_id = FabricId::mint();
-    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&incumbent_dir.0).unwrap())).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&successor_dir.0).unwrap())).await;
+    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&incumbent_dir.0).await.unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&successor_dir.0).await.unwrap())).await;
     let f = join(incumbent, successor).await;
     let op = operation_of(&f);
     f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("confirmed");
     until("the successor holds the confirmation", || matches!(f.successor.door.handovers.get(&op), Some((_, Stage::Confirmed(8))))).await;
-    let successor_rows = FileFabricStorage::open(&successor_dir.0).unwrap().handovers().await.unwrap();
-    let incumbent_rows = FileFabricStorage::open(&incumbent_dir.0).unwrap().handovers().await.unwrap();
+    let successor_rows = FileFabricStorage::open(&successor_dir.0).await.unwrap().handovers().await.unwrap();
+    let incumbent_rows = FileFabricStorage::open(&incumbent_dir.0).await.unwrap().handovers().await.unwrap();
     let expect = |rows: &[HandoverRow], stage: HandoverStage| {
         assert_eq!(rows.len(), 1, "one handover: {rows:?}");
         let r = &rows[0];
@@ -481,7 +481,7 @@ async fn a_successor_restarted_between_commit_and_confirmation_keeps_the_leave_c
     let dir = DataDir::new("handover-restart");
     let fabric_id = FabricId::mint();
     let (incumbent, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", false).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&dir.0).unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&dir.0).await.unwrap())).await;
     let f = join(incumbent, successor).await;
     let op = operation_of(&f);
     // The incumbent's door is not serving: the commit happens and its completion is not acknowledged.
@@ -491,7 +491,7 @@ async fn a_successor_restarted_between_commit_and_confirmation_keeps_the_leave_c
     // The successor exits and is born again over its data dir.
     let committed_birth = birth(&f.successor);
     drop(f.successor);
-    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&dir.0).unwrap())).await;
+    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&dir.0).await.unwrap())).await;
     assert_ne!(birth(&reborn).incarnation, committed_birth.incarnation, "a restart is a new birth");
     assert!(reborn.door.handovers.get(&op).is_none(), "nothing is held before the admin reads its storage");
     assert_eq!(reborn.door.restore().await.unwrap(), 1);

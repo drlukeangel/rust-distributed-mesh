@@ -53,10 +53,12 @@ pub struct FileRecords {
 }
 
 impl FileRecords {
-    /// Open (creating) the directory `dir` under the admin's data directory.
-    pub fn open(own_data_dir: &Path, dir: &str) -> Result<Self, StorageError> {
+    /// Open (creating) the directory `dir` under the admin's data directory: the directory made on
+    /// the blocking pool, as every read and write is, so no worker thread waits on the disk.
+    pub async fn open(own_data_dir: &Path, dir: &str) -> Result<Self, StorageError> {
         let dir = own_data_dir.join(dir);
-        std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
+        let made = dir.clone();
+        blocking_io(move || std::fs::create_dir_all(&made)).await.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
         Ok(Self { dir, write: tokio::sync::Mutex::new(()) })
     }
 
@@ -133,9 +135,13 @@ impl FileRecords {
         blocking_io(move || insert_file(&dir, &tmp, &path, &bytes)).await
     }
 
-    /// Whether a file under `key` exists, whatever it holds.
-    pub fn holds(&self, key: &str) -> bool {
-        self.path(key).exists()
+    /// Whether a file under `key` exists, whatever it holds: a look at the disk on the blocking
+    /// pool, as a point read is. A look that cannot be answered (the directory unreadable) is an
+    /// error naming the file, never an answer of "not held".
+    pub async fn holds(&self, key: &str) -> Result<bool, StorageError> {
+        let path = self.path(key);
+        let file = path.clone();
+        blocking_io(move || file.try_exists()).await.map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })
     }
 
     /// Remove the record under `key`, if any.
@@ -184,7 +190,8 @@ fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool
     }
 }
 
-/// Run `f`, a blocking disk call (a write that ends in an fsync), on tokio's blocking pool. No
+/// Run `f`, a blocking disk call (a write that ends in an fsync, a read, a directory made or looked
+/// at), on tokio's blocking pool. No
 /// worker thread waits on the disk, and no lock a worker could block on is held across it: a
 /// journal commit that takes seconds delays only the caller awaiting it.
 pub(crate) async fn blocking_io<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -214,6 +221,72 @@ pub(crate) fn tempdir(tag: &str) -> PathBuf {
     d
 }
 
+/// A future a test cell runs, boxed so a cell can hand one over.
+#[cfg(test)]
+pub(crate) type CellFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+/// Make `fifo` (its directory too) a FIFO a read of which waits until a writer opens it, and run
+/// `op` on a single-thread runtime. The writer is a thread that, once a reader has the FIFO open,
+/// waits for word from the runtime that it still runs (up to 5 s), then writes `bytes`. Answers
+/// whether that word came while the read waited, and what `op` answered.
+#[cfg(test)]
+pub(crate) fn runtime_runs_while_a_fifo_is_read<T: Send + 'static>(fifo: PathBuf, bytes: Vec<u8>, op: CellFuture<T>) -> (bool, T) {
+    std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
+    let (word_tx, word_rx) = std::sync::mpsc::channel::<()>();
+    let writer = std::thread::spawn(move || {
+        use std::io::Write as _;
+        // Blocks until the read has the FIFO open: the read is waiting from here on.
+        let mut f = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+        let heard = word_rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+        f.write_all(&bytes).unwrap();
+        heard
+    });
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let out = rt.block_on(async move {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        // The read and its start signal are one poll: this task resumes only once that poll returns.
+        let read = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            op.await
+        });
+        started_rx.await.unwrap();
+        let _ = word_tx.send(());
+        read.await.unwrap()
+    });
+    (writer.join().unwrap(), out)
+}
+
+/// Run `setup`, then `op` on its answer, on a single-thread runtime whose blocking pool has one
+/// thread, held busy while `op` first runs. A disk call `op` makes on the blocking pool queues
+/// behind the held thread, so `op` is still waiting after the runtime has turned over; one it makes
+/// on the runtime's thread has finished by then. Answers whether `op` waited, and what it answered
+/// once the pool's thread was let go. (A FIFO cannot hold a `stat` or a `mkdir`: this is the cell
+/// for a disk call that never opens a file.)
+#[cfg(test)]
+pub(crate) fn op_waits_on_the_blocking_pool<S: Send + 'static, T: Send + 'static>(setup: CellFuture<S>, op: impl FnOnce(S) -> CellFuture<T> + Send + 'static) -> (bool, T) {
+    let rt = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap();
+    rt.block_on(async move {
+        let state = setup.await;
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = tokio::task::spawn_blocking(move || {
+            let _ = held_tx.send(());
+            let _ = release_rx.recv();
+        });
+        held_rx.await.unwrap();
+        let task = tokio::spawn(op(state));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        let waited = !task.is_finished();
+        release_tx.send(()).unwrap();
+        holder.await.unwrap();
+        (waited, task.await.unwrap())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,11 +294,11 @@ mod tests {
     #[tokio::test]
     async fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
         let d = tempdir("records");
-        let r = FileRecords::open(&d, "things").unwrap();
+        let r = FileRecords::open(&d, "things").await.unwrap();
         assert_eq!(r.read::<String>("a", "thing/1").await.unwrap(), None);
         r.write("a", "thing/1", &"one".to_string()).await.unwrap();
         r.write("b", "thing/1", &"two".to_string()).await.unwrap();
-        let again = FileRecords::open(&d, "things").unwrap();
+        let again = FileRecords::open(&d, "things").await.unwrap();
         assert_eq!(again.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"));
         assert_eq!(again.list::<String>("thing/1").await.unwrap(), ["one", "two"]);
         assert!(matches!(again.read::<String>("a", "thing/2").await, Err(StorageError::Unrecognised { .. })));
@@ -241,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn a_list_racing_a_removal_answers_the_records_that_remain() {
         let d = tempdir("records-race");
-        let r = std::sync::Arc::new(FileRecords::open(&d, "things").unwrap());
+        let r = std::sync::Arc::new(FileRecords::open(&d, "things").await.unwrap());
         for round in 0..20 {
             for k in 0..200 {
                 r.write(&format!("k{k:03}"), "thing/1", &k).await.unwrap();
@@ -260,5 +333,32 @@ mod tests {
             }
             remover.await.unwrap();
         }
+    }
+
+    /// CONTRACT: opening a store (its directory made on the disk) never waits on the disk on a
+    /// runtime worker: it runs on the blocking pool, as every read and write of the store does
+    /// (`blocking_io`). Every node-admin store is opened inside the admin's boot, on the runtime.
+    #[test]
+    fn opening_a_store_waits_on_the_disk_off_the_runtime_thread() {
+        let d = tempdir("records-open");
+        let (waited, opened) = op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { FileRecords::open(&d, "things").await.map(|_| ()) }));
+        assert!(waited, "the open's mkdir ran on the blocking pool, not the runtime's thread");
+        assert_eq!(opened, Ok(()));
+    }
+
+    /// CONTRACT: `holds`, a look at whether a key's file is on the disk, never waits on the disk on
+    /// a runtime worker: it runs on the blocking pool, as a point read does. The fabric store's
+    /// open asks it (the retired whole-record file) inside the admin's boot.
+    #[test]
+    fn a_look_at_whether_a_key_is_held_waits_on_the_disk_off_the_runtime_thread() {
+        let d = tempdir("records-holds");
+        let setup = Box::pin(async move {
+            let r = FileRecords::open(&d, "things").await.unwrap();
+            r.write("a", "thing/1", &"one".to_string()).await.unwrap();
+            r
+        });
+        let (waited, held) = op_waits_on_the_blocking_pool(setup, |r| Box::pin(async move { (r.holds("a").await, r.holds("b").await) }));
+        assert!(waited, "the look ran on the blocking pool, not the runtime's thread");
+        assert_eq!(held, (Ok(true), Ok(false)));
     }
 }

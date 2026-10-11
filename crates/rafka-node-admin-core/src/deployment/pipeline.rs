@@ -299,13 +299,19 @@ impl CurrentRuntimeAdoption {
     /// `AdoptCurrentRuntime`, `RegisterExactRuntimeHandle` and
     /// `ResolveProviderControlDomain` for this process, under a new
     /// deployment id. The receipts so far are in `data_dir`.
-    pub fn begin(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId) -> Result<Self, PipelineError> {
-        Self::begin_in(node, data_dir, deployment_id, None)
+    pub async fn begin(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId) -> Result<Self, PipelineError> {
+        Self::begin_in(node, data_dir, deployment_id, None).await
     }
 
     /// [`Self::begin`], for a process that runs in a container of the container runtime whose
     /// control domain is `container_domain`: its runtime is that container, by immutable id.
-    pub fn begin_in(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId, container_domain: Option<String>) -> Result<Self, PipelineError> {
+    /// Its receipts are written on the blocking pool (`record_store::blocking_io`).
+    pub async fn begin_in(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId, container_domain: Option<String>) -> Result<Self, PipelineError> {
+        let (node, data_dir, deployment_id) = (node.clone(), data_dir.to_path_buf(), deployment_id.clone());
+        crate::record_store::blocking_io(move || Self::begin_on_disk(&node, &data_dir, &deployment_id, container_domain)).await
+    }
+
+    fn begin_on_disk(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId, container_domain: Option<String>) -> Result<Self, PipelineError> {
         let kind = if container_domain.is_some() { crate::model::ProviderKind::Container } else { crate::model::ProviderKind::Process };
         let span = tracing::info_span!(
             "rdm.node_admin.deployment.update.via-pipeline",
@@ -351,7 +357,12 @@ impl CurrentRuntimeAdoption {
 
     /// `PublishRuntimeFactAndCurrentRuntimeMetadata`: `publish` puts the fact
     /// and this data dir into the projection membership publishes.
-    pub fn publish(mut self, publish: impl FnOnce(&RuntimeFact, String)) -> Result<RuntimeFact, PipelineError> {
+    /// Its receipt is written on the blocking pool (`record_store::blocking_io`).
+    pub async fn publish(self, publish: impl FnOnce(&RuntimeFact, String) + Send + 'static) -> Result<RuntimeFact, PipelineError> {
+        crate::record_store::blocking_io(move || self.publish_on_disk(publish)).await
+    }
+
+    fn publish_on_disk(mut self, publish: impl FnOnce(&RuntimeFact, String)) -> Result<RuntimeFact, PipelineError> {
         let (f, dir) = (self.fact().clone(), self.data_dir.display().to_string());
         self.step(AdoptStep::PublishRuntimeFactAndCurrentRuntimeMetadata, |_| {
             publish(&f, dir.clone());
@@ -373,29 +384,44 @@ impl CurrentRuntimeAdoption {
             elapsed_ms = tracing::field::Empty,
         );
         let started = Instant::now();
-        let r = span.in_scope(|| work(&self.node));
-        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-        span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
+        let mut r = span.in_scope(|| work(&self.node));
         self.receipts.push(match &r {
             Ok((_, ev)) => AdoptionReceipt { step: step.name().into(), outcome: StepOutcome::Complete, output: serde_json::to_value(ev).ok() },
             Err(reason) => AdoptionReceipt { step: step.name().into(), outcome: StepOutcome::Failed { reason: reason.clone() }, output: None },
         });
-        // Written after every step; the Ready gate reads them back.
-        if let Err(e) = serde_json::to_vec_pretty(&self.receipts).map_err(|e| e.to_string()).and_then(|b| std::fs::write(self.data_dir.join(ADOPTION_RECEIPTS), b).map_err(|e| e.to_string())) {
-            tracing::warn!(node = %self.node, error = %e, "the Day-0 adoption receipts cannot be written");
+        // Written after every step; the Ready gate reads them back. A receipt that cannot be
+        // written fails its step: a lost one would read later as a step never completed.
+        let file = self.data_dir.join(ADOPTION_RECEIPTS);
+        if let Err(e) = serde_json::to_vec_pretty(&self.receipts).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&file, b).map_err(|e| e.to_string())) {
+            let unwritten = format!("{}: the receipt of {} cannot be written: {}: {e}", self.node, step.name(), file.display());
+            r = Err(match r {
+                Ok(_) => unwritten,
+                Err(failed) => format!("{failed}; {unwritten}"),
+            });
         }
+        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
         r.map(|(f, _)| f).map_err(|reason| PipelineError { step: step.name(), reason })
     }
 }
 
 /// The Day-0 adoption steps `data_dir` holds no `Complete` receipt for.
-pub(crate) fn adoption_missing(data_dir: &std::path::Path) -> Vec<&'static str> {
-    let receipts: Vec<AdoptionReceipt> = std::fs::read(data_dir.join(ADOPTION_RECEIPTS)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    AdoptStep::ORDER
+/// `Err` names the receipts file when it cannot be read or parsed.
+/// Read on the blocking pool (`record_store::blocking_io`).
+pub(crate) async fn adoption_missing(data_dir: &std::path::Path) -> Result<Vec<&'static str>, String> {
+    let file = data_dir.join(ADOPTION_RECEIPTS);
+    let receipts: Vec<AdoptionReceipt> = crate::record_store::blocking_io(move || match std::fs::read(&file) {
+        Ok(b) => serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", file.display())),
+        // No receipt written: no step of the adoption is complete.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("{}: {e}", file.display())),
+    })
+    .await?;
+    Ok(AdoptStep::ORDER
         .iter()
         .map(|s| s.name())
         .filter(|s| !receipts.iter().any(|r| r.step == *s && r.outcome == StepOutcome::Complete))
-        .collect()
+        .collect())
 }
 
 /// What the pipeline asks of the live mesh (gossip membership and Node RPC).
@@ -986,28 +1012,6 @@ pub(crate) struct Identity {
     deployment_id: DeploymentId,
 }
 
-/// Write (if absent) and read back the node's transport key in its data dir;
-/// a restart reuses it, a fresh data dir gets a new one.
-fn ensure_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
-    std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
-    let path = data_dir.join("node-key");
-    let key = match std::fs::read_to_string(&path) {
-        Ok(h) => {
-            let bytes: [u8; 32] = hex::decode(h.trim())
-                .map_err(|e| format!("{}: {e}", path.display()))?
-                .try_into()
-                .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
-            iroh::SecretKey::from_bytes(&bytes)
-        }
-        Err(_) => {
-            let k = iroh::SecretKey::generate();
-            std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
-            k
-        }
-    };
-    Ok(EndpointId(key.public().to_string()))
-}
-
 async fn poll<F, Fut>(within: Duration, mut f: F) -> bool
 where
     F: FnMut() -> Fut,
@@ -1205,16 +1209,21 @@ impl DeploymentPipeline<'_> {
             .await?;
         // The node binds port 0 and the operating system assigns the port; the address it
         // reports at its join is the one this admin publishes for the birth.
-        let bind_addr = SocketAddr::new(self.provider.bind_ip(&req.node), 0);
+        let bind_ip = self
+            .provider
+            .bind_ip(&req.node)
+            .await
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: no address to bind: {e}", req.node) })?;
+        let bind_addr = SocketAddr::new(bind_ip, 0);
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
         let data_dir = match prior.as_ref().and_then(|p| p.data_dir.clone()) {
             Some(d) => PathBuf::from(d),
             None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
-            let key = ensure_transport_key(&data_dir)?;
+            let key = EndpointId(crate::admin::load_or_mint_key(&data_dir).await?.public().to_string());
             if !req.held_runtimes.is_empty() {
-                let store = crate::storage::FileNodesStorage::open(&data_dir).map_err(|e| e.to_string())?;
+                let store = crate::storage::FileNodesStorage::open(&data_dir).await.map_err(|e| e.to_string())?;
                 for row in &req.held_runtimes {
                     crate::storage::NodesStorage::put_runtime(&store, row).await.map_err(|e| e.to_string())?;
                 }
@@ -1268,7 +1277,7 @@ impl DeploymentPipeline<'_> {
         let handle: DeploymentHandle = self
             .step(run, CreateStep::DeployRuntime.name(), async {
                 let spec = spec_for(rafka_mesh_telemetry::current_traceparent());
-                if let Some(h) = self.provider.find(&spec).await {
+                if let Some(h) = self.provider.find(&spec).await.map_err(|e| e.to_string())? {
                     tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
                     return Ok(h);
                 }
@@ -1332,8 +1341,10 @@ impl DeploymentPipeline<'_> {
         .await?;
         self.step(run, CreateStep::MakeRuntimeFactAvailableToBirth.name(), async {
             let f = exact()?;
-            f.write_record(&data_dir).map_err(|e| format!("{}: {e}", req.node))?;
-            match RuntimeFact::read_record(&data_dir) {
+            let (written, dir) = (f.clone(), data_dir.clone());
+            // Written and read back on the blocking pool (`record_store::blocking_io`).
+            let back = crate::record_store::blocking_io(move || written.write_record(&dir).map(|()| RuntimeFact::read_record(&dir))).await.map_err(|e| format!("{}: {e}", req.node))?;
+            match back {
                 Some(Ok(back)) if back == f => Ok(RuntimeEvidence::of(&f)),
                 Some(Ok(_)) => Err(format!("{}: {} reads back another runtime", req.node, data_dir.display())),
                 Some(Err(e)) => Err(format!("{}: {e}", req.node)),
@@ -1840,17 +1851,37 @@ impl DeploymentPipeline<'_> {
             let until = Instant::now() + Duration::from_secs(3);
             // Still held by the exited runtime: not released per `/proc` (a port another live
             // process was handed meanwhile, as estates sharing one block do, is released).
+            // `/proc` is read on the blocking pool; a table it cannot read fails the step by name,
+            // never reads as released.
             let exited_pid = handle.pid;
-            let still = |h: &(String, SocketAddr, super::endpoint::SlotTransport)| !super::endpoint::released_by(h.1, h.2, exited_pid);
             let started = Instant::now();
             loop {
-                held.retain(|h| still(h));
+                held = crate::record_store::blocking_io(move || {
+                    let mut still = Vec::with_capacity(held.len());
+                    for h in held {
+                        if !super::endpoint::released_by(h.1, h.2, exited_pid).map_err(|e| format!("cannot prove {} {} released: {e}", h.0, h.1))? {
+                            still.push(h);
+                        }
+                    }
+                    Ok::<_, String>(still)
+                })
+                .await
+                .map_err(|e| format!("{name} exited, but {e}"))?;
                 if held.is_empty() {
                     break;
                 }
                 if Instant::now() >= until {
-                    let names: Vec<String> = held.iter().map(|h| format!("{} {} ({})", h.0, h.1, super::endpoint::port_holder(h.1, h.2))).collect();
-                    return Err(format!("{name} exited, but the operating system still holds {} after {:?}", names.join(", "), started.elapsed()));
+                    let elapsed = started.elapsed();
+                    let names = crate::record_store::blocking_io(move || {
+                        held.iter()
+                            .map(|h| {
+                                let who = super::endpoint::port_holder(h.1, h.2).unwrap_or_else(|e| format!("holder unknown: {e}"));
+                                format!("{} {} ({who})", h.0, h.1)
+                            })
+                            .collect::<Vec<String>>()
+                    })
+                    .await;
+                    return Err(format!("{name} exited, but the operating system still holds {} after {elapsed:?}", names.join(", ")));
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -1889,7 +1920,12 @@ impl DeploymentPipeline<'_> {
                     return Ok(StorageDisposition::Preserved);
                 }
                 match node.data_dir.as_deref() {
-                    Some(dir) => match std::fs::remove_dir_all(dir) {
+                    Some(dir) => match crate::record_store::blocking_io({
+                        let dir = dir.to_string();
+                        move || std::fs::remove_dir_all(dir)
+                    })
+                    .await
+                    {
                         Ok(()) => Ok(StorageDisposition::Released { locator: dir.to_string() }),
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StorageDisposition::Released { locator: dir.to_string() }),
                         Err(e) => Err(format!("{dir}: {e}")),
@@ -2036,46 +2072,182 @@ impl DeploymentPipeline<'_> {
             return Ok(());
         }
         let current = self.birth_dir(predecessor);
-        let mut sources = vec![current.clone()];
-        for entry in std::fs::read_dir(&self.template.data_root).map_err(|e| format!("{}: {e}", self.template.data_root.display()))?.flatten() {
-            let (dir, file) = (entry.path(), entry.file_name().to_string_lossy().to_string());
-            if file.starts_with(&format!("{name}-")) && dir != successor_dir && dir != current && entry.file_type().is_ok_and(|t| t.is_dir()) {
-                sources.push(dir);
-            }
-        }
-        let mut moved: Vec<String> = Vec::new();
-        for source in sources {
-            let Ok(entries) = std::fs::read_dir(&source) else { continue };
-            let holders: Vec<_> = entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).collect();
-            if holders.is_empty() {
-                continue;
-            }
-            // A directory is moved only once the runtime that used it is gone: the predecessor's is
-            // proven terminal by `TerminateRuntime`, an earlier attempt's successor is checked here.
-            if let Some(Ok(fact)) = RuntimeFact::read_record(&source) {
-                if let Ok(h) = super::provider::adopt(self.provider, &fact) {
+        let sources = storage_sources(&self.template.data_root, name, &current, successor_dir).await.map_err(|e| format!("{name}: {e}"))?;
+        // A directory is moved only once the runtime that used it is gone: the predecessor's is
+        // proven terminal by `TerminateRuntime`, an earlier attempt's successor is checked here.
+        for source in &sources {
+            if let Some(fact) = &source.runtime {
+                if let Ok(h) = super::provider::adopt(self.provider, fact) {
                     if self.provider.inspect(&h).await == DeploymentStatus::Running {
-                        return Err(format!("{name}: {} holds storage of this path and its runtime (deployment {}) still runs; it is not moved", source.display(), fact.deployment_id));
+                        return Err(format!("{name}: {} holds storage of this path and its runtime (deployment {}) still runs; it is not moved", source.dir.display(), fact.deployment_id));
                     }
                 }
             }
-            for dir in holders {
-                let to = successor_dir.join(dir.file_name());
-                if to.exists() {
-                    return Err(format!("{name}: {} would move to {}, which already exists in the successor's directory", dir.path().display(), to.display()));
-                }
-                std::fs::rename(dir.path(), &to).map_err(|e| format!("{name}: moving {} to {}: {e}", dir.path().display(), to.display()))?;
-                moved.push(dir.file_name().to_string_lossy().to_string());
-            }
         }
+        let moved = move_storage(sources, successor_dir).await.map_err(|e| format!("{name}: {e}"))?;
         tracing::info!(node = %name, to = %successor_dir.display(), handed_over = ?moved, "the predecessor's storage was handed to the successor's empty directory");
         Ok(())
     }
 }
 
+/// A directory that holds a path's storage: the subdirectories it holds, and the runtime record
+/// of the runtime that used it (`None`: none is written).
+#[derive(Debug)]
+struct StorageSource {
+    dir: PathBuf,
+    holders: Vec<PathBuf>,
+    runtime: Option<RuntimeFact>,
+}
+
+/// The directories holding `name`'s storage: its current birth's `current` (when it exists) and
+/// every other `<name>-*` directory under `data_root` but `successor`, each with the
+/// subdirectories it holds and its runtime record; only those that hold any. `Err` names the
+/// directory or record that could not be read.
+async fn storage_sources(data_root: &std::path::Path, name: &PathName, current: &std::path::Path, successor: &std::path::Path) -> Result<Vec<StorageSource>, String> {
+    let (data_root, prefix, current, successor) = (data_root.to_path_buf(), format!("{name}-"), current.to_path_buf(), successor.to_path_buf());
+    crate::record_store::blocking_io(move || {
+        // The subdirectories `dir` holds; `None` when it is gone (never made, or removed).
+        let subdirs = |dir: &std::path::Path| -> Result<Option<Vec<PathBuf>>, String> {
+            let named = |e: std::io::Error| format!("{}: {e}", dir.display());
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(named(e)),
+            };
+            let mut out = Vec::new();
+            for entry in entries {
+                let entry = entry.map_err(named)?;
+                if entry.file_type().map_err(named)?.is_dir() {
+                    out.push(entry.path());
+                }
+            }
+            Ok(Some(out))
+        };
+        let mut sources = vec![current.clone()];
+        let root = subdirs(&data_root)?.ok_or_else(|| format!("{}: the data root does not exist", data_root.display()))?;
+        sources.extend(root.into_iter().filter(|d| d.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&prefix)) && *d != successor && *d != current));
+        let mut out = Vec::new();
+        for dir in sources {
+            let Some(holders) = subdirs(&dir)? else { continue };
+            if holders.is_empty() {
+                continue;
+            }
+            let runtime = RuntimeFact::read_record(&dir).transpose()?;
+            out.push(StorageSource { dir, holders, runtime });
+        }
+        Ok(out)
+    })
+    .await
+}
+
+/// Move every holder of `sources` into `successor`; the names moved. `Err` names the move that
+/// failed, or the holder whose name the successor already holds.
+async fn move_storage(sources: Vec<StorageSource>, successor: &std::path::Path) -> Result<Vec<String>, String> {
+    let successor = successor.to_path_buf();
+    crate::record_store::blocking_io(move || {
+        let mut moved = Vec::new();
+        for dir in sources.into_iter().flat_map(|s| s.holders) {
+            let file = dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+            let to = successor.join(&file);
+            if to.try_exists().map_err(|e| format!("{}: {e}", to.display()))? {
+                return Err(format!("{} would move to {}, which already exists in the successor's directory", dir.display(), to.display()));
+            }
+            std::fs::rename(&dir, &to).map_err(|e| format!("moving {} to {}: {e}", dir.display(), to.display()))?;
+            moved.push(file);
+        }
+        Ok(moved)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record_store::{op_waits_on_the_blocking_pool, runtime_runs_while_a_fifo_is_read, tempdir};
+
+    /// CONTRACT: the Day-0 adoption writes its receipts on the blocking pool, never on a runtime
+    /// worker.
+    #[test]
+    fn day_zero_adoption_writes_its_receipts_on_the_blocking_pool() {
+        let dir = tempdir("adopt-pool");
+        let (waited, a) = op_waits_on_the_blocking_pool(Box::pin(async move { dir }), |dir| {
+            Box::pin(async move { CurrentRuntimeAdoption::begin(&"mesh1.admin.1".parse().unwrap(), &dir, &DeploymentId::mint()).await.map(|_| ()) })
+        });
+        assert!(waited, "the adoption finished on the runtime's thread while the blocking pool was held");
+        a.unwrap();
+    }
+
+    /// CONTRACT: a receipt the adoption cannot write fails its step naming the file: a lost
+    /// receipt never surfaces later as a Ready blocker for a step that completed.
+    #[tokio::test]
+    async fn an_adoption_receipt_that_cannot_be_written_fails_its_step_naming_the_file() {
+        let dir = tempdir("adopt-unwritable");
+        std::fs::create_dir_all(dir.join(ADOPTION_RECEIPTS)).unwrap();
+        let err = CurrentRuntimeAdoption::begin(&"mesh1.admin.1".parse().unwrap(), &dir, &DeploymentId::mint()).await.map(|_| ()).expect_err("an unwritten receipt is a failed step");
+        assert!(err.reason.contains(ADOPTION_RECEIPTS), "{err}");
+    }
+
+    /// CONTRACT: the Ready gate reads the adoption receipts on the blocking pool.
+    #[test]
+    fn the_adoption_receipts_are_read_on_the_blocking_pool() {
+        let dir = tempdir("adopt-fifo");
+        let fifo = dir.join(ADOPTION_RECEIPTS);
+        let (heard, missing) = runtime_runs_while_a_fifo_is_read(fifo, b"[]".to_vec(), Box::pin(async move { adoption_missing(&dir).await }));
+        assert!(heard, "the runtime stopped while the receipts were read");
+        assert_eq!(missing.unwrap().len(), 4);
+    }
+
+    /// CONTRACT: receipts that cannot be read are an error naming the file, never "every step
+    /// missing".
+    #[tokio::test]
+    async fn unreadable_adoption_receipts_are_an_error_naming_the_file() {
+        let dir = tempdir("adopt-unreadable");
+        std::fs::create_dir_all(dir.join(ADOPTION_RECEIPTS)).unwrap();
+        let err = adoption_missing(&dir).await.expect_err("unreadable receipts are not missing ones");
+        assert!(err.contains(ADOPTION_RECEIPTS), "{err}");
+        std::fs::remove_dir(dir.join(ADOPTION_RECEIPTS)).unwrap();
+        std::fs::write(dir.join(ADOPTION_RECEIPTS), b"not json").unwrap();
+        let err = adoption_missing(&dir).await.expect_err("unparsable receipts are not missing ones");
+        assert!(err.contains(ADOPTION_RECEIPTS), "{err}");
+    }
+
+    /// CONTRACT: the storage hand-over looks at the disk on the blocking pool.
+    #[test]
+    fn the_storage_look_waits_on_the_blocking_pool() {
+        let root = tempdir("handover-pool");
+        let current = root.join("mesh1.rpc.1-n1");
+        std::fs::create_dir_all(current.join("data")).unwrap();
+        let (waited, found) = op_waits_on_the_blocking_pool(Box::pin(async move { (root, current) }), |(root, current)| {
+            Box::pin(async move { storage_sources(&root, &"mesh1.rpc.1".parse().unwrap(), &current, &root.join("mesh1.rpc.1-n2")).await })
+        });
+        assert!(waited, "the look finished on the runtime's thread while the blocking pool was held");
+        assert_eq!(found.unwrap().len(), 1);
+    }
+
+    /// CONTRACT: a storage directory whose runtime record cannot be read is never moved: the
+    /// record is what proves its runtime gone, and the refusal names the file.
+    #[tokio::test]
+    async fn storage_whose_runtime_record_cannot_be_read_is_refused_naming_the_file() {
+        let root = tempdir("handover-record");
+        let current = root.join("mesh1.rpc.1-n1");
+        std::fs::create_dir_all(current.join("data")).unwrap();
+        std::fs::create_dir_all(current.join(rafka_mesh_entity::runtime::RUNTIME_FILE)).unwrap();
+        let err = storage_sources(&root, &"mesh1.rpc.1".parse().unwrap(), &current, &root.join("mesh1.rpc.1-n2")).await.expect_err("an unreadable record proves nothing");
+        assert!(err.contains(rafka_mesh_entity::runtime::RUNTIME_FILE), "{err}");
+    }
+
+    /// CONTRACT: a storage directory that cannot be read is an error naming it, never "holds
+    /// nothing"; only a current birth directory never made is skipped.
+    #[tokio::test]
+    async fn a_storage_directory_that_cannot_be_read_is_an_error_naming_it() {
+        let root = tempdir("handover-dir");
+        let never_made = root.join("mesh1.rpc.1-n0");
+        assert!(storage_sources(&root, &"mesh1.rpc.1".parse().unwrap(), &never_made, &root.join("mesh1.rpc.1-n2")).await.unwrap().is_empty());
+        let current = root.join("mesh1.rpc.1-n1");
+        std::fs::write(&current, b"a file where the birth's directory should be").unwrap();
+        let err = storage_sources(&root, &"mesh1.rpc.1".parse().unwrap(), &current, &root.join("mesh1.rpc.1-n2")).await.expect_err("an unreadable directory holds something unknown");
+        assert!(err.contains(&current.display().to_string()), "{err}");
+    }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
         BuildStepReceipt { build_id: BuildId("bld-1".into()), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
@@ -2114,17 +2286,18 @@ mod tests {
         assert_eq!(ready_prerequisites_missing(&half, op, 1), vec!["MakeRuntimeFactAvailableToBirth"]);
     }
 
-    #[test]
-    fn day_zero_adopts_this_process_with_one_receipt_per_step() {
+    #[tokio::test]
+    async fn day_zero_adopts_this_process_with_one_receipt_per_step() {
         let dir = std::env::temp_dir().join(format!("rafka-adopt-current-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let node: PathName = "mesh1.admin.1".parse().unwrap();
-        let a = CurrentRuntimeAdoption::begin(&node, &dir, &DeploymentId::mint()).unwrap();
-        assert_eq!(adoption_missing(&dir), vec!["PublishRuntimeFactAndCurrentRuntimeMetadata"], "Ready waits for publication");
-        let mut published = None;
-        let fact = a.publish(|f, d| published = Some((f.clone(), d))).unwrap();
-        assert_eq!(published, Some((fact.clone(), dir.display().to_string())));
-        assert!(adoption_missing(&dir).is_empty());
+        let a = CurrentRuntimeAdoption::begin(&node, &dir, &DeploymentId::mint()).await.unwrap();
+        assert_eq!(adoption_missing(&dir).await.unwrap(), vec!["PublishRuntimeFactAndCurrentRuntimeMetadata"], "Ready waits for publication");
+        let published = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let into = published.clone();
+        let fact = a.publish(move |f, d| *into.lock().unwrap() = Some((f.clone(), d))).await.unwrap();
+        assert_eq!(*published.lock().unwrap(), Some((fact.clone(), dir.display().to_string())));
+        assert!(adoption_missing(&dir).await.unwrap().is_empty());
         fact.verify_is_this_runtime().unwrap();
         let receipts: Vec<AdoptionReceipt> = serde_json::from_slice(&std::fs::read(dir.join(ADOPTION_RECEIPTS)).unwrap()).unwrap();
         assert_eq!(receipts.iter().map(|r| r.step.as_str()).collect::<Vec<_>>(), AdoptStep::ORDER.iter().map(|s| s.name()).collect::<Vec<_>>());
@@ -2133,7 +2306,7 @@ mod tests {
         assert!(!text.contains("\"pid\""), "{text}");
         // No receipts: nothing is adopted.
         std::fs::remove_file(dir.join(ADOPTION_RECEIPTS)).unwrap();
-        assert_eq!(adoption_missing(&dir).len(), 4);
+        assert_eq!(adoption_missing(&dir).await.unwrap().len(), 4);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

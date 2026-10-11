@@ -106,8 +106,8 @@ impl DeploymentProvider for Provider {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        None
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(None)
     }
 }
 
@@ -122,8 +122,8 @@ impl PathProbe for Probe {
     async fn inspect(&self, node: &Node) -> Result<DeploymentStatus, String> {
         self.0.of(node.node_id.as_str()).map(|r| r.status).ok_or_else(|| format!("{} has no runtime in this world", node.name))
     }
-    async fn recorded(&self, path: &PathName) -> Vec<(String, DeploymentStatus)> {
-        self.0.runtimes.lock().unwrap().values().filter(|r| r.path == path.to_string()).map(|r| (format!("pid {}", r.pid), r.status.clone())).collect()
+    async fn recorded(&self, path: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String> {
+        Ok(self.0.runtimes.lock().unwrap().values().filter(|r| r.path == path.to_string()).map(|r| (format!("pid {}", r.pid), r.status.clone())).collect())
     }
 }
 

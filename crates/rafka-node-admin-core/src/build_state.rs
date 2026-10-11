@@ -786,23 +786,31 @@ pub(crate) struct FileJournal {
 }
 
 impl FileJournal {
-    /// Open (or create) the journal in `own_data_dir` and replay it.
-    pub fn open(own_data_dir: &Path) -> Result<Self, BuildStateError> {
-        std::fs::create_dir_all(own_data_dir).map_err(|e| BuildStateError::Io(e.to_string()))?;
+    /// Open (or create) the journal in `own_data_dir` and replay it: the directory, the file and
+    /// every line read on the blocking pool, as every append is, so no worker thread waits on the
+    /// disk. A journal never written replays to no facts; one that cannot be opened is an error.
+    pub async fn open(own_data_dir: &Path) -> Result<Self, BuildStateError> {
         let path = own_data_dir.join(JOURNAL_FILE);
-        let mut log = FactLog::default();
-        if path.exists() {
-            let f = std::fs::File::open(&path).map_err(|e| BuildStateError::Io(e.to_string()))?;
+        let (dir, file) = (own_data_dir.to_path_buf(), path.clone());
+        let log = crate::record_store::blocking_io(move || {
+            std::fs::create_dir_all(&dir).map_err(|e| BuildStateError::Io(format!("{}: {e}", dir.display())))?;
+            let mut log = FactLog::default();
+            let f = match std::fs::File::open(&file) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(log),
+                Err(e) => return Err(BuildStateError::Io(format!("{}: {e}", file.display()))),
+            };
             for (i, line) in std::io::BufReader::new(f).lines().enumerate() {
-                let line = line.map_err(|e| BuildStateError::Io(e.to_string()))?;
+                let line = line.map_err(|e| BuildStateError::Io(format!("{}: {e}", file.display())))?;
                 if line.trim().is_empty() {
                     continue;
                 }
-                let fact: BuildFact = serde_json::from_str(&line)
-                    .map_err(|e| BuildStateError::CorruptJournal { line: i + 1, reason: e.to_string() })?;
+                let fact: BuildFact = serde_json::from_str(&line).map_err(|e| BuildStateError::CorruptJournal { line: i + 1, reason: e.to_string() })?;
                 log.facts.push(fact);
             }
-        }
+            Ok(log)
+        })
+        .await?;
         Ok(Self { path, log: Mutex::new(log), writer: tokio::sync::Mutex::new(()) })
     }
 
@@ -1166,21 +1174,35 @@ mod tests {
     async fn a_same_admin_restart_replays_the_journal_to_the_same_view() {
         let dir = tmp();
         let before = {
-            let j = FileJournal::open(&dir).unwrap();
+            let j = FileJournal::open(&dir).await.unwrap();
             j.publish_accepted(&intent("b1")).await.unwrap();
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_step_receipt(&step("b1", 1, "restart-node:mesh1.rpc.2")).await.unwrap();
             j.publish_accepted(&intent("b2")).await.unwrap();
             (j.read_build(&BuildId("b1".into())).await.unwrap(), j.list_active().await.unwrap())
         };
-        let j = FileJournal::open(&dir).unwrap(); // the admin restarted
+        let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
         assert_eq!(j.read_build(&BuildId("b1".into())).await.unwrap(), before.0);
         assert_eq!(j.list_active().await.unwrap(), before.1);
         assert_eq!(j.claim_attempt(&claim("b1", 1, "mesh1.admin.2")).await.unwrap(), ClaimOutcome::Lost { holder: "mesh1.admin.1".into() });
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
-        let again = FileJournal::open(&dir).unwrap();
+        let again = FileJournal::open(&dir).await.unwrap();
         assert_eq!(again.read_build(&BuildId("b1".into())).await.unwrap().state, BuildState::Complete);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT: opening the journal (its replay of every fact line in the file) never waits on
+    /// the disk on a runtime worker: it runs on the blocking pool, as every append does. The admin
+    /// opens it inside its boot, on the runtime. The cell opens a journal whose file holds the
+    /// read: the runtime's only thread keeps running, and the replay answers the logged Build.
+    #[test]
+    fn opening_the_journal_waits_on_the_disk_off_the_runtime_thread() {
+        let dir = crate::record_store::tempdir("journal-offload");
+        let line = format!("{}\n", serde_json::to_string(&BuildFact::Accepted(intent("b1"))).unwrap()).into_bytes();
+        let fifo = dir.join(JOURNAL_FILE);
+        let (ran, active) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { FileJournal::open(&dir).await.unwrap().list_active().await.unwrap().len() }));
+        assert!(ran, "the runtime thread ran while the journal's replay waited on the disk");
+        assert_eq!(active, 1);
     }
 
     #[tokio::test]
@@ -1188,7 +1210,7 @@ mod tests {
         let dir = tmp();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(JOURNAL_FILE), format!("{}\nnot json\n", serde_json::to_string(&BuildFact::Accepted(intent("b1"))).unwrap())).unwrap();
-        assert!(matches!(FileJournal::open(&dir), Err(BuildStateError::CorruptJournal { line: 2, .. })));
+        assert!(matches!(FileJournal::open(&dir).await, Err(BuildStateError::CorruptJournal { line: 2, .. })));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, UdpSocket};
+use std::path::Path;
 
 /// What a socket is: the Iroh transport (UDP) or a listener (TCP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,39 +72,70 @@ pub(crate) struct PortHolder {
 /// is kernel-owned (the dead process's lingering connections, which a bind rides over) or held
 /// by a live process other than `exited_pid`. A port another live process listens on is proof the
 /// exited runtime no longer holds it, however the probe's bind fares; only a socket still held by
-/// the exited pid (its group still tearing down) keeps the port "still held".
-pub(crate) fn released_by(addr: SocketAddr, transport: SlotTransport, exited_pid: Option<u32>) -> bool {
-    let holders = port_holders(addr, transport);
-    !holders.iter().any(|h| h.pid.is_some() && h.pid == exited_pid)
+/// the exited pid (its group still tearing down) keeps the port "still held". `Err` names the
+/// `/proc` table or directory that could not be read: a port is never released on a table never
+/// read. A blocking call (it reads `/proc` and binds probes): run it on the blocking pool.
+pub(crate) fn released_by(addr: SocketAddr, transport: SlotTransport, exited_pid: Option<u32>) -> Result<bool, String> {
+    let holders = port_holders(addr, transport)?;
+    Ok(!holders.iter().any(|h| h.pid.is_some() && h.pid == exited_pid)
         && (holders.iter().any(|h| h.pid.is_some()) || !match transport {
             SlotTransport::Udp => udp_port_is_held(addr),
             SlotTransport::Tcp => tcp_port_is_held(addr),
-        })
+        }))
 }
 
-/// Who holds the socket at `addr` for `transport`, in words; `no socket` when none does.
-pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> String {
-    let holders = port_holders(addr, transport);
+/// Who holds the socket at `addr` for `transport`, in words; `no socket` when none does. `Err`
+/// names the `/proc` table or directory that could not be read. A blocking call: run it on the
+/// blocking pool.
+pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> Result<String, String> {
+    let holders = port_holders(addr, transport)?;
     if holders.is_empty() {
-        return "no socket".to_string();
+        return Ok("no socket".to_string());
     }
-    holders
+    Ok(holders
         .iter()
-        .map(|h| format!("{} inode {} held by {}", h.state, h.inode, match h.pid { Some(p) => format!("pid {p} {}", h.comm), None => "no process (kernel-owned)".to_string() }))
+        .map(|h| {
+            format!(
+                "{} inode {} held by {}",
+                h.state,
+                h.inode,
+                match h.pid {
+                    Some(p) => format!("pid {p} {}", h.comm),
+                    None => "no process whose descriptors this node-admin can read (kernel-owned, or another user's)".to_string(),
+                }
+            )
+        })
         .collect::<Vec<_>>()
-        .join("; ")
+        .join("; "))
 }
 
 /// Every socket on `addr`'s port for `transport`, with its holder (see [`port_holder`]).
-pub(crate) fn port_holders(addr: SocketAddr, transport: SlotTransport) -> Vec<PortHolder> {
-    let tables: &[&str] = match transport {
-        SlotTransport::Tcp => &["/proc/net/tcp", "/proc/net/tcp6"],
-        SlotTransport::Udp => &["/proc/net/udp", "/proc/net/udp6"],
+pub(crate) fn port_holders(addr: SocketAddr, transport: SlotTransport) -> Result<Vec<PortHolder>, String> {
+    let tables: [&Path; 2] = match transport {
+        SlotTransport::Tcp => [Path::new("/proc/net/tcp"), Path::new("/proc/net/tcp6")],
+        SlotTransport::Udp => [Path::new("/proc/net/udp"), Path::new("/proc/net/udp6")],
     };
+    port_holders_in(&tables, Path::new("/proc"), addr)
+}
+
+/// Every socket on `addr`'s port listed in `tables`, with the process under `proc_root` whose
+/// descriptor table holds it. A table the kernel does not provide (`tcp6`/`udp6` on a host
+/// without IPv6) is skipped; a table that exists and cannot be read is an `Err` naming it. In
+/// the descriptor walk, a process that exited mid-walk and a process whose descriptors this
+/// node-admin may not read (another user's: never a runtime this node-admin started, which runs
+/// as its own user) name no holder; any other failure to read a process directory, descriptor
+/// table or descriptor is an `Err` naming it.
+pub(crate) fn port_holders_in(tables: &[&Path], proc_root: &Path, addr: SocketAddr) -> Result<Vec<PortHolder>, String> {
+    use std::io::ErrorKind::{NotFound, PermissionDenied};
+    let named = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     let port = format!("{:04X}", addr.port());
     let mut sockets: Vec<(String, u64)> = Vec::new();
     for t in tables {
-        let Ok(text) = std::fs::read_to_string(t) else { continue };
+        let text = match std::fs::read_to_string(t) {
+            Ok(text) => text,
+            Err(e) if e.kind() == NotFound => continue,
+            Err(e) => return Err(format!("socket table {}", named(t, e))),
+        };
         for line in text.lines().skip(1) {
             let f: Vec<&str> = line.split_whitespace().collect();
             if f.len() < 10 {
@@ -127,33 +159,52 @@ pub(crate) fn port_holders(addr: SocketAddr, transport: SlotTransport) -> Vec<Po
         }
     }
     if sockets.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut owners: BTreeMap<u64, (u32, String)> = BTreeMap::new();
-    if let Ok(procs) = std::fs::read_dir("/proc") {
-        for p in procs.flatten() {
-            let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
-            let Ok(fds) = std::fs::read_dir(p.path().join("fd")) else { continue };
-            for fd in fds.flatten() {
-                if let Ok(target) = std::fs::read_link(fd.path()) {
-                    let t = target.to_string_lossy();
-                    if let Some(inode) = t.strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).and_then(|n| n.parse::<u64>().ok()) {
-                        if sockets.iter().any(|(_, i)| *i == inode) {
-                            let comm = std::fs::read_to_string(p.path().join("comm")).map(|c| c.trim().to_string()).unwrap_or_default();
-                            owners.entry(inode).or_insert((pid, comm));
-                        }
-                    }
-                }
+    let procs = std::fs::read_dir(proc_root).map_err(|e| format!("process directory {}", named(proc_root, e)))?;
+    for p in procs {
+        let p = p.map_err(|e| format!("process directory {}", named(proc_root, e)))?;
+        let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let fd_dir = p.path().join("fd");
+        let fds = match std::fs::read_dir(&fd_dir) {
+            Ok(fds) => fds,
+            Err(e) if matches!(e.kind(), NotFound | PermissionDenied) => continue,
+            Err(e) => return Err(format!("descriptor table {}", named(&fd_dir, e))),
+        };
+        for fd in fds {
+            let fd = match fd {
+                Ok(fd) => fd,
+                Err(e) if matches!(e.kind(), NotFound | PermissionDenied) => continue,
+                Err(e) => return Err(format!("descriptor table {}", named(&fd_dir, e))),
+            };
+            let target = match std::fs::read_link(fd.path()) {
+                Ok(t) => t,
+                Err(e) if matches!(e.kind(), NotFound | PermissionDenied) => continue,
+                Err(e) => return Err(format!("descriptor {}", named(&fd.path(), e))),
+            };
+            let t = target.to_string_lossy();
+            let Some(inode) = t.strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).and_then(|n| n.parse::<u64>().ok()) else { continue };
+            if !sockets.iter().any(|(_, i)| *i == inode) {
+                continue;
             }
+            let comm_file = p.path().join("comm");
+            let comm = match std::fs::read_to_string(&comm_file) {
+                Ok(c) => c.trim().to_string(),
+                // Exited after its descriptor was read: it holds nothing now.
+                Err(e) if e.kind() == NotFound => continue,
+                Err(e) => return Err(format!("process name {}", named(&comm_file, e))),
+            };
+            owners.entry(inode).or_insert((pid, comm));
         }
     }
-    sockets
+    Ok(sockets
         .into_iter()
         .map(|(state, inode)| {
             let (pid, comm) = owners.get(&inode).cloned().map(|(p, c)| (Some(p), c)).unwrap_or((None, String::new()));
             PortHolder { state, inode, pid, comm }
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -166,12 +217,12 @@ mod tests {
     fn port_holder_names_this_process_for_its_own_listener_and_no_socket_for_a_free_port() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
-        let who = port_holder(addr, SlotTransport::Tcp);
+        let who = port_holder(addr, SlotTransport::Tcp).unwrap();
         assert!(who.contains("listen"), "{who}");
         assert!(who.contains(&format!("pid {} ", std::process::id())), "{who}");
         drop(l);
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        assert_eq!(port_holder(free, SlotTransport::Tcp), "no socket");
+        assert_eq!(port_holder(free, SlotTransport::Tcp).unwrap(), "no socket");
     }
 
     /// CONTRACT: a port another live process listens on is released by the exited runtime (its
@@ -181,10 +232,40 @@ mod tests {
     fn a_port_another_live_process_listens_on_is_released_by_the_exited_runtime() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
-        assert!(released_by(addr, SlotTransport::Tcp, Some(1)), "another live pid listens: released");
-        assert!(!released_by(addr, SlotTransport::Tcp, Some(std::process::id())), "the exited pid itself still listens: not released");
+        assert!(released_by(addr, SlotTransport::Tcp, Some(1)).unwrap(), "another live pid listens: released");
+        assert!(!released_by(addr, SlotTransport::Tcp, Some(std::process::id())).unwrap(), "the exited pid itself still listens: not released");
         drop(l);
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        assert!(released_by(free, SlotTransport::Tcp, Some(1)));
+        assert!(released_by(free, SlotTransport::Tcp, Some(1)).unwrap());
+    }
+
+    /// CONTRACT: a socket table that exists but cannot be read is an error naming the table and
+    /// why, never "no holder": a port must not read as released when its table was never read.
+    #[test]
+    fn an_unreadable_socket_table_is_an_error_naming_it() {
+        let dir = crate::record_store::tempdir("port-table-unreadable");
+        // A directory where the table is: it exists, and reading it fails (EISDIR).
+        let table = dir.join("tcp");
+        std::fs::create_dir_all(&table).unwrap();
+        let addr: SocketAddr = "127.0.0.1:4242".parse().unwrap();
+        let err = port_holders_in(&[table.as_path()], std::path::Path::new("/proc"), addr).unwrap_err();
+        assert!(err.contains(&table.display().to_string()), "the error names the table: {err}");
+    }
+
+    /// CONTRACT: a table the kernel does not provide (`/proc/net/tcp6` on a host without IPv6)
+    /// is skipped; the tables that exist still answer their sockets.
+    #[test]
+    fn a_missing_tcp6_table_is_skipped_and_the_tcp_table_answers() {
+        let dir = crate::record_store::tempdir("port-table-missing-tcp6");
+        let tcp = dir.join("tcp");
+        let tcp6 = dir.join("tcp6");
+        std::fs::write(
+            &tcp,
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:1092 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 987654321 1 0000000000000000 100 0 0 10 0\n",
+        )
+        .unwrap();
+        let addr: SocketAddr = "127.0.0.1:4242".parse().unwrap();
+        let holders = port_holders_in(&[tcp.as_path(), tcp6.as_path()], std::path::Path::new("/proc"), addr).unwrap();
+        assert_eq!(holders, vec![PortHolder { state: "listen".into(), inode: 987654321, pid: None, comm: String::new() }]);
     }
 }
