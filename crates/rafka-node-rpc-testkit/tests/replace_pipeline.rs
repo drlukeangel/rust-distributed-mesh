@@ -14,7 +14,7 @@ use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, StorageMeta
 use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, ReplaceRequest, RetireKind, RetireRequest, Timeouts};
+use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, ReplaceRequest, RetireRequest, Timeouts};
 use rafka_node_admin_core::node_commands::NodeCommand;
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus, TerminationMode};
@@ -440,21 +440,21 @@ fn a_replace_never_hands_over_the_storage_of_a_birth_deleted_earlier_at_its_path
 
         // The path's first birth, with a WAL, is deleted: its data dir stays.
         let deleted = pipeline
-            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let deleted_dir = std::path::PathBuf::from(deleted.node.data_dir.clone().expect("the birth's directory"));
         std::fs::create_dir_all(seg(&deleted_dir).parent().unwrap()).unwrap();
         std::fs::write(seg(&deleted_dir), b"the deleted birth's records").unwrap();
         pipeline
-            .retire(&RetireRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: deleted.node.clone(), handle: deleted.handle.clone(), kind: RetireKind::Removal })
+            .retire(&RetireRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: deleted.node.clone(), handle: deleted.handle.clone() })
             .await
             .unwrap_or_else(|e| panic!("delete: {e}"));
         assert_eq!(std::fs::read(seg(&deleted_dir)).unwrap(), b"the deleted birth's records", "the delete keeps the birth's storage");
 
         // The path's next birth, with its own WAL, is replaced.
         let current = pipeline
-            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let current_dir = std::path::PathBuf::from(current.node.data_dir.clone().expect("the birth's directory"));
