@@ -130,6 +130,14 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     for (name, id) in mesh1_ids.iter().filter(|(n, _)| n != "mesh1.admin.1") {
         assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/contacts/{id}.json")).exists(), "the Node row of {name} ({id}) remains in {mesh1_dir}");
     }
+    // states.md: the mesh's `leaving` is entered by the leave-mesh down op, and "one commit stores
+    // the row, applies it, gossips it and answers the op"; fabric-node-lifecycle.md (2.7): the mesh's
+    // primary "keeps that mesh's row ... and writes every status". mesh1's primary stored its own
+    // mesh row Leaving when it admitted leave-mesh: the keyed row is in its status store.
+    let mesh1_bare: String = mesh1_id.split_once('_').map(|(_, r)| r).unwrap_or(&mesh1_id).replace('-', "").to_lowercase();
+    let leaving_row = format!("{mesh1_dir}/status/meshes/{mesh1_bare}-Leaving.json");
+    let row: Value = std::fs::read(&leaving_row).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("mesh1's primary stored no Leaving row for its mesh at {leaving_row}: {:?}", std::fs::read_dir(format!("{mesh1_dir}/status/meshes")).map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())));
+    assert_eq!((s(&row["record"]["mesh_id"]), s(&row["record"]["state"])), (mesh1_bare.clone(), "Leaving".to_string()), "{row}");
     let (_, fabric_now) = estate.get("/api/fabric").await;
     estate.admin = s(&fabric_now["admin_api_base"]);
     let owner_name = {
@@ -213,21 +221,6 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     // mesh primary forwards onto the mesh channel.
     assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
     let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
-    // The final primary's Leaving and parked state reach every node from its stopped reply (node-stop.md
-    // steps 4-5, gossip.md:157 "owning mesh channel; backbone Members.in_flight; peer mesh channels"):
-    // the owner, the fabric-primary, publishes NodeStopped for it, and an admin and an ordinary node of
-    // EVERY surviving mesh hold it Leaving and parked, not routable. The fabric seat sits in one of
-    // mesh2 and mesh3 (R-A2: the lowest NodeId); the other hears the owner's overlay only through the
-    // backbone, so whichever drew the seat, one surviving mesh is reached only by that path.
-    let fabric_primary = s(&fabric_now["fabric_primary"]);
-    let final_parked: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && parked(sp)).collect();
-    for m in ["mesh2", "mesh3"] {
-        let held_in = |kind: &str| final_parked.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.{kind}.")));
-        let seat = if fabric_primary.starts_with(&format!("{m}.")) { "holds the fabric seat" } else { "hears the owner only over the backbone" };
-        assert!(held_in("admin"), "a {m} admin held the final primary {final_name} parked ({m} {seat}, fabric-primary {fabric_primary}): {final_parked:?}");
-        assert!(held_in("rpc"), "a {m} ordinary node held the final primary {final_name} parked ({m} {seat}, fabric-primary {fabric_primary}): {final_parked:?}");
-    }
-    assert!(final_parked.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "the parked final primary is not routable anywhere: {final_parked:?}");
     // A stopped birth gossips nothing (node-stop.md step 4): once its connections are cut, the parked
     // final primary announces no Leaving on any channel when its process is ended.
     let cut_at = named(&spans, "rdm.node_admin.node.connections.delete.via-stop-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's connections were cut by its stop");
@@ -260,6 +253,12 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a mesh2 node held mesh1's births departed on mesh-left: {left:?}");
     let last_exit = tier2_last.max(terminal_end(&final_name));
     assert!(left.iter().all(|sp| start_ns(sp) >= last_exit.saturating_sub(1)), "mesh-left was heard only after the last exact exit was proven");
+    // The Leaving row is the leave-mesh admission's commit: put and applied before the admission is
+    // answered, so before the first member drains.
+    let leaving_commit: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-leaving-row").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
+    assert!(leaving_commit.iter().any(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["outcome"]) == "applied"), "mesh1's primary {final_name} applied its mesh row Leaving at leave-mesh: {leaving_commit:?}");
+    let first_member_drain = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| drain_start(n)).min().unwrap();
+    assert!(leaving_commit.iter().all(|sp| end_ns(sp) < first_member_drain), "the Leaving row was committed before any member drained: {leaving_commit:?}");
     // Gossip delivers asynchronously: the order the spec fixes is publication before the first drain.
     let published_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
     let first_drain = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| drain_start(n)).min().unwrap();
@@ -345,4 +344,21 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
             }
         }
     }
+
+    // Last, so every other claim of this stem is proven whatever this one says. The final primary's
+    // Leaving and parked state reach every node from its stopped reply (node-stop.md
+    // steps 4-5, gossip.md:157 "owning mesh channel; backbone Members.in_flight; peer mesh channels"):
+    // the owner, the fabric-primary, publishes NodeStopped for it, and an admin and an ordinary node of
+    // EVERY surviving mesh hold it Leaving and parked, not routable. The fabric seat sits in one of
+    // mesh2 and mesh3 (R-A2: the lowest NodeId); the other hears the owner's overlay only through the
+    // backbone, so whichever drew the seat, one surviving mesh is reached only by that path.
+    let fabric_primary = s(&fabric_now["fabric_primary"]);
+    let final_parked: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && parked(sp)).collect();
+    for m in ["mesh2", "mesh3"] {
+        let held_in = |kind: &str| final_parked.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.{kind}.")));
+        let seat = if fabric_primary.starts_with(&format!("{m}.")) { "holds the fabric seat" } else { "hears the owner only over the backbone" };
+        assert!(held_in("admin"), "a {m} admin held the final primary {final_name} parked ({m} {seat}, fabric-primary {fabric_primary}): {final_parked:?}");
+        assert!(held_in("rpc"), "a {m} ordinary node held the final primary {final_name} parked ({m} {seat}, fabric-primary {fabric_primary}): {final_parked:?}");
+    }
+    assert!(final_parked.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "the parked final primary is not routable anywhere: {final_parked:?}");
 }
