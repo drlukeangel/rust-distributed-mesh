@@ -367,3 +367,32 @@ async fn the_hook_is_handed_the_accepting_authority_of_its_exact_birth() {
     running.stop(Duration::ZERO).await;
     let _ = std::fs::remove_dir_all(&b.dir);
 }
+
+/// CONTRACT: the launcher's `WaitForNodeReady` observer (`rig::LiveMesh::ready`) answers ready for a
+/// birth only once that birth's own digest says ReadyForTraffic, as the node-admin's own observer
+/// does. A node whose hook is blocked is Pending and still answers Ping (it is on the mesh and
+/// serves status, drain-node and stop-node while Pending): the observer names its Pending. What
+/// must NOT happen: a Ping a Pending node answers standing in for ready, which lets a create return
+/// while the birth is still Pending.
+#[tokio::test]
+async fn the_launchers_ready_waits_for_the_births_own_ready_for_traffic_not_a_ping() {
+    use rafka_node_admin_core::deployment::pipeline::NodeObserver;
+    let b = birth(MemberStatus::Pending).await;
+    let hydrator = TestHydrator::new(Mode::Pull);
+    let running = start(&b, &hydrator).await.unwrap().expect("a blocked node still comes up, Pending");
+    let book = &b.admin.observer.membership.book;
+    until(book, "the authority heard the node's Pending digest", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
+    let (d, _) = book.get(b.launch.node_id.as_str()).unwrap();
+    let mut node = rafka_node_admin_core::model::Node::allocated(d.node.name.clone());
+    node.node_id = d.node.node_id.clone();
+    node.endpoint_id = Some(d.node.endpoint_id.clone());
+    node.incarnation_id = Some(d.node.incarnation.clone());
+    node.transport_addr = Some(d.node.transport_addr);
+    let target = b.admin.observer.echo_target(&node).unwrap();
+    assert!(matches!(b.admin.observer.echo(&target).await, RpcOutcome::Reply(_)), "the Pending node answers Ping");
+    let ready = b.admin.observer.ready(&node).await;
+    let why = ready.expect_err("a Pending birth is not ready");
+    assert!(why.contains("mesh1.rpc.1") && why.contains("Pending"), "the refusal names the birth and its Pending: {why}");
+    running.stop(Duration::ZERO).await;
+    let _ = std::fs::remove_dir_all(&b.dir);
+}
