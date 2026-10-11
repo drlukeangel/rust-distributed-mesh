@@ -161,11 +161,24 @@ pub struct SpanCapture {
 pub fn install_span_capture<E: SpanExporter + 'static>(service: &str, exporter: E) -> Result<SpanCapture, String> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    let (capture, layer) = span_capture(service, exporter);
+    tracing_subscriber::registry().with(layer).try_init().map_err(|e| format!("a global subscriber is already installed: {e}"))?;
+    Ok(capture)
+}
+
+/// The same capture as [`install_span_capture`], not installed: the layer goes into a subscriber the
+/// caller builds (a test that dispatches to its own subscriber on every thread of its own runtime,
+/// so two tests in one executable never share spans).
+pub fn span_capture<S, E>(service: &str, exporter: E) -> (SpanCapture, impl tracing_subscriber::Layer<S>)
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    E: SpanExporter + 'static,
+{
     let processor = span_processor("capture", exporter);
     let loss = processor.loss();
     let provider = TracerProvider::builder().with_span_processor(processor).build();
-    tracing_subscriber::registry().with(span_export_layer(&provider, service)).try_init().map_err(|e| format!("a global subscriber is already installed: {e}"))?;
-    Ok(SpanCapture { provider, loss })
+    let layer = span_export_layer(&provider, service);
+    (SpanCapture { provider, loss }, layer)
 }
 
 impl SpanCapture {

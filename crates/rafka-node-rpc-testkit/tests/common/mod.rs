@@ -78,6 +78,82 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
     }
 }
 
+/// How many threads the runtime of a [`Capture::run`] has: the flavor the cell's own test needs.
+#[derive(Clone, Copy, Debug)]
+pub enum Threads {
+    /// One thread: everything the cell starts (admin side, in-process node, transport) shares it.
+    Current,
+    /// A multi-thread runtime with this many workers.
+    Workers(usize),
+}
+
+thread_local! {
+    /// The artifact dir of the [`Capture::run`] driving this thread: where [`template`] points the
+    /// runtimes a cell launches (`RDM_EVIDENCE_DIR`), so their spans land beside the cell's.
+    static ARTIFACT_DIR: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The one span capture of a testkit cell. Every span the cell's runtime emits, on whichever of its
+/// threads, goes to two layers of one subscriber: [`Spans`] (the name/parent/field map the cell's
+/// assertions read) and the product span pipeline (`rafka_mesh_telemetry::span_capture`: product's
+/// filter and its `BatchSpanProcessor`) in front of the JSONL evidence exporter, at
+/// `target/i143-testkit/<cell>/testkit.<pid>-<ns>.spans.jsonl`. A process the cell launches
+/// through [`template`] writes its own JSONL into the same dir. The capture is flushed (bounded) when
+/// it drops, so a cell that panics leaves its trace.
+pub struct Capture {
+    pub spans: Spans,
+    pub dir: std::path::PathBuf,
+    dispatch: tracing::Dispatch,
+    capture: rafka_mesh_telemetry::SpanCapture,
+}
+
+/// The capture of the cell named `cell` (its test function's name).
+pub fn capture(cell: &str) -> Capture {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell);
+    let exporter = rafka_mesh_telemetry::jsonl_span_exporter(&dir, "testkit").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", dir.display()));
+    let spans = Spans::default();
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(cell, exporter);
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(spans.clone()).with(layer));
+    Capture { spans, dir, dispatch, capture }
+}
+
+impl Capture {
+    /// Run `f` to completion on a runtime of its own whose every thread (and the calling one)
+    /// dispatches to this capture.
+    pub fn run<F: std::future::Future>(&self, threads: Threads, f: F) -> F::Output {
+        let mut builder = match threads {
+            Threads::Current => tokio::runtime::Builder::new_current_thread(),
+            Threads::Workers(n) => {
+                let mut b = tokio::runtime::Builder::new_multi_thread();
+                b.worker_threads(n);
+                b
+            }
+        };
+        let d = self.dispatch.clone();
+        let rt = builder.enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().expect("the cell's runtime");
+        let _g = tracing::dispatcher::set_default(&self.dispatch);
+        ARTIFACT_DIR.with(|a| *a.borrow_mut() = Some(self.dir.clone()));
+        let out = rt.block_on(f);
+        ARTIFACT_DIR.with(|a| *a.borrow_mut() = None);
+        out
+    }
+
+    /// Every span ended before this call has reached the JSONL artifact when it returns `Ok`.
+    pub fn flush(&self) -> Result<(), String> {
+        self.capture.flush(Duration::from_secs(10))
+    }
+}
+
+impl Drop for Capture {
+    /// Never panics: a panic here while the cell unwinds would abort and lose the trace.
+    fn drop(&mut self) {
+        match self.flush() {
+            Ok(()) => eprintln!("spans of this cell: {}", self.dir.display()),
+            Err(e) => eprintln!("spans of this cell ({}) did not all reach the artifact: {e}", self.dir.display()),
+        }
+    }
+}
+
 /// Every record published, and every name removed, in order.
 #[derive(Default)]
 pub struct Published {
@@ -108,7 +184,10 @@ pub fn template(fabric: &FabricId, seed: (String, SocketAddr), launcher: rafka_m
         executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
         seeds: vec![seed],
         launcher,
-        env: [(rafka_mesh_entity::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())].into_iter().collect(),
+        env: [(rafka_mesh_entity::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())]
+            .into_iter()
+            .chain(ARTIFACT_DIR.with(|a| a.borrow().clone()).map(|d| ("RDM_EVIDENCE_DIR".to_string(), d.display().to_string())))
+            .collect(),
         data_root: std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint())),
         mesh_issuer: None,
     }
