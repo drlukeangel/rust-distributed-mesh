@@ -15,7 +15,6 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry_sdk::export::trace::SpanData;
-use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
@@ -46,7 +45,7 @@ fn rand_u64() -> u64 {
 }
 
 /// One in-memory exporter for the test binary; each cell reads only its own trace or payload.
-fn spans() -> InMemorySpanExporter {
+fn spans() -> crate::common::Spans {
     crate::common::spans_exporter()
 }
 
