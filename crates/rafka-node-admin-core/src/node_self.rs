@@ -128,13 +128,11 @@ enum Cycle {
     /// Stopped and parked, with the receipt its drain established.
     Parked(DrainReceipt),
     /// Parked and a start is under way (the natural key `(node_id, incarnation, Pending)`): later
-    /// starts of the birth answer the same outcome. A failed start parks the birth again with
-    /// `receipt`.
+    /// starts of the birth answer the same outcome, and a stop is refused naming the start. A failed
+    /// start parks the birth again with the receipt it was parked with.
     Starting {
         /// The outcome of the start under way, once it ends.
         outcome: tokio::sync::watch::Receiver<Option<StatusReply>>,
-        /// The receipt the birth was parked with.
-        receipt: DrainReceipt,
     },
 }
 
@@ -552,7 +550,8 @@ impl NodeSelf {
 
     /// The stop: drain, declare `Leaving`, hard-cut the mesh connections, park. The receipt is the
     /// drain's. A second stop of the same birth, while this one runs or after it, answers the same
-    /// receipt: stopping a stopped birth is done.
+    /// receipt: stopping a stopped birth is done. A stop while a start of the birth is under way is
+    /// refused naming the start.
     async fn stop(self: &Arc<Self>, commander: NodeId, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
         use tracing::Instrument;
         enum Next {
@@ -563,7 +562,10 @@ impl NodeSelf {
         let next = {
             let mut cycle = self.cycle.lock().unwrap();
             match &*cycle {
-                Cycle::Parked(r) | Cycle::Starting { receipt: r, .. } => Next::Done(*r),
+                Cycle::Parked(r) => Next::Done(*r),
+                // The start ends the stopped cycle: the receipt that parked the birth does not
+                // answer for a birth on its way out of Leaving, as a start does not run beside a stop.
+                Cycle::Starting { .. } => return StatusReply::NotReady { reason: format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name()) },
                 Cycle::Stopping(rx) => Next::Wait(rx.clone()),
                 Cycle::Live => {
                     let (tx, rx) = tokio::sync::watch::channel(None);
@@ -694,7 +696,7 @@ impl NodeSelf {
                             return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.held_name()) };
                         };
                         let (tx, rx) = tokio::sync::watch::channel(None);
-                        *cycle = Cycle::Starting { outcome: rx, receipt };
+                        *cycle = Cycle::Starting { outcome: rx };
                         Next::Run(tx, receipt, session)
                     }
                     Cycle::Starting { outcome, .. } => Next::Join(outcome.clone()),
