@@ -858,6 +858,68 @@ mod one_attempt_number {
         assert!(a["accepted_now"].as_str().unwrap_or_default().contains(admitted.0.as_str()), "the refusal names the Build admitted first: {a}");
         println!("trace_id={} admitted={admitted} refused_drift_on={}", refused[0]["trace_id"].as_str().unwrap_or_default(), before.build_id);
     }
+
+    /// CONTRACT: the proven-drift pass for a peer mesh whose rebirth the ladder decided (its two
+    /// node-admins exited, the mesh unheard) is refused at the admission, because a requested restart
+    /// of the same Build was admitted first. A refused pass opened nothing, so it spends nothing:
+    /// once the restart's attempt completes, the next pass releases the mesh's first recovering
+    /// node-admin as attempt k+2. Must NOT happen: the refused pass records the mesh's one release as
+    /// spent, and the decided mesh's node-admins stay held for as long as the Build stays accepted.
+    #[tokio::test]
+    async fn a_drift_pass_refused_at_the_admission_spends_no_recovery_release() {
+        use rafka_node_admin_core::investigate::PeerMesh;
+        let e = estate().await;
+        let fp = e.fabric_primary().await;
+        let own = fp.split('.').next().unwrap().to_string();
+        let peer_mesh = SHAPE.iter().map(|(m, _, _)| (*m).to_string()).find(|m| *m != own).expect("a peer mesh");
+        let admins = [format!("{peer_mesh}.admin.1"), format!("{peer_mesh}.admin.2")];
+        for p in &admins {
+            let id = e.node_id(p).await;
+            e.world.exit_with(&id, Some(1));
+        }
+        e.unheard(&admins.iter().map(String::as_str).collect::<Vec<_>>()).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
+        let cp = door(&e, g.clone()).await;
+        let me: PathName = fp.parse().unwrap();
+        let decided = |m: &str| (m == peer_mesh).then_some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true });
+        let mut started = HashSet::new();
+        let mut held = HashSet::new();
+        let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
+        let time = crate::adopted_time();
+        let hold = |m: &str| decided(m).and_then(|p| p.unheard_ms);
+        let defers = |_: &str| false;
+        let rebirth = |m: &str| decided(m).is_some_and(|p| p.rebirth_decided);
+        let restart = tokio::spawn({
+            let (cp, path): (_, PathName) = (cp.clone(), format!("{own}.rpc.1").parse().unwrap());
+            async move { cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, path, rafka_node_admin_core::http::ActionKind::Restart, None).await }
+        });
+        g.arrived.notified().await;
+        let t = e.view.read().await.clone();
+        let refused = {
+            let mut pass = Box::pin(rafka_node_admin_core::admin::reconcile_drift(&time, &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &rebirth, &|_, _| {}));
+            // One poll while the restart holds the admission inside its write.
+            let early = tokio::select! {
+                biased;
+                r = &mut pass => Some(r),
+                _ = std::future::ready(()) => None,
+            };
+            assert!(early.is_none(), "the drift pass waits at the admission the restart holds: {early:?}");
+            g.release.notify_one();
+            let r = restart.await.unwrap().expect("the restart was admitted first");
+            assert_eq!(r.attempt, before.attempt + 1);
+            pass.await
+        };
+        assert_eq!(refused, None, "the restart holds attempt k+1: the drift pass opened nothing");
+        e.converge().await;
+        let settled = e.accepted.current(&*e.builds).await.unwrap();
+        assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the restart's attempt completed on the same Build");
+        let t = e.view.read().await.clone();
+        let opened = rafka_node_admin_core::admin::reconcile_drift(&time, &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &rebirth, &|_, _| {}).await;
+        assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
+        let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Replace") };
+        assert_eq!(path.to_string(), admins[0], "the first admin in path order");
+    }
 }
 
 /// CONTRACT: a fabric primary that took the seat holds a peer mesh it never heard on the backbone as
