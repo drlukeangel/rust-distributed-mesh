@@ -4252,28 +4252,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         decisions: builds.decisions(),
         claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
         project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
-        cut_off_writes: Arc::new(move |c: crate::fabric_handover::WriteCutOff| {
-            let (mesh, nodes, fabric) = (mesh_files.clone(), nodes_files.clone(), fabric_files.clone());
-            Box::pin(async move {
-                let mut seat: Vec<&crate::record_store::FileRecords> = mesh.mesh_primary_records().into_iter().chain(nodes.mesh_primary_records()).collect();
-                match c {
-                    crate::fabric_handover::WriteCutOff::Set { reason, fabric_seat } => {
-                        if fabric_seat {
-                            seat.extend(fabric.fabric_primary_records());
-                            // The fabric-primary seat authorizes other meshes' rows on the shared root too.
-                            nodes.cut_off_other_meshes(&reason).await;
-                        }
-                        crate::record_store::cut_off_and_drain(&seat, &reason).await;
-                    }
-                    crate::fabric_handover::WriteCutOff::Lift => {
-                        for s in seat.into_iter().chain(fabric.fabric_primary_records()) {
-                            s.lift_cut_off();
-                        }
-                        nodes.lift_other_meshes();
-                    }
-                }
-            })
-        }),
+        cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
     });
     handover.restore().await?;
     let _ = handover_slot.set(handover.clone());

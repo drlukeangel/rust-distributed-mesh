@@ -1021,3 +1021,35 @@ async fn an_executor_of_another_mesh_refuses_to_take_the_fabric_seat_by_name() {
     assert_eq!(f.p.door.take_seats(&x_node, "b2", 1, "restart-node:mesh2.admin.1").await, Ok(SeatTransferOutcome::OtherMesh { holder_mesh: "mesh2".into() }), "a mesh seat alone stays with its holder");
     let _ = (&f.m, &f.n);
 }
+
+/// CONTRACT (R14 item 4: "the holder cuts off its writes to the stores its moving seats authorize,
+/// drains them, then writes the seat row"; fabric-node-lifecycle.md §4.3: the mesh-primary writes
+/// every status of its mesh): a moving mesh seat cuts off the mesh's status rows on the fabric's
+/// store root with its Mesh row, Node rows and contacts: a status write after the cut-off is refused
+/// by name, naming the transfer; a lift gives the writes back.
+#[test]
+fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
+    use rafka_node_admin_core::fabric_handover::{SeatStores, WriteCutOff};
+    use rafka_node_admin_core::status_storage::{MeshStatusRow, StatusStorage};
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let d = std::env::temp_dir().join(format!("seat-stores-{}", rafka_node_admin_core::model::NodeId::mint()));
+        let root = rafka_node_admin_core::store_root::StoreRoot::at(&d.join("store"));
+        let inc = rafka_node_admin_core::model::IncarnationId::mint();
+        let stores = SeatStores {
+            mesh: std::sync::Arc::new(rafka_node_admin_core::storage::FileMeshStorage::open(&root, &inc).unwrap()),
+            nodes: std::sync::Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).unwrap()),
+            fabric: std::sync::Arc::new(rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &inc).unwrap()),
+            status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).unwrap()),
+        };
+        let row = MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic };
+        stores.apply(WriteCutOff::Set { reason: "take-seats:mesh1.admin.2".into(), fabric_seat: false }).await;
+        match stores.status.put_mesh_status(&row).await {
+            Err(rafka_node_admin_core::record_store::StorageError::CutOff { reason, .. }) => assert!(reason.contains("take-seats:mesh1.admin.2"), "{reason}"),
+            other => panic!("a status write after the moving seat's cut-off: {other:?}"),
+        }
+        stores.apply(WriteCutOff::Lift).await;
+        stores.status.put_mesh_status(&row).await.expect("a lift gives the status writes back");
+        let _ = std::fs::remove_dir_all(&d);
+    });
+}

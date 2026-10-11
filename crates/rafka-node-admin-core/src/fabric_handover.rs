@@ -281,6 +281,51 @@ pub enum WriteCutOff {
 /// Applies a [`WriteCutOff`] to this admin's stores (`crate::admin`'s wiring).
 pub type CutOffWrites = Arc<dyn Fn(WriteCutOff) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
+/// The file stores on the fabric's store root a seat transfer cuts off (R14 item 4): the
+/// mesh-primary seat's (the Mesh row, its members' Node rows and contacts) and the fabric-primary
+/// seat's (the Fabric record and its pointers, and every other mesh's rows).
+pub struct SeatStores {
+    /// The Mesh rows.
+    pub mesh: Arc<crate::storage::FileMeshStorage>,
+    /// The Node rows and contacts.
+    pub nodes: Arc<crate::storage::FileNodesStorage>,
+    /// The Fabric record and its pointers.
+    pub fabric: Arc<crate::fabric_storage::FileFabricStorage>,
+    /// The mesh's status rows.
+    pub status: Arc<crate::status_storage::FileStatusStorage>,
+}
+
+impl SeatStores {
+    /// Apply `c`: set cuts off and drains every store the moving seats write; lift gives them back.
+    pub async fn apply(&self, c: WriteCutOff) {
+        let mut seat: Vec<&crate::record_store::FileRecords> = self.mesh.mesh_primary_records().into_iter().chain(self.nodes.mesh_primary_records()).collect();
+        match c {
+            WriteCutOff::Set { reason, fabric_seat } => {
+                if fabric_seat {
+                    seat.extend(self.fabric.fabric_primary_records());
+                    // The fabric-primary seat authorizes other meshes' rows on the shared root too.
+                    self.nodes.cut_off_other_meshes(&reason).await;
+                }
+                crate::record_store::cut_off_and_drain(&seat, &reason).await;
+            }
+            WriteCutOff::Lift => {
+                for s in seat.into_iter().chain(self.fabric.fabric_primary_records()) {
+                    s.lift_cut_off();
+                }
+                self.nodes.lift_other_meshes();
+            }
+        }
+    }
+
+    /// The [`CutOffWrites`] a handover door applies through.
+    pub fn cut_off_writes(self: Arc<Self>) -> CutOffWrites {
+        Arc::new(move |c: WriteCutOff| {
+            let stores = self.clone();
+            Box::pin(async move { stores.apply(c).await })
+        })
+    }
+}
+
 /// What projects an admin's view from its held records now (`crate::admin::view_projector`).
 pub type ProjectView = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
