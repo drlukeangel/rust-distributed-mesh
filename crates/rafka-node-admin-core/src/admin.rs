@@ -3131,17 +3131,19 @@ impl Running {
     /// continued by the Build's next attempt.
     pub async fn leave(self) {
         self.hydrate_cancel.cancel();
-        self.leave_with(true).await
-    }
-
-    /// Leave after a `stop-node` was admitted: `Leaving` with no `Draining` say (stop has no
-    /// implicit drain), then the same linger and close.
-    pub async fn leave_after_stop(self) {
-        self.hydrate_cancel.cancel();
         self.leave_with(false).await
     }
 
-    async fn leave_with(self, say_draining: bool) {
+    /// End a parked birth (a `stop-node` completed): it says nothing and closes. Its stop already
+    /// cut its gossip neighbours and left its topics, and a stopped node gossips nothing
+    /// (node-stop.md step 4): every node holds it Leaving and parked from the `NodeStopped` its
+    /// stopped reply produced.
+    pub async fn leave_after_stop(self) {
+        self.hydrate_cancel.cancel();
+        self.leave_with(true).await
+    }
+
+    async fn leave_with(self, parked: bool) {
         // A leaving holder yields before it says anything: its Build log decides nothing after
         // this, and the committed facts are with the neighbours before the new holder acts.
         self.builds.yield_seat("leaving").await;
@@ -3158,7 +3160,7 @@ impl Running {
         // (rafka-v2 #2942): the Draining say, each Leaving announcement on each channel, the
         // transport shutdown.
         let me = self.digest.lock().unwrap().node.name.to_string();
-        if say_draining {
+        if !parked {
             let started = std::time::Instant::now();
             let span = tracing::info_span!("rdm.mesh.node.update.via-leave-draining", node = %me, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
             let r = self.membership.publish(&say(MemberStatus::Draining)).instrument(span.clone()).await;
@@ -3171,54 +3173,56 @@ impl Running {
         // backbone through the linger, its own `Leaving` among them, so its self-authored departure
         // leaves the mesh by the path every member's does (Luke 2026-10-05). No other admin is a
         // publisher of this admin's membership.
-        let announcement = std::sync::atomic::AtomicU32::new(0);
-        let (linger_started, waited) = (std::time::Instant::now(), rafka_mesh_transport::membership::runqueue_wait());
-        let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
-            let d = say(MemberStatus::Leaving);
-            let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            let (m, bb, me, seam) = (self.membership.clone(), self.backbone.clone(), me.clone(), self.leave_seam.clone());
-            async move {
-                let withheld = |channel: &'static str| seam.as_ref().is_some_and(|s| s.withholds(&me, n, channel));
-                let started = std::time::Instant::now();
-                let mesh_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                let outcome = if withheld("mesh") {
-                    "withheld"
-                } else if m.publish(&d).instrument(mesh_span.clone()).await.is_ok() {
-                    "sent"
-                } else {
-                    "refused"
-                };
-                mesh_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                mesh_span.record("outcome", outcome);
-                mesh_span.in_scope(|| tracing::info!("said Leaving on the mesh channel"));
-                let mesh = d.node.name.mesh.clone();
-                let started = std::time::Instant::now();
-                let view_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "view", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                let mine: Vec<MeshDigest> = view_span.in_scope(|| m.book.current(m.book.staleness_floor()).into_iter().filter(|x| x.node.name.mesh == mesh).collect());
-                view_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                view_span.record("outcome", "read");
-                view_span.in_scope(|| tracing::info!(members = mine.len(), "read this mesh's members for the backbone frame"));
-                let started = std::time::Instant::now();
-                let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                let outcome = if withheld("backbone") {
-                    "withheld"
-                } else if bb.publish(&m, mine).instrument(bb_span.clone()).await {
-                    "sent"
-                } else {
-                    "not-mesh-primary"
-                };
-                bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                bb_span.record("outcome", outcome);
-                bb_span.in_scope(|| tracing::info!("said Leaving among this mesh's members on the backbone"));
-            }
-        })
-        .await;
-        tracing::info!(
-            announcements = said,
-            linger_ms = linger_started.elapsed().as_millis() as u64,
-            runqueue_wait_ms = rafka_mesh_transport::membership::runqueue_wait_since_ms(waited),
-            "said Leaving for the linger"
-        );
+        if !parked {
+            let announcement = std::sync::atomic::AtomicU32::new(0);
+            let (linger_started, waited) = (std::time::Instant::now(), rafka_mesh_transport::membership::runqueue_wait());
+            let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
+                let d = say(MemberStatus::Leaving);
+                let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let (m, bb, me, seam) = (self.membership.clone(), self.backbone.clone(), me.clone(), self.leave_seam.clone());
+                async move {
+                    let withheld = |channel: &'static str| seam.as_ref().is_some_and(|s| s.withholds(&me, n, channel));
+                    let started = std::time::Instant::now();
+                    let mesh_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                    let outcome = if withheld("mesh") {
+                        "withheld"
+                    } else if m.publish(&d).instrument(mesh_span.clone()).await.is_ok() {
+                        "sent"
+                    } else {
+                        "refused"
+                    };
+                    mesh_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                    mesh_span.record("outcome", outcome);
+                    mesh_span.in_scope(|| tracing::info!("said Leaving on the mesh channel"));
+                    let mesh = d.node.name.mesh.clone();
+                    let started = std::time::Instant::now();
+                    let view_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "view", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                    let mine: Vec<MeshDigest> = view_span.in_scope(|| m.book.current(m.book.staleness_floor()).into_iter().filter(|x| x.node.name.mesh == mesh).collect());
+                    view_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                    view_span.record("outcome", "read");
+                    view_span.in_scope(|| tracing::info!(members = mine.len(), "read this mesh's members for the backbone frame"));
+                    let started = std::time::Instant::now();
+                    let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                    let outcome = if withheld("backbone") {
+                        "withheld"
+                    } else if bb.publish(&m, mine).instrument(bb_span.clone()).await {
+                        "sent"
+                    } else {
+                        "not-mesh-primary"
+                    };
+                    bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                    bb_span.record("outcome", outcome);
+                    bb_span.in_scope(|| tracing::info!("said Leaving among this mesh's members on the backbone"));
+                }
+            })
+            .await;
+            tracing::info!(
+                announcements = said,
+                linger_ms = linger_started.elapsed().as_millis() as u64,
+                runqueue_wait_ms = rafka_mesh_transport::membership::runqueue_wait_since_ms(waited),
+                "said Leaving for the linger"
+            );
+        }
         let started = std::time::Instant::now();
         let aborted = self.tasks.len();
         for t in self.tasks {
@@ -4543,20 +4547,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             d.clone()
         });
         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
-        // A planned hand-over: the admin holding the fabric-primary seat fences its Build log before
-        // it publishes Draining or Leaving, which is what lets the election seat its heir.
-        let yield_seat: crate::node_self::YieldSeat = {
-            let (builds, membership, node_id, incarnation) = (builds.clone(), membership.clone(), node_id.clone(), incarnation.clone());
-            Arc::new(move |by: &'static str| {
-                let (builds, membership, node_id, incarnation) = (builds.clone(), membership.clone(), node_id.clone(), incarnation.clone());
-                Box::pin(async move {
-                    if membership.seats().fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
-                        builds.yield_seat(by).await;
-                    }
-                })
-            })
-        };
-        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
+        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
         own.set_session(Arc::new(AdminSession {
             gate: park_gate.clone(),
             name: name.clone(),
