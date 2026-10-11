@@ -436,6 +436,31 @@ mod tests {
         assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), after), Err(ResolveFailure::Unknown), "Gone is what this process holds now, not an archive");
     }
 
+    /// CONTRACT (R12; node-rpc-envelope.md "Meta and config"; node-replace.md: `path.name` resolves to
+    /// the successor the moment its Applied lands): a held birth that took another name
+    /// (`ApplyNodeName`) is the same birth at its new `path.name`: it resolves there by path and by
+    /// its exact id, nobody holds the name it gave up, and the change ticks. The same fact again is
+    /// unchanged. What must NOT happen: the birth kept under the name it gave up, or its new name
+    /// resolving to nobody.
+    #[tokio::test]
+    async fn a_birth_that_takes_another_name_resolves_at_it_and_gives_up_the_old_one() {
+        let r = LiveNodeResolver::default();
+        let born = birth("mesh1.rpc.1.new", 7000);
+        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        assert_eq!(r.apply(born.clone(), None), Applied::Joined);
+        let mut rx = r.changes().unwrap();
+        rx.borrow_and_update();
+        let renamed = ResolvedNode { name: taken.clone(), ..born.clone() };
+        assert_eq!(r.apply(renamed.clone(), None), Applied::Updated, "the held birth took another name");
+        assert!(rx.has_changed().unwrap(), "the name moved");
+        assert_eq!(exact(&r, &born).map(|n| n.name), Ok(taken.clone()));
+        assert_eq!(r.resolve(&NodeTarget::CurrentPath(taken.clone())).map(|n| n.node_id), Ok(born.node_id.clone()));
+        assert!(r.resolve(&NodeTarget::CurrentPath(born.name.clone())).is_err(), "nobody holds the name the birth gave up");
+        rx.borrow_and_update();
+        assert_eq!(r.apply(renamed, None), Applied::Unchanged);
+        assert!(!rx.has_changed().unwrap(), "nothing moved");
+    }
+
     #[tokio::test]
     async fn every_answer_change_ticks_and_an_unchanged_fact_does_not() {
         let r = LiveNodeResolver::default();
