@@ -546,4 +546,66 @@ mod tests {
         std::fs::write(d.join("nodes/runtimes").join(format!("{}.json", a.key())), br#"{"format":"node-runtime/9","record":{}}"#).unwrap();
         assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
     }
+
+    /// A row file at `name` in a fresh file store that is a FIFO: a read of it waits until a writer
+    /// opens it. The writer is a thread that, once a reader has the FIFO open, waits for word from
+    /// the runtime that it still runs (up to 5 s), then writes `row`. Whether that word came, while
+    /// the read was waiting, is what this answers.
+    fn runtime_runs_while_a_row_is_read<T: Send + 'static>(row: NodeRow, op: impl FnOnce(std::sync::Arc<FileNodesStorage>) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static) -> (bool, T) {
+        let d = crate::record_store::tempdir("rows-offload");
+        let store = std::sync::Arc::new(FileNodesStorage::open(&d).unwrap());
+        let fifo = d.join("nodes/rows").join(format!("{}.json", row.name));
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
+        let bytes = serde_json::to_vec(&serde_json::json!({ "format": ROW_FORMAT, "record": row })).unwrap();
+        let (word_tx, word_rx) = std::sync::mpsc::channel::<()>();
+        let writer = std::thread::spawn(move || {
+            use std::io::Write as _;
+            // Blocks until the read has the FIFO open: the read is waiting from here on.
+            let mut f = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+            let heard = word_rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+            f.write_all(&bytes).unwrap();
+            heard
+        });
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let out = rt.block_on(async move {
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+            // The read and its start signal are one poll: this task resumes only once that poll returns.
+            let read = tokio::spawn(async move {
+                let _ = started_tx.send(());
+                op(store).await
+            });
+            started_rx.await.unwrap();
+            let _ = word_tx.send(());
+            read.await.unwrap()
+        });
+        (writer.join().unwrap(), out)
+    }
+
+    /// CONTRACT: a point read of a node row never waits on the disk on a runtime worker (the
+    /// defect class that froze node-admins on 10-08: a worker blocked on the disk): it runs on the
+    /// blocking pool, as the row's write does (`record_store::blocking_io`). The claim runs inline
+    /// on every view install, the join door's among them, and its read of the key is the same read.
+    /// The cell: a row file that is a FIFO holds the read until a writer comes; the runtime's only
+    /// thread keeps running meanwhile, and the read answers the row.
+    #[test]
+    fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() };
+        let name = row.name.clone();
+        let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
+        assert!(ran, "the runtime thread ran while the row read waited on the disk");
+        assert_eq!(read, Ok(Some(row)));
+    }
+
+    /// CONTRACT: a claim's look at the key is that same read off the runtime thread, under the
+    /// store's async row-write lock (no worker blocks on it): a claim of a name another node holds
+    /// answers `NameHeld` while the runtime keeps running.
+    #[test]
+    fn a_claims_read_of_the_key_waits_on_the_disk_off_the_runtime_thread() {
+        let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() };
+        let claim = NodeRow { node_id: NodeId::mint(), ..held.clone() };
+        let (ran, claimed) = runtime_runs_while_a_row_is_read(held.clone(), move |s| Box::pin(async move { s.claim_node_row(&claim).await }));
+        assert!(ran, "the runtime thread ran while the claim's read waited on the disk");
+        assert_eq!(claimed, Ok(Err(NameHeld { name: held.name.clone(), by: held.node_id.clone() })));
+    }
 }
