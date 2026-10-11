@@ -78,6 +78,18 @@ async fn looked_up(ep: &iroh::Endpoint, key: iroh::PublicKey) -> BTreeSet<Socket
     out
 }
 
+/// Every direct address the endpoint's own state for `key` holds a path to in active use.
+async fn active_paths(ep: &iroh::Endpoint, key: iroh::PublicKey) -> BTreeSet<SocketAddr> {
+    let Some(info) = ep.remote_info(key).await else { return BTreeSet::new() };
+    info.addrs()
+        .filter(|a| matches!(a.usage(), iroh::endpoint::TransportAddrUsage::Active))
+        .filter_map(|a| match a.addr() {
+            iroh::TransportAddr::Ip(s) => Some(*s),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Every direct address the endpoint's own state for `key` holds a path to.
 async fn paths(ep: &iroh::Endpoint, key: iroh::PublicKey) -> BTreeSet<SocketAddr> {
     let Some(info) = ep.remote_info(key).await else { return BTreeSet::new() };
@@ -131,11 +143,15 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
     m_admin.learn(first.clone(), "join");
     m_member.learn(first, "join");
     backbone.join_admins(vec![iroh::EndpointAddr::new(peer).with_ip_addr(x)]).await;
-    let _held = old.ep.connect(iroh::EndpointAddr::new(admin.ep.id()).with_ip_addr(socket_of(&admin)), iroh_gossip::ALPN).await.unwrap();
+    let held = old.ep.connect(iroh::EndpointAddr::new(admin.ep.id()).with_ip_addr(socket_of(&admin)), iroh_gossip::ALPN).await.unwrap();
     assert!(paths(&admin.ep, peer).await.contains(&x), "the old birth is connected to the admin at {x}");
 
-    // The key re-binds: the old process is gone, its successor binds a new socket Y and is accepted.
-    old.router.shutdown().await.unwrap();
+    // The key re-binds: the old process dies without a word (no close reaches the admin, which keeps
+    // its connection to X open and in use), and its successor binds a new socket Y.
+    drop(held);
+    drop(old);
+    let open = active_paths(&admin.ep, peer).await;
+    assert!(open.contains(&x), "the admin still holds the dead birth's path to {x} open: {open:?}");
     let new = node_with(key).await;
     let y = socket_of(&new);
     assert_ne!(x, y);
