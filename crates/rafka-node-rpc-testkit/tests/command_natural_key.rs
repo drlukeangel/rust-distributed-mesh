@@ -314,3 +314,63 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
+
+/// CONTRACT: a birth whose start is under way is still in Leaving until the start ends
+/// (states.md, "Stopped nodes": node.start is the only transition out of Leaving and completes
+/// all start gates first; it is parked until then, and the probe answers `CurrentParked`). A
+/// `DrainNode` that reaches it then is the backward transition and is refused naming `Leaving`:
+/// its commander gets no `node-drained`. What must NOT happen: the drain of the cycle the stop
+/// ended answering for the start under way (`AlreadyApplied` and a `node-drained` at once, though
+/// the new cycle has drained nothing). Once started, the birth is a new cycle and its next
+/// `DrainNode` is admitted and drains.
+#[test]
+fn a_drain_during_a_start_is_refused_naming_leaving_and_gets_no_drained_of_the_parked_cycle() {
+    let cell = "a_drain_during_a_start_is_refused_naming_leaving_and_gets_no_drained_of_the_parked_cycle";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_hydrating("drain-during-start", Some(hydrator.clone())).await);
+
+        // The first cycle drains, then stops on that drain.
+        let mut first = birth.open_drain(1);
+        assert_eq!(birth.call(&birth.drain(1)).await, StatusReply::Applied, "the first cycle's drain is admitted");
+        node_drained(&mut first, 1).await;
+        let stopped = birth.call(&birth.stop(2)).await;
+        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{stopped:?}");
+
+        // The start runs until its hook, which holds until the cell lets it go.
+        let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
+        hydrator.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        birth.admin.deployed(&birth.launch, &birth.key);
+        let start = {
+            let birth = birth.clone();
+            tokio::spawn(async move { birth.call(&birth.start(3)).await })
+        };
+        started.notified().await;
+
+        // A drain of the birth while its start is under way.
+        let during = birth.open_drain(4);
+        assert_eq!(
+            birth.call(&birth.drain(4)).await,
+            StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving },
+            "a DrainNode while the start is under way meets a birth still in Leaving: refused by name, never the parked cycle's drain"
+        );
+
+        hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
+        resume.notify_one();
+        assert_eq!(start.await.unwrap(), StatusReply::Started);
+        birth.status_heard(MemberStatus::ReadyForTraffic).await;
+
+        // The started birth's drain is the new cycle's: admitted, and it drains.
+        let mut after = birth.open_drain(5);
+        assert_eq!(birth.call(&birth.drain(5)).await, StatusReply::Applied, "the started birth's drain is a new drain");
+        node_drained(&mut after, 5).await;
+        assert!(!*during.borrow(), "the refused DrainNode's commander is owed no node-drained");
+        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 2, "one drain task per cycle: the first cycle's and the started birth's");
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
