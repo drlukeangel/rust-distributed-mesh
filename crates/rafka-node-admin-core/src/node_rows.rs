@@ -325,32 +325,50 @@ impl NodeRows {
     /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
-        let name = &record.name;
+        let (config, config_from) = self.known_config(record);
+        self.deleted_row(&record.name, &record.node_id, Some((config, config_from)), operation).await
+    }
+
+    /// The `Deleted` row of a birth the executor holds no record of any more (a mesh leave's
+    /// member that departed the view after its exact Exited receipt, mesh-leave.md steps 3 and
+    /// 7): the row at `name` for `node_id`, the config this writer holds for the node. A writer that
+    /// holds no record of the node's row refuses by name and writes nothing: a `Deleted` row is never
+    /// written with a config the writer does not know. One `via-node-row` span.
+    pub async fn deleted_birth(&self, name: &PathName, node_id: &NodeId, operation: &str) -> Result<(), RowRefused> {
+        let known = self.written.config_of(node_id).map(|c| (c, "writer-record"));
+        self.deleted_row(name, node_id, known, operation).await
+    }
+
+    async fn deleted_row(&self, name: &PathName, node_id: &NodeId, known: Option<(BTreeMap<String, String>, &'static str)>, operation: &str) -> Result<(), RowRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
             node = %self.me,
             subject = %name,
             operation,
-            node_id = %record.node_id,
+            node_id = %node_id,
             keys = tracing::field::Empty,
             config_from = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        let (config, config_from) = self.known_config(record);
-        span.record("keys", config.len() as u64).record("config_from", config_from);
+        if let Some((config, config_from)) = &known {
+            span.record("keys", config.len() as u64).record("config_from", *config_from);
+        }
         let r = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, name).await?;
-                let row = NodeRow { name: name.clone(), node_id: record.node_id.clone(), status: NodeStatus::Deleted, config };
+                let Some((config, _)) = known else {
+                    return Err(RowRefused::Unwritten(format!("{}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know", self.me)));
+                };
+                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config };
                 match self.storage.put_node_row(&row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
                         Ok(())
                     }
                     Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
-                    Err(e) => Err(RowRefused::Unwritten(format!("{}: nodes.storage refused the Deleted row of {name} ({}): {e}", self.me, record.node_id))),
+                    Err(e) => Err(RowRefused::Unwritten(format!("{}: nodes.storage refused the Deleted row of {name} ({node_id}): {e}", self.me))),
                 }
             },
             span.clone(),

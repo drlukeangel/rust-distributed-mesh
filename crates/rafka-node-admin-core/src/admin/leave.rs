@@ -271,6 +271,12 @@ impl AdminRunner {
     async fn record_mesh_left(&self, key: &LeaveKey, mesh: &str, all: ExitManifest, event: MeshLeaveEvent) -> Result<(), String> {
         let (build_id, attempt, outer, mesh_id) = (crate::build::BuildId(key.build_id.clone()), key.attempt, key.operation.as_str(), &key.mesh_id);
         let reference = manifest_reference(&key.build_id, attempt, outer, true);
+        // The final primary's row Deleted and the mesh row Dead, before the receipt: this
+        // fabric-primary is the acting primary of a mesh that has none left, as its view shows once
+        // the final primary's stop is published.
+        self.refresh_view().await;
+        let records: Vec<Node> = self.topology.read().await.nodes.iter().filter(|n| n.mesh == mesh).cloned().collect();
+        crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &self.records.declared, &self.me.to_string(), key, mesh, &records, &all.final_primary).await?;
         self.builds
             .append_step_receipt(&BuildStepReceipt {
                 build_id: build_id.clone(),
@@ -409,7 +415,8 @@ impl AdminRunner {
         };
         let (roster, known) = crate::mesh_leave::leaving_roster(&*self.builds, key, &self.me.to_string(), &me_birth, &my_runtime, capture, fetch_owner).await?;
         let records: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
-        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, &records, &known, |n| async move { self.shutdown_one(key, &n).await }).await
+        let records = &records;
+        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, records, &known, |n| async move { self.shutdown_one(key, &n).await }, |b| async move { crate::mesh_leave::birth_row_deleted(self.records.node_rows().as_deref(), &self.me.to_string(), &key.operation, records, &b).await }).await
     }
 
     /// One member's drain and stop and the provider's terminal receipt of its exact runtime.

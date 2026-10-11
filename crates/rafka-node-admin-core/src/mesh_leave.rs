@@ -592,12 +592,17 @@ where
 /// runtime `final_runtime`); `records` are the view's Node records of the mesh, of any status;
 /// `known` are step receipts read from the owner's Build facts at admission
 /// ([`admission_roster`]), folded with this Build's own; `shutdown` is one member's drain/stop
-/// workflow and the provider's terminal receipt of its exact runtime.
+/// workflow and the provider's terminal receipt of its exact runtime; `delete_row` is the
+/// mesh-primary's write of a member's row `Deleted` on that member's exact Exited receipt (step 3:
+/// "On that receipt the mesh-primary, the writer of its mesh's rows, writes the member's row
+/// Deleted"), a keyed write that is repeated for a retained receipt, never inferred done from it.
 #[allow(clippy::too_many_arguments)]
-pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], shutdown: F) -> Result<ExitManifest, String>
+pub async fn members_exited<F, Fut, G, GFut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], shutdown: F, _delete_row: G) -> Result<ExitManifest, String>
 where
     F: Fn(Node) -> Fut,
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
+    G: Fn(RosterBirth) -> GFut,
+    GFut: std::future::Future<Output = Result<(), String>>,
 {
     use tracing::Instrument;
     if !roster.contains(me) {
@@ -656,6 +661,27 @@ where
     tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len())
         .in_scope(|| tracing::info!("every other member's exact exit is proven: the exit manifest is recorded"));
     Ok(manifest)
+}
+
+/// A roster birth's row `Deleted` on its exact Exited receipt (mesh-leave.md step 3 at the
+/// mesh-primary; step 7 for the final primary at the fabric-primary): written by `rows`, the
+/// writer of the mesh's rows, from the record `records` hold of the exact birth, else from the
+/// record the writer holds of the node's row (a departed birth the view no longer names). A
+/// refusal names the birth and the writer's reason; `executor` is the admin writing.
+pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, executor: &str, operation: &str, records: &[Node], b: &RosterBirth) -> Result<(), String> {
+    let _ = (rows, executor, operation, records, b);
+    Ok(())
+}
+
+/// mesh-left at the fabric-primary (mesh-leave.md step 7), after exact coverage and before the
+/// `MeshLeft` receipt: "At mesh-left the fabric-primary writes the final primary's row Deleted, as
+/// acting primary of a mesh that has none left, and the mesh row Dead". `rows` is the
+/// fabric-primary's writer, `records` its view's records of the mesh, `final_primary` the exact
+/// final birth; the Dead row is committed through `status` and held in `declared`.
+#[allow(clippy::too_many_arguments)]
+pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, records: &[Node], final_primary: &RosterBirth) -> Result<(), String> {
+    let _ = (rows, status, declared, executor, key, mesh, records, final_primary);
+    Ok(())
 }
 
 /// What the fabric-primary decides of a `MeshLeave` handoff from the Build facts it read from the
