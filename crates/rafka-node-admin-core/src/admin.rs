@@ -4426,11 +4426,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     incarnation: n.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
                 };
                 let own_name = me.clone();
+                let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
                 let report = tickle
                     .tick(
                         local_now_ms(),
                         holds_seat,
                         silent,
+                        |id: &str| in_view.contains(id),
                         floor.as_millis() as u64 / 2,
                         floor.as_millis() as u64,
                         |id| {
