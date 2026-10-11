@@ -137,6 +137,7 @@ fn proxied_held(r: &Rig) -> (rafka_mesh_entity::connections::ConnectionsHeld, ra
     let own: rafka_mesh_entity::PathName = "mesh1.rpc.1".parse().unwrap();
     let end = |n: &ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let proxy = NodeConnection {
+        id: rafka_mesh_entity::ConnectionId::mint(),
         source: ConnectionEnd { name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
         destination: end(&r.target.resolved),
         kind: ConnectionKind::Proxy,

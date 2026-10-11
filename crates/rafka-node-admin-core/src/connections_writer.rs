@@ -226,6 +226,7 @@ impl ConnectionsWriter {
 
     fn direct(own: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, reason: Option<String>) -> NodeConnection {
         NodeConnection {
+            id: rafka_mesh_entity::ConnectionId::mint(),
             source: own,
             destination,
             kind: ConnectionKind::Direct,
@@ -401,6 +402,7 @@ impl ConnectionObserver for ConnectionsWriter {
                         // The row names both ends as they are now: this process's birth, never the
                         // one that wrote the previous attempt, and the birth dialled.
                         Some(r) => NodeConnection {
+                            id: rafka_mesh_entity::ConnectionId::mint(),
                             source: own,
                             destination,
                             recovery: Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: r.recovery_epoch, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),

@@ -423,6 +423,15 @@ impl NodeSelf {
         if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
             return Some(self.serve_round(commander, req));
         }
+        if let StatusRequest::DeleteConnections { node_id, incarnation, .. } = req {
+            if *node_id != self.node_id {
+                return Some(StatusReply::RejectedNotAuthority { why: rafka_node_rpc_contract::status::NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } });
+            }
+            if *incarnation != self.incarnation {
+                return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
+            }
+            return Some(StatusReply::NotReady { reason: format!("{}: node.connections.delete has no executor in this birth yet; nothing is cut", self.held_name()) });
+        }
         let (node_id, incarnation, build_id, attempt, operation) = match req {
             StatusRequest::DrainNode { node_id, incarnation, build_id, attempt, operation }
             | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation }

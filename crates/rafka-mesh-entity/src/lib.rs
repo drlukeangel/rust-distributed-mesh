@@ -28,7 +28,7 @@ pub use connections::{
 };
 pub use digest::{check_config, ConfigOverCap, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS, GossipStats, MemberStatus, MeshDigest, MeshNode, NodeLoad};
 pub use lifecycle::{LifecycleOp, RoundHook, DEPARTED_RETENTION};
-pub use ids::{EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, CROCKFORD60_LEN, ID_FORMAT, OPAQUE_ID_LEN};
+pub use ids::{ConnectionId, EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, CROCKFORD60_LEN, ID_FORMAT, OPAQUE_ID_LEN};
 pub use publisher::PublisherId;
 pub use path::{NodeKind, PathName, PathNameError};
 pub use seat::{Seat, SeatHolder};

@@ -282,7 +282,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
             (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, None)
         }
         // Commands and completions are answered before the decision (`StatusAuthority::apply`).
-        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateNode { .. } => {
+        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateNode { .. } | StatusRequest::DeleteConnections { .. } => {
             (StatusReply::NotReady { reason: format!("{} reached the declaration decision, which does not decide {}", auth.me, req.op()) }, None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -387,6 +387,10 @@ impl StatusAuthority {
                 return StatusReply::NotReady { reason: format!("{}: node-left is not a call: a stopped birth reports left on the reply of its stop-node call", self.me) };
             }
             StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return self.serve_command(&view, sender.as_ref(), req).await,
+            StatusRequest::DeleteConnections { node_id, .. } if *node_id == self.node_id => return self.serve_command(&view, sender.as_ref(), req).await,
+            StatusRequest::DeleteConnections { .. } => {
+                return StatusReply::NotReady { reason: format!("{}: node.connections.delete is not yet carried to the birth by its mesh-primary; nothing is cut", self.me) };
+            }
             StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } => {
                 let Some(leaver) = self.leaver.get().cloned() else {
                     return StatusReply::NotReady { reason: format!("{} is still starting: it cannot serve {} yet", self.me, req.op()) };
@@ -528,7 +532,9 @@ impl StatusAuthority {
     /// `drain-node` / `stop-node` naming this admin: served by the subject itself, from another
     /// node-admin (its owning mesh-admin).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
-        let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. } | StatusRequest::StartNode { node_id, incarnation, .. }) = req else { unreachable!("serve_command is called for commands only") };
+        let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. } | StatusRequest::StartNode { node_id, incarnation, .. } | StatusRequest::DeleteConnections { node_id, incarnation, .. }) = req else {
+            unreachable!("serve_command is called for commands only")
+        };
         let me = view.own(&self.node_id);
         let reply = match (me, sender, self.own.get()) {
             (Some(me), _, _) if me.node_id != *node_id => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } },
