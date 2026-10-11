@@ -69,7 +69,6 @@ pub struct RunningNode {
     pub cancel: rafka_node_rpc::Retirement,
     hydration: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>>,
     hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    gossip: iroh_gossip::net::Gossip,
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     node_rpc_feed: tokio::task::JoinHandle<()>,
     declare_loop: tokio::task::JoinHandle<()>,
@@ -117,7 +116,6 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
-        let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -179,7 +177,6 @@ impl RunningNode {
         }
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
-        let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -187,7 +184,9 @@ impl RunningNode {
 
     /// Publish `Leaving` and stop serving.
     /// Phase two: say `Leaving` on the fabric, keep saying it every
-    /// `LEAVE_EVERY` for `linger`, then leave gossip and close every endpoint.
+    /// `LEAVE_EVERY` for `linger`, then shut each router down: `Router::shutdown` shuts every
+    /// protocol it serves down, gossip included, once, and then closes the endpoint. Nothing here
+    /// shuts gossip down beside it: a second `Gossip::shutdown` meets an actor already stopped.
     ///
     /// iroh-gossip queues a broadcast and acknowledges nothing, and closing
     /// the endpoint drops whatever is still unsent; the linger keeps the
@@ -213,7 +212,6 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
-        let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -621,7 +619,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         attempt: 0,
     };
     let driver = hydration.driver(ctx, rafka_node_admin_core::app_hydration::Events::new(membership.book.clone(), addressed), boot.clone());
-    let mut running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: hydration_cell.clone(), hydrating: hydrating_cell.clone(), gossip: g, publisher, node_rpc_feed, declare_loop };
+    let running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: hydration_cell.clone(), hydrating: hydrating_cell.clone(), publisher, node_rpc_feed, declare_loop };
     *hydration_cell.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     use rafka_node_admin_core::app_hydration::{End, Step};
     let Some(driver) = driver else {
