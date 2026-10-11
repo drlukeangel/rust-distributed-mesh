@@ -218,12 +218,16 @@ impl Drive {
     }
 
     /// The `Step` frame of every `Complete` receipt of `steps` from attempt `from` to before attempt
-    /// `to`: a read of receipts, never a run.
-    fn receipt_frames(&self, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) -> Vec<BuildReply> {
+    /// `to`, with the node the receipt names (the lifecycle op a `NodeDeleting` or `NodeDeleted`
+    /// decided): a read of receipts, never a run.
+    fn receipt_frames(&self, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) -> Vec<(BuildReply, Option<crate::model::NodeId>)> {
         steps
             .iter()
             .filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from && s.attempt < to)
-            .map(|s| BuildReply::Step { build_id: self.build_id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() })
+            .map(|s| {
+                let subject = s.output.clone().and_then(|o| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(o).ok()).map(|op| op.node_id);
+                (BuildReply::Step { build_id: self.build_id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() }, subject)
+            })
             .collect()
     }
 
@@ -697,12 +701,12 @@ impl DriveEnv {
     /// A `Step` frame new to `drive`, live from the executor or read from a receipt (a completed
     /// step's receipt is the same event as its frame): the row writer handles it once, from the
     /// record this fabric-primary holds, before any reader of the drive sees the frame.
-    async fn step(&self, drive: &Drive, frame: BuildReply) {
+    async fn step(&self, drive: &Drive, frame: BuildReply, subject: Option<crate::model::NodeId>) {
         if !drive.take_key(&frame) {
             return;
         }
         if let BuildReply::Step { operation, step, .. } = &frame {
-            self.rows.on_step(&self.me, &self.topology, operation, step).await;
+            self.rows.on_step(&self.me, &self.topology, operation, step, subject.as_ref()).await;
         }
         drive.publish(frame);
     }
@@ -710,8 +714,8 @@ impl DriveEnv {
     /// The frame of every `Complete` receipt of `steps` from attempt `from` to before attempt `to`,
     /// each through [`Self::step`]: a read of receipts, never a run.
     pub async fn replay(&self, drive: &Drive, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) {
-        for frame in drive.receipt_frames(steps, from, to) {
-            self.step(drive, frame).await;
+        for (frame, subject) in drive.receipt_frames(steps, from, to) {
+            self.step(drive, frame, subject).await;
         }
     }
 
@@ -725,7 +729,7 @@ impl DriveEnv {
         loop {
             match stream.next().await {
                 InnerItem::Frame(f) => match f {
-                    BuildReply::Step { .. } => self.step(drive, f).await,
+                    BuildReply::Step { .. } => self.step(drive, f, None).await,
                     BuildReply::Blocked { .. } => {
                         drive.push(f);
                     }

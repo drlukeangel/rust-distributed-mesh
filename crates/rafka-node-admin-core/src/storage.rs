@@ -197,8 +197,10 @@ pub trait NodesStorage: Send + Sync {
     /// is another node's `Deleted` row: `row` is kept ([`Claimed::Written`]). Any other row holds
     /// the name and the claim is refused [`NameHeld`] naming its node.
     async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError>;
-    /// Release the key `name`: its row goes (a renamed node let go of the name).
-    async fn remove_node_row(&self, name: &PathName) -> Result<(), StorageError>;
+    /// `holder` lets go of the key `name`: its row goes when it is `holder`'s, decided by the store
+    /// in one step against every other row write; a row of another node there (the name was
+    /// released before and claimed since) is left as it is. Returns whether `holder`'s row went.
+    async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError>;
 }
 
 /// What a claim that was not refused did.
@@ -270,9 +272,14 @@ impl NodesStorage for MemoryNodesStorage {
         }
         Ok(claimed)
     }
-    async fn remove_node_row(&self, name: &PathName) -> Result<(), StorageError> {
-        self.rows.lock().unwrap().remove(&name.to_string());
-        Ok(())
+    async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
+        let mut rows = self.rows.lock().unwrap();
+        let key = name.to_string();
+        let held = rows.get(&key).is_some_and(|r| &r.node_id == holder);
+        if held {
+            rows.remove(&key);
+        }
+        Ok(held)
     }
 }
 
@@ -338,9 +345,14 @@ impl NodesStorage for FileNodesStorage {
         }
         Ok(claimed)
     }
-    async fn remove_node_row(&self, name: &PathName) -> Result<(), StorageError> {
+    async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let _one = self.row_writes.lock().await;
-        self.rows.remove(&name.to_string()).await
+        let key = name.to_string();
+        let held = self.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.is_some_and(|r| &r.node_id == holder);
+        if held {
+            self.rows.remove(&key).await?;
+        }
+        Ok(held)
     }
 }
 

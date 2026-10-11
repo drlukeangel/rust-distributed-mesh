@@ -456,7 +456,7 @@ impl NodesStorage for RefusingRows {
     async fn claim_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<rafka_node_admin_core::storage::Claimed, rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the claim".into() })
     }
-    async fn remove_node_row(&self, name: &rafka_node_admin_core::model::PathName) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+    async fn release_node_row(&self, name: &rafka_node_admin_core::model::PathName, _holder: &rafka_node_admin_core::model::NodeId) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
     }
 }
