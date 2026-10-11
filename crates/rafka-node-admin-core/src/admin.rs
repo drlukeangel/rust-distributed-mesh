@@ -974,6 +974,12 @@ impl RecoverySubmitter {
     }
 }
 
+/// The silence-status memo of the mesh primary's tick: what it last put per node.
+type WrittenSilence = HashMap<NodeId, (Option<IncarnationId>, Option<NodeStatus>)>;
+
+/// The mesh primary's per-birth bookkeeping speaks only for the births it still watches.
+fn retire_unwatched(_watched: &BTreeMap<String, Node>, _offline: &mut HashSet<(NodeId, IncarnationId)>, _verdicts: &mut HashMap<(NodeId, IncarnationId), Inspected>, _written: &mut WrittenSilence) {}
+
 /// How a followed recovery Build ended: its terminal frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RecoveryEnd {
@@ -4377,7 +4383,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
             let mut tickle = crate::offline::OfflineTickle::new();
             let floor = rafka_mesh_transport::membership::staleness_floor();
-            let mut written = HashMap::new();
+            let mut written: WrittenSilence = HashMap::new();
             loop {
                 let view = topology.read().await.clone();
                 let holds_seat = view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me);
@@ -4502,6 +4508,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     records.offline.lock().unwrap().retain(|(n, _)| n.as_str() != id);
                     write(id, None, &mut written).await;
                 }
+                retire_unwatched(&watched, &mut records.offline.lock().unwrap(), &mut verdicts.lock().unwrap(), &mut written);
                 // node-recovery.md: on TRUE OFFLINE the mesh primary asks the provider about the exact
                 // runtime of each ordinary member of its own mesh; Exited is the proof, and the
                 // recovery is submitted keyed on the exited birth. Re-evaluated every tick while the
@@ -4875,6 +4882,35 @@ mod tests {
     /// reason }` is recorded as that failure on the submit span's outcome, and the submit ends in an
     /// error so the mesh-primary's next tick finds the member still proven exited and submits again.
     /// A Complete terminal is recorded as complete, and a stream that ends with no terminal is named.
+    /// CONTRACT: the mesh primary's per-birth bookkeeping (the TRUE OFFLINE set, the inspection
+    /// verdicts, the silence-status memo) holds only births its view still watches at that exact
+    /// incarnation. A birth deleted by its recovery (a new node.id at its path.name) and a birth
+    /// superseded by a new incarnation of its node are retired; a watched TRUE OFFLINE birth keeps
+    /// all three. Must NOT happen: entries of gone births accumulating, one per recovered birth.
+    #[test]
+    fn the_mesh_primarys_offline_bookkeeping_retires_deleted_and_superseded_births() {
+        let watched_node = |path: &str| {
+            let mut n = Node::allocated(path.parse().unwrap());
+            n.incarnation_id = Some(IncarnationId::mint());
+            n.status = NodeStatus::Dead;
+            n
+        };
+        let kept = watched_node("mesh2.rpc.1");
+        let restarted = watched_node("mesh2.rpc.2");
+        let superseded = (restarted.node_id.clone(), IncarnationId::mint());
+        let deleted = (NodeId::mint(), IncarnationId::mint());
+        let kept_birth = (kept.node_id.clone(), kept.incarnation_id.clone().unwrap());
+        let watched: BTreeMap<String, Node> = [&kept, &restarted].into_iter().map(|n| (n.node_id.to_string(), n.clone())).collect();
+        let mut offline: HashSet<_> = [kept_birth.clone(), superseded.clone(), deleted.clone()].into();
+        let exited = Inspected::Exited(Some(4), "provider");
+        let mut verdicts: HashMap<_, _> = [(kept_birth.clone(), exited.clone()), (superseded.clone(), exited.clone()), (deleted.clone(), exited.clone())].into();
+        let mut written: WrittenSilence = [(kept.node_id.clone(), (kept.incarnation_id.clone(), Some(NodeStatus::Dead))), (deleted.0.clone(), (Some(deleted.1.clone()), Some(NodeStatus::Dead)))].into();
+        retire_unwatched(&watched, &mut offline, &mut verdicts, &mut written);
+        assert_eq!(offline, [kept_birth.clone()].into(), "only the watched TRUE OFFLINE birth stays offline");
+        assert_eq!(verdicts.keys().cloned().collect::<HashSet<_>>(), [kept_birth.clone()].into(), "a verdict lives as long as its birth is TRUE OFFLINE");
+        assert_eq!(written.keys().cloned().collect::<HashSet<_>>(), [kept.node_id.clone()].into(), "the silence memo of a deleted node is retired");
+    }
+
     #[tokio::test]
     async fn a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_submitted() {
         struct Queued(std::collections::VecDeque<RecoveryFrame>);
