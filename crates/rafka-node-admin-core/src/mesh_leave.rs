@@ -616,7 +616,8 @@ pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&Rost
 /// step receipt of the accepted Build. A member whose exact Exited receipt the Build already holds
 /// (a successful child of an earlier, incomplete run) keeps it and is not run again; a failed or
 /// unrunnable member leaves its tier incomplete. `me` is the final primary (still running, its exact
-/// runtime `final_runtime`); `records` are the view's Node records of the mesh, of any status;
+/// runtime `final_runtime`); `records` are the Node records of the roster's births
+/// ([`roster_records`]: the view's record, else the membership's record of that exact birth);
 /// `known` are step receipts read from the owner's Build facts at admission
 /// ([`admission_roster`]), folded with this Build's own; `shutdown` is one member's drain/stop
 /// workflow and the provider's terminal receipt of its exact runtime; `delete_row` is the
