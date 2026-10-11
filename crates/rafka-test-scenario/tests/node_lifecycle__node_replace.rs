@@ -115,7 +115,9 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "the node's own mesh-primary submits: {recovery}");
     assert_eq!(recovery["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {recovery}");
     assert_eq!(s(&recovery["attributes"]["exit_code"]), "4", "the proof names TRANSPORT_STOPPED: {recovery}");
-    assert_eq!(s(&recovery["attributes"]["exit_proof"]), "exit-record", "{recovery}");
+    // The mesh-primary launched its member, so its provider holds the runtime's own wait status: the
+    // exit code is the provider's, not read back from the exit record in the data dir.
+    assert_eq!(s(&recovery["attributes"]["exit_proof"]), "provider", "{recovery}");
     assert_eq!(s(&recovery["attributes"]["build_id"]), birth_build, "the recovery is an attempt of the accepted Build: {recovery}");
     let attempt = s(&recovery["attributes"]["attempt"]);
     let build = estate.await_build(&birth_build, SETTLE).await;
