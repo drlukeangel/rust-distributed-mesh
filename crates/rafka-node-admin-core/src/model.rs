@@ -150,8 +150,10 @@ pub struct Node {
     pub config: std::collections::BTreeMap<String, String>,
 }
 
+/// A node read without the fact held is not selected (states.md "Routing": selection needs the
+/// held ready-for-traffic of the birth and its mesh).
 fn routable_default() -> bool {
-    true
+    false
 }
 
 impl Node {
@@ -173,7 +175,8 @@ impl Node {
             admin_api_base: None,
             transport_addr: None,
             listeners: Vec::new(),
-            routable: true,
+            // Nothing realised yet: not ready-for-traffic, so not selected.
+            routable: false,
             declared: None,
             parked: false,
             config: Default::default(),
