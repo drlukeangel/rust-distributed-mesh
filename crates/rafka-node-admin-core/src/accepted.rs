@@ -985,6 +985,7 @@ mod tests {
             action: Some(AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() }),
             // Attempt 6 stopped an earlier birth of the path; attempt 7 is this stop.
             attempt_actions: [(6, AttemptAction::Stop { path: path.clone(), from_incarnation: other.clone() }), (7, AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() })].into(),
+            attempt_executors: Default::default(),
         };
         let mut gone = mn();
         gone.nodes.retain(|x| x.name != path);
@@ -1028,6 +1029,7 @@ mod tests {
             reason: AttemptReason::ProvenDrift,
             action: Some(AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() }),
             attempt_actions: Default::default(),
+            attempt_executors: Default::default(),
         };
         let replace = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
         // The view holds the successor (another birth) at the path.
@@ -1086,6 +1088,7 @@ mod tests {
             reason: AttemptReason::Recovery,
             action: Some(AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }),
             attempt_actions: Default::default(),
+            attempt_executors: Default::default(),
         };
         let recover = vec![BuildOperation::RecoverNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
         // The exited birth unheard, another member unheard and a third missing: only the recovery.

@@ -245,7 +245,10 @@ impl BuildExecutor {
             build_id = %build_id,
             attempt,
             executor = %self.executor,
-            previous_executor = previous.as_ref().and_then(|b| b.executor.as_deref()).unwrap_or(""),
+            // The admin that held the attempt before this one. The fabric-primary's claim of this
+            // attempt is already folded (the executor absorbs its intent first), so `executor` here
+            // names this admin.
+            previous_executor = previous.as_ref().and_then(|b| b.attempt_executors.get(&attempt.saturating_sub(1))).map(String::as_str).unwrap_or(""),
             reason = previous.as_ref().map(|b| b.reason.as_str()).unwrap_or(""),
             action = %previous.as_ref().and_then(|b| b.action.as_ref()).map(|a| serde_json::to_string(a).unwrap_or_default()).unwrap_or_default(),
             operations = tracing::field::Empty,
