@@ -18,7 +18,7 @@ use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
-use rafka_mesh_entity::MeshId;
+use rafka_mesh_entity::{MeshId, NodeId};
 use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -325,6 +325,68 @@ impl LeaveBook {
     }
 }
 
+/// One mesh leave at the leaving mesh's primary.
+#[derive(Debug, Clone)]
+enum LeaveRun {
+    /// The member workflows are running for the owner that sent `leave-mesh` last.
+    Running(NodeId),
+    /// Every other member exited and the manifest is recorded: the handoff to the owner is what
+    /// is left.
+    Exited(NodeId, ExitManifest),
+}
+
+/// What a `leave-mesh` admission does for the run of its key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaveAdmission {
+    /// No run is held: the member workflows start for this sender.
+    Start,
+    /// The member workflows are running: their handoff goes to this sender.
+    Running,
+    /// The manifest is recorded: the handoff is what repeats, to this sender.
+    Resend(ExitManifest),
+}
+
+/// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished. The owner
+/// a handoff goes to is the admin that sent `leave-mesh` last for the key (a successor
+/// fabric-primary re-dispatching the same attempt takes the handoff over).
+#[derive(Default)]
+pub struct LeaveRuns(Mutex<HashMap<LeaveKey, LeaveRun>>);
+
+impl LeaveRuns {
+    /// `leave-mesh` for `key` from `sender`.
+    pub fn admit(&self, key: &LeaveKey, sender: &NodeId) -> LeaveAdmission {
+        let mut runs = self.0.lock().unwrap();
+        match runs.get(key).cloned() {
+            Some(LeaveRun::Running(_)) => LeaveAdmission::Running,
+            Some(LeaveRun::Exited(_, manifest)) => LeaveAdmission::Resend(manifest),
+            None => {
+                runs.insert(key.clone(), LeaveRun::Running(sender.clone()));
+                LeaveAdmission::Start
+            }
+        }
+    }
+
+    /// The run of `key` recorded its manifest: the owner its handoff goes to now.
+    pub fn exited(&self, key: &LeaveKey, manifest: &ExitManifest) -> Option<NodeId> {
+        let mut runs = self.0.lock().unwrap();
+        let owner = match runs.get(key) {
+            Some(LeaveRun::Running(o) | LeaveRun::Exited(o, _)) => o.clone(),
+            None => return None,
+        };
+        runs.insert(key.clone(), LeaveRun::Exited(owner.clone(), manifest.clone()));
+        Some(owner)
+    }
+
+    /// The run of `key` ended incomplete: it is forgotten (its receipts stand) and the owner it
+    /// ran for is returned.
+    pub fn incomplete(&self, key: &LeaveKey) -> Option<NodeId> {
+        match self.0.lock().unwrap().remove(key) {
+            Some(LeaveRun::Running(o) | LeaveRun::Exited(o, _)) => Some(o),
+            None => None,
+        }
+    }
+}
+
 /// What serves `LeaveMesh` (at the leaving mesh's primary) and `MeshLeave` (at the
 /// fabric-primary); the status door hands each to it.
 #[async_trait::async_trait]
@@ -353,6 +415,25 @@ mod tests {
             runtime: Some(RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() }),
             exit_code: Some(0),
         }
+    }
+
+    /// CONTRACT: the handoff of a running leave goes to the admin that sent `leave-mesh` last: a
+    /// successor fabric-primary re-dispatching the same attempt while the member workflows run
+    /// takes the handoff over, and a repeated `leave-mesh` after the manifest is recorded resends
+    /// it to that sender.
+    #[test]
+    fn a_leave_mesh_from_a_successor_owner_takes_over_the_running_leaves_handoff() {
+        let runs = LeaveRuns::default();
+        let key = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let (first, successor) = (NodeId::mint(), NodeId::mint());
+        assert_eq!(runs.admit(&key, &first), LeaveAdmission::Start);
+        assert_eq!(runs.admit(&key, &successor), LeaveAdmission::Running);
+        let last = birth("mesh2.admin.1", "i3");
+        let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
+        assert_eq!(runs.exited(&key, &manifest), Some(successor.clone()), "the handoff goes to the owner that sent leave-mesh last");
+        let third = NodeId::mint();
+        assert_eq!(runs.admit(&key, &third), LeaveAdmission::Resend(manifest));
+        assert_eq!(runs.incomplete(&key), Some(third), "a resend is owned by its sender");
     }
 
     /// CONTRACT: a manifest covers the accepted roster exactly: a missing receipt, an extra or
