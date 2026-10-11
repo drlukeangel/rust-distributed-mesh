@@ -48,6 +48,11 @@ async fn until_ready(running: &rafka_node_admin_core::admin::Running) {
 /// authority that does not exist, or the root Ready before its hook returned.
 #[tokio::test]
 async fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let dir = std::env::temp_dir().join(format!("hydrate-day0-{}", rafka_mesh_entity::NodeId::mint()));
@@ -81,6 +86,11 @@ async fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_lo
 /// happen: the joining admin Ready while its hook is blocked.
 #[tokio::test]
 async fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does") {
+        return;
+    }
     use rafka_mesh_entity::launch::{Launch, Launcher};
     use rafka_mesh_entity::runtime::RuntimeFact;
     use rafka_mesh_entity::{IncarnationId, NodeId};

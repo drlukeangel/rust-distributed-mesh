@@ -50,6 +50,11 @@ fn birth_dir(what: &str) -> std::path::PathBuf {
 /// running handle are the bytes the signer wrote.
 #[tokio::test]
 async fn a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_birth() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_birth") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let dir = birth_dir("member-cert-birth");
@@ -116,6 +121,11 @@ async fn a_restarted_node_is_issued_a_fresh_member_cert_for_its_new_incarnation(
 /// authority were not ready, or the birth admitted without a cert.
 #[tokio::test]
 async fn a_refused_issuance_refuses_the_join_by_name_and_the_node_is_never_admitted() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_refused_issuance_refuses_the_join_by_name_and_the_node_is_never_admitted") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let dir = birth_dir("member-cert-refused");
@@ -166,6 +176,11 @@ async fn the_member_cert_is_in_the_hydrate_context_and_equals_the_handles() {
 /// cert and a span that names the choice; the empty bytes are the answer, not an absence.
 #[tokio::test]
 async fn an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let dir = birth_dir("member-cert-none");
