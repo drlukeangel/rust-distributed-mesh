@@ -21,10 +21,11 @@
 //! already riding it finishes. Eviction is connection health, not
 //! reachability: nothing here marks a node unreachable.
 //!
-//! Timeout strikes (two consecutive reply-deadline expiries on one entry)
-//! evict a poisoned connection. They are transitional restart detection
-//! (ownership §9): the incarnation key above detects a restart with no failed
-//! call, and the strikes are deleted once that cut is proven end to end.
+//! Eviction is structural (node-rpc.md §21): Iroh reports the connection closed
+//! or lost (when it is taken from the pool, or on a stream open, the request
+//! write or the reply read), or the resolver no longer names its birth. A reply
+//! deadline is no evidence about the connection: the call ends `Indeterminate`
+//! and the connection stays pooled.
 
 use crate::resolve::{NodeResolver, NodeTarget, ResolvedNode};
 use iroh::endpoint::Connection;
@@ -35,9 +36,6 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{watch, Notify};
 use tokio::time::Instant;
-
-/// Consecutive reply-deadline expiries on one pooled entry that evict it.
-pub(crate) const TIMEOUT_STRIKES_BEFORE_EVICT: u32 = 2;
 
 /// One pooled connection's identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -98,7 +96,6 @@ struct Dial {
 struct Inner {
     conns: Mutex<HashMap<PoolKey, Connection>>,
     dials: Mutex<HashMap<PoolKey, Dial>>,
-    strikes: Mutex<HashMap<PoolKey, u32>>,
 }
 
 /// The pool a [`crate::NodeRpcClient`] owns.
@@ -163,7 +160,6 @@ impl Pool {
             gone
         };
         for k in gone {
-            self.inner.strikes.lock().unwrap().remove(&k);
             evict_span(k.superseded_by(Some(node)), &k, "evicted", 0);
         }
         for (_, d) in self.inner.dials.lock().unwrap().iter().filter(|(k, _)| stale(k)) {
@@ -179,7 +175,6 @@ impl Pool {
             let _ = d.cancel.send(true);
         }
         let closed: Vec<(PoolKey, Connection)> = self.inner.conns.lock().unwrap().drain().collect();
-        self.inner.strikes.lock().unwrap().clear();
         for (key, conn) in &closed {
             conn.close(0u32.into(), reason);
             tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0)
@@ -202,7 +197,6 @@ impl Pool {
             keys.into_iter().filter_map(|k| conns.remove(&k).map(|c| (k, c))).collect()
         };
         for (key, conn) in &closed {
-            self.inner.strikes.lock().unwrap().remove(key);
             conn.close(0u32.into(), reason);
             tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0)
                 .in_scope(|| tracing::info!("a pooled connection was closed"));
@@ -337,41 +331,9 @@ impl Pool {
         Ok(conn)
     }
 
-    /// The connection proved itself (any reply or refusal): clear its strikes.
-    pub fn healthy(&self, key: &PoolKey) {
-        self.inner.strikes.lock().unwrap().remove(key);
-    }
-
     /// A structural failure (open, write or read on the connection): evict now. `true` when this
     /// call removed the pooled connection.
     pub fn broken(&self, key: &PoolKey, conn: &Connection) -> bool {
-        self.inner.strikes.lock().unwrap().remove(key);
-        self.remove_if_same(key, conn)
-    }
-
-    /// A reply deadline expired on `conn`. The second in a row evicts it; `true` when it did.
-    pub(crate) fn timed_out(&self, key: &PoolKey, conn: &Connection) -> bool {
-        let strikes = {
-            let mut s = self.inner.strikes.lock().unwrap();
-            let n = s.entry(key.clone()).or_insert(0);
-            *n += 1;
-            *n
-        };
-        if strikes >= TIMEOUT_STRIKES_BEFORE_EVICT {
-            self.inner.strikes.lock().unwrap().remove(key);
-            if self.remove_if_same(key, conn) {
-                tracing::info_span!(
-                    "rdm.node_rpc.connection.evict.via-timeout-strikes",
-                    peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0, strikes
-                )
-                .in_scope(|| tracing::info!("poisoned connection evicted; the node is not marked unreachable"));
-                return true;
-            }
-        }
-        false
-    }
-
-    fn remove_if_same(&self, key: &PoolKey, conn: &Connection) -> bool {
         let mut conns = self.inner.conns.lock().unwrap();
         if conns.get(key).is_some_and(|c| c.stable_id() == conn.stable_id()) {
             conns.remove(key);
