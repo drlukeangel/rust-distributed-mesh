@@ -69,6 +69,12 @@ async fn born(cell: &str) -> Estate {
     estate.await_build(accepted["build_id"].as_str().expect("build_id"), SETTLE).await;
     let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", SOURCE, CARRIER, DEST].iter().map(|n| n.to_string()).collect();
     estate.settled(&names, SETTLE).await;
+    // The settled view is the admin's. The source records a Proxy to the destination through the
+    // carrier, so its own resolver must hold both births first: a node learns a peer's birth by
+    // gossip, and a source that has not heard the destination yet refuses it Unknown by name.
+    for peer in [CARRIER, DEST] {
+        estate.witness_holds(&format!("path:{SOURCE}"), peer).await;
+    }
     estate
 }
 
