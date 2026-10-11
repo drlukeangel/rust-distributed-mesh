@@ -1550,21 +1550,11 @@ pub struct AdminRunner {
     /// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a handoff for.
     pub leaves: Arc<crate::mesh_leave::LeaveBook>,
     /// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished.
-    pub leave_runs: Mutex<HashMap<crate::mesh_leave::LeaveKey, LeaveRun>>,
+    pub leave_runs: crate::mesh_leave::LeaveRuns,
     /// The fabric-primary handover: this admin's initiator, doors and recorded operations.
     pub handover: Arc<crate::fabric_handover::HandoverDoor>,
     /// The signer this admin issues a new mesh's first admin's issuing material with.
     pub issuer: Arc<crate::certs::CertIssuer>,
-}
-
-/// One mesh leave at the leaving mesh's primary.
-#[derive(Clone)]
-pub enum LeaveRun {
-    /// The member workflows are running for the owner that sent `leave-mesh`.
-    Running(NodeId),
-    /// Every other member exited and the manifest is recorded: the handoff to the owner is what
-    /// is left.
-    Exited(NodeId, crate::mesh_leave::ExitManifest),
 }
 
 /// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
@@ -3422,7 +3412,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         node_rpc: Some(node_rpc.clone()),
         lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone() })),
         leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
-        leave_runs: Mutex::new(HashMap::new()),
+        leave_runs: crate::mesh_leave::LeaveRuns::default(),
         handover: handover.clone(),
         issuer: issuer.clone(),
     });

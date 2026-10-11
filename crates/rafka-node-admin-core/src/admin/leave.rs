@@ -179,16 +179,10 @@ impl AdminRunner {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } };
         };
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
-        let resend = {
-            let mut runs = self.leave_runs.lock().unwrap();
-            match runs.get(&key).cloned() {
-                Some(LeaveRun::Running(_)) => return StatusReply::AlreadyApplied,
-                Some(LeaveRun::Exited(_, manifest)) => Some(manifest),
-                None => {
-                    runs.insert(key.clone(), LeaveRun::Running(owner.clone()));
-                    None
-                }
-            }
+        let resend = match self.leave_runs.admit(&key, &owner) {
+            crate::mesh_leave::LeaveAdmission::Running => return StatusReply::AlreadyApplied,
+            crate::mesh_leave::LeaveAdmission::Resend(manifest) => Some(manifest),
+            crate::mesh_leave::LeaveAdmission::Start => None,
         };
         // The command's serve span carries the caller's propagated trace; the workflow it starts
         // continues it, so every member's calls join the outer trace.
@@ -201,27 +195,30 @@ impl AdminRunner {
                 StatusReply::AlreadyApplied
             }
             None => {
-                tokio::spawn(async move { runner.run_leave(key, owner, parent).await });
+                tokio::spawn(async move { runner.run_leave(key, parent).await });
                 StatusReply::Applied
             }
         }
     }
 
-    async fn run_leave(self: Arc<Self>, key: LeaveKey, owner: NodeId, parent: tracing::Span) {
+    async fn run_leave(self: Arc<Self>, key: LeaveKey, parent: tracing::Span) {
         let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty);
         async {
             match self.leave_members(&key).await {
                 Ok(manifest) => {
                     tracing::Span::current().record("outcome", "exited");
-                    self.leave_runs.lock().unwrap().insert(key.clone(), LeaveRun::Exited(owner.clone(), manifest.clone()));
-                    self.hand_off(&key, &owner, &manifest).await;
+                    // The handoff goes to the owner that sent leave-mesh last, read now.
+                    match self.leave_runs.exited(&key, &manifest) {
+                        Some(owner) => self.hand_off(&key, &owner, &manifest).await,
+                        None => tracing::info!("this leave's run is no longer held: the handoff waits for a repeated leave-mesh"),
+                    }
                 }
                 Err(e) => {
                     tracing::Span::current().record("outcome", "incomplete");
                     // The run ends; its receipts stand. Every member that exited holds its exact
                     // Exited step receipt, and the roster its LeavingRoster receipt: a repeated
                     // leave-mesh, or the Build's next attempt, runs only the members without one.
-                    self.leave_runs.lock().unwrap().remove(&key);
+                    self.leave_runs.incomplete(&key);
                     tracing::info!(error = %e, "the member workflows are incomplete: no handoff is sent");
                 }
             }
