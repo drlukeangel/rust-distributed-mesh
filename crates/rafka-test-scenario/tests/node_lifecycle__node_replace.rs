@@ -946,6 +946,20 @@ fn tickle_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value, round: u
     found.into_iter().next()
 }
 
+/// The span that ends the `observer`'s first tickle round for `node_id` once its direct connect
+/// failed: the via-peer step (`rdm.node_admin.node.resolve.via-peer-tickle`), closed by the round
+/// itself when its verdict comes back (offline.rs `OfflineTickle::tick`, the round's `step` span),
+/// once exported. The hold-down span ([`tickle_span`] round 1) is the loop's fold of that verdict,
+/// made by the first pass after the round ended.
+fn round_end_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value) -> Option<&'a Value> {
+    let mut found: Vec<&Value> = named(spans, "rdm.node_admin.node.resolve.via-peer-tickle")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id && sp["attributes"]["verdict"].is_string())
+        .collect();
+    found.sort_by_key(|sp| start(sp));
+    found.into_iter().next()
+}
+
 /// A span attribute that is a number, exported as a string or a number.
 fn num_attr(sp: &Value, k: &str) -> u64 {
     let v = &sp["attributes"][k];
@@ -982,16 +996,21 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let before = estate.node(NODE).await;
     estate.kill_node(NODE).await;
 
-    // Round 1 on the mesh-primary that holds the seat now. Its span ends the round, due by
-    // node-recovery.md steps 1-2: the silence (one floor, marked on the pruner's gossip-interval
-    // sweep), the tick (one gossip interval) half a floor after the mark, then one tickle round: one
-    // direct connect, then the connects through up to two peers at once, each to a killed process
+    // Round 1 on the mesh-primary that holds the seat now. Its via-peer step's span ends the round
+    // (`round_end_span`), due by node-recovery.md steps 1-2: the silence (one floor after the last
+    // digest heard: offline.rs `silent_set` derives the mark from it), the loop's pass half a floor
+    // after the mark (on the gossip-interval grid: up to one interval late), then one tickle round:
+    // one direct connect, then the connects through up to two peers at once, each to a killed process
     // and so spending its whole dial: the connection's idle timeout, the staleness floor (R-T8),
-    // inside the call's 10 s budget. Then the export's 200 ms schedule.
+    // inside the call's 10 s budget. Then the export's 200 ms schedule and this cell's read of it
+    // (one gossip interval). The hold-down span is not the round's end: the loop folds the verdict at
+    // its first pass after the round ended, and a round of two whole dials starts on a pass and ends
+    // just past one, so that fold comes almost one interval after the verdict.
     let gossip = rafka_mesh_entity::cadence::gossip_interval();
     let connect = floor.min(Duration::from_secs(10));
     let round1_due = floor + gossip + gossip + floor / 2 + rafka_node_admin_core::offline::tickle_round(connect) + Duration::from_millis(200);
-    let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { tickle_span(&estate.spans(), &mp, &before["node_id"], 1).cloned() }).await;
+    let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { round_end_span(&estate.spans(), &mp, &before["node_id"]).cloned() }).await;
+    assert_eq!(s(&round1["attributes"]["verdict"]), "no-path", "{mp}'s round 1 finds no path to the killed {NODE}: {round1}");
     // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.
     let (status, stop) = estate.post(&format!("/api/nodes/{mp}/stop"), &json!({})).await;
     assert_eq!(status, 202, "the stop of {mp} is accepted: {stop}");
