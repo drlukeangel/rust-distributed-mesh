@@ -219,9 +219,15 @@ impl Ladder {
     /// mesh (`DigestBook::mesh_unheard`, mesh-investigation.md: "Let t be the elapsed monotonic time
     /// since the fabric-primary's last valid direct backbone receipt from mesh-x"), `None` for a mesh
     /// the backbone never carried here.
+    /// A mesh heard on the backbone is fenced from the rung the ladder tracks it from
+    /// ([`Rungs::track`]), whether or not the ladder has stepped it yet (a fabric-primary that took the
+    /// seat a moment ago has stepped nothing), and its decided rebirth is the ladder's; a mesh the
+    /// backbone never carried is what the ladder holds of it (watched from the seat).
     pub fn fence(&self, mesh: &str, unheard: Option<Duration>) -> Option<PeerMesh> {
-        let _ = unheard;
-        self.peer_mesh(mesh)
+        match unheard {
+            Some(t) => (t >= self.rungs.track).then(|| PeerMesh { unheard_ms: Some(t.as_millis() as u64), rebirth_decided: self.rebirth_decided(mesh) }),
+            None => self.peer_mesh(mesh),
+        }
     }
 
     /// How long after `unheard` the next rung of `mesh` falls due: the driver wakes then, so a tick
@@ -824,13 +830,14 @@ mod tests {
             "a seat taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is fenced"
         );
         assert_eq!(l.fence("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no fence");
-        for s in l.step("mesh1", Duration::from_secs(7)) {
-            if let Step::Probe { n, ticket, unheard_ms } = s {
-                l.probed("mesh1", ticket, n, CarrierEdgeLost, unheard_ms);
+        // The ladder steps the mesh: probe 1, probe 2, both carrier-edge-lost, then the decision.
+        for _ in 0..3 {
+            for s in l.step("mesh1", Duration::from_secs(7)) {
+                if let Step::Probe { n, ticket, unheard_ms } = s {
+                    l.probed("mesh1", ticket, n, CarrierEdgeLost, unheard_ms);
+                }
             }
         }
-        l.step("mesh1", Duration::from_secs(7));
-        l.step("mesh1", Duration::from_secs(7));
         assert!(l.rebirth_decided("mesh1"), "two carrier-edge-lost probes decide the rebirth");
         assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), rebirth_decided: true }), "the decided rebirth is the ladder's");
         assert_eq!(l.fence("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
