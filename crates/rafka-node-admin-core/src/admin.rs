@@ -6900,6 +6900,7 @@ mod tests {
             hydration: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            loads: None,
         };
         let _ = Declared::default();
 
