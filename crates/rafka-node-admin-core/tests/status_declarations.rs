@@ -319,15 +319,20 @@ struct ServedNode {
 }
 
 async fn serve_node(b: &Birth) -> ServedNode {
+    serve_node_answering(b, StatusReply::Applied).await
+}
+
+/// A birth serving Status that records every request and answers each with `reply`.
+async fn serve_node_answering(b: &Birth, reply: StatusReply) -> ServedNode {
     use rafka_node_rpc_contract::catalog::OpOwner;
     let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
     let s = seen.clone();
     let server = ServerBuilder::new()
         .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
-            let s = s.clone();
+            let (s, reply) = (s.clone(), reply.clone());
             async move {
                 s.lock().unwrap().push(req);
-                Ok(StatusReply::Applied)
+                Ok(reply)
             }
         })
         .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().0 })
@@ -393,4 +398,81 @@ async fn a_config_over_its_cap_is_refused_by_name_and_nothing_is_applied() {
         StatusReply::RejectedConfig { over: rafka_mesh_entity::ConfigOverCap { keys: keys as u32, bytes: bytes as u32, max_keys: rafka_mesh_entity::MAX_CONFIG_KEYS as u32, max_bytes: rafka_mesh_entity::MAX_CONFIG_BYTES as u32 } }
     );
     assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the node");
+}
+
+/// A nodes store that refuses every node-row put, by name; every other row is the memory store's.
+#[derive(Default)]
+struct RefusingRows(MemoryNodesStorage);
+
+#[async_trait::async_trait]
+impl NodesStorage for RefusingRows {
+    async fn put_runtime(&self, row: &rafka_node_admin_core::storage::RuntimeRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.put_runtime(row).await
+    }
+    async fn runtimes(&self) -> Result<Vec<rafka_node_admin_core::storage::RuntimeRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.runtimes().await
+    }
+    async fn own(&self) -> Result<Option<rafka_node_admin_core::storage::NodeRecord>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.own().await
+    }
+    async fn put_own(&self, record: &rafka_node_admin_core::storage::NodeRecord) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.put_own(record).await
+    }
+    async fn contacts(&self) -> Result<Vec<rafka_node_admin_core::storage::NodeRecord>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.contacts().await
+    }
+    async fn put_contact(&self, record: &rafka_node_admin_core::storage::NodeRecord) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.put_contact(record).await
+    }
+    async fn remove_contact(&self, node_id: &NodeId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.remove_contact(node_id).await
+    }
+    async fn put_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the write".into() })
+    }
+    async fn node_row_at(&self, name: &rafka_node_admin_core::model::PathName) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.node_row_at(name).await
+    }
+}
+
+/// CONTRACT (ops-naming "Node data": the fabric-primary writes the record, then the node applies it):
+/// when the birth does not apply the config, the update ends `ConfigNotApplied`, naming the node and
+/// the birth's answer by name; the row was written first, so the node's record at its path.name holds
+/// the new config. Not `NotReady`: the fabric-primary is ready, the birth refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
+    let (rig, b) = rig().await;
+    let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+    let node = serve_node_answering(rpc1, StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }).await;
+    configs_door(&rig, &node).await;
+    let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
+    let client = client_of(&rig, admin2).await;
+    let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+    let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+    assert!(
+        matches!(&reply, StatusReply::ConfigNotApplied { node, answered, .. } if node == "mesh1.rpc.1" && answered == "rejected-stale-incarnation"),
+        "the row is written and the birth refused: {reply:?}"
+    );
+    assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
+    let row = rig.storage.node_row_at(&rpc1.node.name).await.unwrap().expect("the fabric-primary wrote the row before telling the birth");
+    assert_eq!(row.config, config);
+}
+
+/// CONTRACT (ops-naming "Node data": the fabric-primary writes the record, then tells the node): when
+/// the nodes store refuses the row, the update ends `ConfigRowRefused` naming the node and the store's
+/// refusal, and nothing is told to the birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
+    let (rig, b) = rig().await;
+    let rpc1 = &b["rpc1"];
+    let node = serve_node(rpc1).await;
+    configs_door(&rig, &node).await;
+    let view = rig.topology.read().await.clone();
+    let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
+    let reply = rig.authority.configs.get().unwrap().update(&rig.admin.node.name, &view, &RefusingRows::default(), &req).await;
+    assert!(
+        matches!(&reply, StatusReply::ConfigRowRefused { node, reason } if node == "mesh1.rpc.1" && reason.contains("disk refused the write")),
+        "the store refused the row: {reply:?}"
+    );
+    assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the birth when its row was not written");
 }
