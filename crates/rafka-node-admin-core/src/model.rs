@@ -133,8 +133,9 @@ pub struct Node {
     /// Non-Iroh listeners the birth binds, by name.
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
-    /// May application routing select this node: held, not departed, and under no open
-    /// lifecycle overlay (`NodeDeleting`). The resolver never reads it.
+    /// May application routing select this node (states.md "Routing"): only while it is
+    /// ready-for-traffic and its mesh is ready-for-traffic; anything else is a routing stop. The
+    /// resolver and the Node RPC client never read it.
     #[serde(default = "routable_default")]
     pub routable: bool,
     /// The lifecycle state this birth declared to its authority and the authority applied
@@ -149,8 +150,10 @@ pub struct Node {
     pub config: std::collections::BTreeMap<String, String>,
 }
 
+/// A node read without the fact held is not selected (states.md "Routing": selection needs the
+/// held ready-for-traffic of the birth and its mesh).
 fn routable_default() -> bool {
-    true
+    false
 }
 
 impl Node {
@@ -172,7 +175,8 @@ impl Node {
             admin_api_base: None,
             transport_addr: None,
             listeners: Vec::new(),
-            routable: true,
+            // Nothing realised yet: not ready-for-traffic, so not selected.
+            routable: false,
             declared: None,
             parked: false,
             config: Default::default(),
