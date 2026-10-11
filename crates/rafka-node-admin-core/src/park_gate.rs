@@ -42,6 +42,14 @@ impl ParkGate {
         *self.parked.borrow()
     }
 
+    /// Returns at once while the gate is open; while it is parked, when it opens. A task that takes
+    /// a lock other code needs is not spawned behind the gate (it would be held wherever it stands,
+    /// a lock it was queued on included): it waits here, at a point where it holds nothing.
+    pub async fn opened(&self) {
+        let mut rx = self.parked.subscribe();
+        let _ = rx.wait_for(|p| !*p).await;
+    }
+
     /// Spawn `task` behind this gate.
     pub fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
     where

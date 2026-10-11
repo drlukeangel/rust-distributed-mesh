@@ -957,13 +957,14 @@ const VIEW_POLL: Duration = Duration::from_millis(200);
 
 /// The view's next rebuild is due: at once when a routing fact the book holds moved since the last
 /// rebuild read it (a birth's status, an overlay, a departure, a mesh status: states.md "Routing",
-/// applied on receipt), else after `poll`.
+/// applied on receipt), else after `poll`; and only while the admin's gate is open. A parked admin's
+/// rebuild is held here, holding nothing, and is due the moment the gate opens.
 pub(crate) async fn view_rebuild_due(facts: &mut rafka_mesh_transport::membership::RoutingWatch, poll: Duration, gate: &crate::park_gate::ParkGate) {
-    let _ = gate;
     tokio::select! {
         _ = tokio::time::sleep(poll) => {}
         _ = facts.moved() => {}
     }
+    gate.opened().await;
 }
 
 /// Every birth of `fabric` this admin's book holds besides itself, heard a moment ago or only
@@ -5318,8 +5319,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let elections = ElectionLog::new(name.clone());
         let me = name.clone();
         let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
+        // Not spawned behind the gate: the rebuild takes the view's lock, which every handler of a
+        // parked admin reads (its start among them). It is held at its own wait instead
+        // (`view_rebuild_due`), where it holds nothing.
         let rebuild_gate = park_gate.clone();
-        tasks.push(park_gate.spawn(async move {
+        tasks.push(tokio::spawn(async move {
             let mut held: BTreeSet<PathName> = BTreeSet::new();
             let mut facts = book.routing_watch();
             loop {
