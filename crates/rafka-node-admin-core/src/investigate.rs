@@ -461,7 +461,8 @@ pub(crate) struct Investigations {
     /// This admin's `path.name`, named on the probe and verdict spans.
     me: String,
     ladder: Arc<Mutex<Ladder>>,
-    /// The probes in flight, each its own task; dropped with the driver, they end with it.
+    /// The probes in flight, each its own task, held by the admin's park gate while it is parked;
+    /// dropped with the driver, they end with it.
     probes: Mutex<tokio::task::JoinSet<()>>,
     /// Woken when a probe ends, so the step it opens (probe 2, the decision) is taken then.
     landed: Arc<tokio::sync::Notify>,
@@ -513,11 +514,13 @@ impl Investigations {
                 );
                 let (me, ladder, landed, mesh) = (self.me.clone(), self.ladder.clone(), self.landed.clone(), mesh.to_string());
                 let probe = tracing::Instrument::instrument(start(n), span.clone());
-                probes.spawn(async move {
+                // A probe takes no lock a handler needs: while the admin is parked it is held where it
+                // stands, so a stopped admin's probe makes no further call.
+                probes.spawn(self.gate.hold(async move {
                     let found = probe.await;
                     land(&me, &span, &ladder, &mesh, ticket, n, unheard_ms, found);
                     landed.notify_one();
-                });
+                }));
             }
         }
         steps

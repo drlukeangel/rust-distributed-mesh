@@ -145,8 +145,19 @@ impl ParkGate {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
+        tokio::spawn(self.hold(task))
+    }
+
+    /// `task`, held wherever it stands while the gate is parked: what [`ParkGate::spawn`] runs, for a
+    /// caller that runs it on a task of its own (a `JoinSet`). The same rule: only for a task that
+    /// takes no lock another task or handler needs.
+    pub fn hold<F>(&self, task: F) -> impl Future<Output = F::Output> + Send + 'static
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
         let mut rx = self.state.subscribe();
-        tokio::spawn(async move {
+        async move {
             tokio::pin!(task);
             loop {
                 if rx.borrow().parked && rx.wait_for(|s| !s.parked).await.is_err() {
@@ -160,7 +171,7 @@ impl ParkGate {
                     out = &mut task => return out,
                 }
             }
-        })
+        }
     }
 }
 
