@@ -789,18 +789,15 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         let degraded = records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() || records.published_degraded();
         topology.fabric.status = if held == crate::fabric_state::FabricState::ReadyForTraffic && degraded { ScopeStatus::Degraded } else { held.scope() };
     }
-    let leaving: BTreeSet<String> = book.leaving_meshes().into_iter().collect();
     for m in mesh_names {
         // A mesh becomes ready-for-traffic when every node of the mesh is (states.md); once heard
         // ready it stays ready while it has a primary, because a lost node is a degraded fabric and
         // a round for the primary that takes over, never a mesh gone back to pending.
         let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some());
         let id = mesh_ids.get(&m).cloned();
-        let status = match &id {
-            Some(i) if leaving.contains(i.as_str()) => ScopeStatus::Leaving,
-            _ if ready => ScopeStatus::ReadyForTraffic,
-            _ => ScopeStatus::Pending,
-        };
+        // Mesh leaving is known only to the mesh's own primary (R4): a mesh shows no Leaving here;
+        // its members' own Draining and Leaving do.
+        let status = if ready { ScopeStatus::ReadyForTraffic } else { ScopeStatus::Pending };
         topology.meshes.push(Mesh { id, name: m, status });
     }
     topology
@@ -2655,9 +2652,10 @@ impl Running {
                 let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
                 let outcome = if withheld("backbone") {
                     "withheld"
-                } else {
-                    bb.publish(&m, mine).instrument(bb_span.clone()).await;
+                } else if bb.publish(&m, mine).instrument(bb_span.clone()).await {
                     "sent"
+                } else {
+                    "not-mesh-primary"
                 };
                 bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
                 bb_span.record("outcome", outcome);
