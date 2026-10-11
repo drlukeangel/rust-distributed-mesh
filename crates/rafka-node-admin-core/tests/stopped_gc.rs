@@ -356,3 +356,55 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     assert!(matches!(successor.sweep_stopped(Some(TTL)).await, Swept::Submitted { ref node, .. } if *node == old.0));
     assert_eq!(first.sweep_stopped(Some(TTL)).await, Swept::NotFabricPrimary);
 }
+
+/// CONTRACT (§6.9 Selection, "Distinct facts get distinct arms and distinct spans"): once the sweep's
+/// node.delete Build of `mesh1.rpc.1` is accepted, the view still holds the stopped birth until the
+/// delete runs. The next sweep says why it is not collected again: its delete is under way, spanned
+/// `rdm.node_admin.node.reject.via-delete-under-way` with the node. Must NOT happen: that fact told as
+/// a missing stop receipt (`via-no-current-stop-receipt`).
+#[tokio::test]
+async fn a_stopped_node_whose_delete_is_under_way_is_skipped_by_its_own_name() {
+    let (spans, _g) = capture("i143-3072-delete-under-way");
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let t = view("mesh1.admin.1");
+    let old = birth(&t, STOPPED);
+    let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
+    period(&cp, &builds, &old, true, 1).await;
+    let Swept::Submitted { build_id, .. } = cp.sweep_stopped(Some(TTL)).await else { panic!("the expired node is collected") };
+
+    assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing, "the delete is the one Build for it");
+    assert_eq!(cp.accepted.build_id().await, Some(build_id));
+    let under_way = spans.spans("rdm.node_admin.node.reject.via-delete-under-way");
+    assert!(under_way.iter().any(|(_, a)| a["node"] == STOPPED), "{under_way:?}");
+    let told_as_receipt = spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt");
+    assert!(!told_as_receipt.iter().any(|(_, a)| a["node"] == STOPPED), "a delete under way is not a missing stop receipt: {told_as_receipt:?}");
+}
+
+/// CONTRACT (§6.9 Age: "A birth whose receipt cannot be read is skipped by name, never treated as
+/// expired"): `mesh1.rpc.1`'s current stop receipt is held but does not decode as the stop's
+/// lifecycle op. The sweep skips it, spanned `rdm.node_admin.node.reject.via-unreadable-stop-receipt`
+/// with the node and the decode error, and submits nothing. Must NOT happen: that fact told as no
+/// receipt at all (`via-no-current-stop-receipt`), or a delete.
+#[tokio::test]
+async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_name() {
+    let (spans, _g) = capture("i143-3072-unreadable-receipt");
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let t = view("mesh1.admin.1");
+    let (path, _, incarnation) = birth(&t, STOPPED);
+    let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
+    let b0 = cp.accepted.build_id().await.unwrap();
+    let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
+    builds.absorb(&[
+        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Stop, action: Some(AttemptAction::Stop { path: path.clone(), from_incarnation: incarnation }), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 }),
+        BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
+        BuildFact::Step(BuildStepReceipt { build_id: b0.clone(), attempt, operation: format!("stop-node:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: Some(serde_json::json!("not a lifecycle op")), executor: Some("mesh1.admin.1".into()) }),
+        BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),
+    ]);
+
+    assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
+    assert_eq!(cp.accepted.build_id().await, Some(b0), "nothing was submitted");
+    let unreadable = spans.spans("rdm.node_admin.node.reject.via-unreadable-stop-receipt");
+    assert!(unreadable.iter().any(|(_, a)| a["node"] == STOPPED && a["reason"].contains("does not decode")), "{unreadable:?}");
+    let told_as_missing = spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt");
+    assert!(!told_as_missing.iter().any(|(_, a)| a["node"] == STOPPED), "an unreadable receipt is not a missing one: {told_as_missing:?}");
+}
