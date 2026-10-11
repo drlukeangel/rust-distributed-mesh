@@ -30,36 +30,44 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The ruled rungs, in backbone rounds unheard.
+/// The ruled rungs: how long the mesh has gone unheard, elapsed monotonic time since the fabric
+/// primary's last valid direct backbone receipt from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rungs {
-    /// Unheard this long, the mesh is tracked (a round missed beyond the publication jitter).
-    pub track: u64,
+    /// Unheard this long, the mesh is tracked (a publication missed beyond its jitter).
+    pub track: Duration,
     /// Unheard this long, the first probe is made.
-    pub probe1: u64,
+    pub probe1: Duration,
     /// Unheard this long, the mesh is marked silent and nothing is sent.
-    pub mark: u64,
+    pub mark: Duration,
     /// Unheard this long, the second probe is made.
-    pub probe2: u64,
-    /// Unheard this long, the ladder decides.
-    pub decide: u64,
+    pub probe2: Duration,
+    /// Unheard this long, the decision step opens.
+    pub decide: Duration,
 }
 
 impl Rungs {
-    /// 20 s, 30 s, 40 s and 60 s at the 2 s default round.
-    pub const RULED: Rungs = Rungs { track: 2, probe1: 10, mark: 15, probe2: 20, decide: 30 };
+    /// The rungs at the staleness floor `floor` and the backbone gossip interval `backbone`.
+    pub fn at(floor: Duration, backbone: Duration) -> Rungs {
+        let _ = floor;
+        Rungs { track: backbone * 2, probe1: backbone * 10, mark: backbone * 15, probe2: backbone * 20, decide: backbone * 30 }
+    }
+
+    /// The rungs at the configured cadences.
+    pub fn configured() -> Rungs {
+        Self::at(rafka_mesh_entity::cadence::staleness_floor(), rafka_mesh_entity::cadence::backbone_gossip_interval())
+    }
 }
 
 /// Every node's pooled connection idles out after the staleness floor; that closes a connection
 /// to a dead peer before the second probe only if the floor is shorter than the probe's wait
-/// (`probe2` unheard backbone rounds). A floor at or past it refuses the start by name.
+/// (`probe2` unheard). A floor at or past it refuses the start by name.
 pub fn check_idle_below_probe2(staleness_floor: std::time::Duration, backbone_round: std::time::Duration) -> Result<(), String> {
-    let probe2 = backbone_round * Rungs::RULED.probe2 as u32;
+    let probe2 = Rungs::at(staleness_floor, backbone_round).probe2;
     if staleness_floor >= probe2 {
         return Err(format!(
-            "the staleness floor RDM_STALENESS_MS ({} ms) is not below the second probe ({} unheard backbone rounds of RDM_BACKBONE_INTERVAL_MS = {} ms, {} ms): a pooled connection to a dead peer would still be open when the second probe dials",
+            "the staleness floor RDM_STALENESS_MS ({} ms) is not below the second probe (RDM_BACKBONE_INTERVAL_MS = {} ms, {} ms): a pooled connection to a dead peer would still be open when the second probe dials",
             staleness_floor.as_millis(),
-            Rungs::RULED.probe2,
             backbone_round.as_millis(),
             probe2.as_millis()
         ));
@@ -94,25 +102,25 @@ impl ProbeOutcome {
 pub enum Step {
     /// The mesh went unheard: tracking begins.
     Track {
-        /// The backbone rounds the mesh has gone unheard.
-        rounds: u64,
+        /// How long the mesh has gone unheard, in milliseconds.
+        unheard_ms: u64,
     },
     /// The shared silent mark: nothing is sent.
     Mark {
-        /// The backbone rounds the mesh has gone unheard.
-        rounds: u64,
+        /// How long the mesh has gone unheard, in milliseconds.
+        unheard_ms: u64,
     },
     /// Make probe `n` (1 or 2).
     Probe {
         /// The probe's number.
         n: u8,
-        /// The backbone rounds the mesh has gone unheard.
-        rounds: u64,
+        /// How long the mesh has gone unheard, in milliseconds.
+        unheard_ms: u64,
     },
     /// The node-admin answered: the investigation stops.
     Stop {
-        /// The backbone rounds the mesh has gone unheard.
-        rounds: u64,
+        /// How long the mesh has gone unheard, in milliseconds.
+        unheard_ms: u64,
     },
     /// The decision: `rebirth` only when the latest probe answered `carrier-edge-lost`.
     Decide {
@@ -120,13 +128,13 @@ pub enum Step {
         rebirth: bool,
         /// What the latest probe found.
         latest: ProbeOutcome,
-        /// The backbone rounds the mesh has gone unheard.
-        rounds: u64,
+        /// How long the mesh has gone unheard, in milliseconds.
+        unheard_ms: u64,
     },
     /// The mesh was heard on the backbone again: the investigation is cancelled.
     Cancel {
-        /// The backbone rounds the mesh had gone unheard.
-        rounds: u64,
+        /// How long the mesh had gone unheard, in milliseconds.
+        unheard_ms: u64,
         /// The probes made.
         probes: u8,
     },
@@ -134,8 +142,8 @@ pub enum Step {
 
 #[derive(Debug, Default)]
 struct State {
-    /// Backbone rounds the mesh has been unheard for, as of the latest step.
-    rounds: u64,
+    /// How long the mesh has gone unheard, as of the latest step.
+    unheard: Duration,
     tracked: bool,
     marked: bool,
     probes: [Option<ProbeOutcome>; 2],
@@ -199,58 +207,59 @@ impl Ladder {
     /// What this ladder holds of `mesh`: `unheard_ms` is set while the ladder tracks the mesh as unheard
     /// (from the rung [`Rungs::track`] on, until it is heard again), the same clock [`Self::step`] counts;
     /// `None` when the ladder holds no investigation of the mesh at all.
-    pub fn peer_mesh(&self, mesh: &str, round: Duration) -> Option<PeerMesh> {
+    pub fn peer_mesh(&self, mesh: &str) -> Option<PeerMesh> {
         let st = self.meshes.get(mesh)?;
-        Some(PeerMesh { unheard_ms: st.tracked.then(|| st.rounds * (round.as_millis() as u64).max(1)), rebirth_decided: st.verdict == Some(true) })
+        Some(PeerMesh { unheard_ms: st.tracked.then(|| st.unheard.as_millis() as u64), rebirth_decided: st.verdict == Some(true) })
     }
 
-    /// What `mesh` being unheard for `rounds` asks next. One probe or the decision per call; the
+    /// What `mesh` being unheard for `unheard` asks next. One probe or the decision per call; the
     /// driver makes the probe, records it with [`Self::probed`], and asks again.
-    pub fn step(&mut self, mesh: &str, rounds: u64) -> Vec<Step> {
+    pub fn step(&mut self, mesh: &str, unheard: Duration) -> Vec<Step> {
         let r = self.rungs;
         let st = self.meshes.entry(mesh.to_string()).or_default();
         let mut out = Vec::new();
-        st.rounds = rounds;
-        if rounds < r.track {
+        st.unheard = unheard;
+        let unheard_ms = unheard.as_millis() as u64;
+        if unheard < r.track {
             if st.tracked && (st.probes_made() > 0 || st.marked || st.verdict.is_some()) {
-                out.push(Step::Cancel { rounds, probes: st.probes_made() });
+                out.push(Step::Cancel { unheard_ms, probes: st.probes_made() });
             }
             *st = State::default();
             return out;
         }
         if !st.tracked {
             st.tracked = true;
-            out.push(Step::Track { rounds });
+            out.push(Step::Track { unheard_ms });
         }
-        if rounds >= r.mark && !st.marked {
+        if unheard >= r.mark && !st.marked {
             st.marked = true;
-            out.push(Step::Mark { rounds });
+            out.push(Step::Mark { unheard_ms });
         }
         if st.stopped || st.verdict.is_some() {
             return out;
         }
-        if rounds >= r.probe1 && st.probes[0].is_none() {
-            out.push(Step::Probe { n: 1, rounds });
-        } else if rounds >= r.probe2 && st.probes[1].is_none() {
-            out.push(Step::Probe { n: 2, rounds });
-        } else if rounds >= r.decide {
+        if unheard >= r.probe1 && st.probes[0].is_none() {
+            out.push(Step::Probe { n: 1, unheard_ms });
+        } else if unheard >= r.probe2 && st.probes[1].is_none() {
+            out.push(Step::Probe { n: 2, unheard_ms });
+        } else if unheard >= r.decide {
             // The latest completed probe decides; an older carrier-edge-lost never overrides a
             // newer unreachable.
             let latest = st.probes[1].or(st.probes[0]).unwrap_or(ProbeOutcome::Unreachable);
             let rebirth = latest == ProbeOutcome::CarrierEdgeLost;
             st.verdict = Some(rebirth);
-            out.push(Step::Decide { rebirth, latest, rounds });
+            out.push(Step::Decide { rebirth, latest, unheard_ms });
         }
         out
     }
 
     /// Probe `n` of `mesh` found `outcome`. An answering node-admin stops the investigation.
-    pub fn probed(&mut self, mesh: &str, n: u8, outcome: ProbeOutcome, rounds: u64) -> Option<Step> {
+    pub fn probed(&mut self, mesh: &str, n: u8, outcome: ProbeOutcome, unheard_ms: u64) -> Option<Step> {
         let st = self.meshes.get_mut(mesh)?;
         st.probes[usize::from(n.clamp(1, 2)) - 1] = Some(outcome);
         (outcome == ProbeOutcome::AdminAlive).then(|| {
             st.stopped = true;
-            Step::Stop { rounds }
+            Step::Stop { unheard_ms }
         })
     }
 }
@@ -333,17 +342,14 @@ pub async fn run(w: Watch) {
         let heard = book.backbone_meshes();
         let never = if seat_since.is_some() { never_heard(&view, &w.me.mesh, &heard) } else { BTreeSet::new() };
         forget_unheard_meshes(&w.ladder, &heard.union(&never).cloned().collect());
-        let round_ms = w.round.as_millis().max(1) as u64;
         let mut tasks = Vec::new();
         for mesh in heard.into_iter().filter(|m| *m != w.me.mesh) {
             let Some(unheard) = book.mesh_unheard(&mesh, Instant::now()) else { continue };
-            let rounds = unheard.as_millis() as u64 / round_ms;
-            tasks.push(investigate(&w, &view, mesh, rounds, unheard));
+            tasks.push(investigate(&w, &view, mesh, unheard));
         }
         for mesh in never {
             let unheard = seat_since.expect("never is empty without it").elapsed();
-            let rounds = unheard.as_millis() as u64 / round_ms;
-            tasks.push(investigate(&w, &view, mesh, rounds, unheard));
+            tasks.push(investigate(&w, &view, mesh, unheard));
         }
         futures_util::future::join_all(tasks).await;
         restore(&w, &view);
@@ -381,22 +387,22 @@ fn restore(w: &Watch, view: &Topology) {
     }
 }
 
-async fn investigate(w: &Watch, view: &Topology, mesh: String, rounds: u64, unheard: Duration) {
+async fn investigate(w: &Watch, view: &Topology, mesh: String, unheard: Duration) {
     let at = local_now_ms().saturating_sub(unheard.as_millis() as u64);
-    let steps = w.ladder.lock().unwrap().step(&mesh, rounds);
+    let steps = w.ladder.lock().unwrap().step(&mesh, unheard);
     for step in steps {
         match step {
-            Step::Track { rounds } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %w.me, mesh = %mesh, at, rounds, mark = false)
+            Step::Track { unheard_ms } => {
+                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %w.me, mesh = %mesh, at, unheard_ms, mark = false)
                     .in_scope(|| tracing::info!("no word of the mesh on the backbone: the investigation tracks it"));
             }
-            Step::Mark { rounds } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %w.me, mesh = %mesh, at, rounds, mark = true)
+            Step::Mark { unheard_ms } => {
+                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %w.me, mesh = %mesh, at, unheard_ms, mark = true)
                     .in_scope(|| tracing::info!("the mesh is marked silent; nothing is sent"));
             }
-            Step::Probe { n, rounds } => {
+            Step::Probe { n, unheard_ms } => {
                 let found = probe(w, view, &mesh, n).await;
-                let stop = w.ladder.lock().unwrap().probed(&mesh, n, found.outcome, rounds);
+                let stop = w.ladder.lock().unwrap().probed(&mesh, n, found.outcome, unheard_ms);
                 tracing::info_span!(
                     "rdm.node_admin.mesh.update.via-probe",
                     node = %w.me,
@@ -407,16 +413,16 @@ async fn investigate(w: &Watch, view: &Topology, mesh: String, rounds: u64, unhe
                     carrier = %found.carrier,
                     outcome = found.outcome.as_str(),
                     detail = %found.detail,
-                    rounds,
+                    unheard_ms,
                 )
                 .in_scope(|| tracing::info!("one probe of the unheard mesh"));
-                if let Some(Step::Stop { rounds }) = stop {
-                    verdict(w, &mesh, found.outcome.as_str(), rounds, at, "the node-admin answered: the investigation stops");
+                if let Some(Step::Stop { unheard_ms }) = stop {
+                    verdict(w, &mesh, found.outcome.as_str(), unheard_ms, at, "the node-admin answered: the investigation stops");
                 }
             }
             Step::Stop { .. } => {}
-            Step::Decide { rebirth, latest, rounds } => {
-                verdict(w, &mesh, latest.as_str(), rounds, at, if rebirth { "the latest probe says a member cannot reach its own node-admin: the mesh is reborn" } else { "no member could say: the mesh is held" });
+            Step::Decide { rebirth, latest, unheard_ms } => {
+                verdict(w, &mesh, latest.as_str(), unheard_ms, at, if rebirth { "the latest probe says a member cannot reach its own node-admin: the mesh is reborn" } else { "no member could say: the mesh is held" });
                 if rebirth {
                     let verdict_ms = w.membership.clock().now_rafka_ms();
                     let lost = view.cohort(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
@@ -425,16 +431,16 @@ async fn investigate(w: &Watch, view: &Topology, mesh: String, rounds: u64, unhe
                         .in_scope(|| tracing::info!("the existing Mesh Recovery opens; the fabric primary authors degraded"));
                 }
             }
-            Step::Cancel { rounds, probes } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome = "heard-again", at = local_now_ms(), rounds, probes)
+            Step::Cancel { unheard_ms, probes } => {
+                tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome = "heard-again", at = local_now_ms(), unheard_ms, probes)
                     .in_scope(|| tracing::info!("the mesh is heard on the backbone again: the investigation is cancelled"));
             }
         }
     }
 }
 
-fn verdict(w: &Watch, mesh: &str, outcome: &str, rounds: u64, _heard_at: u64, why: &str) {
-    tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome, at = local_now_ms(), rounds).in_scope(|| tracing::info!("{why}"));
+fn verdict(w: &Watch, mesh: &str, outcome: &str, unheard_ms: u64, _heard_at: u64, why: &str) {
+    tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome, at = local_now_ms(), unheard_ms).in_scope(|| tracing::info!("{why}"));
 }
 
 /// What the carried `ProbeNodeState` found. Any reply from the node-admin means it is there. Only the
@@ -569,22 +575,32 @@ mod tests {
         }
     }
 
+    /// The ladder at the production cadences: a 30 s staleness floor, 2 s backbone rounds.
     fn ladder() -> Ladder {
-        Ladder::new(Rungs::RULED)
+        Ladder::new(Rungs::at(Duration::from_secs(30), Duration::from_secs(2)))
+    }
+
+    /// `k` ticks of 2 s unheard.
+    fn tick(k: u64) -> Duration {
+        Duration::from_secs(2 * k)
+    }
+
+    fn ms(k: u64) -> u64 {
+        tick(k).as_millis() as u64
     }
 
     /// Walk the ruled timeline: `probes` are what probe 1 and probe 2 find.
     fn walk(l: &mut Ladder, probes: [ProbeOutcome; 2]) -> Vec<(u64, Step)> {
         let mut log = Vec::new();
         for rounds in 0..=40 {
-            let mut asked = l.step("mesh2", rounds);
+            let mut asked = l.step("mesh2", tick(rounds));
             // The driver asks again after a probe is recorded, as it does on the next round.
             let mut guard = 0;
             while !asked.is_empty() {
                 for s in asked.drain(..) {
                     if let Step::Probe { n, .. } = &s {
                         let found = probes[usize::from(*n) - 1];
-                        if let Some(stop) = l.probed("mesh2", *n, found, rounds) {
+                        if let Some(stop) = l.probed("mesh2", *n, found, ms(rounds)) {
                             log.push((rounds, stop));
                         }
                     }
@@ -654,6 +670,86 @@ mod tests {
         n
     }
 
+    /// CONTRACT (R-CK1, mesh-investigation.md: "the thresholds below are elapsed time, not round
+    /// counts"; step 2 "the shared staleness mark"): the rungs are 20 s, 30 s, 40 s and 60 s of
+    /// elapsed time unheard at the 30 s staleness floor, the silent mark being the staleness floor
+    /// itself, and a changed backbone interval moves none of them. At the gate's 3 s floor they are
+    /// 2 s, 3 s, 4 s and 6 s.
+    #[test]
+    fn the_rungs_are_elapsed_time_from_the_staleness_floor_never_backbone_rounds() {
+        let (twenty, thirty, forty, sixty) = (Duration::from_secs(20), Duration::from_secs(30), Duration::from_secs(40), Duration::from_secs(60));
+        for backbone in [Duration::from_millis(500), Duration::from_secs(2), Duration::from_secs(5)] {
+            let r = Rungs::at(thirty, backbone);
+            assert_eq!((r.probe1, r.mark, r.probe2, r.decide), (twenty, thirty, forty, sixty), "backbone interval {backbone:?}");
+            assert!(r.track <= r.probe1, "tracking begins no later than probe 1: {r:?}");
+        }
+        let gate = Rungs::at(Duration::from_secs(3), Duration::from_millis(500));
+        assert_eq!((gate.probe1, gate.mark, gate.probe2, gate.decide), (Duration::from_secs(2), Duration::from_secs(3), Duration::from_secs(4), Duration::from_secs(6)));
+    }
+
+    /// CONTRACT (R-CK1): one investigation chain for a silent peer mesh. Only a direct backbone
+    /// receipt starts or resets t: forwarded topology of the mesh arriving every round neither resets
+    /// nor extends it, so the ladder walks probe 1, the mark, probe 2 and the decision at the same
+    /// elapsed times whether it is stepped every 0.5 s or every 2 s; a fresh backbone receipt cancels
+    /// it. With no probe answered the decision is a hold: nothing marks the mesh dead on silence.
+    #[test]
+    fn one_investigation_runs_on_elapsed_time_from_the_last_direct_backbone_receipt() {
+        use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
+        let digest = |name: &str| MeshDigest {
+            fabric_id: FabricId::parse("fab000000001").unwrap(),
+            node: MeshNode { node_id: NodeId::mint(), name: name.parse().unwrap(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            status: MemberStatus::ReadyForTraffic,
+            admin_api_base: None,
+            emitted_at_rafka_ms: 1,
+            digest_seq: 1,
+            mesh_id: None,
+            in_flight: None,
+            config: Default::default(),
+            load: None,
+            gossip: None,
+            data_dir: None,
+        };
+        let floor = Duration::from_secs(30);
+        for every in [Duration::from_millis(500), Duration::from_secs(2)] {
+            let book = rafka_mesh_transport::membership::DigestBook::default();
+            let (admin, rpc) = (digest("mesh2.admin.1"), digest("mesh2.rpc.1"));
+            let t0 = Instant::now();
+            assert!(book.record_forwarded_at(admin.clone(), t0), "the direct backbone receipt");
+            let mut l = Ladder::new(Rungs::at(floor, every));
+            let mut log: Vec<(Duration, Step)> = Vec::new();
+            let mut k = 1u32;
+            while every * k <= Duration::from_secs(70) {
+                let now = t0 + every * k;
+                // The peer mesh's topology forwarded onto this node's mesh channel, every round.
+                let mut fwd = rpc.clone();
+                fwd.digest_seq = u64::from(k) + 1;
+                book.record_topology_at(fwd, now);
+                let unheard = book.mesh_unheard("mesh2", now).expect("the mesh was heard on the backbone");
+                assert_eq!(unheard, every * k, "forwarded topology neither resets nor extends t");
+                for s in l.step("mesh2", unheard) {
+                    if let Step::Probe { n, unheard_ms } = s {
+                        l.probed("mesh2", n, Unreachable, unheard_ms);
+                    }
+                    log.push((unheard, s));
+                }
+                k += 1;
+            }
+            let first = |f: &dyn Fn(&Step) -> bool| log.iter().find(|(_, s)| f(s)).map(|(t, _)| *t);
+            assert_eq!(first(&|s| matches!(s, Step::Probe { n: 1, .. })), Some(Duration::from_secs(20)), "every {every:?}: {log:?}");
+            assert_eq!(first(&|s| matches!(s, Step::Mark { .. })), Some(Duration::from_secs(30)), "every {every:?}");
+            assert_eq!(first(&|s| matches!(s, Step::Probe { n: 2, .. })), Some(Duration::from_secs(40)), "every {every:?}");
+            assert_eq!(first(&|s| matches!(s, Step::Decide { .. })), Some(Duration::from_secs(60)), "every {every:?}");
+            assert!(log.iter().all(|(_, s)| !matches!(s, Step::Decide { rebirth: true, .. })), "silence and unreachable probes decide no rebirth: {log:?}");
+            assert!(!l.rebirth_decided("mesh2"));
+            // A direct backbone receipt resets t and cancels the investigation.
+            let later = t0 + every * k;
+            assert!(book.record_forwarded_at(admin.clone(), later));
+            let reset = book.mesh_unheard("mesh2", later).unwrap();
+            assert_eq!(reset, Duration::ZERO, "a direct backbone receipt resets t");
+            assert!(matches!(l.step("mesh2", reset).as_slice(), [Step::Cancel { .. }]), "a receipt cancels the investigation");
+        }
+    }
+
     /// CONTRACT (Luke 2026-10-11, the investigation's first step: "fabric-primary's tickle of
     /// peer-mesh-primary then its other node-admins"): a probe carries `ProbeNodeState` to the peer
     /// mesh's primary node-admin first, then to each of its other node-admins in path order. The
@@ -695,16 +791,16 @@ mod tests {
     #[test]
     fn a_backbone_receipt_cancels_and_resets_the_interval() {
         let mut l = ladder();
-        assert!(l.step("mesh2", 3).iter().any(|s| matches!(s, Step::Track { .. })));
-        assert!(l.step("mesh2", 0).is_empty(), "heard before any probe: nothing to cancel loudly");
+        assert!(l.step("mesh2", tick(3)).iter().any(|s| matches!(s, Step::Track { .. })));
+        assert!(l.step("mesh2", tick(0)).is_empty(), "heard before any probe: nothing to cancel loudly");
         for r in 0..=12 {
-            l.step("mesh2", r);
+            l.step("mesh2", tick(r));
         }
-        l.probed("mesh2", 1, CarrierEdgeLost, 12);
-        assert_eq!(l.step("mesh2", 0), vec![Step::Cancel { rounds: 0, probes: 1 }]);
-        assert!(l.step("mesh2", 1).is_empty());
-        let again: Vec<Step> = (2..=10).flat_map(|r| l.step("mesh2", r)).collect();
-        assert!(again.contains(&Step::Probe { n: 1, rounds: 10 }), "a fresh interval probes again at 10: {again:?}");
+        l.probed("mesh2", 1, CarrierEdgeLost, ms(12));
+        assert_eq!(l.step("mesh2", tick(0)), vec![Step::Cancel { unheard_ms: 0, probes: 1 }]);
+        assert!(l.step("mesh2", tick(1)).is_empty());
+        let again: Vec<Step> = (2..=10).flat_map(|r| l.step("mesh2", tick(r))).collect();
+        assert!(again.contains(&Step::Probe { n: 1, unheard_ms: ms(10) }), "a fresh interval probes again at 10: {again:?}");
     }
 
     /// CONTRACT: the rebirth of a peer mesh's node-admins is decided only by a `rebirth` decision: not
@@ -744,14 +840,14 @@ mod tests {
     fn two_unheard_meshes_run_independent_ladders() {
         let mut l = ladder();
         for r in 0..=40 {
-            let a = l.step("mesh2", r);
+            let a = l.step("mesh2", tick(r));
             for s in a {
-                if let Step::Probe { n, rounds } = s {
-                    l.probed("mesh2", n, CarrierEdgeLost, rounds);
+                if let Step::Probe { n, unheard_ms } = s {
+                    l.probed("mesh2", n, CarrierEdgeLost, unheard_ms);
                 }
             }
             // mesh3 is heard throughout.
-            assert!(l.step("mesh3", 0).is_empty());
+            assert!(l.step("mesh3", tick(0)).is_empty());
         }
         assert!(l.rebirth_decided("mesh2"));
         assert!(!l.rebirth_decided("mesh3"), "mesh3 was never decided");
@@ -763,7 +859,7 @@ mod tests {
     #[test]
     fn forgetting_a_retired_mesh_does_not_deadlock_on_the_ladder_lock() {
         let ladder = Arc::new(Mutex::new(ladder()));
-        ladder.lock().unwrap().step("mesh2", 0);
+        ladder.lock().unwrap().step("mesh2", Duration::ZERO);
         let (tx, rx) = std::sync::mpsc::channel();
         let l = ladder.clone();
         std::thread::spawn(move || {

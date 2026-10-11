@@ -4019,7 +4019,6 @@ impl DigestBook {
         true
     }
 
-    /// Digests heard within `fresh` of now.
     /// Hold `d` as forwarded by its mesh's primary, which only forwards a
     /// member it hears: an equal copy of the held digest keeps the member
     /// heard (the primary's word that it still is). Otherwise as [`Self::record`].
@@ -4032,7 +4031,11 @@ impl DigestBook {
     /// held member was heard, and a member held only from forwards never ages to silent. A
     /// member already heard keeps its instant and how it was heard; only its digest moves on.
     pub(crate) fn record_topology(&self, d: MeshDigest) -> bool {
-        let now = Instant::now();
+        self.record_topology_at(d, Instant::now())
+    }
+
+    /// [`Self::record_topology`], received at `now`.
+    pub fn record_topology_at(&self, d: MeshDigest, now: Instant) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "forwarded");
             return false;
