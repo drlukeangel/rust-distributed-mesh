@@ -207,6 +207,14 @@ pub(crate) fn sweep_targets(map: &[MapNode]) -> Vec<MapNode> {
     map.to_vec()
 }
 
+/// The candidates for the local node a current topology is read from (node-admin-lifecycle.md
+/// §4.1 step 5), in the order they are tried: settled births first, then births in transition, each
+/// in path order. A draining node refuses `GetTopology` (node-rpc-envelope.md: "A draining node
+/// refuses new non-status calls"), so a settled node that answers is the one to read from.
+pub(crate) fn local_candidates(map: &[MapNode]) -> Vec<MapNode> {
+    map.to_vec()
+}
+
 /// Enter the existing mesh of `ctx.me` from `held`, the topology its source gave: connect to a
 /// local node, read the current topology from it, then sweep the own mesh once.
 pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, held: Vec<MapNode>) -> SweepReport {
@@ -221,7 +229,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
     let mut map = own(&held);
     // A local node of the own mesh: the first of the map, in path order, that answers.
     let mut local = None;
-    for n in sweep_targets(&map) {
+    for n in local_candidates(&map) {
         if ping(ctx, &n).await.is_ok() {
             local = Some(n.clone());
             break;
@@ -321,5 +329,22 @@ mod tests {
         ];
         let pinged: Vec<String> = sweep_targets(&map).iter().map(|n| n.name.to_string()).collect();
         assert_eq!(pinged, vec!["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3", "mesh2.rpc.4"]);
+    }
+
+    /// CONTRACT (node-admin-lifecycle.md §4.1 step 5: "Read GetTopology from a LOCAL node of the
+    /// recovering admin's own mesh"; node-rpc-envelope.md: "A draining node refuses new non-status
+    /// calls"): the local node is tried settled births first, then births in transition, each in
+    /// path order, so a Draining node ahead of a ReadyForTraffic one in path order is never the one
+    /// the current topology is read from while the ready one answers.
+    #[test]
+    fn the_local_node_is_tried_settled_births_first() {
+        let map = vec![
+            birth("mesh2.rpc.1", MemberStatus::Draining),
+            birth("mesh2.rpc.2", MemberStatus::Leaving),
+            birth("mesh2.rpc.3", MemberStatus::ReadyForTraffic),
+            birth("mesh2.rpc.4", MemberStatus::ReadyForTraffic),
+        ];
+        let tried: Vec<String> = local_candidates(&map).iter().map(|n| n.name.to_string()).collect();
+        assert_eq!(tried, vec!["mesh2.rpc.3", "mesh2.rpc.4", "mesh2.rpc.1", "mesh2.rpc.2"]);
     }
 }
