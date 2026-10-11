@@ -134,18 +134,18 @@ async fn next_within(reader: &mut rafka_node_admin_core::build_drive::DriveReade
     tokio::time::timeout(Duration::from_millis(50), reader.next()).await.ok().flatten()
 }
 
-/// CONTRACT: a fabric-primary that yielded its seat dispatches nothing. The Build log's sticky
-/// fence is checked before the claim: the drive ends `SeatLost` naming the fence, no attempt is
+/// CONTRACT: a fabric-primary whose committed seat record moved dispatches nothing. The Build
+/// log's sticky fence is checked before the claim: the drive ends `SeatLost` naming the fence, no attempt is
 /// claimed, no executor is called, and the callers' streams end with the seat loss (the caller
 /// re-submits by the Build id at the new seat).
 #[tokio::test]
-async fn a_fabric_primary_that_yielded_its_seat_claims_and_dispatches_nothing() {
+async fn a_fabric_primary_whose_seat_record_moved_claims_and_dispatches_nothing() {
     let r = rig().await;
     r.switch.fenced.store(true, Ordering::SeqCst);
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("yielded the fabric-primary seat"), "{why}"),
+        DriveEnd::SeatLost(why) => assert!(why.contains("no longer holds the fabric-primary seat: the committed seat row moved it"), "{why}"),
         other => panic!("a fenced seat ends the drive SeatLost: {other:?}"),
     }
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
@@ -229,7 +229,7 @@ async fn a_fenced_fabric_primary_is_refused_fenced_whatever_its_view_shows_and_n
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("yielded the fabric-primary seat"), "the fence refused it, not the view: {why}"),
+        DriveEnd::SeatLost(why) => assert!(why.contains("no longer holds the fabric-primary seat: the committed seat row moved it"), "the fence refused it, not the view: {why}"),
         other => panic!("a fenced seat ends the drive SeatLost: {other:?}"),
     }
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")));
@@ -475,7 +475,7 @@ async fn a_fence_set_while_the_executor_runs_ends_the_drive_at_the_fence_naming_
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is running at the executor");
     r.switch.fence_to(Some("mesh1.admin.2"));
     let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends at the fence while the executor's run is still open").unwrap();
-    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("yielded the fabric-primary seat")), "the fence ends the drive SeatLost: {end:?}");
+    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("no longer holds the fabric-primary seat: the committed seat row moved it")), "the fence ends the drive SeatLost: {end:?}");
     match next_within(&mut reader).await {
         Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh1.admin.2"), "the stream names the committed successor: {loss:?}"),
         other => panic!("the reader ends with the seat loss, got {other:?}"),
