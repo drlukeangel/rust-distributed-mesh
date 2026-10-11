@@ -8,8 +8,9 @@
 //!
 //! The rules, one function ([`resolve_with`]):
 //! - A holder that lives keeps its seat. A lower NodeId never displaces it. Lives means the record's
-//!   exact birth is in the view and is not yielding (`Draining`, `Leaving`, `Restarting`), not
-//!   replaced by a later birth of its NodeId, and not proven gone. Silent (`PendingReconnect`),
+//!   exact birth is in the view, not replaced by a later birth of its NodeId, and not proven gone,
+//!   whatever its status: a `Draining`, `Leaving` or `Restarting` holder keeps the seat until its
+//!   explicit yield (a new holder record, SeatedTogether) is held (R-EL1). Silent (`PendingReconnect`),
 //!   an observer-inferred `Dead` and an unheard route are NOT proof: the holder keeps the seat.
 //! - A holder whose record names a birth this view has not heard keeps its seat vacant for it.
 //! - A holder that yields, or whose exact birth is proven gone, hands the seat to its own mesh:
