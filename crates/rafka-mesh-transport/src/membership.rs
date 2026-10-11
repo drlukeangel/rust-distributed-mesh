@@ -2507,11 +2507,7 @@ impl Membership {
     /// node-admin of the Mesh with the lowest NodeId, the election the node-admins make
     /// (rafka-node-admin-core `election::elect`). The node tops up from it and from no other.
     pub fn mesh_primary(&self) -> Option<MeshDigest> {
-        self.book
-            .current(self.book.staleness_floor())
-            .into_iter()
-            .filter(|d| d.node.name.mesh == self.view.mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic)
-            .min_by(|a, b| a.node.node_id.cmp(&b.node.node_id))
+        self.book.mesh_primary(&self.view.mesh)
     }
 
     /// Resume desynchronized sources from this Mesh's own primary (gossip.md §3.3): when a delta
@@ -3794,6 +3790,14 @@ impl DigestBook {
         self.inner.lock().unwrap().values().filter(|(_, _, heard)| *heard == Heard::Forwarded).map(|(d, _, _)| d.node.name.mesh.clone()).collect()
     }
 
+    /// `mesh`'s primary node-admin as this book holds it.
+    pub fn mesh_primary(&self, mesh: &str) -> Option<MeshDigest> {
+        self.current(self.staleness_floor())
+            .into_iter()
+            .filter(|d| d.node.name.mesh == mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic)
+            .min_by(|a, b| a.node.node_id.cmp(&b.node.node_id))
+    }
+
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
     pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
         let extra = self.forwarded_staleness_floor() - self.staleness_floor;
@@ -4746,5 +4750,61 @@ mod tests {
             assert!(view.backbone_rx.lock().unwrap().held_full("mesh1").is_none(), "version {v}: no source projection of the mesh is installed");
         }
         assert!(view.book.all().iter().all(|d| d.node.name.mesh != "mesh1"));
+    }
+
+    /// Two node-admins of mesh1, both Ready: `(lower NodeId, higher NodeId)`, named admin.2 and
+    /// admin.1 so the seat can sit on either.
+    fn two_admins(book: &DigestBook, at: Instant) -> (MeshDigest, MeshDigest) {
+        let (mut a, mut b) = (NodeId::mint(), NodeId::mint());
+        if b < a {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let mut lower = digest(&a, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 10);
+        lower.node.name = "mesh1.admin.2".parse().unwrap();
+        let mut higher = digest(&b, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 10);
+        higher.node.name = "mesh1.admin.1".parse().unwrap();
+        assert!(book.record_at(lower.clone(), at) && book.record_at(higher.clone(), at));
+        (lower, higher)
+    }
+
+    fn seat_of(d: &MeshDigest, epoch: u64) -> SeatHolder {
+        SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), epoch }
+    }
+
+    /// CONTRACT (gossip.md §3.3, R-A2): a member tops up from its own mesh's current primary, the
+    /// birth its held seat record names, never from an election of its own. With the seat on the
+    /// admin whose NodeId is the higher of two Ready admins, the member's primary is that holder.
+    #[test]
+    fn a_members_mesh_primary_is_the_seat_holder_not_the_lowest_ready_admin() {
+        let book = DigestBook::default();
+        let (_lower, holder) = two_admins(&book, Instant::now());
+        book.seats.take(Seat::MeshPrimary, &seat_of(&holder, 3));
+        assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.name.to_string()), Some("mesh1.admin.1".into()));
+    }
+
+    /// CONTRACT (R-EL1): a holder that is Draining keeps its seat, so the member still tops up from it.
+    #[test]
+    fn a_draining_seat_holder_is_still_the_members_mesh_primary() {
+        let book = DigestBook::default();
+        let (lower, holder) = two_admins(&book, Instant::now());
+        book.seats.take(Seat::MeshPrimary, &seat_of(&lower, 3));
+        let mut draining = lower.clone();
+        draining.status = MemberStatus::Draining;
+        draining.digest_seq += 1;
+        draining.emitted_at_rafka_ms += 1;
+        assert!(book.record(draining));
+        let _ = holder;
+        assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
+    }
+
+    /// CONTRACT: the seat holder's digest aged past the staleness floor does not move the seat:
+    /// only a new record or a proven loss does, so the member still addresses the holder.
+    #[test]
+    fn a_seat_holder_unheard_past_the_staleness_floor_is_still_the_members_mesh_primary() {
+        let book = DigestBook::default();
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
+        let (lower, _higher) = two_admins(&book, long_ago);
+        book.seats.take(Seat::MeshPrimary, &seat_of(&lower, 3));
+        assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
     }
 }
