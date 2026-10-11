@@ -384,12 +384,20 @@ pub struct Drives {
 
 impl Drives {
     /// The drive of `build_id`, with a task making its frames running: the one held, or a new one.
-    /// A drive that stalled or paused is picked up again here.
+    /// A drive that stalled or paused is picked up again here. A drive that completed the Build is
+    /// the Build's record and is handed back as it is, with nothing run: a caller that read the
+    /// Build active before its verdict entered the log (the reconcile loop's `list_active`, a
+    /// re-submit's `read_build`) gets the drive that ended it, never a second one in its place. A
+    /// drive that ended otherwise (failed, seat lost) is replaced by a new one.
     pub fn ensure(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId) -> Arc<Drive> {
         let drive = {
             let mut drives = self.drives.lock().unwrap();
-            if drives.get(build_id).is_some_and(|d| d.ended()) {
-                drives.remove(build_id);
+            match drives.get(build_id) {
+                Some(d) if d.completed() => return d.clone(),
+                Some(d) if d.ended() => {
+                    drives.remove(build_id);
+                }
+                _ => {}
             }
             drives.entry(build_id.clone()).or_insert_with(|| Drive::new(build_id.clone())).clone()
         };
