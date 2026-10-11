@@ -4539,6 +4539,43 @@ mod tests {
         assert_eq!(book.leaving_meshes(), vec![m1.to_string()]);
     }
 
+    /// CONTRACT (gossip.md, "Mesh-admin hears mesh-leaving" step 1): `mesh-leaving` marks the MESH
+    /// Leaving and holds its member births. A birth of that mesh this node installs after it heard the
+    /// event (the Leaving mesh's source still moves, a forwarded full or a topology read arrives later)
+    /// is one of its member births and is held too: not routable, its address and status kept.
+    #[test]
+    fn mesh_leaving_holds_a_birth_of_the_mesh_installed_after_it_was_heard() {
+        let book = DigestBook::default();
+        let m1 = MeshId::mint();
+        let admin = born("mesh1", "admin.1", Some(&m1), 1);
+        assert!(book.record_forwarded(admin.clone()));
+        assert_eq!(book.mesh_leaving(&m1), 1);
+        let later = born("mesh1", "rpc.2", None, 1);
+        assert!(book.record_forwarded(later.clone()));
+        assert!(!book.routable(later.node.node_id.as_str()), "a member birth installed after mesh-leaving is held from new work");
+        assert_eq!(book.get(later.node.node_id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "its status is unchanged");
+    }
+
+    /// CONTRACT (gossip.md, "Mesh-admin hears mesh-leaving" step 1): accepted `mesh-leaving` marks the
+    /// mesh Leaving even when this node holds no birth of the mesh yet; the births it installs
+    /// afterwards (the node-admin's digest naming the mesh id, an ordinary node's that does not) are
+    /// held, and another mesh's are not.
+    #[test]
+    fn mesh_leaving_heard_before_any_birth_of_the_mesh_is_held_still_holds_the_mesh() {
+        let book = DigestBook::default();
+        let m1 = MeshId::mint();
+        assert_eq!(book.mesh_leaving(&m1), 0, "no birth of the mesh is held yet");
+        assert!(book.is_mesh_leaving(&m1), "the mesh is Leaving all the same");
+        let (admin, rpc, other) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1), born("mesh2", "rpc.1", None, 1));
+        for d in [&admin, &rpc, &other] {
+            assert!(book.record_forwarded(d.clone()));
+        }
+        assert!(!book.routable(admin.node.node_id.as_str()) && !book.routable(rpc.node.node_id.as_str()), "the mesh's births are held from new work");
+        assert!(book.routable(other.node.node_id.as_str()), "another mesh's birth is untouched");
+        let applied = book.mesh_left(&m1, "bld_1", 1, 9);
+        assert_eq!((applied.name.as_deref(), applied.departed), (Some("mesh1"), 2), "mesh-left departs the births installed after mesh-leaving");
+    }
+
     /// CONTRACT: `mesh-left` departs every birth the mesh held, through the departure a node's own
     /// stop takes: the births leave the active topology and are held departed for the departed
     /// retention and not a moment longer; the mesh is no longer Leaving and nothing is kept of it;
