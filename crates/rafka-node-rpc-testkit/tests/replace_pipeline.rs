@@ -1,8 +1,12 @@
-//! i143.e12.s4 functional: the replace pipeline runs ONE operation `replace-node:<path>` in the
-//! order node-replace.md and node-recovery.md give. The predecessor drains (unless the provider
-//! already proves it terminal), gives up its path, the successor's identity is allocated, the
-//! predecessor is stopped with the provider's exact terminal proof and its storage handed over, the
-//! successor starts, joins and is ready, and only then is the old identity deleted.
+//! i143.e12.s4 functional: the replace pipeline runs ONE operation `replace-node:<path>`.
+//!
+//! A replace of a live birth follows Rafka's recipe (node-replace.md 1-3): the complete stop parks
+//! the predecessor, it is renamed `<path>.old` while parked, and the successor is created at the
+//! freed name with a new node.id, incarnation and directory. The predecessor stays parked with its
+//! data: the data transfer is Rafka's own step after create, and the predecessor's delete is a later
+//! step of the recipe. A birth the provider already proves terminal is the recovery of an exited
+//! node: it is sent nothing, ended with the provider's proof, and its departure follows the
+//! successor's readiness.
 //!
 //! The span-asserting cell runs in its own process (`own_process`).
 
@@ -92,13 +96,31 @@ impl LifecycleEvents for Recorder<'_> {
     }
 }
 
-/// Every step of a replace of a live birth, in order.
-const REPLACE_ORDER: [&str; 23] = [
-    "NodeDeleting",
+/// Every step of a replace of a live birth, in order (node-replace.md 1-3).
+const REPLACE_ORDER: [&str; 18] = [
     "DrainNode",
     "AwaitNodeDrained",
     "StopNode",
     "AwaitNodeLeft",
+    "RenamePredecessor",
+    "AllocateIdentity",
+    "PrepareStorage",
+    "PrepareNetwork",
+    "DeployRuntime",
+    "RegisterExactRuntimeHandle",
+    "ResolveProviderControlDomain",
+    "MakeRuntimeFactAvailableToBirth",
+    "WaitForBind",
+    "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata",
+    "ApplyMeshPending",
+    "WaitForMeshJoin",
+    "WaitForNodeReady",
+    "Complete",
+];
+
+/// Every step of the recovery of a birth the provider already proves terminal, in order.
+const RECOVERY_ORDER: [&str; 19] = [
+    "NodeDeleting",
     "RenamePredecessor",
     "AllocateIdentity",
     "PrepareStorage",
@@ -166,22 +188,25 @@ fn receipts(steps: &[rafka_node_admin_core::build_state::BuildStepReceipt], oper
     steps.iter().filter(|r| r.operation == operation && r.outcome == StepOutcome::Complete).map(|r| r.step.clone()).collect()
 }
 
-/// CONTRACT: a replace of a live, persistent-storage birth is one operation `replace-node:<path>`, in
+/// CONTRACT: a replace of a live, persistent-storage birth is one operation `replace-node:<path>` in
 /// the recipe's order (node-replace.md: "node[1].stop runs the complete stop and leaves the
-/// predecessor parked", then "node[1].update renames name to `<name>.old` while parked", then
-/// "node.create claims the freed name"). The old birth is drained and stopped, and the stop's
-/// departure is published (`NodeStopped`, so every book drops it) before it is renamed `<path>.old`
-/// (spanned) and before the successor's identity exists. It is then ended with the provider's exact
-/// terminal proof and its storage directories move into the successor's empty directory before the
-/// successor starts; the successor is ready, and only then is the old identity's `NodeDeleted`
-/// published, once, naming the exact old birth. The predecessor's directory keeps its files. At the
-/// successor's readiness a peer admin's view (its book, without the executor's records) holds one live
-/// birth at the path, the successor, and the path resolves to the successor.
+/// predecessor parked, with its incarnation and data retained", then "node[1].update renames name to
+/// `<name>.old` while parked", then "node.create claims the freed name and starts the successor with a
+/// new node.id/incarnation"; "Rafka transfers its data as its own recipe step"). The old birth is
+/// drained and stopped, and the stop's departure is published (`NodeStopped`, so every book drops it)
+/// before it is renamed `<path>.old` (spanned, its receipt naming the exact old birth) and before the
+/// successor's identity exists. The successor is created in its own new directory while the
+/// predecessor is still parked: at the successor's readiness, and after the operation completes, the
+/// predecessor's process runs (parked) and its data is where it was, untouched. The replace deletes
+/// nothing: no NodeDeleting, no terminal proof, no storage moved, no NodeDeleted (the predecessor's
+/// delete is the recipe's own later step). At the successor's readiness a peer admin's view (its book,
+/// without the executor's records) holds one live birth at the path, the successor, and the path
+/// resolves to the successor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
+async fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_data() {
     // It installs a scoped subscriber: tracing's process-wide callsite interest cache is not shared
     // with the cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "replace_admits_the_successor_before_the_old_identity_is_deleted") {
+    if crate::own_process::delegated(module_path!(), "replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_data") {
         return;
     }
     let spans = Spans::default();
@@ -197,15 +222,18 @@ async fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
-    std::fs::create_dir_all(old_dir.join("wal").join("segments")).unwrap();
-    std::fs::write(old_dir.join("wal").join("segments").join("seg-0"), b"records").unwrap();
+    let segment = old_dir.join("wal").join("segments").join("seg-0");
+    std::fs::create_dir_all(segment.parent().unwrap()).unwrap();
+    std::fs::write(&segment, b"records").unwrap();
     rig.log.lock().unwrap().clear();
 
     let replace_build = publish_build(&rig.builds, persistent(true)).await;
-    // At the successor's readiness (before the old identity's NodeDeleted): what a peer admin holds.
-    let peer_at_ready: Arc<Mutex<Option<(Vec<Node>, Result<rafka_node_rpc::ResolvedNode, String>, NodeId)>>> = Arc::default();
+    // At the successor's readiness: what a peer admin holds, and the predecessor's process and data.
+    type AtReady = (Vec<Node>, Result<rafka_node_rpc::ResolvedNode, String>, NodeId, DeploymentStatus, Option<Vec<u8>>);
+    let peer_at_ready: Arc<Mutex<Option<AtReady>>> = Arc::default();
     let book = &rig.admin.observer.membership.book;
     let fabric_id = &rig.template.fabric_id;
+    let (provider, first_handle, at_segment) = (&rig.provider, &first.handle, &segment);
     let at_ready = peer_at_ready.clone();
     let second = pipeline
         .replace(&ReplaceRequest { build_id: replace_build.clone(), attempt: 1, predecessor: first.node.clone(), handle: first.handle.clone(), spec: &RPC_NODE, held_runtimes: Vec::new() }, None, move |successor| async move {
@@ -214,47 +242,50 @@ async fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
             let resolver = rafka_node_rpc::LiveNodeResolver::default();
             rafka_node_admin_core::node_rpc::feed_once(book, &resolver, "peer");
             let resolved = rafka_node_rpc::NodeResolver::resolve(&resolver, &rafka_node_rpc::NodeTarget::CurrentPath(path())).map_err(|e| format!("{e:?}"));
-            *at_ready.lock().unwrap() = Some((at_path, resolved, successor.node_id.clone()));
+            let predecessor = provider.inspect(first_handle).await;
+            let data = std::fs::read(at_segment).ok();
+            *at_ready.lock().unwrap() = Some((at_path, resolved, successor.node_id.clone(), predecessor, data));
             Ok(())
         })
         .await
         .unwrap_or_else(|e| panic!("replace: {e}"));
-    let (at_path, resolved, successor_id) = peer_at_ready.lock().unwrap().take().expect("the successor reached readiness");
+    let (at_path, resolved, successor_id, predecessor_at_ready, data_at_ready) = peer_at_ready.lock().unwrap().take().expect("the successor reached readiness");
+    assert_eq!(predecessor_at_ready, DeploymentStatus::Running, "the predecessor is parked, its process alive, while the successor is created and made ready");
+    assert_eq!(data_at_ready.as_deref(), Some(&b"records"[..]), "the predecessor's data is in its own directory at the successor's readiness: {segment:?}");
     let live: Vec<(String, String, String)> = at_path.iter().filter(|n| n.status.is_live()).map(|n| (n.node_id.to_string(), format!("{:?}", n.status), n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default())).collect();
     assert_eq!(live.len(), 1, "a peer's view holds one live birth at {}: {live:?}", path());
     assert_eq!(live[0].0, successor_id.to_string(), "the live birth at {} is the successor: {live:?}", path());
     assert_eq!(resolved.map(|r| r.node_id), Ok(successor_id.clone()), "a peer resolves {} to the successor once the predecessor is parked and renamed", path());
 
-    // One operation, every step once, in the order the lifecycle gives.
+    // One operation, every step once, in the recipe's order.
     let view = rig.builds.read_build(&replace_build).await.unwrap();
     let operation = format!("replace-node:{}", path());
     assert_eq!(receipts(&view.steps, &operation), REPLACE_ORDER.map(String::from).to_vec());
     assert!(view.steps.iter().all(|r| r.operation == operation), "no retire-node or create-node operation: {:?}", view.steps.iter().map(|r| r.operation.as_str()).collect::<std::collections::BTreeSet<_>>());
+    let renamed_receipt = view.steps.iter().find(|r| r.step == "RenamePredecessor").and_then(|r| r.output.clone()).expect("the rename's receipt");
+    assert_eq!(renamed_receipt["node_id"], serde_json::to_value(&first.node.node_id).unwrap(), "the rename's receipt names the exact old node: {renamed_receipt}");
+    assert_eq!(renamed_receipt["incarnation"], serde_json::to_value(first.node.incarnation_id.clone().unwrap()).unwrap(), "the rename's receipt names the exact old birth: {renamed_receipt}");
 
-    // The successor is a new node at the same path, the predecessor is terminal.
+    // The successor is a new node at the same path in its own directory; the predecessor is parked.
     assert_ne!(second.node.node_id, first.node.node_id);
     assert_ne!(second.node.endpoint_id, first.node.endpoint_id, "a new transport key");
     assert_eq!(second.node.name, first.node.name);
-    assert!(matches!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
+    assert_eq!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Running, "the replace ends the predecessor parked, never exited");
     assert_eq!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Running);
 
-    // The events leave in order: NodeDeleting, the drain, the successor's readiness, NodeDeleted.
+    // The events leave in order: the drain, the stop and its NodeStopped, then the successor's readiness.
     let log = rig.log.lock().unwrap().clone();
     let (old, new) = (first.node.node_id.to_string(), second.node.node_id.to_string());
     let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
-    let deleting = at(&format!("NodeDeleting:{old}:{operation}"));
     let drain = at(&format!("drain-node:{old}"));
     let drained = at(&format!("awaited:drain-node:{old}"));
     let stop = at(&format!("stop-node:{old}"));
     let left = at(&format!("awaited:stop-node:{old}"));
     let stopped = at(&format!("NodeStopped:{old}:stop-node:{}", path()));
     let ready = at(&format!("ready:{new}"));
-    let deleted = at(&format!("NodeDeleted:{old}:{operation}"));
-    assert!(deleting < drain && drain < drained && drained < stop && stop < left && left < stopped && stopped < ready && ready < deleted, "drain, node-drained, stop-node, node-left, its NodeStopped, then the successor's readiness, then NodeDeleted last: {log:?}");
+    assert!(drain < drained && drained < stop && stop < left && left < stopped && stopped < ready, "drain, node-drained, stop-node, node-left, its NodeStopped, then the successor's readiness: {log:?}");
     assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 1, "the stop's departure is published once: {log:?}");
-    assert_eq!(log.iter().filter(|l| l.starts_with("NodeDeleted")).count(), 1, "{log:?}");
-    let deleted_receipt = view.steps.iter().find(|r| r.step == "NodeDeleted").and_then(|r| r.output.clone()).unwrap();
-    assert_eq!(deleted_receipt["incarnation"], serde_json::to_value(first.node.incarnation_id.clone().unwrap()).unwrap(), "NodeDeleted names the exact old birth");
+    assert!(!log.iter().any(|l| l.starts_with("NodeDeleting") || l.starts_with("NodeDeleted")), "a replace deletes nothing: the predecessor's delete is the recipe's own later step: {log:?}");
 
     // The predecessor gave up its path before anything was created; the sink saw exactly that birth.
     assert_eq!(*rig.sink.renamed.lock().unwrap(), vec![(path(), first.node.node_id.clone(), first.node.incarnation_id.clone().unwrap())]);
@@ -270,15 +301,17 @@ async fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
     assert_eq!(rename.get("node_id"), Some(&old));
     assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("replace") && f.get("build_id") == Some(&replace_build.0)));
 
-    // The storage went into the successor's empty directory; the predecessor's files stayed with it.
+    // RDM moved no data: the predecessor's directory holds all of it, the successor's none of it.
     let new_dir = std::path::PathBuf::from(second.node.data_dir.clone().unwrap());
-    assert_eq!(std::fs::read(new_dir.join("wal").join("segments").join("seg-0")).unwrap(), b"records", "the WAL is the successor's");
+    assert_ne!(new_dir, old_dir, "the successor has its own directory");
+    assert_eq!(std::fs::read(&segment).unwrap(), b"records", "the WAL stays the predecessor's: the data transfer is Rafka's step");
+    assert!(!new_dir.join("wal").exists(), "nothing was handed to the successor's directory: {new_dir:?}");
     assert!(old_dir.join("node-key").is_file(), "the predecessor's identity files stay with it: {old_dir:?}");
-    assert!(!old_dir.join("wal").exists(), "directories moved, they were not copied");
-    assert!(old_dir.exists(), "Persistent/Preserve: the predecessor's directory stays");
-    // The successor is this test's runtime: it is stopped, with the provider's proof, before the test ends.
-    rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
-    assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the successor was stopped");
+    // Both runtimes are this test's: each is stopped, with the provider's proof, before the test ends.
+    for h in [&first.handle, &second.handle] {
+        rig.provider.terminate(h, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+        assert!(matches!(rig.provider.inspect(h).await, DeploymentStatus::Exited { .. }), "the runtime was stopped");
+    }
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }
 
@@ -313,7 +346,7 @@ async fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no
 
     let view = rig.builds.read_build(&replace_build).await.unwrap();
     let operation = format!("replace-node:{}", path());
-    let want: Vec<String> = REPLACE_ORDER.iter().filter(|s| !["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"].contains(s)).map(|s| s.to_string()).collect();
+    let want: Vec<String> = RECOVERY_ORDER.map(String::from).to_vec();
     assert_eq!(receipts(&view.steps, &operation), want);
     let log = rig.log.lock().unwrap().clone();
     assert!(!log.iter().any(|l| l.starts_with("drain-node:") || l.starts_with("stop-node:")), "nothing is sent to a proven-terminal birth: {log:?}");
