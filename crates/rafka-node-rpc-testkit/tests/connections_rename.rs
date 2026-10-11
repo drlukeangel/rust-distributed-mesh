@@ -121,12 +121,23 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             other => panic!("ApplyNodeName did not end in a reply: {other:?}"),
         }
 
-        // The peer hears the renamed digest; its resolver, fed from its book, holds the birth at the
-        // name it took and nothing at the one it gave up.
+        // The peer hears the renamed digest, and the feed of its own process takes it into its
+        // resolver: each answer change ticks the resolver. Its book holds the digest before the
+        // wait, so what is left is the in-process feed; a resolver that never takes the name never
+        // ticks, and the bound names that.
         while peer_book.get(renamed.node_id.as_str()).is_none_or(|(d, _)| d.node.name != taken) {
             peer_digests.changed().await.unwrap();
         }
-        rafka_node_rpc_testkit::node_rpc::feed_once(peer_book, &peer_node.node_rpc.resolver, &peer_name.to_string());
+        let resolver = &peer_node.node_rpc.resolver;
+        let mut moved = resolver.changes().expect("the live resolver ticks on every answer change");
+        let took = async {
+            while resolver.resolve(&NodeTarget::ExactNode(renamed.node_id.clone())).map(|n| n.name).as_ref() != Ok(&taken) {
+                moved.changed().await.unwrap();
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(10), took).await.is_err() {
+            panic!("the peer's book holds {taken} for the birth, and its resolver still names it {:?}", resolver.resolve(&NodeTarget::ExactNode(renamed.node_id.clone())).map(|n| n.name));
+        }
 
         // The peer dials the renamed node: one entry at each end.
         match peer_seams.client.call::<Ping>(&NodeTarget::ExactNode(renamed.node_id.clone()), &PingRequest::Ping { payload: b"after the rename".to_vec() }, &CallOptions::default()).await.0 {
@@ -160,7 +171,6 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         let own: Vec<NodeConnection> = held.lock().unwrap().own_latest_directs().into_iter().cloned().collect();
         expect(own.iter().any(|e| e == accepted), format!("the entry it wrote after the rename is this node's own Direct: {own:#?}"));
 
-        let resolver = &peer_node.node_rpc.resolver;
         let at = resolver.resolve(&NodeTarget::ExactNode(renamed.node_id.clone())).map(|n| n.name);
         expect(at.as_ref() == Ok(&taken), format!("the peer resolves the birth by the name it holds, {taken}: {at:?}"));
         let holder = resolver.resolve(&NodeTarget::CurrentPath(taken.clone())).map(|n| n.node_id);

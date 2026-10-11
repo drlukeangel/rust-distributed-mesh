@@ -392,14 +392,17 @@ impl ConnectionObserver for ConnectionsWriter {
         self.observed(
             move |w, own| {
                 let previous = w.latest_direct(&destination);
-                // A failing series continues in its epoch, one ordinal up; anything else (never
-                // tried, connected, dropped) is a new incident: a new epoch at ordinal one.
+                // A failing series of the birth dialled continues in its epoch, one ordinal up;
+                // anything else (never tried, connected, dropped, or a failure against another
+                // birth at the destination: a series is for the current destination incarnation,
+                // connections.md §9.1) is a new incident: a new epoch at ordinal one.
                 match previous.as_ref() {
-                    Some(p) if p.state == ConnectionState::Failed => match p.recovery {
-                        // The series continues under this node as it is now: the row names this
-                        // process's birth, never the one that wrote the previous attempt.
+                    Some(p) if p.state == ConnectionState::Failed && (&p.destination.node_id, &p.destination.incarnation) == (&destination.node_id, &destination.incarnation) => match p.recovery {
+                        // The row names both ends as they are now: this process's birth, never the
+                        // one that wrote the previous attempt, and the birth dialled.
                         Some(r) => NodeConnection {
                             source: own,
+                            destination,
                             recovery: Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: r.recovery_epoch, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),
                             reason: Some(reason),
                             logged_at_ms: local_now_ms(),
