@@ -17,7 +17,7 @@ use std::fmt;
 pub const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
 /// Width of a canonical product id.
-pub(crate) const CROCKFORD60_LEN: usize = 12;
+pub const CROCKFORD60_LEN: usize = 12;
 
 /// The `id_format` evidence names for a canonical product id.
 pub const ID_FORMAT: &str = "crockford60";
