@@ -471,8 +471,8 @@ impl DeploymentProvider for FaultedProvider {
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
         self.inner.find(spec).await
     }
-    fn bind_ip(&self, node: &rafka_node_admin_core::model::PathName) -> std::net::IpAddr {
-        self.inner.bind_ip(node)
+    async fn bind_ip(&self, node: &rafka_node_admin_core::model::PathName) -> Result<std::net::IpAddr, DeployError> {
+        self.inner.bind_ip(node).await
     }
     fn launched(&self) -> Vec<DeploymentHandle> {
         self.inner.launched()

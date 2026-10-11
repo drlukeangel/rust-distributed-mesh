@@ -337,8 +337,10 @@ pub trait DeploymentProvider: Send + Sync {
     /// The host address `node`'s runtime binds on, with port 0 (the operating system assigns the
     /// port; the node reports it at its join). Loopback for a process; a container's own address
     /// on the fabric network.
-    fn bind_ip(&self, _node: &crate::model::PathName) -> std::net::IpAddr {
-        std::net::IpAddr::from([127, 0, 0, 1])
+    /// `Err` names why no address can be given (a container network the daemon cannot list, or
+    /// one with no address left).
+    async fn bind_ip(&self, _node: &crate::model::PathName) -> Result<std::net::IpAddr, DeployError> {
+        Ok(std::net::IpAddr::from([127, 0, 0, 1]))
     }
 
     /// Every runtime this provider started that it has not seen exit: what a

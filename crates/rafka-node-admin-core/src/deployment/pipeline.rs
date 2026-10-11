@@ -1209,7 +1209,12 @@ impl DeploymentPipeline<'_> {
             .await?;
         // The node binds port 0 and the operating system assigns the port; the address it
         // reports at its join is the one this admin publishes for the birth.
-        let bind_addr = SocketAddr::new(self.provider.bind_ip(&req.node), 0);
+        let bind_ip = self
+            .provider
+            .bind_ip(&req.node)
+            .await
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: no address to bind: {e}", req.node) })?;
+        let bind_addr = SocketAddr::new(bind_ip, 0);
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
         let data_dir = match prior.as_ref().and_then(|p| p.data_dir.clone()) {
             Some(d) => PathBuf::from(d),

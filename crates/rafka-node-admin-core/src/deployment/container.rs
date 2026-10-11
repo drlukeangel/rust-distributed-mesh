@@ -94,28 +94,117 @@ fn container_name(spec: &ResolvedNodeLaunch) -> String {
     format!("rafka-{}-{}", docker_safe(&spec.node.to_string()), docker_safe(&spec.deployment_id.0))
 }
 
-/// Container names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]`.
-/// Every address a container holds on `network` right now (`docker network inspect`).
-pub(crate) fn network_addresses(network: &str) -> std::collections::BTreeSet<IpAddr> {
-    let out = std::process::Command::new("docker").args(["network", "inspect", "--format", "{{range .Containers}}{{.IPv4Address}} {{end}}", network]).output();
-    out.map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().filter_map(|a| a.split('/').next()?.parse().ok()).collect()).unwrap_or_default()
+/// Every address a container holds on `network` right now (`docker network inspect`). `Err`
+/// names the inspect that failed: a daemon that cannot answer never reads as no address taken.
+pub(crate) async fn network_addresses(network: &str) -> Result<std::collections::BTreeSet<IpAddr>, String> {
+    docker(&["network", "inspect", "--format", "{{range .Containers}}{{.IPv4Address}} {{end}}", network])
+        .await
+        .map(|out| parse_network_addresses(&out))
+        .map_err(|e| format!("the addresses taken on network {network}: {e}"))
 }
 
-/// `uid:gid` of this process (`/proc/self/status`): a container runs as the user that launched it.
+/// The addresses of a `docker network inspect` listing (`<ip>/<prefix>` separated by spaces).
+fn parse_network_addresses(out: &str) -> std::collections::BTreeSet<IpAddr> {
+    out.split_whitespace().filter_map(|a| a.split('/').next()?.parse().ok()).collect()
+}
+
+/// Does a `docker inspect` failure say no object has that name (and nothing else)?
+fn inspect_says_absent(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("no such object") || err.contains("no such container")
+}
+
+/// `uid:gid` of this process, from the kernel: a container runs as the user that launched it.
 pub fn current_user() -> String {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).and_then(|v| v.split_whitespace().next().map(String::from));
-    match (field("Uid:"), field("Gid:")) {
-        (Some(u), Some(g)) => format!("{u}:{g}"),
-        _ => "0:0".into(),
+    // SAFETY: getuid and getgid take no arguments, always succeed and touch no memory.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    format!("{uid}:{gid}")
+}
+
+/// The group owning the Docker daemon's socket at `socket`: a containerised node-admin joins it
+/// to drive the daemon as the launching user. `None` when no socket is there; `Err` names a
+/// socket path that cannot be looked at. A blocking call: run it on the blocking pool.
+fn socket_group_at(socket: &Path) -> Result<Option<u32>, String> {
+    use std::os::unix::fs::MetadataExt;
+    match std::fs::metadata(socket) {
+        Ok(m) => Ok(Some(m.gid())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("docker socket {}: {e}", socket.display())),
     }
 }
 
-/// The group owning the Docker daemon's socket: a containerised node-admin joins it to drive the
-/// daemon as the launching user.
-pub fn socket_group() -> Option<u32> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(DOCKER_SOCKET).ok().map(|m| m.gid())
+/// Is there a directory at `path`? `false` when nothing is there; `Err` names a path that cannot
+/// be looked at.
+fn dir_present(path: &Path) -> Result<bool, String> {
+    match std::fs::metadata(path) {
+        Ok(m) => Ok(m.is_dir()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// What a launch's disk holds for its `docker run`, read in one blocking call.
+#[derive(Debug, Default)]
+struct LaunchDisk {
+    /// The runtime library directories this host has.
+    runtime_mounts: Vec<&'static str>,
+    /// A node-admin's Docker socket to mount, and the group that owns it.
+    docker_socket_gid: Option<u32>,
+    /// A node-admin's binary directory (`RDM_BIN_DIR`), when it is a directory.
+    bin_dir: Option<String>,
+    /// A node-admin's fabric data root: the data dir's parent, when it is a directory.
+    data_root: Option<PathBuf>,
+    /// A node-admin's explicit executable binding directories.
+    binding_dirs: Vec<PathBuf>,
+    /// The span evidence directory (`RDM_EVIDENCE_DIR`), when it is a directory.
+    evidence_dir: Option<String>,
+}
+
+/// Prepare a launch's disk: make the data dir, look at what is mounted, and remove a runtime
+/// record an earlier birth left in the data dir (the birth waits for the one the pipeline makes
+/// available). Every failure names its file. A blocking call: run it on the blocking pool.
+fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<String, String>) -> Result<LaunchDisk, String> {
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("data dir {}: {e}", data_dir.display()))?;
+    let mut disk = LaunchDisk::default();
+    for m in RUNTIME_MOUNTS {
+        match std::fs::metadata(m) {
+            Ok(_) => disk.runtime_mounts.push(m),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("runtime library directory {m}: {e}")),
+        }
+    }
+    if admin {
+        if std::env::var_os("DOCKER_HOST").is_none() {
+            disk.docker_socket_gid = socket_group_at(Path::new(DOCKER_SOCKET))?;
+        }
+        if let Some(dir) = env.get("RDM_BIN_DIR") {
+            disk.bin_dir = dir_present(Path::new(dir)).map_err(|e| format!("RDM_BIN_DIR {e}"))?.then(|| dir.clone());
+        }
+        if let Some(root) = data_dir.parent() {
+            disk.data_root = dir_present(root).map_err(|e| format!("data root {e}"))?.then(|| root.to_path_buf());
+        }
+        if let Some(file) = env.get(rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS) {
+            let mut dirs: std::collections::BTreeSet<PathBuf> = Path::new(file).parent().map(Path::to_path_buf).into_iter().collect();
+            let set = rafka_mesh_entity::binding::BindingSet::load(Path::new(file)).map_err(|e| format!("executable bindings {file}: {e}"))?;
+            dirs.extend(set.bindings.iter().filter_map(|b| b.executable.parent().map(Path::to_path_buf)));
+            let bin_dir = disk.bin_dir.as_ref().map(PathBuf::from);
+            for d in dirs {
+                if Some(&d) != bin_dir.as_ref() && !disk.data_root.as_ref().is_some_and(|r| d.starts_with(r)) && dir_present(&d).map_err(|e| format!("executable binding directory {e}"))? {
+                    disk.binding_dirs.push(d);
+                }
+            }
+        }
+    }
+    if let Some(dir) = env.get("RDM_EVIDENCE_DIR") {
+        disk.evidence_dir = dir_present(Path::new(dir)).map_err(|e| format!("RDM_EVIDENCE_DIR {e}"))?.then(|| dir.clone());
+    }
+    let record = data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE);
+    match std::fs::remove_file(&record) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("an earlier birth's runtime record {} cannot be removed: {e}", record.display())),
+    }
+    Ok(disk)
 }
 
 fn docker_safe(s: &str) -> String {
@@ -329,16 +418,26 @@ impl ContainerDeploymentProvider {
 
     /// The handle's immutable container id.
     /// The live container this launch started, by its name.
-    async fn find_by_name(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+    /// `Ok(None)` when no container has the name or it is not running; `Err` names a `docker
+    /// inspect` that failed for any other reason, or answered what this build cannot read.
+    async fn find_by_name(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
         let name = container_name(spec);
-        let state = docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name]).await.ok()?;
+        let named = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason: format!("finding container {name}: {reason}") };
+        let state = match docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name]).await {
+            Ok(state) => state,
+            Err(e) if inspect_says_absent(&e) => return Ok(None),
+            Err(e) => return Err(named(e)),
+        };
         let mut parts = state.split_whitespace();
-        let (status, pid, id) = (parts.next()?, parts.next()?, parts.next()?.to_string());
+        let (Some(status), Some(pid), Some(id)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(named(format!("docker inspect answered {state:?}, not `<status> <pid> <id>`")));
+        };
         if status != "running" {
-            return None;
+            return Ok(None);
         }
+        let id = id.to_string();
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
-        Some(self.handle(spec.deployment_id.clone(), id, pid.parse().ok().filter(|p| *p > 0)))
+        Ok(Some(self.handle(spec.deployment_id.clone(), id, pid.parse().ok().filter(|p| *p > 0))))
     }
 
     fn launched_handles(&self) -> Vec<DeploymentHandle> {
@@ -373,9 +472,14 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         if let Some((n, a)) = spec.listeners.iter().find(|(_, a)| a.ip() != ip) {
             return Err(err(format!("listener {n} is assigned {a}, but one container has one address ({ip})")));
         }
-        std::fs::create_dir_all(&spec.data_dir).map_err(|e| err(format!("data dir {}: {e}", spec.data_dir.display())))?;
         let exe_name = spec.executable.file_name().ok_or_else(|| err(format!("{} names no file", spec.executable.display())))?;
         let exe_in = Path::new(BIN_DIR).join(exe_name);
+        // The data dir, the mounts and an earlier birth's runtime record, on the blocking pool.
+        let admin = spec.node.kind == rafka_mesh_entity::NodeKind::NodeAdmin;
+        let disk = {
+            let (data_dir, env) = (spec.data_dir.clone(), spec.env.clone());
+            crate::record_store::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
+        };
         let name = container_name(spec);
         let data = spec.data_dir.display().to_string();
         let mut args: Vec<String> = vec![
@@ -399,48 +503,37 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             "-v".into(),
             format!("{data}:{data}"),
         ];
-        for m in RUNTIME_MOUNTS.iter().filter(|m| Path::new(m).exists()) {
+        for m in &disk.runtime_mounts {
             args.extend(["-v".into(), format!("{m}:{m}:ro")]);
         }
         // A node-admin in a container drives the same Docker daemon (one provider control domain)
         // and hands it host paths: the daemon's socket, the binaries and the fabric's data root are
         // mounted at their host paths, so a path it names means the same thing to the daemon.
-        if spec.node.kind == rafka_mesh_entity::NodeKind::NodeAdmin {
-            if std::env::var_os("DOCKER_HOST").is_none() && Path::new(DOCKER_SOCKET).exists() {
-                args.extend(["-v".into(), format!("{DOCKER_SOCKET}:{DOCKER_SOCKET}")]);
-                if let Some(gid) = socket_group() {
-                    args.extend(["--group-add".into(), gid.to_string()]);
-                }
+        if admin {
+            if let Some(gid) = disk.docker_socket_gid {
+                args.extend(["-v".into(), format!("{DOCKER_SOCKET}:{DOCKER_SOCKET}"), "--group-add".into(), gid.to_string()]);
             }
             // It proves a birth bound its sockets from the birth's own socket table
             // (`/proc/<pid>/net/*` of the container's init, a host pid): it sees host pids.
             args.extend(["--pid".into(), "host".into()]);
             // The Docker client keeps its configuration under HOME; the node's data dir is its own.
             args.extend(["-e".into(), format!("HOME={data}")]);
-            if let Some(dir) = spec.env.get("RDM_BIN_DIR").filter(|d| Path::new(d).is_dir()) {
+            if let Some(dir) = &disk.bin_dir {
                 args.extend(["-v".into(), format!("{dir}:{dir}:ro")]);
             }
-            let data_root = spec.data_dir.parent().filter(|r| r.is_dir());
-            if let Some(root) = data_root {
+            if let Some(root) = &disk.data_root {
                 args.extend(["-v".into(), format!("{}:{}", root.display(), root.display())]);
             }
             // Explicit executable bindings: the admin validates and re-hashes them at every launch, so it
             // reads the binding file and every bound executable at their host paths. A directory the
             // admin already has mounted is not mounted twice.
-            if let Some(file) = spec.env.get(rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS) {
-                let mut dirs: std::collections::BTreeSet<PathBuf> = Path::new(file).parent().map(Path::to_path_buf).into_iter().collect();
-                if let Ok(set) = rafka_mesh_entity::binding::BindingSet::load(Path::new(file)) {
-                    dirs.extend(set.bindings.iter().filter_map(|b| b.executable.parent().map(Path::to_path_buf)));
-                }
-                let bin_dir = spec.env.get("RDM_BIN_DIR").map(PathBuf::from);
-                for d in dirs.into_iter().filter(|d| d.is_dir() && Some(d) != bin_dir.as_ref() && !data_root.is_some_and(|r| d.starts_with(r))) {
-                    args.extend(["-v".into(), format!("{}:{}:ro", d.display(), d.display())]);
-                }
+            for d in &disk.binding_dirs {
+                args.extend(["-v".into(), format!("{}:{}:ro", d.display(), d.display())]);
             }
         }
         // The span evidence directory the launch names, at the same path: a container's spans
         // land beside every process's.
-        if let Some(dir) = spec.env.get("RDM_EVIDENCE_DIR").filter(|d| Path::new(d).is_dir()) {
+        if let Some(dir) = &disk.evidence_dir {
             args.extend(["-v".into(), format!("{dir}:{dir}")]);
         }
         for (k, v) in &spec.env {
@@ -450,9 +543,6 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         args.push(exe_in.display().to_string());
         args.extend(spec.args.iter().cloned());
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        // A record left by an earlier birth in this data dir is not this one's:
-        // the birth waits for the one the pipeline makes available.
-        let _ = std::fs::remove_file(spec.data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE));
         // `docker run -d` answers the immutable id: the runtime's identity,
         // not the (reusable) name.
         let id = docker(&argv).await.map_err(err)?.trim().to_string();
@@ -472,12 +562,23 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         };
         docker(&["stop", "-t", &grace.to_string(), name]).await.map_err(err)?;
         let code = docker(&["inspect", "--format", "{{.State.ExitCode}}", name]).await.ok().and_then(|c| c.parse().ok());
-        // Keep the logs beside the node's data, then remove the container.
-        let data_dir = self.data_dirs.lock().unwrap().remove(name).map(|(d, _)| d);
-        if let (Some(dir), Ok(logs)) = (data_dir, Command::new("docker").args(["logs", name]).output().await) {
-            let _ = std::fs::write(dir.join("container.log"), [&logs.stdout[..], &logs.stderr[..]].concat());
+        // Keep the logs beside the node's data, then remove the container. Logs that cannot be
+        // kept fail the stop by name and leave the stopped container (and its logs) in place, so
+        // a re-run keeps them before it removes it.
+        let data_dir = self.data_dirs.lock().unwrap().get(name).map(|(d, _)| d.clone());
+        if let Some(dir) = data_dir {
+            let logs = Command::new("docker").args(["logs", name]).stdin(std::process::Stdio::null()).output().await.map_err(|e| err(format!("docker logs {name}: {e}")))?;
+            if !logs.status.success() {
+                return Err(err(format!("docker logs {name}: {}", String::from_utf8_lossy(&logs.stderr).trim())));
+            }
+            let file = dir.join("container.log");
+            let written = file.clone();
+            crate::record_store::blocking_io(move || std::fs::write(&written, [&logs.stdout[..], &logs.stderr[..]].concat()))
+                .await
+                .map_err(|e| err(format!("the container's logs cannot be kept at {}: {e}", file.display())))?;
         }
         docker(&["rm", "-f", name]).await.map_err(err)?;
+        self.data_dirs.lock().unwrap().remove(name);
         self.exited.lock().unwrap().insert(name.to_string(), code);
         Ok(())
     }
@@ -509,7 +610,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     }
 
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
-        Ok(self.find_by_name(spec).await)
+        self.find_by_name(spec).await
     }
 
     fn launched(&self) -> Vec<DeploymentHandle> {
@@ -517,15 +618,22 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     }
 
     /// A container is given its own address on the fabric network before it starts (`--ip`): the
-    /// one pre-boot address a container needs. Its ports are the operating system's.
-    fn bind_ip(&self, node: &crate::model::PathName) -> IpAddr {
+    /// one pre-boot address a container needs. Its ports are the operating system's. The
+    /// addresses already taken on the network are asked of the daemon (no lock held across it);
+    /// a daemon that cannot answer, or a network with no address left, is an error naming it.
+    async fn bind_ip(&self, node: &crate::model::PathName) -> Result<IpAddr, DeployError> {
+        let err = |reason: String| DeployError::Spawn { node: node.to_string(), reason };
+        if let Some(ip) = self.ips.lock().unwrap().held.get(node) {
+            return Ok(*ip);
+        }
+        let on_network = network_addresses(&self.network.name).await.map_err(err)?;
         let mut ips = self.ips.lock().unwrap();
         if let Some(ip) = ips.held.get(node) {
-            return *ip;
+            return Ok(*ip);
         }
         let (first, last) = self.network.node_range();
         let (first, last) = (u32::from(first), u32::from(last));
-        let taken: std::collections::BTreeSet<IpAddr> = ips.held.values().copied().chain(network_addresses(&self.network.name)).collect();
+        let taken: std::collections::BTreeSet<IpAddr> = ips.held.values().copied().chain(on_network).collect();
         let mut next = ips.next.clamp(first, last);
         for _ in 0..=(last - first) {
             let ip = IpAddr::from(Ipv4Addr::from(next));
@@ -533,14 +641,17 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             if !taken.contains(&ip) {
                 ips.next = next;
                 ips.held.insert(node.clone(), ip);
-                return ip;
+                return Ok(ip);
             }
         }
-        panic!("every node address of the fabric network {} is held", self.network.name)
+        Err(err(format!("every node address of the fabric network {} is held ({} taken)", self.network.name, taken.len())))
     }
 
     async fn failure_detail(&self, handle: &DeploymentHandle, _data_dir: &Path) -> String {
-        let Ok(name) = self.container_of(handle) else { return String::new() };
+        let name = match self.container_of(handle) {
+            Ok(name) => name,
+            Err(e) => return e.to_string(),
+        };
         match Command::new("docker").args(["logs", "--tail", "20", name]).output().await {
             Ok(o) => tail(&String::from_utf8_lossy(&[&o.stdout[..], &o.stderr[..]].concat()), 5),
             Err(e) => format!("docker logs: {e}"),
