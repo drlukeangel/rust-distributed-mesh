@@ -465,11 +465,16 @@ struct Found {
     detail: String,
 }
 
+/// The node-admins of `mesh` a probe carries `ProbeNodeState` to, in the order it asks them.
+pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str) -> Vec<Node> {
+    view.cohort(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).min_by_key(|a| (!a.is_primary, a.name.to_string())).cloned().into_iter().collect()
+}
+
 /// Probe `mesh`'s node-admin: Ping its members, then Forward `ProbeNodeState` through one that
 /// answered. Active connections are asked first, then path order; probe 2 prefers a member probe 1
 /// did not use.
 async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
-    let admin = view.cohort(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).min_by_key(|a| (!a.is_primary, a.name.to_string())).cloned();
+    let admin = admins_in_probe_order(view, mesh).into_iter().next();
     let Some(admin) = admin else {
         return Found { outcome: ProbeOutcome::Unreachable, target: String::new(), members: String::new(), carrier: String::new(), detail: format!("the view holds no node-admin of {mesh}") };
     };
@@ -602,6 +607,32 @@ mod tests {
         }
         let log = walk(&mut ladder(), [Unreachable, CarrierEdgeLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Decide { rebirth: true, .. })), vec![30]);
+    }
+
+    fn view_of(nodes: Vec<Node>) -> Topology {
+        use crate::model::{Fabric, FabricId, ProviderKind, ScopeStatus};
+        Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: vec![], nodes }
+    }
+
+    fn admin(name: &str, primary: bool) -> Node {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.node_id = NodeId::mint();
+        n.incarnation_id = Some(crate::model::IncarnationId::mint());
+        n.status = NodeStatus::ReadyForTraffic;
+        n.is_primary = primary;
+        n
+    }
+
+    /// CONTRACT (Luke 2026-10-11, the investigation's first step: "fabric-primary's tickle of
+    /// peer-mesh-primary then its other node-admins"): a probe carries `ProbeNodeState` to the peer
+    /// mesh's primary node-admin first, then to each of its other node-admins in path order. The
+    /// primary leads even where another admin's path sorts first. Must NOT happen: a probe that asks
+    /// only one node-admin, or a secondary before the primary.
+    #[test]
+    fn a_probe_asks_the_peer_meshs_primary_admin_first_then_its_other_admins() {
+        let v = view_of(vec![admin("mesh2.admin.1", false), admin("mesh2.admin.3", false), admin("mesh2.admin.2", true), admin("mesh1.admin.1", true)]);
+        let order: Vec<String> = admins_in_probe_order(&v, "mesh2").iter().map(|a| a.name.to_string()).collect();
+        assert_eq!(order, vec!["mesh2.admin.2", "mesh2.admin.1", "mesh2.admin.3"], "the primary first, then the others in path order, and nothing of another mesh");
     }
 
     /// CONTRACT: the node-admin answering either probe stops the investigation: no second probe
