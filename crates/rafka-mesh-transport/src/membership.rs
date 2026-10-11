@@ -2920,6 +2920,17 @@ impl Backbone {
         true
     }
 
+    /// This Mesh's members as a publication round puts them into its aggregate: every member of
+    /// this Mesh the book heard within the staleness floor.
+    pub fn own_members(&self, membership: &Membership) -> Vec<MeshDigest> {
+        membership.book.current(membership.book.staleness_floor()).into_iter().filter(|d| d.node.name.mesh == self.mesh).collect()
+    }
+
+    /// Resolves when the next publication round is due: at `deadline`, the anti-entropy timer.
+    pub async fn round_wake(&self, _membership: &Membership, deadline: tokio::time::Instant) {
+        tokio::time::sleep_until(deadline).await;
+    }
+
     /// The forwarded full of every source this primary holds (its own Mesh and each peer Mesh),
     /// without loads, on taking the seat: the first publication of every source into this Mesh.
     /// Nothing sends it again on a timer; a held source whose peer Mesh is unheard is not
