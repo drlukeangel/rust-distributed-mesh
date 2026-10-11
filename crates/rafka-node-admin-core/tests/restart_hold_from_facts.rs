@@ -1,8 +1,9 @@
 //! The restart hold an admin's book carries is the Build facts' truth from the moment a fact enters
 //! the admin's log (node-restart.md "Completion: node.restarted after the whole start completes"):
-//! the `NodeRestarting` pre-event opens it and the `restart-node:<path>` `Complete` receipt closes
-//! it, each as it lands, never at the next hierarchy round. A restart door reading the book between
-//! the receipt and the next round must not refuse a live node as still `restarting`.
+//! the `NodeRestarting` pre-event opens it, and the `restart-node:<path>` `Complete` receipt or the
+//! attempt's `Converged` verdict (node-rpc-envelope.md: progress waits on no gossip) closes it, each
+//! inside the append that brings it, never at the next hierarchy round. A restart door reading the
+//! book after that fact must not refuse a live node as still `restarting`.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`) whose rounds are stretched far
 //! past the cell's bound (`RDM_GOSSIP_INTERVAL_MS`, `RDM_BACKBONE_INTERVAL_MS`), in a process of its
