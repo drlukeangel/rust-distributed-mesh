@@ -384,7 +384,7 @@ impl FabricRounds {
         let mut out = mesh_blockers(view, &meshes, &self.env.records.planned());
         let primaries: Vec<(String, Option<IncarnationId>, bool)> =
             meshes.iter().map(|m| { let p = view.cohort_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
-        let reports = self.env.records.declared.lock().unwrap().reports.clone();
+        let reports = crate::round::reports_of(&self.env.records.declared.lock().unwrap(), view, meshes.iter().map(String::as_str));
         out.extend(crate::round::fabric_missing(&primaries, self.env.records.declare_gate(), &reports));
         out
     }
