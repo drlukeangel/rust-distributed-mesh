@@ -1121,7 +1121,8 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClie
 /// through its mesh-primary (not the fabric-primary), the node carries it, then its runtime is
 /// killed: the mesh-primary's recovery writes the exited birth's Deleted row with that config, the
 /// new node's name claim is seeded from it (`via-node-row` moment `claim`, `seeded_from` the exited
-/// node, one key), and the new node (new node.id, same path.name) carries the config.
+/// node, one key), the new node's join answer hands it that config (`via-join` `config_keys` 1),
+/// and the new node (new node.id, same path.name) carries the config.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor() {
     let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor").await;
@@ -1161,6 +1162,14 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
     let deleted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect();
     assert_eq!(deleted.len(), 1, "one Deleted row of the exited birth: {deleted:?}");
     assert_eq!(s(&deleted[0]["attributes"]["keys"]), "1", "the Deleted row keeps the config: {deleted:?}");
+    // The new node is handed that config in its join answer (node-start.md step 2), before it
+    // publishes anything or declares readiness: the claim was written before it was launched.
+    let joined = wait_for("the new node's join is exported", Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).cloned()
+    })
+    .await;
+    assert_eq!((s(&joined["attributes"]["outcome"]), s(&joined["attributes"]["config_keys"])), ("installed".to_string(), "1".to_string()), "the new node's join answer hands its row's config: {joined}");
     let carried = wait_for(&format!("the new {node_path} carries the config"), Duration::from_secs(30), || async { let n = estate.node(node_path).await; (n["config"] == told_json).then_some(n) }).await;
     assert_eq!(carried["node_id"], after["node_id"], "the new node, not the exited one, carries it");
     eprintln!("trace {}: via-node-row delete node_id={} keys={}; trace {}: via-node-row claim node={} seeded_from={} keys={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&claim["trace_id"]), mesh_primary, s(&a["seeded_from"]), a["keys"]);
