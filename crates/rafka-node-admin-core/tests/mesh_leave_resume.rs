@@ -284,14 +284,14 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
         let _in_root = root.enter();
 
         // Attempt 1: both sides capture the roster at admission; the ordinary tier is incomplete.
-        let fp1 = accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", || live_roster(&records)).await.unwrap();
-        let mp1 = accepted_roster(&builds, &key(1), STEP_LEAVING_ROSTER, FINAL, || live_roster(&records)).await.unwrap();
+        let fp1 = accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
+        let mp1 = accepted_roster(&builds, &key(1), STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
         let first = members_exited(&builds, &key(1), FINAL, &mp1, &me, final_runtime.clone(), &records, shutdown(1)).await;
 
         // Attempt 2 reads the view the first one left.
         let records2: Vec<Node> = records.iter().map(|n| view.0.lock().unwrap().get(&n.name.to_string()).cloned().unwrap_or_else(|| n.clone())).collect();
-        let fp2 = accepted_roster(&builds, &key(2), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", || live_roster(&records2)).await.unwrap();
-        let mp2 = accepted_roster(&builds, &key(2), STEP_LEAVING_ROSTER, FINAL, || live_roster(&records2)).await.unwrap();
+        let fp2 = accepted_roster(&builds, &key(2), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records2)).await.unwrap();
+        let mp2 = accepted_roster(&builds, &key(2), STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records2)).await.unwrap();
         let second = members_exited(&builds, &key(2), FINAL, &mp2, &me, final_runtime.clone(), &records2, shutdown(2)).await;
         (first, fp1, fp2, mp1, mp2, second, records2, trace_id)
     });

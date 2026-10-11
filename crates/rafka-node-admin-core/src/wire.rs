@@ -437,7 +437,8 @@ fn produces(step: &str) -> Option<Produces> {
         Produces::Storage
     } else if ret(RetireStep::TerminateRuntime) {
         Produces::Terminal
-    } else if step == crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED || step == crate::mesh_leave::STEP_MESH_LEFT {
+    } else if [crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED, crate::mesh_leave::STEP_MESH_LEFT, crate::mesh_leave::STEP_ACCEPTED_ROSTER, crate::mesh_leave::STEP_LEAVING_ROSTER].contains(&step) {
+        // The accepted roster rides the exit-manifest shape: an exit manifest with no receipts yet.
         Produces::ExitManifest
     } else {
         return None;
