@@ -14,7 +14,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
 use serde_json::{json, Value};
@@ -860,9 +860,9 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
         let _in_root = root.enter();
         let admitted = |steps: &[BuildStepReceipt]| admitted_of(steps, &outer).unwrap().unwrap();
         let adm = admitted(&builds.read_build(&build_id).await.unwrap().steps);
-        let without_row = resume_after_loss(&builds, &fleet, &[], &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
+        let without_row = resume_after_loss(&builds, &fleet, None, &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
         let before = admitted(&builds.read_build(&build_id).await.unwrap().steps);
-        let with_row = resume_after_loss(&builds, &fleet, std::slice::from_ref(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
+        let with_row = resume_after_loss(&builds, &fleet, Some(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
         let after = admitted(&builds.read_build(&build_id).await.unwrap().steps);
         (without_row, with_row, before, after, trace_id)
     });
@@ -937,7 +937,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
         // mesh2.admin.3 admits LeaveMesh; its capture would be the live members it sees now.
         let owner_facts = owner.facts().await.unwrap();
         let live_now: Vec<Node> = records.iter().filter(|n| [FAILING, NEW_ADMIN].contains(&n.name.to_string().as_str())).cloned().collect();
-        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &key(2), NEW_ADMIN, &created, &runtime(NEW_ADMIN), || live_roster(&live_now), || async { Ok(owner_facts) }).await;
+        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &own.0, &key(2), NEW_ADMIN, &created, &runtime(NEW_ADMIN), || live_roster(&live_now), || async { Ok(owner_facts) }).await;
         let out = match roster {
             Ok((roster, known)) => members_exited(&own, &key(2), NEW_ADMIN, &roster, &created, runtime(NEW_ADMIN), &records, &known, |n: Node| {
                 let (ran, t) = (&ran, exited(&RosterBirth::of(&n).unwrap(), &runtime(&n.name.to_string())));
@@ -994,4 +994,95 @@ fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row
     });
     assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no runtime row")), "no digest and no row: unproven, naming both: {without_row:?}");
     assert_eq!(with_row, Finding::Exited { code: Some(0) }, "the runtime row recorded at launch is what the provider inspects");
+}
+
+/// CONTRACT: the leaving mesh-primary admits `LeaveMesh` for a Build whose Accepted fact gossip has
+/// not yet brought it (the command outran the fact, gate 044519ab canonical_ids: admitted at .810,
+/// "no Build" at .811, Accepted heard at .905). Its own log holding no fact of the Build is the case
+/// "its own do not yet admit it": the owner's Build facts are read (FetchBuildFacts) and absorbed
+/// into its own Build log (node-build-hydration.md: "Facts are absorbed into the existing Build
+/// log"), and the leave runs over the roster the owner accepted. Its own log then holds the Build.
+#[test]
+fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners_facts() {
+    let cap = capture();
+    let records: Vec<Node> = [FINAL, EXITING].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 49_000 + i as u32))).collect();
+    let me = RosterBirth::of(&records[0]).unwrap();
+    let my_runtime = RuntimeProof::of(&handles[FINAL].fact().unwrap());
+    let (roster, held, trace_id) = cap.run(async {
+        let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
+        let build_id = BuildId::mint();
+        let mesh_id = MeshId::mint();
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 1, operation: operation(&mesh_id) };
+        owner.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        accepted_roster(&owner, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &my_runtime, || live_roster(&records)).await.unwrap();
+        let owner_facts = owner.facts().await.unwrap();
+        let root = tracing::info_span!("cell.mesh-leave-unheard-build", build_id = %build_id);
+        let trace_id = trace_id(&root);
+        let _in_root = root.enter();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &own.0, &key, FINAL, &me, &my_runtime, || live_roster(&records), || async {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(owner_facts)
+        })
+        .await;
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1, "the owner's Build facts are read once");
+        (roster, own.read_build(&build_id).await.map(|p| p.steps.iter().map(|r| r.step.clone()).collect::<Vec<_>>()), trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("unheard_build");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    let (roster, _) = roster.unwrap_or_else(|e| panic!("a leaving primary that has not heard the Build runs the leave over the owner's facts: {e}"));
+    assert_eq!(sorted(roster), sorted(live_roster(&records).unwrap()), "the roster is the one the owner accepted");
+    let held = held.unwrap_or_else(|e| panic!("the owner's facts are absorbed: this admin's own log holds the Build: {e}"));
+    assert!(held.iter().any(|s| s == STEP_ACCEPTED_ROSTER) && held.iter().any(|s| s == STEP_LEAVING_ROSTER), "its own log holds the owner's AcceptedRoster and the LeavingRoster it captured: {held:?}");
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    assert!(named("rdm.node_admin.build.update.via-owner-facts-absorbed").iter().any(|s| s["attributes"]["executor"] == FINAL && s["attributes"]["facts"] == "2" && s["attributes"]["steps"] == "1"), "the owner's Build facts were absorbed into this admin's own log: {:?}", spans.iter().map(|s| s["name"].clone()).collect::<Vec<_>>());
+}
+
+/// CONTRACT (mesh-leave.md step 4: "The fabric-primary validates exact roster coverage"; line 79:
+/// "Missing receipts ... leave the workflow incomplete"): the final primary that calls mesh-leave
+/// and holds no fact of the Build at all (FetchBuildFacts answers UnknownBuild) recorded no exit
+/// manifest, so the fabric-primary's verdict is Incomplete at once, naming every roster birth but
+/// the final primary as without an Exited receipt and naming the unknown Build; the open leave ends
+/// inside the call instead of waiting out its handoff bound (gate 044519ab canonical_ids: 120 s).
+/// A read that could not decide (not ready, unreached) stays undecided and the leave stays open.
+#[test]
+fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplete() {
+    let records: Vec<Node> = [FINAL, EXITING, FAILING].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 50_000 + i as u32))).collect();
+    let roster = live_roster(&records).unwrap();
+    let me = RosterBirth::of(&records[0]).unwrap();
+    let admitted = Admitted { roster: roster.clone(), final_primary: me.clone(), final_runtime: RuntimeProof::of(&handles[FINAL].fact().unwrap()), amendments: Vec::new() };
+    let mesh_id = MeshId::mint();
+    let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint().0, attempt: 1, operation: operation(&mesh_id) };
+    let reference = manifest_reference(&key.build_id, 1, &key.operation, false);
+    let cap = capture();
+    let (verdict, not_ready, trace_id) = cap.run(async {
+        let root = tracing::info_span!("cell.mesh-leave-unknown-build-handoff", build_id = %key.build_id);
+        let trace_id = trace_id(&root);
+        let _in_root = root.enter();
+        let unknown = rafka_node_admin_core::build_facts_read::FetchFailure::UnknownBuild(format!("the responder holds no fact of {}", key.build_id));
+        let verdict = handoff_verdict_from_read(Err(unknown), &key, &admitted, &reference, "mesh1.admin.1", FINAL);
+        let not_ready = handoff_verdict_from_read(Err(rafka_node_admin_core::build_facts_read::FetchFailure::NotReady("hydrating".into())), &key, &admitted, &reference, "mesh1.admin.1", FINAL);
+        (verdict, not_ready, trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("unknown_build_handoff");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    match verdict {
+        Ok(HandoffVerdict::Incomplete { reason, without_exit }) => {
+            let expected: BTreeSet<String> = roster.iter().filter(|b| **b != me).map(|b| format!("{} {}", b.node, b.incarnation_id)).collect();
+            assert_eq!(without_exit.into_iter().collect::<BTreeSet<_>>(), expected, "every roster birth but the final primary is without an Exited receipt");
+            assert!(reason.contains("holds no fact of") && reason.contains(&key.build_id), "the reason names the unknown Build: {reason}");
+        }
+        other => panic!("a final primary that holds no fact of the Build ends the leave incomplete, not undecided: {other:?}"),
+    }
+    assert!(matches!(&not_ready, Err(r) if r.contains("hydrating")), "a read that could not decide leaves the leave open: {not_ready:?}");
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    assert_eq!(named("rdm.node_admin.mesh.reject.via-incomplete-handoff").iter().filter(|s| s["attributes"]["roster"] == "3" && s["attributes"]["exited"] == "0").count(), 1, "one incomplete handoff is refused, for the unknown Build only");
 }
