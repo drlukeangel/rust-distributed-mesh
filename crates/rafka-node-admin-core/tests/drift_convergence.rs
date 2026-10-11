@@ -1023,3 +1023,71 @@ fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again(
     let drift: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-proven-drift" && s["trace_id"] == trace_id.as_str()).collect();
     assert!(drift.iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["action"] == "none" && s["attributes"]["scope"].as_str().is_some_and(|x| x.contains("shutdown-mesh:"))), "the opened attempt names the incomplete shutdown: {drift:?}");
 }
+
+/// CONTRACT: a removed mesh whose final primary's exact exit is recorded, but whose `MeshLeft` is
+/// not (the attempt failed after the owner's stop of the final primary), is resumed from its
+/// receipts although the view holds no birth of it live: the fabric-primary opens the next attempt
+/// of the same Build with no action, and that attempt's plan is the mesh's shutdown, which records
+/// `MeshLeft` from the receipts (`mesh_leave::owner_resume`).
+#[test]
+fn a_removed_mesh_whose_final_primary_exited_without_mesh_left_opens_its_shutdown_again() {
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, StepOutcome};
+    use rafka_node_admin_core::deployment::pipeline::{RetireStep, RuntimeProof, TerminalReceipt};
+    use rafka_node_admin_core::mesh_leave::{member_operation, operation, ExitManifest, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_OTHER_MEMBERS_EXITED};
+    let cap = crate::mesh_leave_resume::capture();
+    let (opened, build_id, trace_id) = cap.run(async {
+        let root = tracing::info_span!("cell.mesh-leave-reopen-final-exited");
+        let trace_id = {
+            use opentelemetry::trace::TraceContextExt as _;
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            root.context().span().span_context().trace_id().to_string()
+        };
+        let _in_root = root.enter();
+        let e = estate().await;
+        let fp = e.fabric_primary().await;
+        let leaving = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+        let mut topology = e.accepted.current(&*e.builds).await.unwrap().topology;
+        topology.meshes.remove(leaving);
+        let build_id = BuildId::mint();
+        e.builds.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 1 }).await.unwrap();
+        e.builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: fp.clone() }).await.unwrap();
+        let mesh_id = e.view.read().await.meshes.iter().find(|m| m.name == leaving).and_then(|m| m.id.clone()).unwrap();
+        let outer = operation(&mesh_id);
+        // Every birth of the leaving mesh exited: none is live in the view.
+        let members: Vec<Node> = {
+            let mut v = e.view.write().await;
+            for n in v.nodes.iter_mut().filter(|n| n.mesh == leaving) {
+                n.status = NodeStatus::Dead;
+            }
+            v.nodes.iter().filter(|n| n.mesh == leaving).cloned().collect()
+        };
+        let roster: Vec<RosterBirth> = members.iter().map(|n| RosterBirth::of(n).unwrap()).collect();
+        let last = roster.iter().find(|b| b.node.contains(".admin.")).cloned().unwrap();
+        let proof = |b: &RosterBirth| RuntimeProof { deployment_id: format!("dep-{}", b.node), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: b.incarnation_id.clone() };
+        let terminal = |b: &RosterBirth| TerminalReceipt { node: b.node.clone(), node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone(), runtime: Some(proof(b)), exit_code: Some(0) };
+        let step = |operation: String, step: &str, output: serde_json::Value| BuildStepReceipt { build_id: build_id.clone(), attempt: 1, operation, step: step.into(), outcome: StepOutcome::Complete, output: Some(output), executor: Some(fp.clone()) };
+        let accepted = ExitManifest { mesh_id: mesh_id.to_string(), roster: roster.clone(), final_primary: last.clone(), final_runtime: Some(proof(&last)), receipts: vec![] };
+        let others = ExitManifest { receipts: roster.iter().filter(|b| **b != last).map(terminal).collect(), ..accepted.clone() };
+        for r in [
+            step(outer.clone(), STEP_ACCEPTED_ROSTER, serde_json::to_value(&accepted).unwrap()),
+            step(outer.clone(), STEP_OTHER_MEMBERS_EXITED, serde_json::to_value(&others).unwrap()),
+            step(member_operation(&outer, &last.node), RetireStep::TerminateRuntime.name(), serde_json::to_value(terminal(&last)).unwrap()),
+        ] {
+            e.builds.append_step_receipt(&r).await.unwrap();
+        }
+        e.builds
+            .append_attempt_receipt(&BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: format!("{outer}: the MeshLeft receipt could not be recorded") } })
+            .await
+            .unwrap();
+        e.accepted.point(&build_id, 1, "test").await.unwrap();
+        (e.drift().await, build_id, trace_id)
+    });
+    let spans = cap.spans();
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cells/mesh_leave_reopen_final_exited");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    assert_eq!(opened, Some((build_id, 2)), "the recorded final exit with no MeshLeft opens the next attempt of the same Build");
+    let drift: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-proven-drift" && s["trace_id"] == trace_id.as_str()).collect();
+    assert!(drift.iter().any(|s| s["attributes"]["action"] == "none" && s["attributes"]["scope"].as_str().is_some_and(|x| x.contains("shutdown-mesh:"))), "{drift:?}");
+}
