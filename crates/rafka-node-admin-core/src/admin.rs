@@ -475,33 +475,36 @@ impl Records {
         let _ = self.book.set(book);
     }
 
-    /// Point-read the exit-proof row of every birth `t` holds and every seat holder the book records,
-    /// each among its own mesh's status rows, and hold what was read as the proven exits; whether
-    /// they changed. A row that cannot be read proves nothing and is named on one
-    /// `rdm.node_admin.node.reject.via-exit-row-unreadable` span.
-    async fn read_exits(&self, storage: &dyn crate::status_storage::StatusStorage, t: &Topology) -> bool {
+    /// The read of the exit-proof rows, one part of the view's read phase (taken before the view's
+    /// write lock, [`Self::install_projected`]): the row of every birth a projection draws from `book`
+    /// and these records (each digest held, each stopped birth with or without a digest, each launch
+    /// record) and of every seat holder the book records, a point read among its own mesh's status
+    /// rows, and what was read held as the proven exits. The store root is the fabric's own (R14),
+    /// so a birth of another fabric names no row there. A row that cannot be read proves nothing and
+    /// is named on one `rdm.node_admin.node.reject.via-exit-row-unreadable` span.
+    pub async fn read_exits(&self, book: &DigestBook) {
+        let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
         let mut births: HashMap<(NodeId, IncarnationId), (String, String)> = HashMap::new();
-        for n in &t.nodes {
+        for d in book.all().into_iter().chain(book.parked()) {
+            births.entry((d.node.node_id.clone(), d.node.incarnation.clone())).or_insert((d.node.name.mesh.clone(), d.node.name.to_string()));
+        }
+        for op in book.parked_unheard() {
+            births.entry((op.node_id.clone(), op.incarnation.clone())).or_insert((op.name.mesh.clone(), op.name.to_string()));
+        }
+        for n in self.nodes.lock().unwrap().values() {
             if let Some(inc) = &n.incarnation_id {
                 births.entry((n.node_id.clone(), inc.clone())).or_insert((n.mesh.clone(), n.name.to_string()));
             }
         }
-        if let Some(book) = self.book.get() {
-            for h in book.seats.fabric().into_iter().chain(book.seats.meshes().into_values()) {
-                births.entry((h.node_id.clone(), h.incarnation.clone())).or_insert((h.mesh.clone(), format!("the {} seat holder", h.mesh)));
-            }
+        for h in book.seats.fabric().into_iter().chain(book.seats.meshes().into_values()) {
+            births.entry((h.node_id.clone(), h.incarnation.clone())).or_insert((h.mesh.clone(), format!("the {} seat holder", h.mesh)));
         }
-        let mut read = std::collections::HashSet::new();
+        let mut read: HashMap<(NodeId, IncarnationId), (String, crate::status_storage::NodeExitRow)> = HashMap::new();
         let mut unreadable = Vec::new();
-        let before = self.exited.lock().unwrap().clone();
         for ((node_id, inc), (mesh, named)) in births {
             match storage.node_exit_of(&mesh, &node_id, &inc).await {
                 Ok(Some(row)) => {
-                    if !before.contains(&(node_id.clone(), inc.clone())) {
-                        tracing::info_span!("rdm.node_admin.node.resolve.via-exit-proof-row", node = %row.name, node_id = %node_id, incarnation_id = %inc.0, mesh = %mesh, exit_code = row.exit_code.map(|c| c.to_string()).unwrap_or_default(), proof = %row.proof)
-                            .in_scope(|| tracing::info!("the projection reads the birth's exit-proof row: it is held exited, Dead and gone from every seat"));
-                    }
-                    read.insert((node_id, inc));
+                    read.insert((node_id, inc), (mesh, row));
                 }
                 Ok(None) => {}
                 Err(e) => unreadable.push(format!("{named} ({node_id} at {}) among {mesh}'s status rows: {e}", inc.0)),
@@ -511,7 +514,17 @@ impl Records {
             tracing::info_span!("rdm.node_admin.node.reject.via-exit-row-unreadable", rows = unreadable.len(), detail = %unreadable.join("; "))
                 .in_scope(|| tracing::info!("an exit-proof row could not be read: that birth is not held exited by this projection"));
         }
-        std::mem::replace(&mut *self.exited.lock().unwrap(), read.clone()) != read
+        // What is held now (another install may have stored since this pass began) names the exits entering.
+        let entered: Vec<(String, crate::status_storage::NodeExitRow)> = {
+            let mut exited = self.exited.lock().unwrap();
+            let entered = read.iter().filter(|(k, _)| !exited.contains(*k)).map(|(_, v)| v.clone()).collect();
+            *exited = read.into_keys().collect();
+            entered
+        };
+        for (mesh, row) in entered {
+            tracing::info_span!("rdm.node_admin.node.resolve.via-exit-proof-row", node = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.0, mesh = %mesh, exit_code = row.exit_code.map(|c| c.to_string()).unwrap_or_default(), proof = %row.proof)
+                .in_scope(|| tracing::info!("the projection reads the birth's exit-proof row: it is held exited, Dead and gone from every seat"));
+        }
     }
 
     /// Whether the birth's exit-proof row was read by the installed projection.
@@ -561,16 +574,22 @@ impl Records {
     /// the later state: a projection taken before waiting could carry a removal's absence away
     /// again. The declarer wakes when the view changed; a write of the same view wakes nothing.
     ///
-    /// The exits the projection holds are read with it: once projected, the exit-proof row of every
-    /// birth it holds is point-read, and a read that changed what is proven is projected again.
-    pub async fn install_projected(&self, topology: &RwLock<Topology>, mut project: impl FnMut() -> Topology) -> Topology {
-        let mut held = topology.write().await;
-        let mut t = project();
-        if let Some(fold) = self.status.get() {
-            if self.read_exits(&**fold.storage(), &t).await {
-                t = project();
-            }
+    /// The view's read phase runs first, before its write lock is taken: no disk read holds a
+    /// reader of the view. It reads the exit-proof rows of the births the book this admin's
+    /// membership holds and these records name ([`Self::read_exits`]); the projection taken under
+    /// the lock reads the exits held. A birth that enters the book between the two is read at the
+    /// next rebuild.
+    pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
+        if let Some(book) = self.book.get() {
+            self.read_exits(book).await;
         }
+        let held = topology.write().await;
+        let t = project();
+        self.install(held, t).await
+    }
+
+    /// Install `t` over the view `held` (its write lock held).
+    async fn install(&self, mut held: tokio::sync::RwLockWriteGuard<'_, Topology>, t: Topology) -> Topology {
         if *held != t {
             // The seat of this admin's mesh taken with this view: its status rows are folded in
             // before the view is installed, so no decision reads the view against an empty record.
@@ -6780,6 +6799,7 @@ mod tests {
         book.seats.take(MeshPrimary, &holder_of(&fp, 1));
         book.seats.take(MeshPrimary, &holder_of(&mesh2[0], 1));
         let records = Arc::new(Records::default());
+        records.set_book(book.clone());
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
         let rows = Arc::new(crate::node_rows::NodeRows::new(fp.node.name.clone(), fp.node.node_id.clone(), view.clone(), storage));
         records.set_rows(rows.clone());
@@ -6794,6 +6814,7 @@ mod tests {
         if records.status.get().is_none() {
             records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "nomesh".into(), "nomesh.admin.1".parse().unwrap(), NodeId::mint());
         }
+        records.set_book(book.clone());
         let mut n = Node::allocated(d.node.name.clone());
         n.node_id = d.node.node_id.clone();
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -7044,6 +7065,7 @@ mod tests {
         // mesh2.admin.2's own view: its investigation's exit proof, read from the same row.
         let own = Records::default();
         own.set_status(records.status.get().unwrap().storage().clone(), "mesh2".into(), live.node.name.clone(), live.node.node_id.clone());
+        own.set_book(book.clone());
         let view2 = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &own));
         own.install_projected(&view2, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &own)).await;
         let decided = incumbency_of(&book, &own);
@@ -7836,7 +7858,10 @@ mod tests {
         store.inner.put_node_exit_of("mesh1", &row).await.unwrap();
         let records = Arc::new(Records::default());
         records.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
+        records.set_book((*book).clone());
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
+        let capture = crate::span_capture::Capture::new("i143-3068-exit-rows-read-before-the-view-lock");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let install = {
             let (records, topology, book) = (records.clone(), topology.clone(), book.clone());
             tokio::spawn(async move { records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await })
@@ -7849,6 +7874,9 @@ mod tests {
         let listed = installed.node(&lost.node.name).map(|n| n.status);
         assert_eq!(listed, Some(NodeStatus::Dead), "the projection installed under the lock holds the exit the read found");
         assert_eq!(topology.read().await.node(&lost.node.name).map(|n| n.status), Some(NodeStatus::Dead));
+        let read = capture.named("rdm.node_admin.node.resolve.via-exit-proof-row");
+        assert_eq!(read.len(), 1, "the read phase reads the birth's exit-proof row once: {read:?}");
+        eprintln!("span rdm.node_admin.node.resolve.via-exit-proof-row trace_id={} {:?}", read[0].trace_id, read[0].attributes);
     }
 
     const STORE_DIR: &str = "/tmp/rdm-admin-cells/store";
