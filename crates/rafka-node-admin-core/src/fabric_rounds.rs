@@ -729,7 +729,7 @@ impl FabricRounds {
     }
 
     async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
-        let Some(me) = own_row(view, &self.env.node_id) else {
+        let Some(me) = view.own(&self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
         let Some(sender) = sender else { return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } } };
@@ -746,7 +746,7 @@ impl FabricRounds {
         if op.operation != want {
             return StatusReply::NotReady { reason: format!("{}: {} names operation {}, the round's is {want}", self.env.me, req.op(), op.operation) };
         }
-        if sender.is_fabric_primary && sender.name != me.name && me.is_primary {
+        if sender.is_fabric_primary && sender.node_id != me.node_id && me.is_primary {
             // This admin is a mesh primary and the fabric-primary commands its mesh.
             let key = op.key();
             self.env.wake.addressed_by(&sender.node_id);
@@ -759,7 +759,7 @@ impl FabricRounds {
                 self.env.wake.poke();
                 StatusReply::AlreadyApplied
             }
-        } else if sender.kind == NodeKind::NodeAdmin && sender.is_primary && sender.mesh == me.mesh && sender.name != me.name {
+        } else if sender.kind == NodeKind::NodeAdmin && sender.is_primary && sender.mesh == me.mesh && sender.node_id != me.node_id {
             match own {
                 Some(own) => own.serve(&sender.node_id, None, req).await.expect("a round op"),
                 None => StatusReply::NotReady { reason: format!("{} has not yet joined its mesh; {} from {} is refused", self.env.me, req.op(), sender.name) },
@@ -770,7 +770,7 @@ impl FabricRounds {
     }
 
     fn serve_up(&self, view: &Topology, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
-        let Some(me) = own_row(view, &self.env.node_id) else {
+        let Some(me) = view.own(&self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
         let who = sender.map(|n| (&n.node_id, n.incarnation_id.as_ref(), n.name.to_string()));
@@ -781,16 +781,10 @@ impl FabricRounds {
                 self.climb_wake.notify_one();
                 reply
             }
-            Some(s) if me.is_primary && s.mesh == me.mesh && s.name != me.name => self.mesh_book.check_in(&self.env.me.to_string(), who_ref, req),
+            Some(s) if me.is_primary && s.mesh == me.mesh && s.node_id != me.node_id => self.mesh_book.check_in(&self.env.me.to_string(), who_ref, req),
             _ => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the fabric-primary, or the mesh-primary of the sender's mesh".into() } },
         }
     }
-}
-
-/// This admin's own row in `view`, by the node id it was born with. Never by path.name: a replace
-/// keeps the path.name and mints a new node id, so a view can hold the retired birth's row too.
-fn own_row<'a>(view: &'a Topology, node_id: &NodeId) -> Option<&'a Node> {
-    view.members().find(|n| n.node_id == *node_id)
 }
 
 /// The meshes among `meshes` that are not ready-for-traffic in `view`, with the nodes behind each. A
@@ -887,7 +881,7 @@ mod tests {
         let reborn = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, false);
         let view = projected(vec![retired.clone(), reborn.clone(), node("mesh1.admin.2", NodeStatus::ReadyForTraffic, true)]);
         assert_eq!(view.members().filter(|n| n.name == reborn.name).count(), 2, "both births of mesh1.admin.1 are in the view");
-        let me = own_row(&view, &reborn.node_id).expect("this admin is in its view");
+        let me = view.own(&reborn.node_id).expect("this admin is in its view");
         assert_eq!(me.node_id, reborn.node_id, "the reborn admin's own row, not the retired birth's {}", retired.node_id);
     }
 

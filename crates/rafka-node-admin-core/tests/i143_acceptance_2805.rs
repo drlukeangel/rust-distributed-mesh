@@ -145,6 +145,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let fabric_id = topology.read().await.fabric.id.clone();
     let authority = Arc::new(StatusAuthority {
         me: me.node.name.clone(),
+        node_id: me.node.node_id.clone(),
         fabric_id,
         topology,
         declared: Arc::new(Mutex::new(declared)),
@@ -896,13 +897,13 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
     capture.run(async {
         let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let handoff = |rig: &Rig, mesh_id: MeshId, target: Node| {
-            let (topology, me) = (rig.authority.topology.clone(), fp.node.name.clone());
+            let (topology, me, me_id) = (rig.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
             let ep_key = fp.key.clone();
             async move {
                 let ep = rafka_node_rpc::endpoint::bind(ep_key, "127.0.0.1:0".parse().unwrap()).await.unwrap();
                 let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
                 let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
-                rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &topology, "mesh2", &mesh_id.to_string(), &target).await
+                rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), &target).await
             }
         };
         let target_of = |rig: &Rig| {
@@ -992,7 +993,7 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
         r.ready.store(false, Ordering::SeqCst);
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
-        let (topology, me) = (r.authority.topology.clone(), fp.node.name.clone());
+        let (topology, me, me_id) = (r.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
         let ep = rafka_node_rpc::endpoint::bind(fp.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
         let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
@@ -1002,7 +1003,7 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
             gate.store(true, Ordering::SeqCst);
         });
         let started = std::time::Instant::now();
-        rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &topology, "mesh2", &mesh_id.to_string(), &target).await.expect("Pending applies once the authority is filled");
+        rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), &target).await.expect("Pending applies once the authority is filled");
         let waited = started.elapsed();
         opener.await.unwrap();
         assert!(waited >= Duration::from_millis(1000), "the hand-off did not pass while the gate was closed: {waited:?}");

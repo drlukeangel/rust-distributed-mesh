@@ -63,7 +63,7 @@ struct Seat {
 }
 
 async fn seat(b: &Birth, topology: Arc<RwLock<Topology>>, builds: Arc<dyn BuildStateAdapter>, contexts: Arc<AttemptContexts>) -> Seat {
-    let door = Arc::new(ClaimDoor { me: b.node.name.clone(), topology, builds, contexts });
+    let door = Arc::new(ClaimDoor { me: b.node.name.clone(), node_id: b.node.node_id.clone(), topology, builds, contexts });
     let slot: build_claim::ClaimSlot = Arc::new(OnceLock::new());
     let _ = slot.set(door.clone());
     let server = build_claim::serve(ServerBuilder::new(), slot)

@@ -108,10 +108,11 @@ impl BuildDoor {
 
     /// Only the fabric-primary accepts a Build call; any other admin names the one it sees.
     async fn not_fabric_primary(&self) -> Option<BuildReply> {
-        let seat = self.control.topology.read().await.fabric_primary().map(|n| n.name.clone());
+        // Decided by the node id this admin was born with (its claim door's), never by path.name.
+        let seat = self.control.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
         match seat {
-            Some(n) if n.to_string() == self.me.to_string() => None,
-            other => Some(BuildReply::NotFabricPrimary { fabric_primary: other.map(|n| n.to_string()) }),
+            Some((_, id)) if id == self.env.door.node_id => None,
+            other => Some(BuildReply::NotFabricPrimary { fabric_primary: other.map(|(n, _)| n.to_string()) }),
         }
     }
 

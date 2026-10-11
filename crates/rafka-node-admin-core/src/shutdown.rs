@@ -15,7 +15,7 @@
 //! shows); it is never inferred stopped.
 
 use crate::fabric_storage::{FabricShutdown, FabricStorage, FabricStorageError};
-use crate::model::{Node, NodeKind, NodeStatus, PathName};
+use crate::model::{Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use serde::Serialize;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -159,11 +159,11 @@ fn present(n: &Node) -> bool {
 }
 
 /// What one admin stops, in order, once the barrier holds: as `mesh`'s primary, its ordinary
-/// members, then its non-primary admins.
-pub(crate) fn own_mesh_drain(view: &Topology, me: &PathName) -> (Vec<Node>, Vec<Node>) {
+/// members, then its non-primary admins (every birth of the mesh's admins but this one, `me_id`).
+pub(crate) fn own_mesh_drain(view: &Topology, me: &PathName, me_id: &NodeId) -> (Vec<Node>, Vec<Node>) {
     let mesh = me.mesh.clone();
     let members = view.births().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin && present(n)).cloned().collect();
-    let admins = view.births().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin && n.name != *me && present(n)).cloned().collect();
+    let admins = view.births().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin && n.node_id != *me_id && present(n)).cloned().collect();
     (members, admins)
 }
 
@@ -171,7 +171,7 @@ pub(crate) fn own_mesh_drain(view: &Topology, me: &PathName) -> (Vec<Node>, Vec<
 /// waits on before stopping the spine. Returns the runtimes still present otherwise.
 pub(crate) fn drained_to_primaries(view: &Topology) -> Result<Vec<Node>, Vec<Node>> {
     let primaries: Vec<Node> = view.births().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && present(n)).cloned().collect();
-    let left: Vec<Node> = view.births().filter(|n| present(n) && !primaries.iter().any(|p| p.name == n.name)).cloned().collect();
+    let left: Vec<Node> = view.births().filter(|n| present(n) && !primaries.iter().any(|p| p.node_id == n.node_id)).cloned().collect();
     if left.is_empty() {
         Ok(primaries)
     } else {
@@ -196,7 +196,7 @@ pub trait Stopper: Send + Sync {
 /// Run one admin's part of the shutdown once it holds one, until it has nothing left to do.
 /// Returns `true` when this admin is the fabric-primary and has stopped the spine (it stops itself
 /// next); a mesh-primary and a non-primary admin wait to be stopped by theirs.
-pub async fn drain(me: PathName, control: Arc<ShutdownControl>, stopper: Arc<dyn Stopper>) -> bool {
+pub async fn drain(me: PathName, me_id: NodeId, control: Arc<ShutdownControl>, stopper: Arc<dyn Stopper>) -> bool {
     let tick = Duration::from_millis(200);
     // The barrier, from this admin's own view.
     loop {
@@ -208,17 +208,17 @@ pub async fn drain(me: PathName, control: Arc<ShutdownControl>, stopper: Arc<dyn
     }
     control.set_phase(ShutdownPhase::Draining);
     let view = stopper.view().await;
-    let i_am_mesh_primary = view.births().any(|n| n.name == me && n.is_primary);
+    let i_am_mesh_primary = view.births().any(|n| n.node_id == me_id && n.is_primary);
     if !i_am_mesh_primary {
         return false;
     }
     tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-drain", node = %me, mesh = %me.mesh)
         .in_scope(|| tracing::info!("freeze barrier holds: draining this mesh"));
-    let (members, admins) = own_mesh_drain(&view, &me);
+    let (members, admins) = own_mesh_drain(&view, &me, &me_id);
     for group in [members, admins] {
         stop_and_wait(&control, &*stopper, group).await;
     }
-    let is_fabric_primary = stopper.view().await.births().any(|n| n.name == me && n.is_fabric_primary);
+    let is_fabric_primary = stopper.view().await.births().any(|n| n.node_id == me_id && n.is_fabric_primary);
     if !is_fabric_primary {
         return false;
     }
@@ -237,7 +237,7 @@ pub async fn drain(me: PathName, control: Arc<ShutdownControl>, stopper: Arc<dyn
         }
     };
     control.set_phase(ShutdownPhase::Spine);
-    let others: Vec<Node> = primaries.into_iter().filter(|n| n.name != me).collect();
+    let others: Vec<Node> = primaries.into_iter().filter(|n| n.node_id != me_id).collect();
     stop_and_wait(&control, &*stopper, others).await;
     true
 }

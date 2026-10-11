@@ -87,6 +87,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     let rig_mesh_ids = mesh_ids.clone();
     let authority = Arc::new(StatusAuthority {
         me: admin.node.name.clone(),
+        node_id: admin.node.node_id.clone(),
         fabric_id,
         topology: topology.clone(),
         declared: Arc::new(Mutex::new(Declared::default())),
@@ -503,7 +504,7 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
         configs_door(&rig, &node).await;
         let view = rig.topology.read().await.clone();
         let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
-        let reply = rig.authority.configs.get().unwrap().update(&rig.admin.node.name, &view, &RefusingRows::default(), &req).await;
+        let reply = rig.authority.configs.get().unwrap().update(&rig.admin.node.name, &rig.admin.node.node_id, &view, &RefusingRows::default(), &req).await;
         assert!(
             matches!(&reply, StatusReply::ConfigRowRefused { node, reason } if node == "mesh1.rpc.1" && reason.contains("disk refused the write")),
             "the store refused the row: {reply:?}"
@@ -622,7 +623,7 @@ fn a_config_update_for_another_meshs_member_reaches_it_through_that_meshs_primar
         let config: BTreeMap<String, String> = [("tags".to_string(), "far".to_string())].into();
         let req = StatusRequest::UpdateNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config: config.clone() };
         let view = rig.topology.read().await.clone();
-        let reply = door.update(&rig.admin.node.name, &view, &*rig.storage, &req).await;
+        let reply = door.update(&rig.admin.node.name, &rig.admin.node.node_id, &view, &*rig.storage, &req).await;
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap() });
         assert_eq!(
             node.seen.lock().unwrap().clone(),
