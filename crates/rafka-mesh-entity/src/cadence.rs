@@ -29,3 +29,17 @@ pub fn backbone_gossip_interval() -> Duration {
     static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *EVERY.get_or_init(|| env_ms("RDM_BACKBONE_INTERVAL_MS", 2_000))
 }
+
+/// The staleness floor of a member heard only through forwarded topology, at the staleness floor
+/// `floor` and the backbone gossip interval `backbone`: the staleness floor, plus one backbone
+/// gossip interval, plus the time its mesh's next primary takes to forward it (the staleness floor
+/// and one backbone gossip interval), gossip.md §3.2.
+pub fn forwarded_staleness_floor_at(floor: Duration, backbone: Duration) -> Duration {
+    floor + backbone + floor + backbone
+}
+
+/// [`forwarded_staleness_floor_at`] at the configured cadences: when a member another mesh's
+/// primary forwards is marked `PendingReconnect` at a node that holds it only from those forwards.
+pub fn forwarded_staleness_floor() -> Duration {
+    forwarded_staleness_floor_at(staleness_floor(), backbone_gossip_interval())
+}
