@@ -1156,6 +1156,54 @@ pub(crate) struct RecoverySubmitter {
     /// This admin's Build door: the fabric-primary's own, when this admin holds that seat too.
     pub door: crate::build_op::BuildSlot,
     pub client: Option<Arc<rafka_node_rpc::NodeRpcClient>>,
+    /// The exited births whose last submit ended Failed, by birth, until a submit of theirs ends
+    /// Complete (node-recovery.md "Failure and receipts"). The tick submits each again, keyed on the
+    /// birth as the first submit was ([`owed_submits`]): a workflow whose delete completed departed
+    /// the birth (its node.deleted), and no view holds it to be found unheard again.
+    pub failed: Arc<Mutex<HashMap<(NodeId, IncarnationId), FailedSubmit>>>,
+}
+
+/// An exited birth whose last submit ended Failed: what its next submit names, with the provider's
+/// exit proof the first submit recorded (its exit-proof row stands, so nothing is inspected or
+/// written again).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FailedSubmit {
+    /// The exited birth's record: its path.name, node.id and incarnation.
+    pub node: Node,
+    /// The exit code the provider proved, and where it came from.
+    pub code: Option<i32>,
+    pub source: &'static str,
+    /// The attempt whose Failed terminal the last submit followed.
+    pub attempt: u32,
+}
+
+/// Why a submit ended without the Build's terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotSettled {
+    /// What happened, named.
+    pub why: String,
+    /// The fabric-primary refused the submit by a topology rule (the path is no member of the
+    /// accepted Build, or the birth is a node-admin whose mesh holds no other live admin: mesh
+    /// recovery's), so submitting the birth again is refused again. Anything else (no fabric-primary
+    /// named, a Build in progress, a stream cut) settles nothing and the next tick submits again.
+    pub refused: bool,
+}
+
+impl From<String> for NotSettled {
+    fn from(why: String) -> Self {
+        Self { why, refused: false }
+    }
+}
+
+/// The births the tick submits again (node-recovery.md "Failure and receipts"): none unless this
+/// admin holds its mesh's primary seat and no fabric shutdown froze recovery (as [`recovery_due`]);
+/// else every kept birth of its own mesh whose last submit ended Failed, whether or not the view
+/// still holds it.
+pub(crate) fn owed_submits(holds_seat: bool, frozen: bool, mesh: &str, failed: &HashMap<(NodeId, IncarnationId), FailedSubmit>) -> Vec<FailedSubmit> {
+    if !holds_seat || frozen {
+        return Vec::new();
+    }
+    failed.values().filter(|f| f.node.mesh == mesh).cloned().collect()
 }
 
 /// What the provider's inspection of a TRUE OFFLINE member proved.
@@ -1236,32 +1284,51 @@ impl RecoverySubmitter {
     /// holds the birth as submitted until then. A repeat answers AlreadyApplied or BuildInProgress.
     pub(crate) async fn submit(&self, node: &Node, code: Option<i32>, source: &'static str) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
-        let span = tracing::info_span!(
-            "rdm.node_admin.build.update.via-node-recovery",
-            node = %node.name,
-            node_id = %node.node_id,
-            incarnation_id = %incarnation.0,
-            submitter = %self.me,
-            exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
-            exit_proof = source,
-            fabric_primary = tracing::field::Empty,
-            build_id = tracing::field::Empty,
-            attempt = tracing::field::Empty,
-            disposition = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-        );
+        let span = submit_span(&self.me, node, &incarnation, code, source);
         // The exit-proof row first: a refused put ends the submit here, named on its own span.
         let end = match crate::offline::put_exit_proof(&*self.status_storage, node, code, source, local_now_ms()).await {
             Ok(_) => self.submit_in(&span, node, &incarnation).instrument(span.clone()).await,
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         };
-        let (outcome, r) = settle(end);
+        self.settled(&span, node, &incarnation, code, source, end)
+    }
+
+    /// The submit of a birth whose last submit ended Failed (node-recovery.md "Failure and
+    /// receipts"), on the tick: the same submit, keyed on the exited birth, with no new inspection
+    /// and no new exit-proof row (the first submit's stands). The fabric-primary answers it as any
+    /// repeat: AlreadyApplied once a workflow completed for the birth, BuildInProgress while an
+    /// attempt runs, else the next attempt of the Build with this birth's action, whose plan runs only
+    /// what the receipts leave (a delete that completed is never run again).
+    pub(crate) async fn submit_again(&self, failed: &FailedSubmit) -> Result<(), String> {
+        let node = &failed.node;
+        let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
+        let span = submit_span(&self.me, node, &incarnation, failed.code, failed.source);
+        span.record("after_failed_attempt", failed.attempt);
+        let end = self.submit_in(&span, node, &incarnation).instrument(span.clone()).await;
+        self.settled(&span, node, &incarnation, failed.code, failed.source, end)
+    }
+
+    /// How a submit ended, on its span and in the keep of failed submits: a Failed terminal keeps the
+    /// birth for the next tick; Complete, or a refusal by a topology rule, releases it; anything else
+    /// leaves the keep as it was.
+    fn settled(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, code: Option<i32>, source: &'static str, end: Result<RecoveryEnd, NotSettled>) -> Result<(), String> {
+        let birth = (node.node_id.clone(), incarnation.clone());
+        match &end {
+            Ok(RecoveryEnd::Failed { attempt, .. }) => {
+                self.failed.lock().unwrap().insert(birth, FailedSubmit { node: node.clone(), code, source, attempt: *attempt });
+            }
+            Ok(RecoveryEnd::Complete { .. }) | Err(NotSettled { refused: true, .. }) => {
+                self.failed.lock().unwrap().remove(&birth);
+            }
+            Err(NotSettled { refused: false, .. }) => {}
+        }
+        let (outcome, r) = settle(end.map_err(|n| n.why));
         span.record("outcome", outcome.as_str());
         span.in_scope(|| tracing::info!("the mesh primary submits the recovery of its proven-exited member to the fabric-primary"));
         r
     }
 
-    async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<RecoveryEnd, String> {
+    async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<RecoveryEnd, NotSettled> {
         let fp = self.topology.read().await.fabric_primary().map(|n| n.name.clone()).ok_or_else(|| format!("{}'s view names no fabric-primary to submit the recovery of {} to", self.me, node.name))?;
         span.record("fabric_primary", fp.to_string().as_str());
         if fp == self.me {
@@ -1274,7 +1341,7 @@ impl RecoverySubmitter {
                     span.record("disposition", "created");
                     let drive = door.drives.ensure(&door.env, &o.build_id, o.attempt);
                     let mut reader = drive.reader(o.attempt);
-                    follow(&mut reader).await
+                    Ok(follow(&mut reader).await?)
                 }
                 Ok(crate::http::Recovery::AlreadyApplied(o)) => {
                     span.record("build_id", o.build_id.0.as_str());
@@ -1283,20 +1350,55 @@ impl RecoverySubmitter {
                     Ok(RecoveryEnd::Complete { attempt: o.attempt })
                 }
                 Err(r) => {
+                    let refused = matches!(r, crate::http::Refusal::Reject(_));
                     let reply = crate::build_op::refusal_reply(r);
-                    Err(format!("{}: {reply:?}", reply.name()))
+                    Err(NotSettled { why: format!("{}: {reply:?}", reply.name()), refused })
                 }
             };
         }
         let client = self.client.clone().ok_or_else(|| format!("{} has no Node RPC client to submit the recovery of {} with", self.me, node.name))?;
         let carrier = rafka_node_admin_client::BuildCarrier::new(client, fp);
         let change = rafka_node_rpc_contract::build::BuildChange::Recover { node: node.name.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-        let stream = carrier.create(change).await.map_err(|e| format!("build.create(recover {}) refused: {e}", node.name))?;
+        let stream = carrier.create(change).await.map_err(|e| {
+            NotSettled { refused: refused_by_rule(&e), why: format!("build.create(recover {}) refused: {e}", node.name) }
+        })?;
         span.record("build_id", stream.build_id().0.as_str());
         span.record("attempt", stream.attempt());
         span.record("disposition", disposition_name(stream.disposition()));
-        follow(&mut (node.name.clone(), stream)).await
+        Ok(follow(&mut (node.name.clone(), stream)).await?)
     }
+}
+
+/// Whether a `build.create` for a proven exit was refused by one of the topology rules
+/// `ControlPlane::open_recovery` refuses a submit by (the path is no member of the accepted Build; a
+/// node-admin whose mesh holds no other live admin is mesh recovery's): the refusals
+/// `Refusal::Reject` carries in process, named over op `0x20` by their own reason (the client's
+/// `refusal`).
+fn refused_by_rule(e: &rafka_node_admin_client::CallEnd) -> bool {
+    use crate::build::BuildReject;
+    let rules = [BuildReject::UnknownNode { node: String::new() }.reason(), BuildReject::NodeAdminNotNodeRecovered { node: String::new() }.reason()];
+    matches!(e, rafka_node_admin_client::CallEnd::Rejected { reason, .. } if rules.contains(&reason.as_str()))
+}
+
+/// The span of one submit of the exited birth `node` at `incarnation` by the mesh primary `me`
+/// (node-recovery.md "Observability contract": the submit has a span on the mesh-primary).
+/// `after_failed_attempt` is recorded on a submit that follows a Failed one of the same birth.
+fn submit_span(me: &PathName, node: &Node, incarnation: &IncarnationId, code: Option<i32>, source: &'static str) -> tracing::Span {
+    tracing::info_span!(
+        "rdm.node_admin.build.update.via-node-recovery",
+        node = %node.name,
+        node_id = %node.node_id,
+        incarnation_id = %incarnation.0,
+        submitter = %me,
+        exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
+        exit_proof = source,
+        fabric_primary = tracing::field::Empty,
+        build_id = tracing::field::Empty,
+        attempt = tracing::field::Empty,
+        disposition = tracing::field::Empty,
+        after_failed_attempt = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    )
 }
 
 /// A recovery submit's disposition as both doors record it on the submit span: the in-process
@@ -1450,8 +1552,8 @@ async fn follow(frames: &mut dyn RecoveryFrames) -> Result<RecoveryEnd, String> 
 }
 
 /// The submit span's `outcome` and the submit's result, from how the followed recovery ended.
-/// A Failed recovery ends the submit in an error: the birth is released, and the next tick finds it
-/// still proven exited and submits again (node-recovery.md "Failure and receipts").
+/// A Failed recovery ends the submit in an error, and the submitter keeps the birth: the next tick
+/// submits it again (node-recovery.md "Failure and receipts", `RecoverySubmitter::settled`).
 fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), String>) {
     match end {
         Ok(RecoveryEnd::Complete { attempt }) => (format!("complete: attempt {attempt}"), Ok(())),
@@ -5136,6 +5238,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             status_storage: status_storage.clone(),
             door: build_slot.clone(),
             client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
+            failed: Arc::default(),
         };
         let park = park_gate.clone();
         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
@@ -5300,6 +5403,24 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         let (recovery, n, verdicts) = (recovery.clone(), n.clone(), verdicts.clone());
                         crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
                             recovery.recover_if_proven(&n, &verdicts).await;
+                        });
+                    }
+                    // node-recovery.md "Failure and receipts": a birth whose last submit ended Failed
+                    // is submitted again, whether or not the view still holds it (a workflow whose
+                    // delete completed departed it). One submit per birth in flight, whichever way
+                    // it is due.
+                    let owed = owed_submits(holds_seat, frozen.held().is_some(), &mesh, &recovery.failed.lock().unwrap());
+                    for failed in owed {
+                        let Some(incarnation) = failed.node.incarnation_id.clone() else { continue };
+                        let birth = (failed.node.node_id.clone(), incarnation);
+                        if !in_flight.lock().unwrap().insert(birth.clone()) {
+                            continue;
+                        }
+                        let recovery = recovery.clone();
+                        crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
+                            if let Err(e) = recovery.submit_again(&failed).await {
+                                tracing::info!(node = %failed.node.name, error = %e, "the submit again ended without the recovery");
+                            }
                         });
                     }
                 }
@@ -6135,6 +6256,7 @@ mod tests {
             status_storage: status.clone(),
             door: Default::default(),
             client: None,
+            failed: Arc::default(),
         };
         (recovery, status, member)
     }
