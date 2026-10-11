@@ -3723,21 +3723,26 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let t_deleted = start_ns(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).unwrap());
     let t_ready = start_ns(named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_id.as_str()).unwrap());
     assert!(t_ready < t_deleted, "the old identity's departure is published only after the successor is admitted and ready (a replace is not a delete followed by a spawn)");
-    // The drift: a proven-drift attempt of the same Build after the kill, the dead gateway re-created under it.
-    let drift_spans: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| sp["attributes"]["build_id"] == drift_build.as_str() && start_ns(sp) > kill_ns).collect();
-    assert!(!drift_spans.is_empty(), "no proven-drift attempt of {drift_build} after the kill of {victim2}");
-    let op2 = format!("replace-node:{victim2}");
+    // The death's recovery (node-recovery.md): the dead gateway's mesh-primary proves the exit and submits
+    // one recovery, an attempt of the same Build (`recover-node:<path>`); the fabric-primary's drift opens
+    // nothing for an ordinary member.
+    let drift_spans: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == victim2 && sp["attributes"]["node_id"] == id2.as_str() && s(&sp["attributes"]["outcome"]).starts_with("complete")).collect();
+    assert_eq!(drift_spans.len(), 1, "one completed recovery of {victim2}'s exited birth: {drift_spans:?}");
+    assert_eq!(s(&drift_spans[0]["attributes"]["build_id"]), drift_build, "the recovery is an attempt of {drift_build}");
+    let proven: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(&format!("exited: {victim2}"))).collect();
+    assert!(proven.is_empty(), "the fabric-primary opened a drift attempt for a member: {proven:?}");
+    let op2 = format!("recover-node:{victim2}");
     let recreate: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| sp["attributes"]["build_id"] == drift_build.as_str() && start_ns(sp) > kill_ns && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op2))).collect();
-    assert!(!recreate.is_empty(), "no reconcile of {drift_build} after the kill executed {op2} (a birth the reconciler proved exited is replaced)");
+    assert!(!recreate.is_empty(), "no reconcile of {drift_build} after the kill executed {op2}");
     let drift_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id2.as_str()).collect();
     let drift_chain = json!({
-        "proven_drift_spans": drift_spans.iter().map(|sp| json!({"span": sp["span_id"], "attempt": sp["attributes"]["attempt"], "scope": sp["attributes"]["scope"], "reason": sp["attributes"]["reason"], "authority": sp["attributes"]["authority"]})).collect::<Vec<_>>(),
+        "node_recovery_spans": drift_spans.iter().map(|sp| json!({"span": sp["span_id"], "attempt": sp["attributes"]["attempt"], "submitter": sp["attributes"]["submitter"], "exit_proof": sp["attributes"]["exit_proof"], "outcome": sp["attributes"]["outcome"]})).collect::<Vec<_>>(),
         "recreate_reconciles": recreate.iter().map(|sp| json!({"span": sp["span_id"], "attempt": attempt_of(sp), "executor": sp["attributes"]["executor"], "operations": sp["attributes"]["operations"], "reason": sp["attributes"]["reason"], "action": sp["attributes"]["action"]})).collect::<Vec<_>>(),
         "node_deleted_for_the_dead_identity": drift_deleted.iter().map(|sp| json!({"span": sp["span_id"], "incarnation_id": sp["attributes"]["incarnation_id"]})).collect::<Vec<_>>(),
     });
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([formation_build.clone()]), "the only Build accepted is the formation: the planned replacement and the death's recovery are attempts of it");
-    inv.holds("no topology changed after the formation: the planned replacement (a Replace attempt: one replace-node operation) and the death's recovery (a proven-drift attempt re-creating the path) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
+    inv.holds("no topology changed after the formation: the planned replacement (a Replace attempt: one replace-node operation) and the death's recovery (the mesh-primary's recover-node attempt) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -3767,7 +3772,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
                 "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
                 "planned_replacement": {"retired": retired, "replacement": replacement, "retire_chain": retire_chain, "add_chain": add_chain},
                 "drift_replacement": {"drift": drift, "chain": drift_chain,
-                    "planned_replace_operation": "POST /api/nodes/<node>/replace opens AttemptAction::Replace through http.rs open_attempt (replace = true) on the accepted Build; the planned replacement above is that attempt, and a runtime death is a proven-drift attempt whose action is Replace (any exit but code 4) or Restart (code 4)"},
+                    "planned_replace_operation": "POST /api/nodes/<node>/replace opens AttemptAction::Replace through http.rs open_attempt (replace = true) on the accepted Build; the planned replacement above is that attempt, and a runtime death of a member is its mesh-primary's recovery: one recover-node attempt keyed on the exited birth (node-recovery.md)"},
                 "scenario_events": a.events, "topology_writes": a.writes, "fence": fence, "attempts": attempts, "elections": elections, "imported_mechanism": imported, "final_launches": launches_end, "scenarios": ["C8"],
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
                 "schedule": {"seed": f.seed, "generator": "rafka_test_scenario::model::Rng (SplitMix64)", "planned": victim, "drift": victim2},
@@ -5120,10 +5125,11 @@ async fn replace_race_run(cell: &str, shape: Shape) {
         json!({"node_id_old": x_id, "node_id_new": born_x["node_id"], "attempt": attempt0 + 1}),
     );
 
-    // Leg 2, the replace and the proven-drift answer contend: a second gateway's runtime is killed and
-    // the replace is requested the moment the fabric-primary's own view holds the node unheard, the one
-    // instant both the door and the drift pass may act. Whichever opens its attempt first wins; the other
-    // is refused by name (`build-in-progress`) or never opens. One new birth either way.
+    // Leg 2, the replace and the node recovery contend: a second gateway's runtime is killed and the
+    // replace is requested the moment the fabric-primary's own view holds the node unheard; its
+    // mesh-primary's recovery submit (node-recovery.md) may reach the door too. Whichever opens its
+    // attempt first wins; the other is refused by name (`build-in-progress`) or never opens (the
+    // recovery's birth is no longer watched once replaced). One new birth either way.
     let y = format!("mesh2.gateway.{}", f.shape.gateway);
     let ny = at(&st1, &y).clone();
     let (y_id, y_inc) = (s(&ny["node_id"]), s(&ny["incarnation_id"]));
@@ -5154,7 +5160,7 @@ async fn replace_race_run(cell: &str, shape: Shape) {
             a.attempts.insert(formation.clone(), attempt1 + 1);
             a.refused_writes.push(json!({"sent_to": st1.fp["name"], "status": code, "error": v["error"], "path": y, "route": "replace", "t_ms": now_ms()}));
             a.actions.push(json!({"t_ms": now_ms(), "action": "C8 race leg 2: replace of the unheard gateway", "via": format!("POST /api/nodes/{y}/replace"), "status": code, "error": v["error"]}));
-            "proven-drift"
+            "node-recovery"
         }
         other => panic!("{y}: the replace of an unheard gateway was answered {other:?}, neither accepted nor refused `build-in-progress`: {v}"),
     };
@@ -5180,8 +5186,9 @@ async fn replace_race_run(cell: &str, shape: Shape) {
     let (formation_b, a1) = (formation.clone(), attempt1);
     close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C8"], json!({"events": legs}), gone, move |_f, spans, inv| {
         let creates = |p: &str, since: u64| -> Vec<&Value> { named(spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| sp["attributes"]["node"] == p && start_ns(sp) > since).collect() };
+        // The mesh-primary's recovery admitted at the fabric-primary's door (node-recovery.md).
         let drifts = |p: &str, since: u64| -> Vec<&Value> {
-            named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(p) && start_ns(sp) > since).collect()
+            named(spans, "rdm.node_admin.build.update.via-recovery").into_iter().filter(|sp| sp["attributes"]["node"] == p && s(&sp["attributes"]["outcome"]) == "admitted" && start_ns(sp) > since).collect()
         };
         // A request that opened an attempt carries its Build; one refused on the door carries none.
         let rests = |p: &str, since: u64| -> Vec<&Value> {
@@ -5189,25 +5196,27 @@ async fn replace_race_run(cell: &str, shape: Shape) {
         };
         // Non-vacuity: the births the formation made are in the same span set under the same name.
         assert!(!named(spans, "rdm.node_admin.node.create.via-build").is_empty(), "the creating span is emitted at all");
-        // Both deaths are in meshes the fabric-primary hears: a heard mesh is repaired as ever, never held.
-        assert!(named(spans, "rdm.node_admin.build.reject.via-unheard-mesh").is_empty(), "no mesh was held unheard: both deaths were repaired by the drift pass");
+        // Both deaths are in meshes the fabric-primary hears: a heard mesh is never held.
+        assert!(named(spans, "rdm.node_admin.build.reject.via-unheard-mesh").is_empty(), "no mesh was held unheard");
+        let proven: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| [&xp, &yp].iter().any(|p| s(&sp["attributes"]["scope"]).contains(p.as_str()))).collect();
+        assert!(proven.is_empty(), "the fabric-primary's drift opens nothing for a member: {proven:?}");
         let (cx, cy) = (creates(&xp, kx), creates(&yp, ky));
         assert_eq!(cx.len(), 1, "exactly one birth was created at {xp} after its kill: {cx:?}");
         assert_eq!(cy.len(), 1, "exactly one birth was created at {yp} after its kill: {cy:?}");
         assert_eq!(rests(&xp, kx).len(), 1, "leg 1: the replace request opened exactly one attempt");
-        assert!(drifts(&xp, kx).is_empty(), "leg 1: the replace attempt was in flight, so the drift pass opened none: {:?}", drifts(&xp, kx));
+        assert!(drifts(&xp, kx).is_empty(), "leg 1: the replace attempt was in flight, so no recovery was admitted: {:?}", drifts(&xp, kx));
         let (ry, dy) = (rests(&yp, ky), drifts(&yp, ky));
         // Both answers to the death may open the one attempt number for the one action (the log keeps the
         // first); what is never allowed is a second number, or a second create.
-        assert!(!ry.is_empty() || !dy.is_empty(), "leg 2: neither the replace request nor the proven-drift pass opened an attempt");
+        assert!(!ry.is_empty() || !dy.is_empty(), "leg 2: neither the replace request nor the node recovery opened an attempt");
         let numbers: BTreeSet<u32> = ry.iter().chain(dy.iter()).map(|sp| attempt_of(sp)).collect();
-        assert_eq!(numbers, BTreeSet::from([(a1 + 1) as u32]), "leg 2: every opener of the death took the one next attempt number (request {}, drift {}): {ry:?} {dy:?}", ry.len(), dy.len());
+        assert_eq!(numbers, BTreeSet::from([(a1 + 1) as u32]), "leg 2: every opener of the death took the one next attempt number (request {}, recovery {}): {ry:?} {dy:?}", ry.len(), dy.len());
         let all: BTreeSet<String> = named(spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
         assert_eq!(all, BTreeSet::from([formation_b.clone()]), "the only Build accepted is the formation");
         let attempts: BTreeSet<u32> = named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| sp["attributes"]["build_id"] == formation_b.as_str() && start_ns(sp) > kx).map(attempt_of).collect();
         assert!(attempts.len() >= 2 && attempts.iter().max().copied() == Some((a1 + 1) as u32), "the Build advanced attempt by attempt, one per replacement, to {}: {attempts:?}", a1 + 1);
         inv.holds("C8 race: after each kill exactly one create-node ran at the path, no second Build was accepted, and the attempts advanced one per replacement", true, json!({"creates": [cx.len(), cy.len()], "attempts": attempts}));
-        json!({"creates_after_kill": [cx.len(), cy.len()], "request_attempts": [rests(&xp, kx).len(), ry.len()], "drift_attempts": [drifts(&xp, kx).len(), dy.len()], "attempts": attempts})
+        json!({"creates_after_kill": [cx.len(), cy.len()], "request_attempts": [rests(&xp, kx).len(), ry.len()], "recovery_attempts": [drifts(&xp, kx).len(), dy.len()], "attempts": attempts})
     })
     .await;
 }
@@ -5216,11 +5225,11 @@ async fn replace_race_run(cell: &str, shape: Shape) {
 /// answer to the death gets there first. In the formed estate the exact runtime of a gateway is killed
 /// (acknowledged by the provider) and `POST /api/nodes/<gateway>/replace` follows at once, while the
 /// fabric-primary's view still holds the node ready: the next attempt of the formation's Build retires
-/// the dead birth and creates the successor at its path.name, a new NodeId in a new runtime, and the
-/// proven-drift pass opens no attempt of its own. A second gateway is killed the same way and the
-/// replace is requested the moment the fabric-primary's view holds it unheard, when both the request
-/// and the proven-drift pass may open the attempt: the one that opens it wins, the other is refused by
-/// name (`build-in-progress`) or never opens, and again one create-node ran and one new NodeId stands.
+/// the dead birth and creates the successor at its path.name, a new NodeId in a new runtime, and no
+/// recovery is admitted for it. A second gateway is killed the same way and the replace is requested
+/// the moment the fabric-primary's view holds it unheard, when both the request and its mesh-primary's
+/// recovery submit (node-recovery.md) may open the attempt: the one that opens it wins, the other is
+/// refused by name (`build-in-progress`) or never opens, and again one create-node ran and one new NodeId stands.
 /// After each, the path holds its one birth for a staleness window in every admin's view, on the
 /// attempt that made it. Canon: fabric-mesh-ops.md section 6 and proof 10 (unplanned loss produces one
 /// NodeDeleted for the old identity, from the replacement attempt's executor), fabric-mesh-lifecycle.md
