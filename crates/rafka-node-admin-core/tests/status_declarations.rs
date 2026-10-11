@@ -448,6 +448,12 @@ impl NodesStorage for RefusingRows {
     async fn node_row_at(&self, name: &rafka_node_admin_core::model::PathName) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
         self.0.node_row_at(name).await
     }
+    async fn claim_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<(), rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.claim_node_row(row).await
+    }
+    async fn remove_node_row(&self, name: &rafka_node_admin_core::model::PathName) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.remove_node_row(name).await
+    }
 }
 
 /// CONTRACT (ops-naming "Node data": the fabric-primary writes the record, then the node applies it):

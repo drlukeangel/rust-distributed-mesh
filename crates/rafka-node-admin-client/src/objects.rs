@@ -106,6 +106,25 @@ impl std::fmt::Display for MetaFieldIsRdmOwned {
 
 impl std::error::Error for MetaFieldIsRdmOwned {}
 
+/// A create or a rename into a `path.name` another node holds, parked or live: a name is held by
+/// exactly one node until that node is renamed or deleted (ops-naming "Identity";
+/// node-rpc-envelope.md "Meta and config"). The claim is insert-and-fail on the name's key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameHeld {
+    /// The name claimed.
+    pub name: PathName,
+    /// The node that holds it.
+    pub by: NodeId,
+}
+
+impl std::fmt::Display for NameHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is held by node {}: it is released only when that node is renamed or deleted", self.name, self.by)
+    }
+}
+
+impl std::error::Error for NameHeld {}
+
 /// Everything RDM stores about a node: the whole entity `node.update` takes and sends back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeMeta {
