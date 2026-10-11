@@ -251,6 +251,23 @@ impl NodeRows {
         r
     }
 
+    /// Hold the row `node_id` holds at `name` as this writer's record of it, read from the store (R13:
+    /// "Rebuild after a seat change reads the mesh's own rows"), the same point read a claim or an
+    /// arrival makes: a mesh leave's roster birth this writer's views never held (the admin created
+    /// for a leaving mesh with no admin left joined after that birth stopped), whose `Deleted` row it
+    /// is about to write. Nothing is written. `Ok(true)`: the row is held; `Ok(false)`: the store
+    /// holds no row of this node at `name`. `Err` names the read that failed.
+    pub async fn hold_row_of(&self, name: &PathName, node_id: &NodeId) -> Result<bool, String> {
+        let row = self.storage.node_row_at(name).await.map_err(|e| format!("{}: the row at {name} could not be read for {node_id}: {e}", self.me))?;
+        match row.filter(|r| r.node_id == *node_id) {
+            Some(row) => {
+                self.written.hold(&row);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// A create that claimed `name` for `node_id` and did not complete lets go of its claim, so the
     /// next birth at the name is not refused by it: a release of the holder's own key only, never
     /// another node's row. One `via-claim-withdrawn` span says why.

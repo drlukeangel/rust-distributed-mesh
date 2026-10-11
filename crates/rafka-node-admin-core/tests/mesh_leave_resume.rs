@@ -14,7 +14,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{birth_row_deleted, roster_records, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{birth_row_deleted, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::node_rows::{Claimed, NodeRows, RowRefused};
@@ -1283,6 +1283,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         let root = tracing::info_span!("cell.mesh-leave-roster-birth", build_id = %build_id, operation = %key.operation);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
+        roster_rows_read(Some(&rows), NEW_ADMIN, &key.operation, &roster, &records).await;
         let manifest = members_exited(&builds, &key, NEW_ADMIN, &roster, &me, runtime.clone(), &records, &[], |n: Node| {
             ran.lock().unwrap().push(n.clone());
             let runtime = runtime.clone();

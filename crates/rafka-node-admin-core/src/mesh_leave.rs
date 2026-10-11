@@ -70,6 +70,19 @@ impl RosterBirth {
         let incarnation_id = n.incarnation_id.as_ref().map(|i| i.0.clone()).ok_or_else(|| format!("{} has no known birth", n.name))?;
         Ok(Self { node: n.name.to_string(), node_id: n.node_id.to_string(), incarnation_id })
     }
+
+    /// The record of this exact birth the accepted roster alone gives (R11: the roster decides
+    /// what runs): its `path.name`, node id and incarnation, `Leaving` as a birth of a leaving
+    /// mesh. The member workflow reads the rest where it reads it for any birth (its runtime from
+    /// the birth's durable runtime row). It carries no config: no row is written from it.
+    pub fn record(&self) -> Result<Node, String> {
+        let name: crate::model::PathName = self.node.parse().map_err(|e| format!("the roster birth's path.name {} does not parse: {e:?}", self.node))?;
+        let mut n = Node::allocated(name);
+        n.node_id = NodeId::parse(&self.node_id).map_err(|e| format!("the roster birth {}'s node id {} does not parse: {e}", self.node, self.node_id))?;
+        n.incarnation_id = Some(crate::model::IncarnationId(self.incarnation_id.clone()));
+        n.status = crate::model::NodeStatus::Leaving;
+        Ok(n)
+    }
 }
 
 /// The exit manifest: the accepted roster, and the provider's terminal receipt of every birth that
@@ -624,7 +637,8 @@ where
 /// as `held` gives it, the record this admin's membership holds of the birth. A member that sent its
 /// terminal `Leaving` and went silent leaves the view one gossip interval later (a graceful
 /// departure, fabric-node-lifecycle.md §6) and still has no Exited receipt: its record is the held
-/// one. A birth neither holds is absent, and its tier fails naming it ([`members_exited`]).
+/// one. A birth neither holds is absent here, and runs from the roster birth itself
+/// ([`members_exited`], [`RosterBirth::record`]).
 pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&RosterBirth) -> Option<Node>) -> Vec<Node> {
     let exact = |b: &RosterBirth, n: &Node| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
     roster
@@ -640,6 +654,31 @@ pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&Rost
         .collect()
 }
 
+/// The read the leave's member workflows take before they run (R13: "Rebuild after a seat change
+/// reads the mesh's own rows"): the row of every roster birth `records` hold no record of, held by
+/// `rows`, the writer of the mesh's rows, so the birth's `Deleted` row is written from the row its
+/// node holds ([`birth_row_deleted`]); the admin created for a leaving mesh with no admin left
+/// joined after such a birth stopped, and its views never held it. One
+/// `rdm.node_admin.mesh.resolve.via-roster-row` span per birth read names what the read found; a
+/// row not read leaves the birth's `Deleted` write to refuse by name.
+pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executor: &str, operation: &str, roster: &[RosterBirth], records: &[Node]) {
+    let Some(rows) = rows else { return };
+    let exact = |b: &RosterBirth, n: &Node| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
+    for b in roster.iter().filter(|b| !records.iter().any(|n| exact(b, n))) {
+        let read = match (b.node.parse::<crate::model::PathName>(), NodeId::parse(&b.node_id)) {
+            (Ok(name), Ok(node_id)) => rows.hold_row_of(&name, &node_id).await,
+            (name, node_id) => Err(format!("{executor}: the roster birth {} ({}) names no path.name or node id: {:?} {:?}", b.node, b.node_id, name.err(), node_id.err())),
+        };
+        let (outcome, detail) = match &read {
+            Ok(true) => ("held", String::new()),
+            Ok(false) => ("no-row", format!("the store holds no row of {} at {}", b.node_id, b.node)),
+            Err(e) => ("unreadable", e.clone()),
+        };
+        tracing::info_span!("rdm.node_admin.mesh.resolve.via-roster-row", node = %executor, member = %b.node, node_id = %b.node_id, incarnation_id = %b.incarnation_id, operation, outcome, detail = %detail)
+            .in_scope(|| tracing::info!("the row of a roster birth this admin holds no record of is read from the mesh's own rows"));
+    }
+}
+
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
 /// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
@@ -647,7 +686,9 @@ pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&Rost
 /// (a successful child of an earlier, incomplete run) keeps it and is not run again; a failed or
 /// unrunnable member leaves its tier incomplete. `me` is the final primary (still running, its exact
 /// runtime `final_runtime`); `records` are the Node records of the roster's births
-/// ([`roster_records`]: the view's record, else the membership's record of that exact birth);
+/// ([`roster_records`]: the view's record, else the membership's record of that exact birth), and a
+/// roster birth they hold no record of runs from the roster birth itself ([`RosterBirth::record`]):
+/// the accepted roster decides what runs (mesh-delete.md, "Resume after the primary's loss" step 3);
 /// `known` are step receipts read from the owner's Build facts at admission
 /// ([`admission_roster`]), folded with this Build's own; `shutdown` is one member's drain/stop
 /// workflow and the provider's terminal receipt of its exact runtime; `delete_row` is the
@@ -691,7 +732,16 @@ where
         for b in remaining.iter().filter(|b| is_admin(b) == admins) {
             match records.iter().find(|n| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id)) {
                 Some(n) => members.push(n.clone()),
-                None => failed.push(format!("{} {}: this view holds no record of the accepted birth, so its workflow cannot run and it has no Exited receipt", b.node, b.incarnation_id)),
+                // The accepted roster decides what runs, not what this admin holds: a birth it never
+                // held a record of (it joined after that birth stopped) runs from the roster birth.
+                None => match b.record() {
+                    Ok(n) => {
+                        tracing::info_span!("rdm.node_admin.mesh.resolve.via-roster-birth", member = %b.node, node_id = %b.node_id, incarnation_id = %b.incarnation_id, tier, operation = %key.operation, attempt = key.attempt)
+                            .in_scope(|| tracing::info!("a roster birth this admin holds no record of runs from the accepted roster's exact birth"));
+                        members.push(n);
+                    }
+                    Err(e) => failed.push(format!("{} {}: {e}", b.node, b.incarnation_id)),
+                },
             }
         }
         // A retained member of this tier exited in an earlier run: its row is written Deleted again
