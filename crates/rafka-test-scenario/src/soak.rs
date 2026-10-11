@@ -109,9 +109,9 @@ pub struct Config {
     /// (`rafka_mesh_transport::membership`): the windows a silence is observed within.
     pub floor: Duration,
     pub backbone: Duration,
-    /// The longest one offline-tickle round takes: the direct ping plus every via-peer carrier, each
-    /// one call of the default budget (`rafka_node_rpc::CallOptions::default().budget` x (1 +
-    /// `rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT`)).
+    /// The longest one offline-tickle round takes: the direct connect, then every via-peer carrier at
+    /// once, each one call of the default budget
+    /// (`rafka_node_admin_core::offline::tickle_round_at_default_budget`).
     pub tickle_round: Duration,
 }
 
