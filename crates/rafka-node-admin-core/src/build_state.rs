@@ -61,6 +61,9 @@ pub enum AttemptReason {
     Stop,
     /// A standalone start of a parked birth was requested (`start-node:<path>`).
     Start,
+    /// A mesh-primary proved a member's exact birth exited and submitted its recovery
+    /// (`recover-node:<path>`, node-recovery.md).
+    Recovery,
 }
 
 impl AttemptReason {
@@ -75,6 +78,7 @@ impl AttemptReason {
             Self::Drain => "drain",
             Self::Stop => "stop",
             Self::Start => "start",
+            Self::Recovery => "recovery",
         }
     }
 }
@@ -557,6 +561,7 @@ fn describe_open(o: &AttemptOpened) -> String {
         Some(crate::accepted::AttemptAction::Drain { path, from_incarnation }) => format!("drain of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
         None => "no fenced action".to_string(),
     };
     format!("{} ({action}, opened by {})", o.reason.as_str(), o.opened_by)
