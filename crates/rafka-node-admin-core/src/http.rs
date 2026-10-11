@@ -169,6 +169,22 @@ impl ControlPlane {
                     return Err(Refusal::Reject(reject));
                 }
             };
+            // A Build whose plan would end the fabric-primary while no live admin of its mesh can take
+            // its seats is refused before it exists (node-rpc-envelope.md, "TakeSeats", Boundary).
+            if let Some(reject) = crate::accepted::plan(&topology, &observed, None).operations.iter().find_map(|op| {
+                let (node, action) = match op {
+                    crate::build::BuildOperation::RetireNode { node } => (node, "retire"),
+                    crate::build::BuildOperation::RestartNode { node } => (node, "restart"),
+                    crate::build::BuildOperation::ReplaceNode { node, .. } => (node, "replace"),
+                    crate::build::BuildOperation::DrainNode { node, .. } => (node, "drain"),
+                    crate::build::BuildOperation::StopNode { node, .. } => (node, "stop"),
+                    _ => return None,
+                };
+                last_admin(node, action, &observed)
+            }) {
+                outer.in_scope(|| reject_span(route, &reject));
+                return Err(Refusal::Reject(reject));
+            }
             let build_id = BuildId::mint();
             span.record("build_id", build_id.0.as_str());
             span.record("previous_build_id", current.build_id.0.as_str());
@@ -301,6 +317,14 @@ impl ControlPlane {
                         return Err(Refusal::Reject(reject));
                     }
                 }
+                // The fabric-primary's own seats move by TakeSeats to a same-mesh successor; with none,
+                // only mesh-leave moves the fabric seat out of its mesh (node-rpc-envelope.md, Boundary).
+                if kind != ActionKind::Start {
+                    if let Some(reject) = last_admin(&path, kind.name(), &t) {
+                        outer.in_scope(|| reject_span(route, &reject));
+                        return Err(Refusal::Reject(reject));
+                    }
+                }
                 match n.incarnation_id.clone() {
                     Some(incarnation) => incarnation,
                     None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to fence the attempt to")),
@@ -354,6 +378,30 @@ pub enum ActionKind {
     Start,
 }
 
+impl ActionKind {
+    /// The action's name: what a refusal says the request would do to the node.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::Replace => "replace",
+            Self::Drain => "drain",
+            Self::Stop => "stop",
+            Self::Start => "start",
+        }
+    }
+}
+
+/// The refusal of a `action` of `node` when `node` holds the fabric-primary seat in `t` and no other
+/// live node-admin of its mesh can take its seats (the same-mesh successor the election seats once its
+/// birth is gone, `executor::seat_successor`): TakeSeats moves seats inside the holder's mesh only, and
+/// the fabric seat leaves a mesh whose last admin holds it only through TakeFabricPrimary inside
+/// mesh-leave (node-rpc-envelope.md, "TakeSeats: Build-driven seat transfer", Boundary).
+fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
+    let holder = t.fabric_primary()?;
+    let target = t.node(node)?;
+    (holder.node_id == target.node_id && crate::executor::seat_successor(node, t).is_none()).then(|| BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string() })
+}
+
 /// The restart/replace refusal `node-not-live`, spanned beside the request with the node, the
 /// status the live view holds for it and why that status refuses the operation
 /// (`rdm.node_admin.node.reject.via-not-live`).
@@ -391,7 +439,8 @@ fn reject_span(route: &'static str, reject: &BuildReject) {
         "fabric-mismatch",
         "empty-fabric",
         "provider-mismatch",
-        "unheard-mesh"
+        "unheard-mesh",
+        "last-admin"
     );
 }
 
