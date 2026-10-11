@@ -19,11 +19,12 @@ fn end(kind: NodeKind, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd
 
 fn direct(source: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, at: u64) -> NodeConnection {
     let recovery = (state == ConnectionState::Failed).then_some(DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
-    NodeConnection { source, destination, kind: ConnectionKind::Direct, state, carrier: None, recovery, reason: None, logged_at_ms: at }
+    NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source, destination, kind: ConnectionKind::Direct, state, carrier: None, recovery, reason: None, logged_at_ms: at }
 }
 
 fn proxy(source: ConnectionEnd, carrier: ConnectionEnd, destination: ConnectionEnd, at: u64) -> NodeConnection {
     NodeConnection {
+        id: rafka_mesh_entity::ConnectionId::mint(),
         source,
         destination,
         kind: ConnectionKind::Proxy,
@@ -51,8 +52,9 @@ fn estate() -> (ConnectionsHeld, ConnectionEnd, ConnectionEnd, ConnectionEnd) {
 #[test]
 fn a_disconnected_or_failed_direct_never_stays_resident_and_an_older_connect_never_revives_it() {
     let (mut held, own, _carrier, dest) = estate();
-    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
-    assert_eq!(held.active_direct(&own.name, &dest.name), Some(Some(&direct(own.clone(), dest.clone(), ConnectionState::Connected, 20))));
+    let connected = direct(own.clone(), dest.clone(), ConnectionState::Connected, 20);
+    held.apply(connected.clone()).unwrap();
+    assert_eq!(held.active_direct(&own.name, &dest.name), Some(Some(&connected)));
 
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 30)).unwrap();
     assert_eq!(held.active_direct(&own.name, &dest.name), Some(None), "a Failed entry removes the edge");

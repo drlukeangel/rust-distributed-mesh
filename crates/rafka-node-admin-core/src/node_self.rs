@@ -30,7 +30,7 @@ use crate::model::{IncarnationId, NodeId, PathName};
 use rafka_mesh_entity::{LifecycleOp, MemberStatus, MeshDigest};
 use rafka_mesh_transport::membership::{Frame, Membership};
 use rafka_node_rpc::{NodeRpcClient, NodeRpcServer, NodeTarget};
-use rafka_node_rpc_contract::status::{DrainReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, DrainReceipt, NodeState, Status, StatusReply, StatusRequest};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -90,6 +90,23 @@ pub struct TasksParked {
     /// Those turns by task (`task` or `task:n`, comma-separated); empty when there were none.
     pub waited_for: String,
 }
+
+/// What a `node.connections.delete` did at this birth (R-CR3): the connections it cut, and every
+/// connection id it accounts for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Deleted {
+    /// What the hard cut closed.
+    pub report: CutReport,
+    /// The open entries cut, their drops written under the name the birth holds.
+    pub closed: Vec<rafka_mesh_entity::ConnectionId>,
+    /// The ids named that are no open entry of the birth: unknown, or already closed.
+    pub not_open: Vec<rafka_mesh_entity::ConnectionId>,
+    /// The open entries the birth still holds after the cut, a drop the storage refused included.
+    pub held: Vec<rafka_mesh_entity::ConnectionId>,
+}
+
+/// The reason every drop `node.connections.delete` writes carries.
+pub const CONNECTIONS_DELETE: &str = "node.connections.delete";
 
 /// Why a start stopped, and at which step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,6 +254,9 @@ pub struct NodeSelf {
     cycle: Mutex<Cycle>,
     /// How this process leaves and rejoins its mesh; filled once the process holds the parts.
     session: Mutex<Option<Arc<dyn Session>>>,
+    /// The process's connections writer: what this birth holds (R-CR1) and where the drops of a
+    /// `node.connections.delete` are written; filled once the process holds it.
+    connections: Mutex<Option<Arc<crate::connections_writer::ConnectionsWriter>>>,
     /// What this birth completes before it checks in to a commit-state or open-traffic round.
     round_actions: Mutex<Arc<dyn crate::fabric_rounds::RoundActions>>,
     /// The rounds this birth took, by round, and how far it took each.
@@ -257,7 +277,7 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, retire: None, backbone: None, drain: Mutex::new(None), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, retire: None, backbone: None, drain: Mutex::new(None), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -282,6 +302,119 @@ impl NodeSelf {
     /// This surface, leaving and rejoining its mesh through `session` when it is stopped and started.
     pub fn set_session(&self, session: Arc<dyn Session>) {
         *self.session.lock().unwrap() = Some(session);
+    }
+
+    /// This surface, holding the process's connections writer: what this birth holds and where a
+    /// `node.connections.delete` writes its drops.
+    pub fn set_connections(&self, connections: Arc<crate::connections_writer::ConnectionsWriter>) {
+        *self.connections.lock().unwrap() = Some(connections);
+    }
+
+    /// The connections this birth holds now (R-CR1), from its connections writer; refused by name
+    /// when the process has not handed it one, so nothing is decided on a set it cannot read.
+    pub async fn held_routes(&self) -> Result<Vec<rafka_mesh_entity::connections::NodeConnection>, String> {
+        let writer = self.connections.lock().unwrap().clone();
+        match writer {
+            Some(w) => Ok(w.held_routes().await),
+            None => Err(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name())),
+        }
+    }
+
+    /// `node.connections.delete` at this birth (R-CR3; node-stop.md step 3 is its `All`). `All` is
+    /// the stop's cut through the [`Session`] (gossip neighbours, pooled and accepted peer
+    /// connections, sparing `spare`, the commander whose call is in flight); `Connections` cuts the
+    /// pooled and accepted connections of the routes whose open entry it names, and only those, never
+    /// the commander's own connection. Each route cut gets its drop, written under the name the birth
+    /// holds; an id that is no open entry is named `not_open`. The endpoint stays bound.
+    pub async fn delete_connections(&self, spare: Option<iroh::PublicKey>, scope: &ConnectionScope) -> Deleted {
+        let writer = self.connections.lock().unwrap().clone();
+        let (report, routes, not_open) = match scope {
+            ConnectionScope::All => {
+                let session = self.session.lock().unwrap().clone();
+                let report = match session {
+                    Some(session) => session.cut(spare).await,
+                    None => CutReport::default(),
+                };
+                // What the cut leaves open in the log is dropped too, the commander's spared stream
+                // included: nothing routes on this birth's connections once the call is answered.
+                let routes = match &writer {
+                    Some(w) => w.held_routes().await,
+                    None => Vec::new(),
+                };
+                (report, routes, Vec::new())
+            }
+            ConnectionScope::Connections(ids) => {
+                let open = match &writer {
+                    Some(w) => w.held_routes().await,
+                    None => Vec::new(),
+                };
+                let mut report = CutReport::default();
+                let (mut routes, mut not_open) = (Vec::new(), Vec::new());
+                for id in ids {
+                    match open.iter().find(|r| &r.id == id) {
+                        Some(route) if !routes.iter().any(|r: &rafka_mesh_entity::connections::NodeConnection| r.id == route.id) => {
+                            // A Proxy rides its carrier's Direct, which is its own entry: only the
+                            // route is retired. A Direct's connections both ways are cut.
+                            if route.kind == rafka_mesh_entity::connections::ConnectionKind::Direct {
+                                if let Some(peer) = self.client.endpoint_of(&route.destination.node_id) {
+                                    report.pooled += self.client.close_pooled_to(&peer, CONNECTIONS_DELETE);
+                                    report.accepted += self.server.close_connections_from(peer, spare, CONNECTIONS_DELETE);
+                                }
+                            }
+                            routes.push(route.clone());
+                        }
+                        Some(_) => {}
+                        None => not_open.push(id.clone()),
+                    }
+                }
+                (report, routes, not_open)
+            }
+        };
+        let (closed, refused) = match &writer {
+            Some(w) => w.write_drops(&routes, CONNECTIONS_DELETE).await,
+            None => (Vec::new(), Vec::new()),
+        };
+        for (id, why) in &refused {
+            tracing::info_span!("rdm.node_admin.node.connections.reject.via-refused-drop", node = %self.held_name(), entry = %id, refusal = %why)
+                .in_scope(|| tracing::info!("the connection was cut and its drop was refused by storage: the log still holds it open"));
+        }
+        let held = match &writer {
+            Some(w) => w.held_routes().await.into_iter().map(|r| r.id).collect(),
+            None => Vec::new(),
+        };
+        Deleted { report, closed, not_open, held }
+    }
+
+    /// Serve `DeleteConnections` from `commander` (its connection `spare`): a scope that names
+    /// nothing to cut is refused by name and cuts nothing; any other is the cut, answered
+    /// `node.connections.deleted`. One span names the scope and every count.
+    async fn serve_delete_connections(&self, commander: &NodeId, spare: Option<iroh::PublicKey>, scope: &ConnectionScope) -> StatusReply {
+        use tracing::Instrument;
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.connections.delete.via-delete-connections",
+            node = %self.held_name(), commander = %commander, scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
+            closed = tracing::field::Empty, not_open = tracing::field::Empty, held = tracing::field::Empty, neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty,
+            outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal"
+        );
+        let reply = async {
+            if self.connections.lock().unwrap().is_none() {
+                return StatusReply::NotReady { reason: format!("{}: this birth holds no connections writer yet; nothing is cut", self.held_name()) };
+            }
+            if let Some(reason) = scope.refusal() {
+                tracing::Span::current().record("reason", reason.as_str());
+                return StatusReply::RejectedConnectionScope { reason: format!("{}: {reason}", self.held_name()) };
+            }
+            let d = self.delete_connections(spare, scope).await;
+            let current = tracing::Span::current();
+            current.record("closed", d.closed.len()).record("not_open", d.not_open.len()).record("held", d.held.len());
+            current.record("neighbours", d.report.neighbours).record("pooled", d.report.pooled).record("accepted", d.report.accepted);
+            StatusReply::ConnectionsDeleted { closed: d.closed, not_open: d.not_open, held: d.held }
+        }
+        .instrument(span.clone())
+        .await;
+        span.record("outcome", reply.name());
+        span.in_scope(|| tracing::info!("node.connections.delete decided at this birth"));
+        reply
     }
 
     /// Whether this birth is parked: stopped, its process alive, waiting for a start or a delete.
@@ -423,6 +556,16 @@ impl NodeSelf {
         if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
             return Some(self.serve_round(commander, req));
         }
+        if let StatusRequest::DeleteConnections { node_id, incarnation, .. } = req {
+            if *node_id != self.node_id {
+                return Some(StatusReply::RejectedNotAuthority { why: rafka_node_rpc_contract::status::NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } });
+            }
+            if *incarnation != self.incarnation {
+                return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
+            }
+            let StatusRequest::DeleteConnections { scope, .. } = req else { unreachable!("matched above") };
+            return Some(self.serve_delete_connections(commander, spare, scope).await);
+        }
         let (node_id, incarnation, build_id, attempt, operation) = match req {
             StatusRequest::DrainNode { node_id, incarnation, build_id, attempt, operation }
             | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation }
@@ -550,8 +693,9 @@ impl NodeSelf {
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 };
+                // The receipt's count first, its name last: a reader that sees the receipt's name
+                // on the span sees the whole receipt (the count is never read before it is written).
                 let current = tracing::Span::current();
-                current.record("receipt", receipt.name());
                 match receipt {
                     DrainReceipt::Established { in_flight } => {
                         current.record("in_flight", in_flight);
@@ -559,8 +703,11 @@ impl NodeSelf {
                     }
                     DrainReceipt::Deadline { last_in_flight } => {
                         current.record("in_flight", last_in_flight);
-                        tracing::info!(last_in_flight, "the drain bound passed with work in flight: the birth stays Draining, not drained, and owes no node-drained");
                     }
+                }
+                current.record("receipt", receipt.name());
+                if let DrainReceipt::Deadline { last_in_flight } = receipt {
+                    tracing::info!(last_in_flight, "the drain bound passed with work in flight: the birth stays Draining, not drained, and owes no node-drained");
                 }
                 // Each commander owed is called on its own: one that cannot be reached holds up no other.
                 futures_util::future::join_all(self.ended(receipt).into_iter().map(|owed| owed.complete(&self))).await;
@@ -681,11 +828,13 @@ impl NodeSelf {
             tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %op.operation, status = "Leaving", members = count, published)
                 .in_scope(|| tracing::info!("the last aggregate before the stop carries this node Leaving"));
         }
-        // 5. The hard cut, sparing the commander's connection the stop call rides.
-        let report = match session {
-            Some(session) => session.cut(spare).instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %op.operation, commander = %commander)).await,
-            None => CutReport::default(),
-        };
+        // 5. node.connections.delete { All }: the hard cut, sparing the commander's connection the
+        // stop call rides, and the drop of every connection it held.
+        let report = self
+            .delete_connections(spare, &ConnectionScope::All)
+            .instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %op.operation, commander = %commander))
+            .await
+            .report;
         // Leaving is this node's own status from the moment its tasks are cut; nothing publishes it.
         let _ = (self.set_status)(MemberStatus::Leaving);
         tracing::info_span!(

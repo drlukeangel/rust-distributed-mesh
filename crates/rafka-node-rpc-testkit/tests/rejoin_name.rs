@@ -101,8 +101,8 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
     })
 }
 
-/// CONTRACT: a node born `mesh1.rpc.1.new` takes `mesh1.rpc.1` live (`ApplyNodeName` answered
-/// `Applied`) and is then stopped: its authority's held stopped digest names `mesh1.rpc.1`, and so
+/// CONTRACT: a node born `mesh1.rpc.1.new` takes `mesh1.rpc.1` live (drained, its connections
+/// deleted, `ApplyNodeName` answered `Applied`; R-CR1a) and is then stopped: its authority's held stopped digest names `mesh1.rpc.1`, and so
 /// does its row. Its start presents the name it holds, `mesh1.rpc.1`, and is admitted; its stop and
 /// start spans name `mesh1.rpc.1`. What must NOT happen: the join presenting the birth's frozen
 /// `.new`, refused `JoinMismatch("name")`, or a lifecycle span after the rename naming `.new`.
@@ -150,6 +150,10 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
+        let drain = StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_held".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1.new".into() };
+        assert_eq!(call(&admin, &target, &drain).await, StatusReply::Applied);
+        let delete = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+        assert!(matches!(call(&admin, &target, &delete).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.to_string() };
         assert_eq!(call(&admin, &target, &apply).await, StatusReply::Applied);
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_held".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };

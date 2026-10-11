@@ -101,6 +101,7 @@ pub fn due(plan: &[ReconnectItem], now_ms: u64) -> Vec<&ReconnectItem> {
 /// same epoch. The caller writes it and reschedules from it.
 pub fn next_failure(item: &ReconnectItem, reason: impl Into<String>, now_ms: u64) -> NodeConnection {
     NodeConnection {
+        id: crate::ConnectionId::mint(),
         state: ConnectionState::Failed,
         recovery: Some(DirectRecovery {
             recovery_epoch: item.recovery.recovery_epoch,
@@ -123,6 +124,7 @@ pub fn first_failure(
 ) -> NodeConnection {
     let epoch = previous.and_then(|p| p.recovery).map_or(1, |r| r.recovery_epoch.saturating_add(1));
     NodeConnection {
+        id: crate::ConnectionId::mint(),
         source,
         destination,
         kind: ConnectionKind::Direct,
@@ -141,6 +143,7 @@ pub fn owed_retirements(held: &ConnectionsHeld, now_ms: u64) -> Vec<NodeConnecti
         .into_iter()
         .filter(|p| matches!(held.active_direct(&p.source.name, &p.destination.name), Some(Some(edge)) if !held.names_superseded_destination(edge)))
         .map(|p| NodeConnection {
+            id: crate::ConnectionId::mint(),
             state: ConnectionState::Disconnected,
             reason: Some(DIRECT_RESTORED.into()),
             recovery: None,

@@ -821,8 +821,9 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
 }
 
 /// CONTRACT: a put that changes a field RDM owns is refused before anything is sent, and one that
-/// changes otel_debug, which no row field carries, ends `NotBackedToday`. Calls whose request no op
-/// carries say so by name.
+/// changes otel_debug, which no row field carries, ends `NotBackedToday`. A `node.connections.delete`
+/// naming no connection is refused by name before anything is sent (R-CR3). Calls whose request no
+/// op carries say so by name.
 #[test]
 fn calls_no_op_carries_today_say_so_by_name() {
     use rafka_node_admin_client::{MetaField, NodeMeta};
@@ -852,9 +853,13 @@ fn calls_no_op_carries_today_say_so_by_name() {
             rafka_node_rpc_contract::status::StatusReply::RejectedMetaFieldIsRdmOwned { field: MetaField::Status.name().into() }
         );
         assert!(matches!(nodes.update(&held, &NodeMeta { otel_debug: true, ..held.clone() }, &mp, &route).await, Err(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
-        for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet)] {
-            assert!(matches!(end, CallEnd::NotBackedToday { op: got, .. } if got == op), "{end:?}");
-        }
+        // node.connections.delete naming no connection is refused by name, and nothing is sent.
+        assert!(
+            matches!(nodes.connections_delete(&held, &mp, &route, &rafka_node_rpc_contract::status::ConnectionScope::Connections(vec![])).await, Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
+            "an empty Connections list is refused by name"
+        );
+        let end = nodes.config_get();
+        assert!(matches!(end, CallEnd::NotBackedToday { op: NodeOp::ConfigGet, .. }), "{end:?}");
     });
 }
 

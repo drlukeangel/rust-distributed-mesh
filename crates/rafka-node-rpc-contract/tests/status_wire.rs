@@ -1,17 +1,19 @@
 //! Fixed bytes for the coordinated 2026-10-07 status reseal (#2923); the four drain/stop command
-//! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand.
+//! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand, as are
+//! `node.connections.delete`'s request (21) and its two replies (31, 32).
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rafka_mesh_entity::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
 fn mesh() -> MeshId { MeshId::parse("1123456789ab").unwrap() }
 fn fabric() -> FabricId { FabricId::parse("2123456789ab").unwrap() }
 fn birth() -> IncarnationId { IncarnationId("birth".into()) }
+fn connection() -> ConnectionId { ConnectionId::parse("3123456789ab").unwrap() }
 
 fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| {
@@ -20,7 +22,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_twenty_one_variant_wire_schema() {
+fn requests_match_the_frozen_twenty_two_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c30313233343536373839616205626972746803"),
@@ -56,6 +58,7 @@ fn requests_match_the_frozen_twenty_one_variant_wire_schema() {
         (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c30313233343536373839616205626972746801016b0176"),
         (ApplyNodeName { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "130c3031323334353637383961620562697274680b6d657368312e7270632e31"),
         (UpdateNode { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "140c3031323334353637383961620562697274680b6d657368312e7270632e31"),
+        (DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c30313233343536373839616205626972746801010c333132333435363738396162"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -66,7 +69,7 @@ fn requests_match_the_frozen_twenty_one_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_thirty_one_variant_wire_schema() {
+fn replies_match_the_frozen_thirty_three_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -100,6 +103,8 @@ fn replies_match_the_frozen_thirty_one_variant_wire_schema() {
         (NameHeld { name: "n".into(), by: node() }, "1c016e0c303132333435363738396162"),
         (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
         (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
+        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![] }, "1f010c3331323334353637383961620000"),
+        (RejectedConnectionScope { reason: "r".into() }, "200172"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -171,4 +176,6 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(RetryOn::TargetReachable { node_id: node() }, "010c303132333435363738396162");
     golden(RetryOn::AuthorityReady, "02");
     golden(RetryOn::AuthorityAddressed, "03");
+    golden(ConnectionScope::All, "00");
+    golden(ConnectionScope::Connections(vec![connection()]), "01010c333132333435363738396162");
 }

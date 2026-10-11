@@ -164,6 +164,12 @@ product_id!(
     /// Equality only: never an election key, age or precedence.
     FabricId, "fabric id"
 );
+product_id!(
+    /// One entry of a node's connections log (connections.md §1, fabric-node-lifecycle.md §8: every
+    /// event receives its own minted row id). The id of a connection's open entry names that
+    /// connection to `node.connections.delete` (R-CR3). Equality only.
+    ConnectionId, "connection id"
+);
 
 /// Width of a minted opaque id ([`IncarnationId`], [`EndpointId`] when minted): 128 random bits in
 /// lower-case hex.

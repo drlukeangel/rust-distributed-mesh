@@ -4943,14 +4943,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         }));
     }
     {
-        // The name is held on this admin's own digest and by its membership, taken only with no call
-        // in flight other than the apply itself; a stopped admin holds it and publishes nothing.
-        let (membership, digest, stats) = (membership.clone(), digest.clone(), rpc_server.stats());
+        // The name is held on this admin's own digest and by its membership, taken only while it
+        // holds no connection (R-CR1); a stopped admin holds it and publishes nothing.
+        let (membership, digest, connections) = (membership.clone(), digest.clone(), connections.clone());
         let _ = rename.set(Arc::new(move |asked: PathName| {
-            let (membership, digest, stats) = (membership.clone(), digest.clone(), stats.clone());
+            let (membership, digest, connections) = (membership.clone(), digest.clone(), connections.clone());
             Box::pin(async move {
                 let held = digest.lock().unwrap().node.name.clone();
-                let decision = crate::node_name::decide(&held, &asked, rafka_node_rpc::ServerStats::get(&stats.in_flight).saturating_sub(1));
+                let routes = connections.held_routes().await;
+                let decision = crate::node_name::decide(&held, &asked, &routes);
                 if decision == crate::node_name::NameApply::Applied {
                     membership.set_name(asked.clone());
                     let d = {
@@ -4977,6 +4978,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         });
         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
         let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
+        own.set_connections(connections.clone());
         own.set_session(Arc::new(AdminSession {
             gate: park_gate.clone(),
             name: name.clone(),

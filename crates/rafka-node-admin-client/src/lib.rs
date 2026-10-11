@@ -334,6 +334,8 @@ pub struct Accepted {
 /// One connection fact (`GET /api/connections`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionView {
+    /// The entry's minted id: an open entry's id names its connection to `node.connections.delete`.
+    pub id: String,
     /// The source node's `path.name`.
     pub source: String,
     /// The destination node's `path.name`.

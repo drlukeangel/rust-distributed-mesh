@@ -538,6 +538,25 @@ impl NodeRpcServer {
         cut.len()
     }
 
+    /// Hard-cut the connections this server accepted from `peer` (`node.connections.delete` naming
+    /// one exact connection), closing each with `reason`, unless `peer` is `spare` (the peer whose
+    /// call is in flight and answered on its connection). Returns how many were closed.
+    pub fn close_connections_from(&self, peer: iroh::PublicKey, spare: Option<iroh::PublicKey>, reason: &'static str) -> usize {
+        if Some(peer) == spare {
+            return 0;
+        }
+        let cut: Vec<Connection> = {
+            let held = self.inner.connections.lock().unwrap();
+            held.values().filter(|c| c.remote_id() == peer).cloned().collect()
+        };
+        for c in &cut {
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %c.remote_id().fmt_short(), connection = c.stable_id(), direction = "accepted")
+                .in_scope(|| tracing::info!("an accepted connection was closed"));
+            c.close(0u32.into(), reason.as_bytes());
+        }
+        cut.len()
+    }
+
     /// Enter `Draining`: new calls get a typed `Draining` refusal.
     pub fn drain(&self) {
         self.inner.draining.store(true, Ordering::SeqCst);

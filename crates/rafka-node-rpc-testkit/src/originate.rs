@@ -369,7 +369,7 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
     // A Proxy the resolution found invalid is retired by this source, as the caller of the seam.
     let retired = match call.retire {
         Some((proxy, why)) => {
-            let row = NodeConnection { state: ConnectionState::Disconnected, reason: Some(why.to_string()), recovery: None, logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
+            let row = NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), state: ConnectionState::Disconnected, reason: Some(why.to_string()), recovery: None, logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
             let _ = seams.connections.record(row).await;
             Some(why.to_string())
         }
@@ -431,6 +431,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
     seams.connections.drain().await;
     let end = |n: &rafka_node_rpc::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
+        id: rafka_mesh_entity::ConnectionId::mint(),
         source: seams.connections.own(),
         destination: end(&dest),
         kind: ConnectionKind::Proxy,
@@ -468,7 +469,7 @@ mod tests {
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-        NodeConnection { source: source.clone(), destination: destination.clone(), kind, state: ConnectionState::Connected, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+        NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state: ConnectionState::Connected, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
     }
 
     /// CONTRACT: the door resolves a held Proxy under the carrier policy it is served with. A
