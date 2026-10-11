@@ -304,24 +304,20 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
     lossy_ep.close().await;
 }
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on every
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on every
 /// thread of the cell's own runtime, so cells sharing a test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture(cell: &str) -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", format!("topology-read-{cell}"))]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("topology-read"));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(&format!("topology-read-{cell}"), exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
 impl Capture {
@@ -334,10 +330,10 @@ impl Capture {
 
     /// `(name, attributes)` of every finished span.
     fn spans(&self) -> Vec<(String, std::collections::BTreeMap<String, String>)> {
-        let _ = self.provider.force_flush();
-        self.exporter
-            .get_finished_spans()
-            .unwrap()
+        self.capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let finished = self.exporter.get_finished_spans().unwrap();
+        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
+        finished
             .into_iter()
             .map(|s| (s.name.to_string(), s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()))
             .collect()

@@ -1,6 +1,13 @@
 //! The crate's one integration-test executable: every file in this directory is a module
 //! here, so the crate links once. A stem runs alone as `<exe> <stem>::`.
 
+/// Only this story's spans reached the exporter: every one is RDM's own (`rdm.*`). A transport
+/// internal (iroh, noq) or any other foreign span in a cell's trace is a defect of the capture.
+pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
+    let foreign: std::collections::BTreeSet<&str> = names.into_iter().filter(|n| !n.starts_with("rdm.")).collect();
+    assert!(foreign.is_empty(), "spans outside the cell's story were exported: {foreign:?}");
+}
+
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 
