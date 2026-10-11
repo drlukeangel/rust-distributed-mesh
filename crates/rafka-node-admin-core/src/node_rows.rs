@@ -1,9 +1,10 @@
 //! The node row at the fabric-primary (ops-naming "Node data: meta, config and exe"; the delete
 //! point; lifecycles/node-decommission.md step 3).
 //!
-//! The fabric-primary is the only writer of a node's row. It writes the whole row from the record
-//! it holds (its topology), a blind put of the `path.name` key, and never reads the store on that
-//! write. A row is written at two moments:
+//! The fabric-primary writes a node's row here from the record it holds (its topology), a blind
+//! put of the `path.name` key, never reading the store on that write. A row's move from one name
+//! to another has one writer, [`move_row`]: a replace's `RenamePredecessor` here and `node.update`
+//! at the node's mesh-primary (`crate::node_update`, R13). A row is written here at two moments:
 //!
 //! - `node.delete` (`retire-node:<path>`), read off the step's `Step` frame (the one the executor
 //!   streams, or its receipt read back by a fabric-primary that took the seat since): at
@@ -130,12 +131,11 @@ impl NodeRows {
             return;
         };
         span.record("node_id", record.node_id.as_str());
-        let r = tracing::Instrument::instrument(self.move_row(me, &record, name, &to), span.clone()).await;
+        let r = tracing::Instrument::instrument(move_row(&*self.storage, me, &record, name, &to), span.clone()).await;
         let (outcome, detail) = match &r {
             Ok(Moved::Renamed) => ("renamed", None),
             Ok(Moved::AlreadyMoved) => ("already-moved", Some(format!("{me}: the replace of {name} ({}) reached RenamePredecessor again: the predecessor holds {to} and no longer holds {name}; nothing is written", record.node_id))),
             Err(RenameRefused::NameHeld(e)) => ("name-held", Some(format!("{me}: the replace of {name} ({}) to {to}: {e}", record.node_id))),
-            Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
             Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
         };
         span.record("outcome", outcome);
@@ -344,81 +344,38 @@ impl NodeRows {
     }
 }
 
-/// Why `node.update` refused a rename at the fabric-primary.
+/// Why a node row's move was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenameRefused {
-    /// The body differs from what RDM holds in a field RDM owns (a live node's name among them).
-    RdmOwned(rafka_node_admin_client::MetaFieldIsRdmOwned),
     /// The new name is held by another node, parked or live.
     NameHeld(rafka_node_admin_client::NameHeld),
-    /// The rename could not be decided or written: why, whole.
+    /// The move could not be written: why, whole.
     Unwritten(String),
 }
 
-impl NodeRows {
-    /// `node.update` of a stopped node's name (to or from its `.old` form): the body is checked
-    /// against what RDM holds, then the new name is claimed for the node, insert-and-fail on its
-    /// key, then the old key is released. Whether the node is stopped is the held record's
-    /// (`parked`), never the caller's.
-    pub async fn rename(&self, me: &PathName, view: &RwLock<Topology>, held: &rafka_node_admin_client::NodeMeta, body: &rafka_node_admin_client::NodeMeta) -> Result<(), RenameRefused> {
-        let span = tracing::info_span!(
-            "rdm.node_admin.node.update.via-rename",
-            node = %me,
-            node_id = %held.node_id,
-            from = %held.name,
-            to = %body.name,
-            outcome = tracing::field::Empty,
-            detail = tracing::field::Empty,
-            "otel.kind" = "internal",
-        );
-        let r = tracing::Instrument::instrument(self.rename_steps(me, view, held, body), span.clone()).await;
-        let (outcome, detail) = match &r {
-            Ok(()) => ("renamed", None),
-            Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
-            Err(RenameRefused::NameHeld(e)) => ("name-held", Some(format!("{me}: the rename of {} ({}) to {}: {e}", held.name, held.node_id, body.name))),
-            Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
-        };
-        span.record("outcome", outcome);
-        if let Some(d) = &detail {
-            span.record("detail", d.as_str());
-        }
-        span.in_scope(|| tracing::info!("node.update: the rename decided"));
-        r
+/// The node's row moves from `from` to `to` in `storage`: the new name is claimed for the node from
+/// its held `record` (insert-and-fail, `NameHeld` naming another holder), then the node lets go of
+/// the old key (only its own row there goes). The one writer of a rename (R13: `node.update` is
+/// one write path): `node.update` at the node's mesh-primary (`crate::node_update`) and a
+/// replace's `RenamePredecessor` both move here.
+pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, from: &PathName, to: &PathName) -> Result<Moved, RenameRefused> {
+    if from == to {
+        return Ok(Moved::Renamed);
     }
-
-    async fn rename_steps(&self, me: &PathName, view: &RwLock<Topology>, held: &rafka_node_admin_client::NodeMeta, body: &rafka_node_admin_client::NodeMeta) -> Result<(), RenameRefused> {
-        // The held record: whether the node is stopped, its status and its config. It is the
-        // fabric-primary's own, never the caller's body.
-        let Some(record) = view.read().await.nodes.iter().find(|n| n.node_id == held.node_id).cloned() else {
-            return Err(RenameRefused::Unwritten(format!("{me}: node {} is not in the fabric-primary's view; its name cannot be changed", held.node_id)));
-        };
-        body.check_put(held, record.parked).map_err(RenameRefused::RdmOwned)?;
-        self.move_row(me, &record, &held.name, &body.name).await.map(|_| ())
-    }
-
-    /// The node's row moves from `from` to `to`: the new name is claimed for the node from its held
-    /// `record` (insert-and-fail, `NameHeld` naming another holder), then the node lets go of the old
-    /// key (only its own row there goes). The one writer of a rename: `node.update` and a replace's
-    /// `RenamePredecessor` both move here.
-    async fn move_row(&self, me: &PathName, record: &Node, from: &PathName, to: &PathName) -> Result<Moved, RenameRefused> {
-        if from == to {
-            return Ok(Moved::Renamed);
-        }
-        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
-        let claimed = match self.storage.claim_node_row(&row).await {
-            Ok(Ok(c)) => c,
-            Ok(Err(name_held)) => return Err(RenameRefused::NameHeld(name_held)),
-            Err(e) => return Err(RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {to} for {}: {e}", record.node_id))),
-        };
-        // The new name is the node's: it lets go of the old key.
-        let released = self.storage.release_node_row(from, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))?;
-        Ok(if claimed == Claimed::HeldByNode && !released { Moved::AlreadyMoved } else { Moved::Renamed })
-    }
+    let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
+    let claimed = match storage.claim_node_row(&row).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(name_held)) => return Err(RenameRefused::NameHeld(name_held)),
+        Err(e) => return Err(RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {to} for {}: {e}", record.node_id))),
+    };
+    // The new name is the node's: it lets go of the old key.
+    let released = storage.release_node_row(from, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))?;
+    Ok(if claimed == Claimed::HeldByNode && !released { Moved::AlreadyMoved } else { Moved::Renamed })
 }
 
 /// What a move of a node's row did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Moved {
+pub(crate) enum Moved {
     /// The node holds the new name now and let go of the old one.
     Renamed,
     /// The node held the new name already and not the old one: the move was made before.

@@ -13,7 +13,7 @@ use rafka_node_admin_core::build_drive::{Dispatched, Dispatcher, Drive, DriveEnd
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::http::ControlPlane;
 use rafka_node_admin_core::model::*;
-use rafka_node_admin_core::node_rows::{NodeRows, RenameRefused};
+use rafka_node_admin_core::node_rows::NodeRows;
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc_contract::build::BuildReply;
@@ -234,77 +234,6 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
     assert_eq!((a["subject"].as_str(), a["node_id"].as_str(), a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.2"), Some(born.as_str()), Some(old.as_str()), Some("1"), Some("row-seeded")), "{a:#?}");
-}
-
-fn meta_of(n: &Node) -> rafka_node_admin_client::NodeMeta {
-    rafka_node_admin_client::NodeMeta {
-        node_id: n.node_id.clone(),
-        incarnation: n.incarnation_id.clone(),
-        endpoint: None,
-        transport_addr: None,
-        exe: Some("rpc-node@abc123".into()),
-        runtime: Some("dep-1".into()),
-        status: rafka_node_admin_client::NodeStatus::Leaving,
-        name: n.name.clone(),
-        mesh: n.mesh.clone(),
-        kind: n.kind,
-        otel_debug: false,
-    }
-}
-
-fn parked(name: &str, config: &str) -> Node {
-    let mut n = node(name, false, false);
-    n.status = NodeStatus::Leaving;
-    n.parked = true;
-    n.config = tier(config);
-    n
-}
-
-/// CONTRACT: a name is held by exactly one node, parked or live, until that node is renamed or
-/// deleted; a rename into a held name is refused `NameHeld { by }` naming the holder
-/// (ops-naming "Identity"; node-rpc-envelope.md "Meta and config"). The refusal is the claim's
-/// own insert-and-fail on the name's key: nothing is written, the holder's row and the renaming
-/// node's row both stay. A body that changes a field RDM owns is refused `MetaFieldIsRdmOwned`
-/// before any claim. Once the holder is deleted the same rename wins: the node's row moves to the
-/// new key, its config with it, and the old key is released. One `via-rename` span per call.
-#[test]
-fn a_rename_into_a_name_a_parked_node_holds_is_refused_name_held() {
-    let cap = capture();
-    cap.run(async {
-        let storage = Arc::new(MemoryNodesStorage::default());
-        let holder = parked("mesh1.rpc.1.old", "gold");
-        let renaming = parked("mesh1.rpc.1", "silver");
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut t = view();
-        t.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
-        t.nodes.extend([holder.clone(), renaming.clone()]);
-        let me_id = t.node(&me).expect("the fabric-primary is in the view").node_id.clone();
-        let view = RwLock::new(t);
-        for n in [&holder, &renaming] {
-            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone() }).await.unwrap();
-        }
-        let rows = NodeRows::new(me.clone(), me_id, storage.clone());
-        let held = meta_of(&renaming);
-        let body = rafka_node_admin_client::NodeMeta { name: renaming.name.renamed(), ..held.clone() };
-
-        let exe = rafka_node_admin_client::NodeMeta { exe: Some("rpc-node@def456".into()), ..body.clone() };
-        assert_eq!(rows.rename(&me, &view, &held, &exe).await, Err(RenameRefused::RdmOwned(rafka_node_admin_client::MetaFieldIsRdmOwned { field: rafka_node_admin_client::MetaField::Exe })));
-
-        let refused = rows.rename(&me, &view, &held, &body).await;
-        assert_eq!(refused, Err(RenameRefused::NameHeld(rafka_node_admin_client::NameHeld { name: holder.name.clone(), by: holder.node_id.clone() })));
-        assert_eq!(storage.node_row_at(&holder.name).await.unwrap().map(|r| r.node_id), Some(holder.node_id.clone()), "the holder keeps the name");
-        assert_eq!(storage.node_row_at(&renaming.name).await.unwrap().map(|r| r.node_id), Some(renaming.node_id.clone()), "nothing moved");
-
-        storage.put_node_row(&NodeRow { name: holder.name.clone(), node_id: holder.node_id.clone(), status: NodeStatus::Deleted, config: holder.config.clone() }).await.unwrap();
-        assert_eq!(rows.rename(&me, &view, &held, &body).await, Ok(()));
-        assert_eq!(storage.node_row_at(&holder.name).await.unwrap(), Some(NodeRow { name: holder.name.clone(), node_id: renaming.node_id.clone(), status: NodeStatus::Leaving, config: tier("silver") }), "the renamed node holds the new name with its own config");
-        assert_eq!(storage.node_row_at(&renaming.name).await.unwrap(), None, "the old key is released");
-    });
-    let spans = cap.spans_named("rdm.node_admin.node.update.via-rename");
-    let outcomes: Vec<&str> = spans.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
-    assert_eq!(outcomes, vec!["meta-field-is-rdm-owned", "name-held", "renamed"], "{spans:#?}");
-    let held_span = &spans[1]["attributes"];
-    assert!(held_span["detail"].as_str().is_some_and(|d| d.contains("mesh1.rpc.1.old")), "{held_span:#?}");
 }
 
 /// CONTRACT: the fabric-primary writes a new birth's row from the record it holds (ops-naming "Node

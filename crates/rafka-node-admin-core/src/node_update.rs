@@ -4,12 +4,14 @@
 //! (`MetaFieldIsRdmOwned { field }`): the held node is stopped, or it is a live `<name>.new`
 //! taking `<name>` (nothing resolves a `.new` name; the node's own `Busy` on the apply is the
 //! in-flight proof); the name is claimed by insert-and-fail in the store adapter (`NameHeld { by }`,
-//! nothing written) and the old key released; the view entry moves with the row; a live birth is
+//! nothing written) and the old key released, through the one writer of a row's move
+//! (`node_rows::move_row`); the view entry moves with the row; a live birth is
 //! told `ApplyNodeName`, a stopped one nothing (its join answer hands it the name); `NodeUpdated`
 //! answers only after the apply answered.
 
 use crate::model::{Node, PathName};
-use crate::storage::{NodeRow, NodesStorage};
+use crate::node_rows::RenameRefused;
+use crate::storage::NodesStorage;
 use crate::topology::Topology;
 use rafka_node_admin_client::{ExactBirth, MetaField, NodeMeta, NodeRpc, Traffic};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, RouteChoice};
@@ -67,14 +69,10 @@ async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Top
         let Some(moved) = moved.get() else {
             return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
         };
-        let row = NodeRow { name: to.clone(), node_id: held.node_id.clone(), status: held.status, config: held.config.clone() };
-        match storage.claim_node_row(&row).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
-            Err(e) => return StatusReply::node_row_refused(&to.to_string(), &format!("{me}: nodes.storage refused the claim of {to} for {node_id}: {e}")),
-        }
-        if let Err(e) = storage.release_node_row(&held.name, &held.node_id).await {
-            return StatusReply::node_row_refused(&held.name.to_string(), &format!("{me}: {node_id} holds {to} and nodes.storage refused the release of {}: {e}", held.name));
+        match crate::node_rows::move_row(storage, me, &held, &held.name, &to).await {
+            Ok(_) => {}
+            Err(RenameRefused::NameHeld(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
+            Err(RenameRefused::Unwritten(why)) => return StatusReply::node_row_refused(&to.to_string(), &why),
         }
         // The view lists the birth at the row's name from now on, on every projection.
         moved(held.name.clone(), node_id.clone(), incarnation.clone(), to.clone()).await;
