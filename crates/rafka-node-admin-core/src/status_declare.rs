@@ -405,6 +405,16 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
             }
         }
     }
+    // My Mesh's Leaving, as its primary, to the fabric-primary: its own mesh row committed Leaving
+    // when it admitted leave-mesh ("one commit stores the row, applies it, gossips it and answers
+    // the op", states.md), reported upward as committed state like its ready-for-traffic, and not
+    // gated on a round: the fabric-primary's map holds the mesh's state it hands an admin it creates.
+    if i_am_mesh_primary && own_mesh_held == Some(MeshState::Leaving) {
+        if let Some(Ok(mesh_id)) = mesh_ids.get(&me.mesh).map(|id| crate::model::MeshId::parse(id).map(|m| (id.clone(), m))) {
+            let (key, mesh_id) = mesh_id;
+            d.owe(Key::Mesh(key, MeshState::Leaving), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Leaving });
+        }
+    }
     // The fabric's readiness, as the fabric-primary, to every other mesh primary.
     if i_am_fabric_primary && view.fabric.status == crate::model::ScopeStatus::ReadyForTraffic {
         for m in &view.meshes {

@@ -328,7 +328,10 @@ impl AdminRunner {
         tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
             .in_scope(|| tracing::info!("leave-mesh admitted at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
         match committed {
-            StatusReply::Applied | StatusReply::AlreadyApplied => {}
+            // The committed Leaving is owed upward now: the declarer reports it to the
+            // fabric-primary (DeclareMeshState, "report committed state upward"), whose map holds
+            // the state it hands an admin it creates for this mesh.
+            StatusReply::Applied | StatusReply::AlreadyApplied => self.records.wake.poke(),
             refused => return refused,
         }
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
