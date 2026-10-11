@@ -671,7 +671,8 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let op = format!("create-node:{admin}");
     let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
-    wait_for_observed(&format!("`{id}`: the Build reaches the held admin (complete receipts {want:?})"), Duration::from_secs(60), || async {
+    let wanted = if exact { format!("complete receipts exactly {want:?}") } else { format!("at least the complete receipts of every step before {}", CreateStep::WaitForBind.name()) };
+    wait_for_observed(&format!("`{id}`: the Build reaches the held admin ({wanted})"), Duration::from_secs(60), || async {
         let b = run.build(&exec, &build_id).await;
         let d = done_steps(&b, &op, 1);
         let reached = if exact { d == want } else { d.len() >= create_order.iter().position(|x| x == CreateStep::WaitForBind.name()).unwrap() };
