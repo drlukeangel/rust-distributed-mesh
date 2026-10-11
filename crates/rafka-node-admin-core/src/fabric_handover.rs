@@ -257,7 +257,29 @@ pub struct HandoverDoor {
     /// authoritative input (fabric-node-lifecycle-elections.md §4.4), and every reader of the view
     /// (the Build door, the claim door, the drive, the executor plan) decides from it.
     pub project_view: ProjectView,
+    /// Cuts off and drains the writes of the stores the moving seats write, before the seat row
+    /// (R14 item 4), or lifts the cut-off when the row was not written.
+    pub cut_off_writes: CutOffWrites,
 }
+
+/// What the holder's SeatTransfer step does to the stores its moving seats write (R14 item 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteCutOff {
+    /// Refuse every write the moving seats authorize (the mesh-primary's mesh and node rows; the
+    /// fabric record as well when the fabric seat moves), then take each store's write lock once,
+    /// which waits for every write already issued.
+    Set {
+        /// Why: the transfer, naming the successor and the operation.
+        reason: String,
+        /// The fabric-primary seat moves too.
+        fabric_seat: bool,
+    },
+    /// The seat row was not written: nothing moved, and the writes are this admin's again.
+    Lift,
+}
+
+/// Applies a [`WriteCutOff`] to this admin's stores (`crate::admin`'s wiring).
+pub type CutOffWrites = Arc<dyn Fn(WriteCutOff) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 /// What projects an admin's view from its held records now (`crate::admin::view_projector`).
 pub type ProjectView = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;

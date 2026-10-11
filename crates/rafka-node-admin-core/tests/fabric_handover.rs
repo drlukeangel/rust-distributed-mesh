@@ -9,7 +9,7 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolde
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::election::{resolve_with, Incumbency};
-use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, Stage, WonClaims};
+use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, Stage, WonClaims, WriteCutOff};
 use rafka_node_admin_core::fabric_storage::{FabricStorage, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
@@ -75,6 +75,10 @@ struct Admin {
     resolved: ResolvedNode,
     storage: Arc<dyn FabricStorage>,
     claims: Arc<TestClaims>,
+    /// Every write cut-off the holder's SeatTransfer step applied, in order.
+    cut_offs: Arc<Mutex<Vec<WriteCutOff>>>,
+    /// Holds the cut-off's drain open while `false`: a write still issued when the step cuts off.
+    drained: tokio::sync::watch::Sender<bool>,
     /// The admin's Node RPC server: a cell drains it as the admin's DrainNode does.
     server: rafka_node_rpc::NodeRpcServer,
     _router: Router,
@@ -120,6 +124,8 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let claims = Arc::new(TestClaims::default());
     let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
+    let cut_offs: Arc<Mutex<Vec<WriteCutOff>>> = Arc::default();
+    let (drained, drain_gate) = tokio::sync::watch::channel(true);
     // The cell's view is set by hand, not projected from digests: the projection re-runs the one
     // election over its members with the seat records this admin holds now, as the admin's own
     // projection does (`admin::view_projector`).
@@ -150,11 +156,21 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         decisions: Arc::default(),
         claims: claims.clone(),
         project_view,
+        cut_off_writes: {
+            let cut_offs = cut_offs.clone();
+            Arc::new(move |c: WriteCutOff| {
+                cut_offs.lock().unwrap().push(c);
+                let mut gate = drain_gate.clone();
+                Box::pin(async move {
+                    let _ = gate.wait_for(|open| *open).await;
+                })
+            })
+        },
     });
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, slot, client, resolver, resolved, storage, claims, server, _router: router }, ep)
+    (Admin { door, slot, client, resolver, resolved, storage, claims, cut_offs, drained, server, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -766,6 +782,40 @@ async fn a_seat_holder_commits_both_seats_to_the_executor_in_one_row() {
     let c = &spans.named(SEATS_COMMITTED)[0];
     assert_eq!((c["build_id"].as_str(), c["attempt"].as_str(), c["mesh_epoch"].as_str(), c["fabric_epoch"].as_str()), ("b1", "1", "4", "8"));
     assert!(spans.named(SEATS_REJECTED).is_empty(), "{:?}", spans.named(SEATS_REJECTED));
+    let _ = (&f.m, &f.x);
+}
+
+/// CONTRACT (R14 item 4; node-rpc-envelope.md "TakeSeats"): the holder's SeatTransfer step cuts
+/// off the writes its moving seats authorize (both seats here, so the fabric record's too) and
+/// waits for every issued write to drain BEFORE it writes the seat row. While the drain is held
+/// open (a write still on the disk) no seat row exists and the call is unanswered; once it
+/// drains, the one row is written and SeatsCommitted answered. What must NOT happen: the seat row
+/// written while an old-seat write is still issued, or a commit with no cut-off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_holder_drains_its_seat_writes_before_it_writes_the_seat_row() {
+    let f = seats_fabric().await;
+    let op = "drain-node:mesh1.admin.1";
+    f.p.drained.send_replace(false);
+    let call = tokio::spawn({
+        let (n, p) = (f.n.client.clone(), f.p.resolved.node_id.clone());
+        let req = take_seats(&f.p, &f.n, 3, 7, "b1", op);
+        async move {
+            let (out, _) = n.call::<FabricPrimaryHandover>(&NodeTarget::ExactNode(p), &req, &CallOptions::default()).await;
+            out.reply().map(|r| r.value().clone())
+        }
+    });
+    until("P cuts off its seat writes", || !f.p.cut_offs.lock().unwrap().is_empty()).await;
+    assert!(
+        matches!(&f.p.cut_offs.lock().unwrap()[..], [WriteCutOff::Set { reason, fabric_seat: true }] if reason.contains(op) && reason.contains("mesh1")),
+        "one cut-off naming the transfer, the fabric seat included: {:?}",
+        f.p.cut_offs.lock().unwrap()
+    );
+    assert!(f.p.storage.seat_transfers().await.unwrap().is_empty(), "the seat row was written while a write of the old seat was still issued");
+    assert!(!call.is_finished(), "P answered before its writes drained");
+    f.p.drained.send_replace(true);
+    let reply = call.await.unwrap();
+    assert!(matches!(&reply, Some(Reply::SeatsCommitted { seats }) if *seats == committed_to(&f.n, 4, 8)), "{reply:?}");
+    assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "one row, written after the drain");
     let _ = (&f.m, &f.x);
 }
 

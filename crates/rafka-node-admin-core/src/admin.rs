@@ -4136,6 +4136,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         decisions: builds.decisions(),
         claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
         project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
+        cut_off_writes: Arc::new(|_| Box::pin(async {})),
     });
     handover.restore().await?;
     let _ = handover_slot.set(handover.clone());
