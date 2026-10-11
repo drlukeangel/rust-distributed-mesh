@@ -1361,6 +1361,29 @@ impl MembershipObserver {
     }
 }
 
+/// The blocker an exact birth names for its Ready (node-start.md step 3): only while its own digest
+/// in `book` says Pending, one `ProbeNodeState` to that birth over `client`, and the hook's blocker of
+/// a Status `Blocked` answer, named with the birth and the event it runs again on and no attempt
+/// counter. Every other answer names no blocker and frames nothing: a `NotReady` is the subject's
+/// door or handler not serving yet (node-rpc-envelope.md, "NotReady ... is never a hook blocker"),
+/// and the step waits on; so does a birth that answers its state (`Current`, `CurrentParked`), a
+/// stale incarnation, or a call that ends unanswered: why it is not Ready is the Ready check's to
+/// report.
+pub async fn probed_ready_blocker(client: &rafka_node_rpc::NodeRpcClient, book: &DigestBook, node: &Node) -> Option<String> {
+    let incarnation = node.incarnation_id.clone()?;
+    let (digest, _) = book.get(node.node_id.as_str()).filter(|(d, _)| d.node.incarnation == incarnation)?;
+    if digest.status != MemberStatus::Pending {
+        return None;
+    }
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+    match rafka_node_admin_client::NodeRpc::new(client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
+        Ok(rafka_node_rpc_contract::status::StatusReply::Blocked { node_id, incarnation: answered, reason, retry_on }) if node_id == node.node_id && answered == incarnation => {
+            Some(format!("{}: hydrate_before_ready is blocked: {reason}; it runs again on {}", node.name, retry_on.name()))
+        }
+        _ => None,
+    }
+}
+
 #[async_trait::async_trait]
 impl NodeObserver for MembershipObserver {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
@@ -1381,6 +1404,10 @@ impl NodeObserver for MembershipObserver {
             Some(d) => Err(format!("{} reports {:?}", node.name, d.status)),
             None => Err(format!("no digest from {} for this birth", node.name)),
         }
+    }
+
+    async fn ready_blocker(&self, node: &Node) -> Option<String> {
+        probed_ready_blocker(self.client.as_deref()?, &self.book, node).await
     }
 
     async fn send_command(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext) -> crate::deployment::pipeline::CommandAdmission {
@@ -3359,6 +3386,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
     let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
+    // Where this admin's own `hydrate_before_ready` stands: written by its start (and a rejoin's),
+    // read by the Ready check and by a probe naming this admin.
+    let hydration_cell: crate::status_rpc::Hydrating = Arc::default();
     // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
     let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
     // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
@@ -3392,6 +3422,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             rounds: rounds_slot.clone(),
             configs: configs_slot.clone(),
             configure: configure.clone(),
+            hydration: hydration_cell.clone(),
         }));
     }
     // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -3846,7 +3877,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // and the mesh channel joined; the Ready check below names its blocker. A birth with no
     // launcher has no authority to pull from, and says why.
     let hydrate_cancel = rafka_node_rpc::Retirement::new();
-    let hydration_cell: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>> = Arc::default();
     let hydration_handle = {
         use crate::app_hydration::{AcceptingAuthority, Authority, Birth, End, Events, HydrateCtx, NoAuthority};
         let authority_ctx = match cfg.launch.as_ref().and_then(|l| l.launcher.clone()) {
@@ -4220,7 +4250,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     asked.push(c.name.to_string());
                                     let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
                                     let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, &kick_of(&node), &rafka_node_rpc::CallOptions::default()).await;
-                                    if matches!(out.reply().map(|r| r.value()), Some(rafka_node_rpc_contract::status::StatusReply::Current { .. })) {
+                                    // The exact birth answered: its state, or its hook's blocker while that hook is Blocked.
+                                    if matches!(out.reply().map(|r| r.value()), Some(rafka_node_rpc_contract::status::StatusReply::Current { .. } | rafka_node_rpc_contract::status::StatusReply::Blocked { .. })) {
                                         return crate::offline::ViaPeerVerdict::Answered { via: c.name.to_string() };
                                     }
                                 }
@@ -5114,6 +5145,7 @@ mod tests {
             rounds: Default::default(),
             configs: Default::default(),
             configure: Default::default(),
+            hydration: Default::default(),
         };
         let _ = Declared::default();
 

@@ -11,7 +11,7 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration, HydrationState, RetryOn};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, PullServer, Row, TestHydrator};
 use rafka_node_rpc_testkit::node::{self, RunningNode};
 use std::sync::Arc;
@@ -244,10 +244,13 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
     })
 }
 
-/// CONTRACT: while its hook is blocked the node answers its authority's status probe with its
-/// state (Pending) and obeys `drain-node` (`Applied`); the retirement cancels the hook: the
-/// blocker span closes `retired`, the hook does not run again, and the node never publishes
-/// ReadyForTraffic. What must NOT happen: `NotReady` for a lifecycle command (s15).
+/// CONTRACT: while its hook is blocked the node answers its authority's status probe with Status
+/// `Blocked { node_id, incarnation, reason, retry_on }` (node-start.md step 3): the exact birth, the
+/// hook's own reason and the event it runs again on. It obeys `drain-node` (`Applied`); the
+/// retirement cancels the hook: the blocker span closes `retired`, the hook does not run again, and
+/// the node never publishes ReadyForTraffic. What must NOT happen: `Current` or `NotReady` for a
+/// blocked node's probe (the executor could not name the blocker, or would take its door for it), or
+/// `NotReady` for a lifecycle command (s15).
 #[test]
 fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
@@ -263,10 +266,12 @@ fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
         let hydrator = TestHydrator::new(Mode::Pull);
         let running = start(&b, &hydrator).await.unwrap().expect("a blocked node still comes up, Pending");
 
-        let probed = command(&b, probe).await;
-        assert!(matches!(probed, StatusReply::Current { state: NodeState::Pending, .. }), "a Pending node answers its state: {probed:?}");
-        assert_eq!(command(&b, drain).await, StatusReply::Applied, "drain-node is admitted while the hook is blocked");
         let handle = running.hydration().expect("handle");
+        let HydrationState::Blocked { reason: hook_reason, .. } = handle.state() else { panic!("the hook is blocked: {:?}", handle.state()) };
+        let probed = command(&b, probe).await;
+        let d = running.digest.clone();
+        assert_eq!(probed, StatusReply::Blocked { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), reason: hook_reason.clone(), retry_on: RetryOn::AuthorityReady }, "a blocked node answers Blocked: the exact birth, the hook's own reason and its retry event");
+        assert_eq!(command(&b, drain).await, StatusReply::Applied, "drain-node is admitted while the hook is blocked");
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the retirement ends the hook");
         assert_eq!(settled, HydrationState::Retired);
         assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked")[0]["cleared_by"], "retired");

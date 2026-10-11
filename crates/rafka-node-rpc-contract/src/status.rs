@@ -578,7 +578,56 @@ pub enum StatusReply {
         /// Its detail.
         reason: String,
     },
+    /// The exact birth's own answer to a probe while its `hydrate_before_ready` hook is Blocked: the
+    /// probe served that birth and found an active readiness blocker. `reason` is the hook's own
+    /// text and `retry_on` the event it runs again on. It is never a `NotReady`: a `NotReady` is the
+    /// door or the handler not serving yet, and says nothing of the hook.
+    Blocked {
+        /// The answering birth's logical node.
+        node_id: NodeId,
+        /// The answering birth's incarnation.
+        incarnation: IncarnationId,
+        /// The hook's own blocker, in words.
+        reason: String,
+        /// The event the hook runs again on.
+        retry_on: RetryOn,
+    },
 }
+
+/// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
+/// and the gate"). Positional order is part of the wire schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RetryOn {
+    /// The authority's birth changed or departed.
+    AuthorityChanged,
+    /// The named node became reachable (heard after silence, or first heard).
+    TargetReachable {
+        /// The node waited for.
+        node_id: NodeId,
+    },
+    /// The authority published ReadyForTraffic.
+    AuthorityReady,
+    /// The authority addressed this node (it sent a down op).
+    AuthorityAddressed,
+}
+
+impl RetryOn {
+    /// The event's name in spans and evidence.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::AuthorityChanged => "authority-changed",
+            Self::TargetReachable { .. } => "target-reachable",
+            Self::AuthorityReady => "authority-ready",
+            Self::AuthorityAddressed => "authority-addressed",
+        }
+    }
+}
+
+/// The most bytes of a hook's blocker a `Blocked` reply carries: what is left of the reply bound
+/// after the variant (one byte), the node id (a one-byte length and [`CROCKFORD60_LEN`] characters),
+/// the incarnation (a one-byte length and [`OPAQUE_ID_LEN`] characters), the retry event at its
+/// largest (a variant byte and a node id), and a two-byte length prefix on the reason.
+pub const MAX_BLOCKED_REASON_BYTES: usize = 1024 - 1 - (1 + CROCKFORD60_LEN) - (1 + OPAQUE_ID_LEN) - (1 + 1 + CROCKFORD60_LEN) - 2;
 
 /// The most bytes of a node's `path.name` a config refusal carries.
 pub const MAX_REFUSAL_NODE_BYTES: usize = 128;
@@ -614,6 +663,12 @@ impl StatusReply {
         Self::ConfigNotApplied { node: within(node, MAX_REFUSAL_NODE_BYTES), answered: within(answered, MAX_REFUSAL_ANSWERED_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
+    /// `Blocked` for the exact birth (`node_id`, `incarnation`) whose hook is blocked for `reason`
+    /// until `retry_on`, the reason within its budget so the reply always fits the Status reply bound.
+    pub fn blocked(node_id: NodeId, incarnation: IncarnationId, reason: &str, retry_on: RetryOn) -> Self {
+        Self::Blocked { node_id, incarnation, reason: within(reason, MAX_BLOCKED_REASON_BYTES), retry_on }
+    }
+
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -642,6 +697,7 @@ impl StatusReply {
             Self::RejectedConfig { .. } => "rejected-config",
             Self::ConfigRowRefused { .. } => "config-row-refused",
             Self::ConfigNotApplied { .. } => "config-not-applied",
+            Self::Blocked { .. } => "blocked",
         }
     }
 }
@@ -657,7 +713,7 @@ impl NodeProtocol for Status {
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 19;
-    const REPLY_VARIANTS: u32 = 25;
+    const REPLY_VARIANTS: u32 = 26;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -670,6 +726,7 @@ impl NodeProtocol for Status {
             | StatusReply::Current { .. }
             | StatusReply::CurrentParked { .. }
             | StatusReply::ConfigUpdated { .. }
+            | StatusReply::Blocked { .. }
             | StatusReply::Stopped { .. }
             | StatusReply::Started => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
@@ -768,6 +825,7 @@ mod tests {
             (StatusReply::RejectedConfig { over: ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, ReplyKind::ProtocolRefusal),
             (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -844,6 +902,21 @@ mod tests {
         }
         let short = StatusReply::config_not_applied("mesh1.rpc.1", "busy", "at its admission bound");
         assert_eq!(short, StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "at its admission bound".into() }, "a detail within its budget is kept whole");
+    }
+
+    /// CONTRACT (a hook's blocker reaches its executor whole or cut, never as a reset): a `Blocked`
+    /// answer whose hook reason is longer than the reply bound, from a birth with minted ids and the
+    /// largest retry event, is still a reply within `MAX_REPLY_FRAME_BYTES`; a reason within its budget
+    /// is kept whole.
+    #[test]
+    fn a_blocked_answer_with_a_long_hook_reason_encodes_within_the_reply_bound() {
+        let long = "x".repeat(4 * Status::MAX_REPLY_FRAME_BYTES);
+        let r = StatusReply::blocked(NodeId::mint(), IncarnationId::mint(), &long, RetryOn::TargetReachable { node_id: NodeId::mint() });
+        let len = Status::encode_reply(&r).unwrap().len();
+        assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "blocked encodes to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
+        let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
+        let short = StatusReply::blocked(node_id.clone(), incarnation.clone(), "rows not yet published", RetryOn::AuthorityAddressed);
+        assert_eq!(short, StatusReply::Blocked { node_id, incarnation, reason: "rows not yet published".into(), retry_on: RetryOn::AuthorityAddressed }, "a reason within its budget is kept whole");
     }
 
     #[test]

@@ -539,7 +539,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         hydration_cell: hydration_cell.clone(),
         hydrating: hydrating_cell.clone(),
     }));
-    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own, addressed: addressed.clone() }));
+    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own, addressed: addressed.clone(), hydration: hydration_cell.clone() }));
     ready.store(true, std::sync::atomic::Ordering::SeqCst);
     *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
@@ -912,6 +912,9 @@ pub(crate) struct Kicked {
     own: Arc<rafka_node_admin_core::node_self::NodeSelf>,
     /// The down ops node-admins sent this birth: what a hook blocked on its authority's word wakes on.
     addressed: Arc<rafka_node_admin_core::app_hydration::Addressed>,
+    /// Where this birth's `hydrate_before_ready` stands (the cell a start's hook writes): while it is
+    /// Blocked, a probe is answered `Blocked` carrying its blocker.
+    hydration: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>>,
 }
 
 type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
@@ -932,7 +935,8 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// hands its peers to its mesh channel again, publishes its digest, and answers its current
-/// state; no transition. `DrainNode` and `StopNode` from a node-admin are obeyed by
+/// state; no transition. While its `hydrate_before_ready` hook is Blocked it answers `Blocked` with
+/// the hook's blocker and republishes nothing. `DrainNode` and `StopNode` from a node-admin are obeyed by
 /// `rafka_node_admin_core::node_self`. A stale incarnation is refused with the one held.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
@@ -942,6 +946,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let Some(me) = slot.get().cloned() else {
                 return Ok(StatusReply::NotReady { reason: "this node has not joined its mesh yet".into() });
             };
+            // The hook's blocker as it stood when the call arrived, before this call addresses the
+            // birth (a hook blocked on its authority's word runs again on it).
+            let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
             let from_admin = sender.as_ref().is_some_and(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin);
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default();
@@ -989,6 +996,17 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // A parked node is Leaving with a live process: it says so and presents nothing.
                     if me.own.is_parked() {
                         return Ok(StatusReply::CurrentParked { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone() });
+                    }
+                    // node-start.md step 3: while its hook is Blocked, the probe served this exact birth
+                    // and found an active readiness blocker; it answers Blocked with the hook's own
+                    // reason and retry event, before any republish, so a polled blocked birth
+                    // republishes nothing.
+                    if let Some((reason, retry_on)) = blocker {
+                        let on = retry_on.name();
+                        let reply = StatusReply::blocked(me.digest.node.node_id.clone(), me.digest.node.incarnation.clone(), &reason, retry_on);
+                        tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.digest.node.name, sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on)
+                            .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
+                        return Ok(reply);
                     }
                     let peers: Vec<EndpointAddr> = me.membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
                     let _ = me.membership.join_peers(peers).await;

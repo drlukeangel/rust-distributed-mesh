@@ -82,6 +82,13 @@ impl NodeObserver for LiveMesh {
         Ok(())
     }
 
+    async fn ready_blocker(&self, node: &Node) -> Option<String> {
+        // The same probe the node-admin's own observer sends (node-start.md step 3), to the birth
+        // this launcher resolves by its own digest.
+        self.echo_target(node).ok()?;
+        rafka_node_admin_core::admin::probed_ready_blocker(&self.client, &self.membership.book, node).await
+    }
+
     async fn send_command(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext) -> rafka_node_admin_core::deployment::pipeline::CommandAdmission {
         let target = match self.echo_target(node) {
             Ok(t) => t,

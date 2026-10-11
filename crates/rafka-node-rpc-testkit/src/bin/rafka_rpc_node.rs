@@ -48,7 +48,12 @@ async fn main() {
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        let started = node::start_with_seams(&launch, |b, seams| {
+        // A scenario's `hydrate_before_ready` knob for this node, if it recorded one.
+        let hydration = match launch.data_dir.parent().and_then(|root| rafka_node_rpc_testkit::hydrate_probe::KnobHydrator::for_node(root, &launch.name.to_string())) {
+            Some(hook) => rafka_node_rpc_testkit::app_hydration::Hydration::new(hook),
+            None => rafka_node_rpc_testkit::app_hydration::Hydration::none(),
+        };
+        let started = node::start_hydrating(&launch, hydration, |b, seams| {
             let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch), seams.resolver.clone(), &launch), declare_client.clone(), &launch);
             rafka_node_rpc_testkit::originate::serve(b, seams, &launch)
         })

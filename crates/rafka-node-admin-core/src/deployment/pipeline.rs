@@ -408,8 +408,10 @@ pub trait NodeObserver: Send + Sync {
     /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
     /// The named blocker the node reports for its Ready (its `hydrate_before_ready` hook's
-    /// `Blocked` outcome, with the event it retries on), or `None`. A node that is only still
-    /// Pending, with no hook blocker, has none: `ready` fails for it and nothing is framed `Blocked`.
+    /// `Blocked` outcome, with the event it retries on), or `None`. Its only source is the subject's
+    /// Status `Blocked` answer to `ProbeNodeState`. A node that is only still Pending, with no hook
+    /// blocker, has none, and neither has a node whose door answers `NotReady`: `ready` fails for it,
+    /// the step waits, and nothing is framed `Blocked`.
     async fn ready_blocker(&self, _node: &Node) -> Option<String> {
         None
     }

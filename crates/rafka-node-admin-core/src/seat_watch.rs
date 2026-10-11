@@ -198,7 +198,8 @@ impl Looker {
         for c in view.members().filter(|c| c.mesh == n.mesh && c.node_id != n.node_id && c.node_id != self.me_id && c.status == NodeStatus::ReadyForTraffic).take(crate::offline::VIA_PEER_TICKLE_FANOUT) {
             let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
             let (out, _, _) = self.client.call_routed::<rafka_node_rpc_contract::status::Status>(&n.node_id, &route, &kick, &CallOptions::default()).await;
-            if matches!(out.reply().map(|r| r.value()), Some(rafka_node_rpc_contract::status::StatusReply::Current { .. })) {
+            // The exact birth answered: its state, or its hook's blocker while that hook is Blocked.
+            if matches!(out.reply().map(|r| r.value()), Some(rafka_node_rpc_contract::status::StatusReply::Current { .. } | rafka_node_rpc_contract::status::StatusReply::Blocked { .. })) {
                 return Finding::AnsweredViaPeer { carrier: c.name.to_string() };
             }
         }
