@@ -12,7 +12,7 @@ use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshD
 use rafka_node_admin_client::{BuildCarrier, Builds, CallEnd, Frame, NodeAdminClient, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
-use rafka_node_admin_core::build_drive::{Dispatched, Dispatcher, DriveEnv, Drives, OpenGate};
+use rafka_node_admin_core::build_drive::{DepartureProof, Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
 use rafka_node_admin_core::build_op::{local_dispatched, BuildDoor, BuildSlot};
 use rafka_node_admin_core::build_run::{AttemptRuns, FramedBuilds, RunDoor};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
@@ -196,6 +196,12 @@ fn mn() -> Topology {
 /// The fabric-primary's Build door over `rig`'s Build state: the control plane that accepts a change,
 /// the drive that claims on its own log, and the executor door that runs the create pipeline.
 async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
+    door_via(rig, join, |run| Arc::new(Local(run)), Arc::new(crate::loopback::Proofs::default())).await
+}
+
+/// [`door`], whose drive calls `dispatcher` (made over the in-process executor door) and reads an
+/// executor's departure from `departure`.
+async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<RunDoor>) -> Arc<dyn Dispatcher>, departure: Arc<dyn DepartureProof>) -> Arc<BuildDoor> {
     let t = mn();
     let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let me: PathName = "mesh1.admin.1".parse().unwrap();
@@ -209,9 +215,9 @@ async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
         accepted,
         builds: rig.builds.clone(),
         door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
-        dispatcher: Arc::new(Local(run.clone())),
+        dispatcher: dispatcher(run.clone()),
         gate: Arc::new(OpenGate),
-        departure: Arc::new(crate::loopback::Proofs::default()),
+        departure,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
@@ -865,4 +871,91 @@ fn every_pipeline_step_is_named_by_the_client() {
         rafka_node_admin_client::fold(&WorkflowKind::Create, &unknown, 1).unwrap_err(),
         CallEnd::UnrecognisedReceipt { operation: "create-node:mesh1.rpc.3".into(), step: "InventedStep".into() }
     );
+}
+
+/// One attempt's run as an executor streams it to the fabric-primary: its frames, then its end.
+struct Script(std::collections::VecDeque<InnerItem>);
+
+#[async_trait::async_trait]
+impl InnerStream for Script {
+    async fn next(&mut self) -> InnerItem {
+        self.0.pop_front().unwrap_or(InnerItem::Ended)
+    }
+}
+
+/// The executor of a restart of `mesh1.rpc.1`, attempt by attempt. The first run is lost once its
+/// `DrainNode` frame has reached the fabric-primary: the receipt lived in the lost executor's own
+/// log alone (its broadcast never left), so no Build log the successor reads holds it, and the
+/// executor's exact runtime is proven exited. The next run holds no `DrainNode` receipt: it
+/// reissues that uncertain step (node-rpc-envelope.md "Caller execution and certainty") and runs
+/// the restart to its end.
+struct LostAfterDrainNode {
+    runs: Mutex<u32>,
+    proofs: Arc<crate::loopback::Proofs>,
+}
+
+#[async_trait::async_trait]
+impl Dispatcher for LostAfterDrainNode {
+    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+        use rafka_node_rpc_contract::build::BuildReply;
+        let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.0.clone(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
+        let run = {
+            let mut runs = self.runs.lock().unwrap();
+            *runs += 1;
+            *runs
+        };
+        let items = if run == 1 {
+            self.proofs.exited.lock().unwrap().insert(executor.to_string());
+            vec![step("retire-node", "NodeRestarting"), step("retire-node", "DrainNode"), InnerItem::Broke(format!("{executor} was lost after its DrainNode receipt"))]
+        } else {
+            vec![
+                step("retire-node", "DrainNode"),
+                step("retire-node", "AwaitNodeDrained"),
+                step("retire-node", "StopNode"),
+                step("retire-node", "AwaitNodeLeft"),
+                step("retire-node", "Complete"),
+                step("restart-node", "StartNode"),
+                step("restart-node", "WaitForNodeReady"),
+                step("restart-node", "Complete"),
+                InnerItem::Frame(BuildReply::Complete { build_id: build_id.0.clone(), attempt }),
+            ]
+        };
+        Dispatched::Stream(Box::new(Script(items.into())))
+    }
+}
+
+/// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": a changing call streams each
+/// completed step's event once): the executor of a restart is lost after its `DrainNode` frame
+/// reached the caller and before that receipt reached any Build log the successor reads. The
+/// successor's attempt reissues `DrainNode` (an uncertain step to it) and writes its own receipt:
+/// two receipts of one step, one per attempt, each a frame under its own receipt key. The caller's
+/// stream reads them as the client's receipt fold does, per step the latest attempt deciding, so
+/// `node.draining` is delivered once and every other event of the restart once, in order.
+#[test]
+fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one_event_to_the_caller() {
+    let cap = capture();
+    let frames = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let proofs = Arc::new(crate::loopback::Proofs::default());
+        let script = Arc::new(LostAfterDrainNode { runs: Mutex::new(0), proofs: proofs.clone() });
+        let door = door_via(&rig, Duration::from_secs(60), move |_| script, proofs).await;
+        let served = serve(door).await;
+        let mut stream = nodes_over(&served.carrier).restart(&"mesh1.rpc.1".parse().unwrap()).await.expect("the fabric-primary accepts the restart");
+        let (frames, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "the stream ends with its terminal frame: {end:?} after {frames:?}");
+        frames
+    });
+    let events: Vec<NodeEvent> = frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect();
+    assert_eq!(
+        events,
+        [NodeEvent::Restarting, NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Restarted],
+        "every event of the restart once, in order: {frames:?}"
+    );
+    assert_eq!(frames.last(), Some(&Frame::Complete));
+
+    let spans = cap.spans();
+    let lost: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["outcome"] == "executor-lost").collect();
+    assert_eq!(lost.len(), 1, "the first attempt's executor was lost: {spans:?}");
+    assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").len(), 1, "its departure was proven before the successor's attempt");
+    assert_eq!(spans_named(&spans, "rdm.node_admin.node.draining.via-reply-frame").len(), 1, "node.draining was delivered once");
 }
