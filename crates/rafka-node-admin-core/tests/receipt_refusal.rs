@@ -83,6 +83,9 @@ impl rafka_node_admin_core::build_state::LocalBuildLog for Refuses {
     async fn absorb_facts(&self, facts: &[BuildFact]) {
         self.inner.absorb_facts(facts).await
     }
+    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.fact_changes()
+    }
 }
 
 #[async_trait::async_trait]

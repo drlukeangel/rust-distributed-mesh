@@ -61,7 +61,7 @@ fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
 /// admin's Build log opens the hold on that birth in the admin's book, and the restart's
 /// `restart-node:<path>` `Complete` receipt entering the log closes it, each with no hierarchy round
 /// between the receipt and the book's overlay watch ticking. The close is spanned
-/// `rdm.mesh.membership.update.via-restart-completed` naming the birth, the Build and the attempt.
+/// `rdm.mesh.membership.update.via-restart-closed-by-facts` naming the birth, the Build and the attempt.
 /// Must NOT happen: the hold outliving its `Complete` until a round re-derives it (the restart door
 /// then refuses the live node `node-not-live`, status `restarting`).
 #[test]
@@ -103,7 +103,8 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
             operation,
             step: step.into(),
             outcome: StepOutcome::Complete,
-            output: Some(serde_json::to_value(&op).unwrap()),
+            // The pre-event records the operation it opens; a Complete commits no output.
+            output: (step == "NodeRestarting").then(|| serde_json::to_value(&op).unwrap()),
             executor: Some("mesh2.admin.1".into()),
         };
 
@@ -128,7 +129,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
     let spans = collect_spans(&evidence);
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();
     let opened = named("rdm.mesh.membership.update.via-node-restarting");
-    let closed = named("rdm.mesh.membership.update.via-restart-completed");
+    let closed = named("rdm.mesh.membership.update.via-restart-closed-by-facts");
     assert_eq!(opened.len(), 1, "one hold opened: {opened:?}");
     assert_eq!(closed.len(), 1, "one hold closed, by its Complete: {closed:?}");
     let text = closed[0].to_string();
