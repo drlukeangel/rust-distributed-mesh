@@ -91,3 +91,49 @@ fn a_new_fabric_primarys_contacts_attach_only_to_the_holder_the_book_holds() {
     book.take(Seat::FabricPrimary, &holder(9));
     assert_eq!(book.fabric_contacts(), None, "the contacts belonged to the epoch-8 holder, not the one that replaced it");
 }
+
+fn seated_together(mesh_epoch: u64, fabric_epoch: u64) -> Frame {
+    use rafka_mesh_entity::{CommittedSeat, LifecycleOp};
+    let op = LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId("i".into()), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
+    Frame::SeatedTogether {
+        op,
+        successor: holder(mesh_epoch),
+        seats: vec![CommittedSeat { seat: Seat::MeshPrimary, holder: holder(mesh_epoch) }, CommittedSeat { seat: Seat::FabricPrimary, holder: holder(fabric_epoch) }],
+    }
+}
+
+/// CONTRACT (gossip.md, "Seated-together seat transfer"): `SeatedTogether` is variant 23, the next
+/// after `NodeStopped` (22): the transfer's lifecycle op (the holder's drain, stop, restart or
+/// replace), the successor and every committed seat. What must NOT happen: a field moved, a variant
+/// inserted before the end.
+#[test]
+fn seated_together_matches_the_frozen_wire_schema() {
+    let node_hex = "0c 303472616a303970337a7037";
+    // 17 = variant 23; op: 0162 01 016f {node} 0169 09"m.admin.1" 01; successor 016d {node} 0169 04;
+    // seats: 02 | 00 016d {node} 0169 04 | 01 016d {node} 0169 09.
+    let hex = format!("17 0162 01 016f {node_hex} 0169 09 6d2e61646d696e2e31 01  016d {node_hex} 0169 04  02 00 016d {node_hex} 0169 04 01 016d {node_hex} 0169 09");
+    assert_eq!(seated_together(4, 9).encode(), bytes(&hex));
+    assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
+}
+
+/// CONTRACT (R-EL1a): the seats a transfer committed are held together under one lock, so no reader
+/// sees one moved and the other not; a stale transfer moves neither; and a primary replays them as
+/// the one `SeatedTogether` while both are still the records it holds (two `Seated` frames would
+/// re-open the window between the two installs at a neighbour that came up).
+#[test]
+fn a_seat_book_holds_seats_together_and_replays_them_together() {
+    let book = SeatBook::default();
+    book.take(Seat::MeshPrimary, &holder(3));
+    book.take(Seat::FabricPrimary, &holder(8));
+    let Frame::SeatedTogether { op, successor, seats } = seated_together(4, 9) else { unreachable!() };
+    assert!(book.take_together(&op, &successor, &seats, false).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
+    assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(9))));
+    assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![seated_together(4, 9).encode()], "both seats replay as the one transfer");
+    // A later record of one seat supersedes the transfer: the records replay one by one again.
+    book.take(Seat::FabricPrimary, &holder(10));
+    assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![Frame::Seated { seat: Seat::MeshPrimary, holder: holder(4) }.encode(), Frame::Seated { seat: Seat::FabricPrimary, holder: holder(10) }.encode()]);
+    // An older transfer moves neither seat.
+    let Frame::SeatedTogether { op, successor, seats } = seated_together(2, 2) else { unreachable!() };
+    assert!(book.take_together(&op, &successor, &seats, false).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
+    assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(10))));
+}

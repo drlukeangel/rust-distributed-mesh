@@ -8,12 +8,13 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
-use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, Stage};
+use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, SeatTransferOutcome, Stage, WonClaims};
 use rafka_node_admin_core::fabric_storage::{FabricStorage, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::handover::{FabricPrimaryHandover, FabricPrimaryHandoverReply as Reply, FabricPrimaryHandoverRequest as Request, HandoverBirth};
+use rafka_node_rpc_contract::handover::{FabricPrimaryHandover, FabricPrimaryHandoverReply as Reply, FabricPrimaryHandoverRequest as Request, HandoverBirth, SeatEpoch};
+use rafka_mesh_entity::CommittedSeat;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -73,7 +74,20 @@ struct Admin {
     resolver: Arc<StaticResolver>,
     resolved: ResolvedNode,
     storage: Arc<dyn FabricStorage>,
+    claims: Arc<TestClaims>,
+    fenced: Arc<Mutex<Vec<(String, Option<String>)>>>,
     _router: Router,
+}
+
+/// The won claims a cell names: (build, attempt) -> executor path.name.
+#[derive(Default)]
+struct TestClaims(Mutex<BTreeMap<(String, u32), String>>);
+
+#[async_trait::async_trait]
+impl WonClaims for TestClaims {
+    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, String> {
+        Ok(self.0.lock().unwrap().get(&(build_id.to_string(), attempt)).cloned())
+    }
 }
 
 struct Pair {
@@ -103,6 +117,8 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
+    let claims = Arc::new(TestClaims::default());
+    let fenced: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::default();
     let door = Arc::new(HandoverDoor {
         fabric: "fabric1".into(),
         me: path.parse().unwrap(),
@@ -117,12 +133,19 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         records: Arc::new(Records::default()),
         contacts: OwnContacts { endpoint_id: ep.id().to_string(), transport_addr: addr, admin_api_base: Some(format!("http://127.0.0.1:{}", addr.port() + 1)) },
         handovers: Default::default(),
-        fence_builds: Arc::new(|_, _| Box::pin(async {})),
+        fence_builds: {
+            let fenced = fenced.clone();
+            Arc::new(move |by: String, to: Option<String>| {
+                fenced.lock().unwrap().push((by, to));
+                Box::pin(async {})
+            })
+        },
+        claims: claims.clone(),
     });
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, slot, client, resolver, resolved, storage, _router: router }, ep)
+    (Admin { door, slot, client, resolver, resolved, storage, claims, fenced, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -593,4 +616,182 @@ async fn concurrent_repeats_of_the_command_and_the_completion_commit_and_confirm
     until("the incumbent's confirmation span", || spans.position(CONFIRMED).is_some()).await;
     assert_eq!(spans.named(COMMITTED).len(), 1, "one commit");
     assert_eq!(spans.named(CONFIRMED).len(), 1, "one confirmation");
+}
+
+
+// ---- TakeSeats: Build-driven seat transfer (node-rpc-envelope.md; R-EL1a) ----
+
+const SEATS_COMMITTED: &str = "rdm.node_admin.seat.update.via-seats-committed";
+const SEATS_INSTALLED: &str = "rdm.node_admin.seat.update.via-seats-installed";
+const SEATS_REJECTED: &str = "rdm.node_admin.seat.reject.via-take-seats";
+const SEATED_TOGETHER: &str = "rdm.mesh.seat.update.via-announce-seated-together";
+
+/// mesh1: P (`mesh1.admin.1`) holds both seats (mesh1 at epoch 3, the fabric at epoch 7); N
+/// (`mesh1.admin.2`) is the admin the election seats once P's birth is gone; M (`mesh1.admin.3`) is
+/// a Ready admin of the same mesh with a higher NodeId. mesh2: X, its primary, with the lowest NodeId
+/// of the fabric (so a cross-mesh calculation would pick X, never N). Build `b1` attempt 1 is won by
+/// N, Build `b2` attempt 1 by M.
+struct Seats {
+    p: Admin,
+    n: Admin,
+    m: Admin,
+    x: Admin,
+}
+
+async fn seats_fabric() -> Seats {
+    let fabric_id = FabricId::mint();
+    let (p, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true).await;
+    let (n, _) = admin(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true).await;
+    let (m, _) = admin(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true).await;
+    let (x, _) = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true).await;
+    let mut pn = node_of(&p, NodeStatus::ReadyForTraffic, true);
+    pn.is_primary = true;
+    let mut nn = node_of(&n, NodeStatus::ReadyForTraffic, false);
+    nn.is_primary = false;
+    let mut mn = node_of(&m, NodeStatus::ReadyForTraffic, false);
+    mn.is_primary = false;
+    let xn = node_of(&x, NodeStatus::ReadyForTraffic, false);
+    let nodes = vec![pn, nn, mn, xn];
+    for a in [&p, &n, &m, &x] {
+        *a.door.topology.write().await = view(nodes.clone());
+        for b in [&p, &n, &m, &x] {
+            a.resolver.insert(b.resolved.clone());
+        }
+        a.door.membership.seats().take(Seat::FabricPrimary, &holder_of(&p, 7));
+        a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&p, 3));
+        a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&x, 1));
+        a.claims.0.lock().unwrap().insert(("b1".into(), 1), "mesh1.admin.2".into());
+        a.claims.0.lock().unwrap().insert(("b2".into(), 1), "mesh1.admin.3".into());
+    }
+    Seats { p, n, m, x }
+}
+
+fn take_seats(holder: &Admin, successor: &Admin, mesh_epoch: u64, fabric_epoch: u64, build: &str, operation: &str) -> Request {
+    Request::TakeSeats {
+        fabric: "fabric1".into(),
+        holder: birth(holder),
+        successor: birth(successor),
+        seats: vec![SeatEpoch { seat: Seat::MeshPrimary, expected_epoch: mesh_epoch }, SeatEpoch { seat: Seat::FabricPrimary, expected_epoch: fabric_epoch }],
+        build_id: build.into(),
+        attempt: 1,
+        operation: operation.into(),
+    }
+}
+
+fn committed_to(a: &Admin, mesh_epoch: u64, fabric_epoch: u64) -> Vec<CommittedSeat> {
+    vec![CommittedSeat { seat: Seat::MeshPrimary, holder: holder_of(a, mesh_epoch) }, CommittedSeat { seat: Seat::FabricPrimary, holder: holder_of(a, fabric_epoch) }]
+}
+
+/// CONTRACT (R-EL1a; node-rpc-envelope.md "TakeSeats"): the executor N calls the holder P. P commits
+/// ONE durable row holding both seats at their next epochs (mesh1 4, fabric 8), installs both, fences
+/// its Build log naming N, publishes SeatedTogether, and answers SeatsCommitted; N installs the
+/// committed seats from the reply. In order: P's commit, then N's install. What must NOT happen: a
+/// second seat row written for the same move, or N holding a seat P has not committed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seat_holder_commits_both_seats_to_the_executor_in_one_row() {
+    if crate::own_process::delegated(module_path!(), "a_seat_holder_commits_both_seats_to_the_executor_in_one_row") {
+        return;
+    }
+    let spans = capture();
+    let f = seats_fabric().await;
+    let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
+    let out = f.n.door.take_seats(&p_node, "b1", 1, "replace-node:mesh1.admin.1").await.expect("the transfer commits");
+    assert_eq!(out, SeatTransferOutcome::Committed { seats: committed_to(&f.n, 4, 8) });
+    for a in [&f.p, &f.n] {
+        assert_eq!((a.door.membership.seats().mesh("mesh1"), a.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "{} holds both committed seats", a.resolved.name);
+    }
+    let rows = f.p.storage.seat_transfers().await.unwrap();
+    assert_eq!(rows.len(), 1, "one row: {rows:?}");
+    assert_eq!(rows[0].seats, committed_to(&f.n, 4, 8));
+    let standing = f.p.storage.seats().await.unwrap();
+    assert!(standing.iter().any(|r| r.seat == Seat::FabricPrimary && r.holder == holder_of(&f.n, 8)) && standing.iter().any(|r| r.seat == Seat::MeshPrimary && r.holder == holder_of(&f.n, 4)), "the row is what the standing seats fold: {standing:?}");
+    assert_eq!(f.p.fenced.lock().unwrap().iter().map(|(_, to)| to.clone()).collect::<Vec<_>>(), vec![Some("mesh1.admin.2".to_string())], "P's Build log is fenced naming N");
+    until("N's install span", || spans.position(SEATS_INSTALLED).is_some()).await;
+    let at = |n: &str| spans.position(n).unwrap_or_else(|| panic!("no {n} span among {:?}", spans.names()));
+    assert!(at(SEATS_COMMITTED) < at(SEATED_TOGETHER), "the committed row is announced after it is written");
+    assert!(at(SEATED_TOGETHER) < at(SEATS_INSTALLED), "P announces before it answers; N installs from the answer");
+    let c = &spans.named(SEATS_COMMITTED)[0];
+    assert_eq!((c["build_id"].as_str(), c["attempt"].as_str(), c["mesh_epoch"].as_str(), c["fabric_epoch"].as_str()), ("b1", "1", "4", "8"));
+    assert!(spans.named(SEATS_REJECTED).is_empty(), "{:?}", spans.named(SEATS_REJECTED));
+    let _ = (&f.m, &f.x);
+}
+
+/// CONTRACT: a lost reply is retried with the identical call and answered with the same committed
+/// seats before any stale-seat check (P's seats are already at 4 and 8); the same operation with a
+/// different payload is RejectedConflict. Nothing commits twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_identical_retry_answers_the_same_seats_and_another_payload_is_refused() {
+    let f = seats_fabric().await;
+    let op = "drain-node:mesh1.admin.1";
+    let first = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op)).await;
+    assert_eq!(first, Reply::SeatsCommitted { seats: committed_to(&f.n, 4, 8) });
+    // The reply was lost: the executor's own step sends the identical call again.
+    let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
+    assert_eq!(f.n.door.take_seats(&p_node, "b1", 1, op).await, Ok(SeatTransferOutcome::Committed { seats: committed_to(&f.n, 4, 8) }), "the retry is answered from the row");
+    assert_eq!(send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op)).await, first);
+    assert_eq!(send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 6, "b1", op)).await, Reply::RejectedConflict { operation: op.into() });
+    assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1);
+    assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.n, 8)), "one epoch committed");
+}
+
+/// CONTRACT: P validates the executor before anything moves, each refusal by name: an admin the
+/// attempt's Won claim does not name; an admin the claim names that is not the one the election
+/// seats once P's birth is gone; a stale seat epoch; a holder birth that is not P's. Nothing commits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_by_name() {
+    if crate::own_process::delegated(module_path!(), "a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_by_name") {
+        return;
+    }
+    let spans = capture();
+    let f = seats_fabric().await;
+    // M calls under b1, whose claim names N.
+    let r = send(&f.m, &f.p, take_seats(&f.p, &f.m, 3, 7, "b1", "drain-node:mesh1.admin.1")).await;
+    assert!(matches!(&r, Reply::RejectedNotEligible { reason } if reason.contains("mesh1.admin.2")), "{r:?}");
+    // M calls under b2, whose claim names M: the election seats N once P is gone, not M.
+    let r = send(&f.m, &f.p, take_seats(&f.p, &f.m, 3, 7, "b2", "stop-node:mesh1.admin.1")).await;
+    assert!(matches!(&r, Reply::RejectedNotEligible { reason } if reason.contains("mesh1.admin.2")), "{r:?}");
+    // N with a stale mesh epoch.
+    assert_eq!(send(&f.n, &f.p, take_seats(&f.p, &f.n, 2, 7, "b1", "drain-node:mesh1.admin.1")).await, Reply::RejectedStaleSeat { seat: Seat::MeshPrimary, expected: 2, current: 3 });
+    // N naming another birth of P.
+    let mut wrong = take_seats(&f.p, &f.n, 3, 7, "b1", "restart-node:mesh1.admin.1");
+    if let Request::TakeSeats { holder, .. } = &mut wrong {
+        holder.incarnation = IncarnationId("another-birth".into());
+    }
+    assert_eq!(send(&f.n, &f.p, wrong).await, Reply::RejectedWrongBirth { role: "holder".into() });
+    // X, another mesh's primary, is never the successor of a same-mesh transfer.
+    f.p.claims.0.lock().unwrap().insert(("b3".into(), 1), "mesh2.admin.1".into());
+    let r = send(&f.x, &f.p, take_seats(&f.p, &f.x, 3, 7, "b3", "drain-node:mesh1.admin.1")).await;
+    assert!(matches!(&r, Reply::RejectedNotEligible { .. }), "{r:?}");
+    let reasons: Vec<String> = spans.named(SEATS_REJECTED).iter().map(|f| f["reason"].clone()).collect();
+    for reason in ["not-the-claimed-executor", "not-seated-once-gone", "stale-seat", "wrong-birth"] {
+        assert!(reasons.iter().any(|r| r == reason), "no reject span for {reason}: {reasons:?}");
+    }
+    assert!(spans.named(SEATS_COMMITTED).is_empty(), "nothing committed");
+    assert!(f.p.storage.seat_transfers().await.unwrap().is_empty());
+    assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.p, 7)), "P still holds the fabric seat");
+}
+
+/// CONTRACT: an executor that cannot reach the holder never moves past the transfer on silence; once
+/// the holder's birth is proven gone it reads the seat records it holds: a SeatedTogether naming it
+/// is the committed result; none means no transfer happened (the ordinary election seats it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_records() {
+    let f = seats_fabric().await;
+    let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
+    let p_inc = f.p.resolved.incarnation.clone();
+    // The transfer committed at P and its SeatedTogether reached N; then P's process is gone.
+    let Reply::SeatsCommitted { seats } = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", "drain-node:mesh1.admin.1")).await else { panic!("committed") };
+    let op = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "drain-node:mesh1.admin.1".into(), node_id: f.p.resolved.node_id.clone(), incarnation: p_inc.clone(), name: "mesh1.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
+    f.n.door.membership.seats().take_together(&op, &holder_of(&f.n, 4), &seats, false);
+    let Seats { p, n, m, x } = f;
+    let _ = p._router.shutdown().await;
+    n.door.membership.seats().mark_gone(p_inc);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), n.door.take_seats(&p_node, "b1", 1, "drain-node:mesh1.admin.1")).await.expect("a proven-lost holder ends the wait");
+    assert_eq!(out, Ok(SeatTransferOutcome::HeldRecords { seats: committed_to(&n, 4, 8) }));
+    // M, which heard no transfer, reads none: the ordinary election applies.
+    m.door.membership.seats().mark_gone(p_node.incarnation_id.clone().unwrap());
+    m.claims.0.lock().unwrap().insert(("b9".into(), 1), "mesh1.admin.3".into());
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, "drain-node:mesh1.admin.1")).await.expect("a proven-lost holder ends the wait");
+    assert_eq!(out, Ok(SeatTransferOutcome::NoTransfer));
+    let _ = x;
 }
