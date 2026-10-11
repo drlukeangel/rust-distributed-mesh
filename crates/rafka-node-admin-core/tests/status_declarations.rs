@@ -100,6 +100,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         rounds: Default::default(),
+        configs: Default::default(),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
@@ -338,6 +339,14 @@ async fn serve_node(b: &Birth) -> ServedNode {
     ServedNode { resolved, seen, _router: router }
 }
 
+/// The fabric-primary's config door, telling births through a client that resolves `node`.
+async fn configs_door(rig: &Rig, node: &ServedNode) {
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(node.resolved.clone());
+    let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))));
+}
+
 fn exact(b: &Birth) -> rafka_node_admin_client::ExactBirth {
     rafka_node_admin_client::ExactBirth { target: NodeTarget::ExactNode(b.node.node_id.clone()), node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap() }
 }
@@ -351,7 +360,7 @@ async fn a_config_update_at_the_fabric_primary_ends_updated_and_the_node_carries
     let (rig, b) = rig().await;
     let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
     let node = serve_node(rpc1).await;
-    let _ = &node.resolved;
+    configs_door(&rig, &node).await;
     let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
     let client = client_of(&rig, admin2).await;
     let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
@@ -372,6 +381,7 @@ async fn a_config_over_its_cap_is_refused_by_name_and_nothing_is_applied() {
     let (rig, b) = rig().await;
     let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
     let node = serve_node(rpc1).await;
+    configs_door(&rig, &node).await;
     let keys = rafka_mesh_entity::MAX_CONFIG_KEYS + 1;
     let config: BTreeMap<String, String> = (0..keys).map(|i| (format!("k{i:02}"), "v".to_string())).collect();
     let bytes: usize = config.iter().map(|(k, v)| k.len() + v.len()).sum();
