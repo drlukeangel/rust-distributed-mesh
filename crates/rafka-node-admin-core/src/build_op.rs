@@ -65,7 +65,7 @@ pub fn refusal_reply(r: Refusal) -> BuildReply {
         Refusal::NotAuthority(p) => BuildReply::NotFabricPrimary { fabric_primary: p },
         Refusal::AttemptTaken(d) => BuildReply::AttemptTaken { detail: d },
         Refusal::Unavailable(d) => BuildReply::NotReady { reason: d },
-        Refusal::State(BuildStateError::Fenced { node, by }) => BuildReply::Fenced { node, by },
+        Refusal::State(BuildStateError::Fenced { node, by, .. }) => BuildReply::Fenced { node, by },
         Refusal::State(e) => BuildReply::NotReady { reason: format!("the Build state: {e}") },
     }
 }

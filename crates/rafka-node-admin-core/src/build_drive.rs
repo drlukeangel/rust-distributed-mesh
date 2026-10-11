@@ -453,7 +453,12 @@ impl DriveEnv {
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
         if let Err(e) = self.gate.fence().await {
             let why = e.to_string();
-            let to = self.seat_elsewhere().await;
+            // A committed transfer named the new holder in the fence itself; a yield without one
+            // (leaving, drain, stop) names the holder this admin's view shows.
+            let to = match e {
+                BuildStateError::Fenced { to: Some(to), .. } => Some(to),
+                _ => self.seat_elsewhere().await,
+            };
             tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat was yielded"));
             drive.lose_seat(SeatLoss { why: why.clone(), to });
             return Some(DriveEnd::SeatLost(why));

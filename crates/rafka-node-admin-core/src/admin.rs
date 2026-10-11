@@ -3388,10 +3388,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         handovers: Default::default(),
         fence_builds: {
             let builds = builds.clone();
-            Arc::new(move |by: String| {
+            Arc::new(move |by: String, to: Option<String>| {
                 let builds = builds.clone();
                 Box::pin(async move {
-                    builds.fence_seat(&by).await;
+                    builds.fence_seat(&by, to).await;
                 })
             })
         },
