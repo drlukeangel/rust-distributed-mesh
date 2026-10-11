@@ -1113,6 +1113,9 @@ pub(crate) struct RecoverySubmitter {
     /// This admin's Build door: the fabric-primary's own, when this admin holds that seat too.
     pub door: crate::build_op::BuildSlot,
     pub client: Option<Arc<rafka_node_rpc::NodeRpcClient>>,
+    /// Where a proven exit is held as the birth's proven loss, the lost set every election of this
+    /// admin takes (`incumbency_of`).
+    pub records: Arc<Records>,
 }
 
 /// What the provider's inspection of a TRUE OFFLINE member proved.
@@ -1170,6 +1173,11 @@ impl RecoverySubmitter {
             }
         }
         if let Inspected::Exited(code, source) = &outcome {
+            // The provider's exact Exited is a proven loss whatever follows (incumbency_of: "a birth
+            // is proven gone when its runtime was found exited").
+            if let Some(incarnation) = n.incarnation_id.as_ref() {
+                self.records.mark_exited(&n.node_id, incarnation);
+            }
             if let Some((announced, op)) = self.removal_announced(n) {
                 let incarnation = n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default();
                 tracing::info_span!(
@@ -5065,6 +5073,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             status_storage: status_storage.clone(),
             door: build_slot.clone(),
             client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
+            records: records.clone(),
         };
         tasks.push(park_gate.spawn(async move {
             // The births whose inspection or submitted recovery is in flight, and the last verdict
@@ -5997,6 +6006,7 @@ mod tests {
             status_storage: status.clone(),
             door: Default::default(),
             client: None,
+            records: Arc::new(Records::default()),
         };
         (recovery, status, member)
     }
@@ -6139,6 +6149,7 @@ mod tests {
                 recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
             };
             assert_eq!(outcome, Inspected::Exited(Some(137), "provider"), "{case}: the provider proved the exact runtime exited");
+            assert!(recovery.records.is_exited(&node.node_id, node.incarnation_id.as_ref().unwrap()), "{case}: the proven exit is held as the birth's proven loss, the lost set every election takes");
             let proof = status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap();
             let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
             let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
@@ -6475,6 +6486,138 @@ mod tests {
         book.record(ready);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"));
+    }
+
+    /// The fabric-primary `mesh1.admin.1` (both seats of mesh1) and `mesh2`'s births `mesh2`, the
+    /// first seated as mesh2's primary at epoch 1: the fabric-primary's book, its records holding
+    /// its node-rows writer over `storage`, and its view projected from both.
+    async fn fabric_primary_over(mesh2: &[MeshDigest], storage: Arc<crate::storage::MemoryNodesStorage>) -> (MeshDigest, DigestBook, Arc<Records>, Arc<RwLock<Topology>>, Arc<crate::node_rows::NodeRows>) {
+        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        let fp = with_id(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), "100000000000");
+        let book = DigestBook::default();
+        book.record(fp.clone());
+        for d in mesh2 {
+            book.record(d.clone());
+        }
+        book.seats.take(FabricPrimary, &holder_of(&fp, 1));
+        book.seats.take(MeshPrimary, &holder_of(&fp, 1));
+        book.seats.take(MeshPrimary, &holder_of(&mesh2[0], 1));
+        let records = Arc::new(Records::default());
+        let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
+        let rows = Arc::new(crate::node_rows::NodeRows::new(fp.node.name.clone(), fp.node.node_id.clone(), view.clone(), storage));
+        records.set_rows(rows.clone());
+        (fp, book, records, view, rows)
+    }
+
+    /// The exact Exited receipt of `d`'s birth, as a leave records it.
+    fn exited_receipt(d: &MeshDigest) -> crate::deployment::pipeline::TerminalReceipt {
+        crate::deployment::pipeline::TerminalReceipt { node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), incarnation_id: d.node.incarnation.0.clone(), runtime: None, exit_code: Some(0) }
+    }
+
+    /// CONTRACT (mesh-leave.md step 7: "At mesh-left the fabric-primary writes the final primary's
+    /// row Deleted, as acting primary of a mesh that has none left"; R-EL1: a seat moves only by
+    /// explicit yield or proven loss): the final primary's exact Exited in the MeshLeft proof set is
+    /// that proven loss. Held by the fabric-primary's records (`mesh_leave::hold_exits`, which
+    /// `record_mesh_left` runs before it projects the view the rows are written from), the exited
+    /// holder is no longer seated, mesh2 has no primary in the fabric-primary's view, and the
+    /// fabric-primary writes the final primary's row Deleted and the mesh row Dead. Must NOT happen:
+    /// the refusal of mesh_identity::canonical_ids on 8803f84e ("mesh1.admin.1 (40ynvqbyvdhh) is not
+    /// the writer of mesh2's node rows ...: mesh2's primary node-admin mesh2.admin.1 (kz0m1x9y3wcn)
+    /// writes them"): the exit proven, never held as a loss, so the election kept the exited holder.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn the_final_primarys_exit_held_as_a_proven_loss_leaves_the_fabric_primary_writing_its_row_deleted() {
+        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
+        let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
+        crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+        let status = crate::status_storage::MemoryStatusStorage::default();
+        let key = crate::mesh_leave::LeaveKey { mesh_id: mesh_id("mesh2"), build_id: "bld-leave".into(), attempt: 1, operation: format!("shutdown-mesh:{}", mesh_id("mesh2")) };
+        let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-final-exit-held");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
+        let write = || async {
+            let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
+            crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary).await
+        };
+        // The exit proven and not held: the election keeps the exited holder seated (R-EL1).
+        let refused = write().await;
+        assert!(refused.as_ref().is_err_and(|e| e.contains("is not the writer of mesh2's node rows")), "unheld, the exited holder still writes mesh2's rows: {refused:?}");
+        let held = crate::mesh_leave::hold_exits(&records, [&exited_receipt(&last)]).unwrap();
+        assert_eq!(held, vec![format!("mesh2.admin.1 {}", last.node.incarnation.0)]);
+        records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+        assert_eq!(view.read().await.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string()), None, "held, the exited holder holds no seat: mesh2 has no primary");
+        write().await.unwrap_or_else(|e| panic!("the fabric-primary writes the final primary's row Deleted: {e}"));
+        let row = crate::storage::NodesStorage::node_row_at(&*storage, &last.node.name).await.unwrap().expect("the row stays at its path.name");
+        assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &last.node.node_id), "{row:?}");
+        let outcomes: Vec<String> = capture.named("rdm.node_admin.node.delete.via-node-row").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(outcomes, ["not-mesh-primary", "row-deleted"], "{outcomes:?}");
+        let deleted = capture.named("rdm.node_admin.node.delete.via-node-row").pop().unwrap();
+        eprintln!("span rdm.node_admin.node.delete.via-node-row trace_id={} {:?}", deleted.trace_id, deleted.attributes);
+    }
+
+    /// CONTRACT (mesh-leave.md, "Resume after the primary's loss", steps 1-2: the lost final
+    /// primary's exact Exited is proven and recorded first, then the fabric-primary creates the one
+    /// node-admin of a mesh with no live admin; R11: record predecessor Exited first): the proven
+    /// exit, held by the fabric-primary's records (`admin_for_leaving_mesh` holds it before the
+    /// create), vacates the lost holder's seat, so the fabric-primary is the writer of the mesh's
+    /// rows and its claim of the created admin's name is written. Must NOT happen: the refusal of
+    /// mesh_lifecycle::mesh_leave_no_survivor on 8803f84e ("AllocateIdentity failed: the name claim
+    /// refused the birth ...: mesh1.admin.1 is not the writer of mesh2's node rows").
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn the_lost_only_admins_exit_held_admits_the_fabric_primarys_claim_for_the_admin_it_creates() {
+        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let lost = with_id(digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), "200000000000");
+        let (_fp, book, records, view, rows) = fabric_primary_over(std::slice::from_ref(&lost), storage.clone()).await;
+        let capture = crate::span_capture::Capture::new("i143-3068-leaving-mesh-admin-claim");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let created: PathName = "mesh2.admin.2".parse().unwrap();
+        let refused = rows.claim(&created, &NodeId::mint(), "create-node:mesh2.admin.2").await;
+        assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost holder still writes mesh2's rows: {refused:?}");
+        crate::mesh_leave::hold_exits(&records, [&exited_receipt(&lost)]).unwrap();
+        records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+        let born = NodeId::mint();
+        match rows.claim(&created, &born, "create-node:mesh2.admin.2").await {
+            Ok(crate::node_rows::Claimed::Written { row, .. }) => assert_eq!((row.node_id, row.status), (born, NodeStatus::Pending)),
+            other => panic!("the fabric-primary claims the created admin's name once the lost holder's exit is held: {other:?}"),
+        }
+        let mut outcomes: Vec<String> = capture.named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s.attributes.get("moment").map(String::as_str) == Some("claim")).map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        outcomes.dedup();
+        assert_eq!(outcomes, ["not-mesh-primary", "row-written"], "{outcomes:?}");
+        let written = capture.named("rdm.node_admin.node.create.via-node-row").pop().unwrap();
+        eprintln!("span rdm.node_admin.node.create.via-node-row trace_id={} {:?}", written.trace_id, written.attributes);
+    }
+
+    /// CONTRACT (R-EL1: a seat moves only by explicit yield or proven loss; seat_watch.rs: "Only a
+    /// runtime found exited is a verified loss"; mesh-leave.md, "Resume after the primary's loss":
+    /// the workflow goes to the admin seated): mesh2's primary `mesh2.admin.1` is lost and
+    /// `mesh2.admin.2` is live. Once the lost holder's exact Exited is proven and held, the seat is
+    /// `mesh2.admin.2`'s in the fabric-primary's view (the leave a later attempt resumes hands it the
+    /// workflow) and in its own, where the proof its investigation held makes it announce the seat at
+    /// the next epoch. Must NOT happen: the no_survivor attempts refused "mesh2.admin.2 is live and
+    /// holds no seat yet" after mesh2.admin.1's exit was proven (trace 5bc960a3e759a77cfb42ae6e9bc687d0).
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn the_lost_primarys_exit_held_seats_the_live_admin_in_the_fabric_primarys_view_and_its_own() {
+        use rafka_mesh_entity::Seat::MeshPrimary;
+        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let lost = with_id(digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), "200000000000");
+        let live = with_id(digest("mesh2.admin.2", MemberStatus::ReadyForTraffic), "300000000000");
+        let (_fp, book, records, view, _rows) = fabric_primary_over(&[lost.clone(), live.clone()], storage).await;
+        let primary = |t: &Topology| t.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string());
+        assert_eq!(primary(&*view.read().await).as_deref(), Some("mesh2.admin.1"), "unheld, the lost holder keeps its seat (R-EL1)");
+        crate::mesh_leave::hold_exits(&records, [&exited_receipt(&lost)]).unwrap();
+        records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+        assert_eq!(primary(&*view.read().await).as_deref(), Some("mesh2.admin.2"), "held, the fabric-primary reads the live admin seated");
+        // mesh2.admin.2's own view: its investigation's exit proof is held the same way.
+        let own = Records::default();
+        own.mark_exited(&lost.node.node_id, &lost.node.incarnation);
+        let decided = incumbency_of(&book, &own);
+        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &own, &decided);
+        assert_eq!(primary(&t).as_deref(), Some("mesh2.admin.2"), "mesh2.admin.2 reads itself seated");
+        let said = seat_announcements(&t, true, "mesh2", (&live.node.node_id, &live.node.incarnation), &decided);
+        assert!(said.iter().any(|(seat, h)| *seat == MeshPrimary && h.mesh == "mesh2" && h.is_birth(&live.node.node_id, &live.node.incarnation) && h.epoch == 2), "mesh2.admin.2 announces mesh2's seat at the next epoch: {said:?}");
     }
 
     /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md §5 "a living holder keeps its seat";

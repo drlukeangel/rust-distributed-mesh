@@ -189,6 +189,37 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[Rost
     held
 }
 
+/// R-EL1 (a seat moves only by explicit yield or proven loss) and R11 (the lost predecessor's exact
+/// Exited is recorded first): each exact Exited receipt of `exits` is held by `records` as that
+/// birth's proven loss, the lost set every election of this admin takes (`incumbency_of`). A seat the
+/// birth held is then vacant in this admin's view: the fabric-primary is the acting primary of a
+/// leaving mesh whose final primary exited (mesh-leave.md step 7), claims the name of the admin it
+/// creates for a mesh with none left, and reads a surviving admin seated (mesh-leave.md, "Resume
+/// after the primary's loss"). Returns each birth held, as `<path.name> <incarnation>`.
+pub fn hold_exits<'a>(records: &crate::admin::Records, exits: impl IntoIterator<Item = &'a TerminalReceipt>) -> Result<Vec<String>, String> {
+    let mut held = Vec::new();
+    for t in exits {
+        let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("the Exited receipt of {} {} names no node id ({:?}): {e}", t.node, t.incarnation_id, t.node_id))?;
+        records.mark_exited(&node_id, &crate::model::IncarnationId(t.incarnation_id.clone()));
+        held.push(format!("{} {}", t.node, t.incarnation_id));
+    }
+    Ok(held)
+}
+
+/// Every birth an admitted leave names: its accepted roster and, per roster amendment, the
+/// predecessor and the final primary it admitted.
+pub fn leave_births(adm: &Admitted) -> Vec<RosterBirth> {
+    let mut births = adm.roster.clone();
+    for a in &adm.amendments {
+        for b in [&a.predecessor, &a.final_primary] {
+            if !births.contains(b) {
+                births.push(b.clone());
+            }
+        }
+    }
+    births
+}
+
 /// Where the fabric-primary's outer workflow `operation` resumes, read from its own Build facts
 /// (`steps`) before it calls anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
