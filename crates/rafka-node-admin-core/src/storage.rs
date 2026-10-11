@@ -584,4 +584,33 @@ mod tests {
         assert!(ran, "the runtime thread ran while the history read waited on the disk");
         assert_eq!(history, Ok(vec![logged]));
     }
+
+    /// CONTRACT: the nodes store's adapter is where a name is claimed (R13; ops-naming "Node data":
+    /// "claims the new name by insert-and-fail inside the store adapter ... `NameHeld { by: node.id }`
+    /// refuses a held name, and nothing is written"). Two saves of rows of two different nodes at one
+    /// `path.name`: the second is refused and the first node's row stands. A save of the same node's row
+    /// there (its status moves, its Deleted row) is a put, and another node's `Deleted` row holds no
+    /// name: a save over it is a put. The memory store (its internal index) and the file store each
+    /// run their own check.
+    #[tokio::test]
+    async fn a_second_nodes_row_at_a_held_name_is_refused_by_the_adapter_and_nothing_is_written() {
+        let d = crate::record_store::tempdir("storage-claim");
+        let name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]) };
+        let check = async |n: &dyn NodesStorage, store: &str| {
+            let (first, second) = (NodeId::mint(), NodeId::mint());
+            let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");
+            n.put_node_row(&held).await.unwrap();
+            let _ = n.put_node_row(&row(&second, crate::model::NodeStatus::Pending, "silver")).await;
+            assert_eq!(n.node_row_at(&name).await.unwrap(), Some(held.clone()), "{store}: nothing is written by a refused save");
+            let deleted = row(&first, crate::model::NodeStatus::Deleted, "gold");
+            n.put_node_row(&deleted).await.unwrap();
+            let next = row(&second, crate::model::NodeStatus::Pending, "gold");
+            n.put_node_row(&next).await.unwrap();
+            assert_eq!(n.node_row_at(&name).await.unwrap(), Some(next), "{store}: the save over a Deleted row is written");
+        };
+        check(&MemoryNodesStorage::default(), "memory").await;
+        check(&FileNodesStorage::open(&d).await.unwrap(), "file").await;
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
