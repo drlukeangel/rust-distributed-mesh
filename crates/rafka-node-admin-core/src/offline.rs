@@ -482,8 +482,10 @@ mod tests {
             let r1 = round(&mut t, PROBE_DELAY).await;
             assert!(r1.offline.is_empty() && t.is_in_hold_down(&id), "round 1 no path opens the hold-down: nothing is owed to the provider");
             assert_eq!(start.elapsed(), tickle_round(BUDGET), "round 1: the direct budget, then one budget for both peers");
+            // Round 2 is due one floor after round 1's no-path verdict, which came one tickle round
+            // after round 1 began (the hold-down is stamped at the verdict, not at the tick).
             let start = Instant::now();
-            let r2 = round(&mut t, PROBE_DELAY + FLOOR).await;
+            let r2 = round(&mut t, PROBE_DELAY + tickle_round(BUDGET).as_millis() as u64 + FLOOR).await;
             assert!(direct_failed.load(Ordering::SeqCst));
             assert_eq!(r2.offline, vec![id.clone()], "round 2 no path is TRUE OFFLINE: the provider is owed");
             assert_eq!(ended.load(Ordering::SeqCst), 4, "TRUE OFFLINE only once both peer probes of both rounds ended");
