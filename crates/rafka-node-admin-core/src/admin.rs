@@ -949,11 +949,18 @@ fn held_births(book: &DigestBook, fabric: &FabricId, me: &NodeId) -> Vec<MeshDig
 }
 
 /// The contacts this admin drops from nodes.storage, of `written`, the contacts it holds, given
-/// `held`, the births its book holds: a contact whose birth the book no longer holds, at a path
-/// another logical node now holds.
+/// `held`, the births its book holds and `departed`, whether the book holds a node departed: a
+/// contact whose node departed (node.delete's NodeDeleted, or mesh-left, which departs every birth
+/// of the removed mesh: mesh-leave.md step 7, "Departed births resolve Gone"), and a contact whose
+/// birth the book no longer holds, at a path another logical node now holds. A contact is a
+/// bootstrap hint for a birth that may still answer; a departed one never does, and a maker's
+/// stored map never hands it to a mesh created again under the same name (R-MN1).
 fn dropped_contacts(written: &HashMap<NodeId, crate::storage::NodeRecord>, held: &[MeshDigest], departed: impl Fn(&NodeId) -> bool) -> Vec<NodeId> {
-    let _ = &departed;
-    written.values().filter(|w| !held.iter().any(|d| d.node.node_id == w.node_id) && held.iter().any(|d| d.node.name == w.name)).map(|w| w.node_id.clone()).collect()
+    written
+        .values()
+        .filter(|w| departed(&w.node_id) || (!held.iter().any(|d| d.node.node_id == w.node_id) && held.iter().any(|d| d.node.name == w.name)))
+        .map(|w| w.node_id.clone())
+        .collect()
 }
 
 /// The provider's proof that the exact birth a digest or a durable row names exited: the runtime
@@ -4320,8 +4327,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // watch, as the runtime rows are): a hint that waits on a timer is lost to a restart that comes
     // first, and the staleness floor says nothing of whether a restarted admin can reach a birth.
     // A peer mesh's ordinary members reach this admin only through an installed topology read.
-    // A contact whose birth the book no longer holds, at a path another logical node now holds, is
-    // dropped; nothing here is topology.
+    // A contact whose node departed, or whose birth the book no longer holds at a path another
+    // logical node now holds, is dropped (`dropped_contacts`); nothing here is topology.
     let contacts_task = {
         let (book, nodes_storage, me, fabric_id, mesh_storage) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone(), mesh_storage.clone());
         park_gate.spawn(async move {
