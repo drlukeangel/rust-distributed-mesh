@@ -396,3 +396,59 @@ fn a_claim_of_a_name_its_own_node_holds_writes_nothing() {
         let _ = std::fs::remove_dir_all(&dir);
     });
 }
+
+/// CONTRACT: a replace moves the predecessor's row to `<path.name>.old` and its departure leaves a
+/// `Deleted` row there, and the successor created at the `path.name` seeds its config from the
+/// `.old` row (ops-naming "Node data": "a Deleted row, or the `<name>.old` row"; node-rpc-envelope.md
+/// "Meta and config": name may change only to/from name.old, insert-and-fail). At the executor's
+/// `RenamePredecessor` the fabric-primary claims `<path>.old` for the predecessor from the record it
+/// held at `NodeDeleting` and releases `<path>`; at `NodeDeleted` it writes the `.old` row `Deleted`,
+/// its config kept; the successor entering its view claims `<path>` seeded from the `.old` row.
+#[test]
+fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
+    let cap = capture();
+    let (old_row, row, pred, succ) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let pred = view().nodes.into_iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap();
+        let successor = node("mesh1.rpc.1", false, false);
+        let succ = successor.node_id.clone();
+        let op = "replace-node:mesh1.rpc.1";
+        let renamed = Act::View(Box::new(|v: &mut Topology| {
+            for n in v.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh1.rpc.1") {
+                n.name = n.name.renamed();
+            }
+        }));
+        let heard = Act::View(Box::new(move |v: &mut Topology| v.nodes.push(successor)));
+        let acts = vec![
+            Act::Frame(op, "NodeDeleting"),
+            Act::Frame(op, "DrainNode"),
+            Act::Frame(op, "RenamePredecessor"),
+            renamed,
+            Act::Frame(op, "AllocateIdentity"),
+            heard,
+            Act::Frame(op, "WaitForNodeReady"),
+            Act::Frame(op, "NodeDeleted"),
+            gone("mesh1.rpc.1.old"),
+            Act::Frame(op, "ReleaseStorage"),
+            Act::Frame(op, "Complete"),
+        ];
+        let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
+        (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ)
+    });
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Deleted, config: tier("gold") }), "the predecessor's row moved to .old and says Deleted, its config kept");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the successor holds the path.name with the .old row's config");
+    let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
+    assert_eq!(renames.len(), 1, "{renames:#?}");
+    let a = &renames[0]["attributes"];
+    assert_eq!((a["from"].as_str(), a["to"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1"), Some("mesh1.rpc.1.old"), Some("renamed")), "{a:#?}");
+    let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
+    assert_eq!(deleted.len(), 1, "{deleted:#?}");
+    let a = &deleted[0]["attributes"];
+    assert_eq!((a["subject"].as_str(), a["node_id"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1.old"), Some(pred.as_str()), Some("row-deleted")), "{a:#?}");
+    let seeded: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == succ.as_str()).collect();
+    assert_eq!(seeded.len(), 1, "{seeded:#?}");
+    let a = &seeded[0]["attributes"];
+    assert_eq!((a["subject"].as_str(), a["seeded_from"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1"), Some(pred.as_str()), Some("row-seeded")), "{a:#?}");
+}
