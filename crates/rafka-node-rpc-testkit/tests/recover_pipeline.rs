@@ -182,6 +182,11 @@ async fn recovery_deletes_the_exited_instance_then_creates_a_new_node_over_its_d
     let operation = format!("recover-node:{}", path());
     assert_eq!(receipts(&view.steps, &operation), RECOVER_ORDER.map(String::from).to_vec());
     assert!(view.steps.iter().all(|r| r.operation == operation), "no other operation: {:?}", view.steps.iter().map(|r| r.operation.as_str()).collect::<std::collections::BTreeSet<_>>());
+    // Every receipt the recovery wrote rides the fabric's Build topic and FetchBuildFacts to the
+    // fabric-primary, whose recovery dedup reads them: none is refused for want of a wire shape.
+    let facts: Vec<rafka_node_admin_core::build_state::BuildFact> = view.steps.iter().cloned().map(rafka_node_admin_core::build_state::BuildFact::Step).collect();
+    let (_, refused) = rafka_node_admin_core::fabric_builds::encode_chunks(facts);
+    assert!(refused.is_empty(), "a receipt of the recovery has no wire shape: {refused:?}");
     let output = |step: &str| view.steps.iter().find(|r| r.step == step).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{step} has an output"));
     assert_eq!(output("Complete"), serde_json::json!({ "node_id": first.node.node_id, "incarnation": old_inc }), "Complete names the exited birth");
     assert_eq!(output("NodeDeleted")["incarnation"], serde_json::to_value(&old_inc).unwrap(), "NodeDeleted names the exact exited birth");
