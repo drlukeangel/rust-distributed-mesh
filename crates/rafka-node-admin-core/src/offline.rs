@@ -426,7 +426,7 @@ mod tests {
         let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
         held.incarnation_id = Some(IncarnationId::mint());
         let store = ReadCounting::default();
-        let declared = crate::status_storage::NodeDeclaredRow { node_id: held.node_id.clone(), incarnation_id: held.incarnation_id.clone().unwrap(), state: rafka_node_rpc_contract::status::NodeState::ReadyForTraffic };
+        let declared = crate::status_storage::NodeDeclaredRow { node_id: held.node_id.clone(), incarnation_id: held.incarnation_id.clone().unwrap(), name: held.name.clone(), state: rafka_node_rpc_contract::status::NodeState::ReadyForTraffic };
         store.put_node_declared(&declared).await.unwrap();
 
         assert_eq!(put_silence_status(&store, &held, Some(NodeStatus::Dead)).await, Ok(true), "the silence row is put");

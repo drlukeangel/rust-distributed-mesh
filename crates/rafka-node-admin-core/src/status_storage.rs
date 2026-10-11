@@ -64,6 +64,8 @@ pub struct NodeDeclaredRow {
     pub node_id: NodeId,
     /// The birth that declared it.
     pub incarnation_id: IncarnationId,
+    /// The birth's path.name as it declared: what a recovery's new node at that path supersedes it by.
+    pub name: crate::model::PathName,
     /// The state applied.
     pub state: NodeState,
 }
@@ -86,6 +88,11 @@ impl NodeDeclaredRow {
         };
         [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving].into_iter().map(every).map(|s| Self::key_of(node_id, incarnation_id, s)).collect()
     }
+}
+
+/// The path.name each birth declared at.
+pub fn declared_names(rows: &[NodeDeclaredRow]) -> HashMap<(NodeId, IncarnationId), crate::model::PathName> {
+    rows.iter().map(|r| ((r.node_id.clone(), r.incarnation_id.clone()), r.name.clone())).collect()
 }
 
 /// The greatest declared state per birth.
@@ -259,7 +266,7 @@ impl StatusStorage for MemoryStatusStorage {
 
 const MESH_STATUS_FORMAT: &str = "mesh-status/1";
 const FABRIC_EVENT_FORMAT: &str = "fabric-event/1";
-const NODE_DECLARED_FORMAT: &str = "node-declared/2";
+const NODE_DECLARED_FORMAT: &str = "node-declared/3";
 const NODE_SILENCE_FORMAT: &str = "node-silence/1";
 const NODE_EXIT_FORMAT: &str = "node-exit/1";
 
