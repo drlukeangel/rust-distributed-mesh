@@ -20,7 +20,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_seventeen_variant_wire_schema() {
+fn requests_match_the_frozen_nineteen_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c30313233343536373839616205626972746803"),
@@ -64,7 +64,7 @@ fn requests_match_the_frozen_seventeen_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_twenty_one_variant_wire_schema() {
+fn replies_match_the_frozen_twenty_five_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
