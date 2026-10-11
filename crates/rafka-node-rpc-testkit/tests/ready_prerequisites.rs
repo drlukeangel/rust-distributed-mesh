@@ -134,7 +134,8 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
             provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
         }
     }
-    // Whatever runs for this node stops with the test.
+    // Whatever runs for this node stops with the test, by signal: it drains, stops and exports its
+    // queued spans before it exits.
     let handle: rafka_node_admin_core::deployment::provider::DeploymentHandle = view
         .steps
         .iter()
@@ -142,7 +143,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
         .and_then(|r| r.output.clone())
         .and_then(|h| serde_json::from_value(h).ok())
         .expect("the runtime was deployed and its handle receipted");
-    let _ = provider.terminate(&handle, TerminationMode::Immediate).await;
+    provider.terminate(&handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
     let _ = std::fs::remove_dir_all(&template.data_root);
     handle.pid.expect("a process handle carries its pid")
 }

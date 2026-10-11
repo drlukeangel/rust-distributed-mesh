@@ -223,6 +223,42 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     start_with_client(launch, |b, resolver, _client| register(b, resolver)).await
 }
 
+/// The stop signal of this process (SIGTERM or ctrl-c), latched from the moment [`listen_for_stop`]
+/// is first called: a binary calls it first thing, so a stop that arrives while the node boots is
+/// heard (the SIGTERM handler replaces the default disposition, which would end the process before
+/// its telemetry drained) and a stop that arrives between boot and [`wait_for_signal`] is not lost.
+static STOP: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>> = std::sync::OnceLock::new();
+
+/// Start listening for this process's stop signal (idempotent). Call it on the process's runtime.
+pub fn listen_for_stop() {
+    STOP.get_or_init(|| {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        #[cfg(unix)]
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = tokio::signal::ctrl_c() => {}
+            }
+            #[cfg(not(unix))]
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = tx.send(true);
+        });
+        rx
+    });
+}
+
+/// Resolves once this process has been told to stop ([`listen_for_stop`]).
+pub async fn stop_requested() {
+    listen_for_stop();
+    let mut rx = STOP.get().expect("listening for the stop signal").clone();
+    if rx.wait_for(|stop| *stop).await.is_err() {
+        // The listener's runtime is gone: no signal can arrive through it.
+        std::future::pending::<()>().await;
+    }
+}
+
 /// Until this process is told to stop: a SIGTERM/ctrl-c, or the mesh transport stopping for
 /// good (a runtime that can neither be heard nor answer ends; its exit is the death proof the
 /// fabric recovers from). `binary` names the process in the exit line.
@@ -235,18 +271,8 @@ pub async fn wait_for_signal(binary: &str) {
         rafka_mesh_telemetry::flush_before_exit();
         rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
     };
-    #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = term.recv() => {}
-            _ = tokio::signal::ctrl_c() => {}
-            () = stopped => {}
-        }
-    }
-    #[cfg(not(unix))]
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
+        () = stop_requested() => {}
         () = stopped => {}
     }
 }
