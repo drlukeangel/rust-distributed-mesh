@@ -84,18 +84,37 @@ async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32) -> Run {
     estate.kill_pid(u32::try_from(pid).unwrap());
 
     // Attempt 1 ends at the owner's hand-off wait (120 s, unchanged); a later attempt completes.
-    let build = wait_for(&format!("build {b} complete on an attempt after the first"), Duration::from_secs(420), || async {
+    // Nothing here panics before the estate is stopped: every process flushes its spans on exit,
+    // and a red run is read from them.
+    let deadline = std::time::Instant::now() + Duration::from_secs(420);
+    let mut build = Value::Null;
+    while std::time::Instant::now() < deadline {
         let (_, v) = estate.get(&format!("/api/builds?id={b}")).await;
-        (v["state"] == "complete" && v["attempt"].as_u64().unwrap_or(0) >= 2).then_some(v)
-    })
-    .await;
+        build = v;
+        if build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
     // The view converges on mesh1 alone within gossip delay of the MeshLeft receipt.
-    let mesh1_names: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2"].iter().map(|n| n.to_string()).collect();
-    estate.settled(&mesh1_names, Duration::from_secs(60)).await;
-    let (status, gone) = estate.get("/api/meshes/mesh2").await;
-    assert_eq!(status, 404, "mesh2 is no longer a mesh of the fabric: {gone}");
+    let mut view: Vec<String> = Vec::new();
+    let mut mesh2_status = 0;
+    if build["state"] == "complete" {
+        let settle = std::time::Instant::now() + Duration::from_secs(60);
+        while std::time::Instant::now() < settle {
+            view = estate.nodes().await.iter().map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
+            mesh2_status = estate.get("/api/meshes/mesh2").await.0;
+            if mesh2_status == 404 && view.iter().all(|n| n.starts_with("mesh1.")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
     estate.stop().await;
     let spans = estate.spans();
+    assert!(build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2, "build {b} completes on an attempt after the first within 420 s: {build}");
+    assert!(view.iter().all(|n| n.starts_with("mesh1.")), "the view holds no mesh2 birth after MeshLeft: {view:?}");
+    assert_eq!(mesh2_status, 404, "mesh2 is no longer a mesh of the fabric");
     Run { build, spans, mesh2_id, lost, b }
 }
 
