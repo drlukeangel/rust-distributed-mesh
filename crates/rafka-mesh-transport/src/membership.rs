@@ -1727,7 +1727,7 @@ impl View {
                     operation = %operation,
                     publisher = %publisher,
                     forwarded_by = forwarded_by.as_deref().unwrap_or(""),
-                    members_marked = marked,
+                    members_held = marked,
                     via,
                 )
                 .in_scope(|| tracing::info!("the mesh is Leaving: its births are held, not selected for new work, their addresses kept"));
@@ -3055,7 +3055,9 @@ impl Default for DigestBook {
 /// when it was first heard leaving, which `mesh-left` departs.
 #[derive(Debug, Clone)]
 struct LeavingMesh {
-    name: String,
+    /// The mesh's name, once a digest naming the mesh id is held: the event names the mesh by id,
+    /// and an ordinary node's digest names only its mesh's name.
+    name: Option<String>,
     births: BTreeMap<String, (IncarnationId, rafka_mesh_entity::PathName)>,
 }
 
@@ -3446,8 +3448,8 @@ impl DigestBook {
     /// node's does not; the mesh's births are every held digest of the name the id-carrying digests
     /// bear.
     fn mesh_name_of(&self, mesh_id: &MeshId) -> Option<String> {
-        if let Some(l) = self.leaving.lock().unwrap().get(mesh_id.as_str()) {
-            return Some(l.name.clone());
+        if let Some(name) = self.leaving.lock().unwrap().get(mesh_id.as_str()).and_then(|l| l.name.clone()) {
+            return Some(name);
         }
         self.all().into_iter().find(|d| d.mesh_id.as_ref() == Some(mesh_id)).map(|d| d.node.name.mesh.clone())
     }
@@ -3457,16 +3459,20 @@ impl DigestBook {
         self.all().into_iter().filter(|d| d.node.name.mesh == name && d.mesh_id.as_ref().is_none_or(|m| m == mesh_id)).collect()
     }
 
-    /// `mesh-leaving` for `mesh_id`: the mesh is Leaving. Every held birth of the mesh is not
-    /// selected for new work and stays held at its address. Idempotent. Returns how many births
-    /// this book newly holds Leaving.
+    /// `mesh-leaving` for `mesh_id`: the mesh is Leaving, whether or not this book holds any birth
+    /// of it yet. Every birth of the mesh, held now or installed later, is not selected for new
+    /// work and stays held at its address with its status ([`Self::routable`]). Idempotent.
+    /// Returns how many held births this book newly holds Leaving.
     pub fn mesh_leaving(&self, mesh_id: &MeshId) -> usize {
-        let Some(name) = self.mesh_name_of(mesh_id) else { return 0 };
-        let members = self.births_named(&name, mesh_id);
+        let name = self.mesh_name_of(mesh_id);
+        let members = name.as_deref().map(|n| self.births_named(n, mesh_id)).unwrap_or_default();
         let mut marked = 0;
         {
             let mut leaving = self.leaving.lock().unwrap();
-            let entry = leaving.entry(mesh_id.to_string()).or_insert_with(|| LeavingMesh { name: name.clone(), births: BTreeMap::new() });
+            let entry = leaving.entry(mesh_id.to_string()).or_insert_with(|| LeavingMesh { name: None, births: BTreeMap::new() });
+            if entry.name.is_none() {
+                entry.name = name;
+            }
             for d in members {
                 if !self.is_departed(d.node.node_id.as_str()) && entry.births.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.name.clone())).is_none() {
                     marked += 1;
@@ -3545,10 +3551,31 @@ impl DigestBook {
     /// May application routing select this node: held, not departed, and
     /// under no open lifecycle overlay. The resolver never reads this.
     pub fn routable(&self, node_id: &str) -> bool {
-        !self.is_departed(node_id)
-            && self.inner.lock().unwrap().contains_key(node_id)
-            && !self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id)
-            && !self.leaving.lock().unwrap().values().any(|l| l.births.contains_key(node_id))
+        if self.is_departed(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
+            return false;
+        }
+        let held = self.inner.lock().unwrap().get(node_id).map(|(d, _, _)| d.clone());
+        held.is_some_and(|d| !self.held_by_leaving(&d))
+    }
+
+    /// Whether `d` is a birth of a Leaving mesh: one this book held when it heard `mesh-leaving`,
+    /// or any birth of that mesh's name that names no other mesh id. A Leaving mesh's name is
+    /// learnt from the first held digest naming its id.
+    fn held_by_leaving(&self, d: &MeshDigest) -> bool {
+        let mut leaving = self.leaving.lock().unwrap();
+        if leaving.is_empty() {
+            return false;
+        }
+        if leaving.values().any(|l| l.births.contains_key(d.node.node_id.as_str())) {
+            return true;
+        }
+        if leaving.values().any(|l| l.name.is_none()) {
+            let inner = self.inner.lock().unwrap();
+            for (id, l) in leaving.iter_mut().filter(|(_, l)| l.name.is_none()) {
+                l.name = inner.values().find(|(x, _, _)| x.mesh_id.as_ref().is_some_and(|m| m.as_str() == id)).map(|(x, _, _)| x.node.name.mesh.clone());
+            }
+        }
+        leaving.iter().any(|(id, l)| l.name.as_deref() == Some(d.node.name.mesh.as_str()) && d.mesh_id.as_ref().is_none_or(|m| m.as_str() == id))
     }
 
     /// Hold `d` as its member's latest word, unless it is older than what is
