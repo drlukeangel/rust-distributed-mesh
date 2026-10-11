@@ -669,9 +669,13 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
 /// exited and submits the recovery"): a member of the mesh that does not hold the fabric-primary is
 /// held (SIGSTOP) and a drain of it is requested at once, attempt N of the accepted Build
 /// (`drain-node:<path>`, run by its mesh-primary). While that drain waits on the held process, the
-/// process is killed. The drain-node command never reaches the birth (NotSent), so no node-drained
-/// can follow: attempt N ends Failed at AwaitNodeDrained, named by that admission (node-drain.md
-/// "Admission is not drain completion"), never Complete. Then the mesh-primary proves the
+/// process is killed. The mesh-primary holds a connection to the member from the Build's own
+/// commit-state and open-traffic rounds (it commanded the member on each; `await_build` returns
+/// after them, and the connection idles out only after a staleness floor), so the drain-node
+/// command is written and finished on that connection to the held process, and its reply is lost
+/// when the process is killed: the admission is Indeterminate (ReplyLost), never Applied, so no
+/// node-drained can follow: attempt N ends Failed at AwaitNodeDrained, named by that admission
+/// (node-drain.md "Admission is not drain completion"), never Complete. Then the mesh-primary proves the
 /// exit and submits the recovery, a later attempt of the same Build, which completes: a new node.id
 /// at the path over the same endpoint key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -695,9 +699,11 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
         b["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(drain_attempt) && r["outcome"]["failed"].is_object())
     })
     .await;
-    // The drain-node command never reached the held, then exited, birth: no node-drained can follow.
+    // The drain-node command was written to the held birth on the connection the Build's rounds
+    // opened, and its reply was lost at the kill: never admitted, so no node-drained can follow.
     assert_eq!(s(&failed["step"]), "AwaitNodeDrained", "the drain is not complete: {failed}");
-    assert!(s(&failed["outcome"]["failed"]["reason"]).contains("NotSent"), "the admission names why: {failed}");
+    let why = s(&failed["outcome"]["failed"]["reason"]);
+    assert!(why.contains("drain-node was not admitted (Indeterminate") && why.contains("ReplyLost("), "the admission names why: {failed}");
 
     let after = wait_for(&format!("{node} ready as a new node"), SETTLE, || async {
         let n = estate.node_opt(&node).await?;
@@ -765,8 +771,16 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let before = estate.node(NODE).await;
     estate.kill_node(NODE).await;
 
-    // Round 1 on the mesh-primary that holds the seat now.
-    let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), floor * 3, || async { tickle_span(&estate.spans(), &mp, &before["node_id"], 1).cloned() }).await;
+    // Round 1 on the mesh-primary that holds the seat now. Its span ends the round, due by
+    // node-recovery.md steps 1-2: the silence (one floor, marked on the pruner's gossip-interval
+    // sweep), the tick (one gossip interval) half a floor after the mark, then one direct connect and
+    // up to VIA_PEER_TICKLE_FANOUT connects through peers, one after another, each to a killed
+    // process and so spending its whole dial: the connection's idle timeout, the staleness floor
+    // (R-T8), inside the call's 10 s budget. Then the export's 200 ms schedule.
+    let gossip = rafka_mesh_entity::cadence::gossip_interval();
+    let connect = floor.min(Duration::from_secs(10));
+    let round1_due = floor + gossip + gossip + floor / 2 + connect * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32) + Duration::from_millis(200);
+    let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { tickle_span(&estate.spans(), &mp, &before["node_id"], 1).cloned() }).await;
     // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.
     let (status, stop) = estate.post(&format!("/api/nodes/{mp}/stop"), &json!({})).await;
     assert_eq!(status, 202, "the stop of {mp} is accepted: {stop}");
