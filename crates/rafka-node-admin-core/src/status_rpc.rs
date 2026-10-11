@@ -119,6 +119,9 @@ pub struct StatusAuthority {
     /// This admin as the subject of `ApplyNodeName`: it takes the name with no traffic in flight
     /// and publishes its digest carrying it; filled once its digest exists.
     pub rename: Rename,
+    /// This admin's view taking a node's row its `node.update` moved (R13): the view lists the birth
+    /// at the row's name on every projection from now on. Filled with the view.
+    pub row_moved: RowMoved,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -307,7 +310,7 @@ impl StatusAuthority {
             }
             StatusRequest::UpdateNode { .. } => {
                 return match self.configs.get() {
-                    Some(configs) => crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, configs.client(), req).await,
+                    Some(configs) => crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, configs.client(), &self.row_moved, req).await,
                     None => StatusReply::NotReady { reason: format!("{} has no node-RPC client yet; {} is refused", self.me, req.op()) },
                 };
             }
@@ -541,6 +544,9 @@ pub type Configure = Arc<OnceLock<Arc<dyn Fn(BTreeMap<String, String>) -> std::p
 /// This node deciding a name its mesh-primary's row gives it (`ApplyNodeName`): the name it held
 /// and the decision, the name taken and published only on `Applied`.
 pub type Rename = Arc<OnceLock<Arc<dyn Fn(rafka_mesh_entity::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = (rafka_mesh_entity::PathName, crate::node_name::NameApply)> + Send>> + Send + Sync>>>;
+
+/// This mesh-primary's view taking a row `node.update` moved: `(from, node_id, incarnation, to)`.
+pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rafka_mesh_entity::PathName, NodeId, rafka_mesh_entity::IncarnationId, rafka_mesh_entity::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
 /// What a node is now, in the declaration vocabulary.
 pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
@@ -914,6 +920,7 @@ mod tests {
             configure: Default::default(),
             hydration: Default::default(),
             rename: Default::default(),
+            row_moved: Default::default(),
         }
     }
 

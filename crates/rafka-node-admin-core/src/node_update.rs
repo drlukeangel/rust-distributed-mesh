@@ -17,14 +17,14 @@ use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use tokio::sync::RwLock;
 
 /// Serve an `UpdateNode` at the admin `me` (born `me_id`): one span holds the whole put.
-pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: &NodeRpcClient, req: &StatusRequest) -> StatusReply {
+pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: &NodeRpcClient, moved: &crate::status_rpc::RowMoved, req: &StatusRequest) -> StatusReply {
     let StatusRequest::UpdateNode { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateNode only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
         node = %me, node_id = %node_id, incarnation_id = %incarnation.0, from = tracing::field::Empty, to = %name,
         traffic = tracing::field::Empty, outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
-    let reply = tracing::Instrument::instrument(put(me, me_id, view, storage, client, node_id, incarnation, name, &span), span.clone()).await;
+    let reply = tracing::Instrument::instrument(put(me, me_id, view, storage, client, moved, node_id, incarnation, name, &span), span.clone()).await;
     span.record("outcome", reply.name());
     span.in_scope(|| tracing::info!("node.update decided"));
     reply
@@ -35,7 +35,7 @@ fn meta(n: &Node, name: PathName) -> NodeMeta {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: &NodeRpcClient, node_id: &rafka_mesh_entity::NodeId, incarnation: &rafka_mesh_entity::IncarnationId, name: &str, span: &tracing::Span) -> StatusReply {
+async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: &NodeRpcClient, moved: &crate::status_rpc::RowMoved, node_id: &rafka_mesh_entity::NodeId, incarnation: &rafka_mesh_entity::IncarnationId, name: &str, span: &tracing::Span) -> StatusReply {
     let now = view.read().await.clone();
     let Some(held) = now.nodes.iter().find(|n| n.node_id == *node_id).cloned() else {
         return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} is not in the mesh-primary's view; its record cannot be put") };
@@ -59,6 +59,9 @@ async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Top
         return StatusReply::RejectedMetaFieldIsRdmOwned { field: e.field.name().into() };
     }
     if to != held.name {
+        let Some(moved) = moved.get() else {
+            return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
+        };
         let row = NodeRow { name: to.clone(), node_id: held.node_id.clone(), status: held.status, config: held.config.clone() };
         match storage.claim_node_row(&row).await {
             Ok(Ok(_)) => {}
@@ -68,10 +71,8 @@ async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Top
         if let Err(e) = storage.release_node_row(&held.name, &held.node_id).await {
             return StatusReply::node_row_refused(&held.name.to_string(), &format!("{me}: {node_id} holds {to} and nodes.storage refused the release of {}: {e}", held.name));
         }
-        // The view entry moves with the row.
-        if let Some(n) = view.write().await.nodes.iter_mut().find(|n| n.node_id == *node_id) {
-            n.name = to.clone();
-        }
+        // The view lists the birth at the row's name from now on, on every projection.
+        moved(held.name.clone(), node_id.clone(), incarnation.clone(), to.clone()).await;
     }
     if held.parked {
         return StatusReply::NodeUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };

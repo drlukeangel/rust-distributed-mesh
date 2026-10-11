@@ -109,7 +109,18 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         configure: Default::default(),
         hydration: Default::default(),
         rename: Default::default(),
+        row_moved: Default::default(),
     });
+    // The rig's view stands for the admin's projection: a moved row moves the birth's entry.
+    let moved_view = topology.clone();
+    let _ = authority.row_moved.set(Arc::new(move |_from: PathName, node_id: NodeId, _incarnation: IncarnationId, to: PathName| {
+        let view = moved_view.clone();
+        Box::pin(async move {
+            if let Some(n) = view.write().await.nodes.iter_mut().find(|n| n.node_id == node_id) {
+                n.name = to;
+            }
+        })
+    }));
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
     let withhold = Arc::new(ReplyWithhold::default());
