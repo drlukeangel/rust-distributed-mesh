@@ -14,7 +14,7 @@
 //! (`0x1F`) from the sender, never from a reference alone.
 
 use crate::build::BuildId;
-use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
+use crate::build_state::{BuildFact, BuildStateAdapter, BuildStepReceipt, StepOutcome};
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
@@ -257,6 +257,58 @@ where
     tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len())
         .in_scope(|| tracing::info!("every other member's exact exit is proven: the exit manifest is recorded"));
     Ok(manifest)
+}
+
+/// What the fabric-primary decides of a `MeshLeave` handoff from the Build facts it read from the
+/// sender (node-rpc-envelope.md, "Mesh leave command pair").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandoffVerdict {
+    /// The manifest covers the accepted roster exactly and names the admitted final runtime.
+    Accept(ExitManifest),
+    /// The manifest does not match what admission captured: `(field, expected, reported)`.
+    Unmatched {
+        /// The first field that does not match.
+        field: String,
+        /// What admission captured for it.
+        expected: String,
+        /// What the handoff reported.
+        reported: String,
+    },
+}
+
+impl HandoffVerdict {
+    /// The reply that refuses this handoff; `None` when it is accepted.
+    pub fn refusal(&self) -> Option<StatusReply> {
+        match self {
+            HandoffVerdict::Accept(_) => None,
+            HandoffVerdict::Unmatched { field, expected, reported } => Some(StatusReply::RejectedUnmatchedCompletion { field: field.clone(), expected: expected.clone(), reported: reported.clone() }),
+        }
+    }
+}
+
+/// The verdict on the handoff of the leave `key`, admitted with `admitted`, over `facts` (the
+/// sender's Build facts, read now); `receipt_manifest` is the reference the call carried.
+pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str) -> HandoffVerdict {
+    let unmatched = |field: &str, expected: String, reported: String| HandoffVerdict::Unmatched { field: field.into(), expected, reported };
+    let (operation, attempt) = (key.operation.as_str(), key.attempt);
+    let receipt = facts.iter().find_map(|f| match f {
+        BuildFact::Step(r) if r.operation == operation && r.attempt == attempt && r.step == STEP_OTHER_MEMBERS_EXITED && r.outcome == StepOutcome::Complete => Some(r.clone()),
+        _ => None,
+    });
+    let Some(receipt) = receipt else {
+        return unmatched("receipt_manifest", format!("a Complete {STEP_OTHER_MEMBERS_EXITED} receipt under {operation}, attempt {attempt}"), format!("{receipt_manifest}: none among the {} facts read", facts.len()));
+    };
+    let manifest: ExitManifest = match receipt.output.clone().and_then(|v| serde_json::from_value(v).ok()) {
+        Some(m) => m,
+        None => return unmatched("receipt_manifest", "a readable exit manifest".into(), format!("{receipt_manifest}: its output does not decode")),
+    };
+    if let Some((field, expected, reported)) = first_mismatch(&manifest, &admitted.roster, &admitted.final_primary, false) {
+        return unmatched(&field, expected, reported);
+    }
+    if manifest.final_runtime.as_ref() != Some(&admitted.final_runtime) {
+        return unmatched("final_runtime", format!("{:?}", admitted.final_runtime), format!("{:?}", manifest.final_runtime));
+    }
+    HandoffVerdict::Accept(manifest)
 }
 
 /// The key of one open mesh leave at the fabric-primary.

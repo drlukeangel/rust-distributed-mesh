@@ -14,7 +14,8 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{accepted_roster, first_mismatch, members_exited, operation, LeaveKey, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER};
+use rafka_node_admin_core::mesh_leave::{accepted_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, Admitted, LeaveKey, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER};
+use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -339,4 +340,88 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     assert!(retained.iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "1" && s["attributes"]["remaining"] == "2"), "attempt 2 kept one receipt and ran two members: {retained:?}");
     let recorded = named("rdm.node_admin.mesh.update.via-exit-manifest-recorded");
     assert!(recorded.iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["receipts"] == "3" && s["attributes"]["roster"] == "4"), "{recorded:?}");
+}
+
+/// CONTRACT: an incomplete tier is refused by name, never awaited. Attempt 1 leaves the ordinary
+/// tier incomplete (one ordinary node exits, the other's exit cannot be proven; the node-admin tier
+/// never starts), so the leaving primary records no exit manifest. The fabric-primary's verdict on
+/// the handoff over the sender's Build facts (as the wire carries them) refuses it `NotReady`
+/// naming every roster birth without an Exited receipt (the unproven ordinary node and the other
+/// node-admin) and not the one that exited (node-rpc-envelope.md, "Mesh leave command pair": "an
+/// incomplete manifest is refused NotReady with the mismatch named").
+#[test]
+fn an_incomplete_tier_is_refused_not_ready_naming_the_births_without_an_exited_receipt() {
+    let cap = capture();
+    let data_root = std::env::temp_dir().join(format!("mesh-leave-incomplete-{}", NodeId::mint()));
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 42_000 + i as u32))).collect();
+    let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(), ..Default::default() };
+    *fleet.blind_once.lock().unwrap() = handles[FAILING].pid;
+    let me = RosterBirth::of(records.iter().find(|n| n.name.to_string() == FINAL).unwrap()).unwrap();
+    let final_runtime = RuntimeProof::of(&handles[FINAL].fact().unwrap());
+    let view = View::default();
+
+    let (tier, verdict, trace_id) = cap.run(async {
+        let builds = WireBuilds(MemoryBuildStateAdapter::new());
+        let build_id = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .await
+            .unwrap();
+        let mesh_id = MeshId::mint();
+        let outer = operation(&mesh_id);
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 1, operation: outer.clone() };
+        let joins = Joins::default();
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            executable: "/nonexistent/rafka-rpc-node".into(),
+            seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
+            launcher: rafka_mesh_entity::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            env: BTreeMap::new(),
+            data_root: data_root.clone(),
+            mesh_issuer: None,
+        };
+        let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let root = tracing::info_span!("cell.mesh-leave-incomplete", build_id = %build_id, operation = %outer);
+        let trace_id = {
+            use opentelemetry::trace::TraceContextExt as _;
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            root.context().span().span_context().trace_id().to_string()
+        };
+        let _in_root = root.enter();
+        let roster = accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
+        let mp = accepted_roster(&builds, &key, STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
+        let tier = members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, |mut n: Node| {
+            let (pipeline, handles, build_id, outer) = (&pipeline, &handles, &build_id, &outer);
+            async move {
+                let name = n.name.to_string();
+                pipeline.shutdown_member(build_id, 1, outer, &mut n, &handles[&name]).await.map_err(|e| e.to_string())
+            }
+        })
+        .await;
+        // The handoff the leaving primary sends for the incomplete run, judged over its facts.
+        let facts = builds.facts().await.unwrap();
+        let admitted = Admitted { roster, final_primary: me.clone(), final_runtime: final_runtime.clone() };
+        let verdict = handoff_verdict(&facts, &key, &admitted, &manifest_reference(&key.build_id, 1, &outer, false));
+        (tier, verdict, trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("incomplete");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    let _ = std::fs::remove_dir_all(&data_root);
+
+    let err = tier.expect_err("the ordinary tier holds an unproven exit");
+    assert!(err.contains("tier ordinary-nodes is incomplete"), "{err}");
+    let reason = match verdict.refusal() {
+        Some(StatusReply::NotReady { reason }) => reason,
+        other => panic!("an incomplete tier is refused NotReady with the births named: {other:?} ({verdict:?})"),
+    };
+    assert!(reason.contains(FAILING) && reason.contains(OTHER_ADMIN), "every roster birth without an Exited receipt is named: {reason}");
+    assert!(!reason.contains(EXITING) && !reason.contains(&format!("{FINAL} ")), "the exited birth and the final primary are not named: {reason}");
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    let refused = named("rdm.node_admin.mesh.reject.via-incomplete-handoff");
+    assert!(refused.iter().any(|s| s["attributes"]["without_exit"].as_str().is_some_and(|w| w.contains(FAILING) && w.contains(OTHER_ADMIN))), "{refused:?}");
 }
