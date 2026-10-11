@@ -5284,12 +5284,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
         };
         let park = park_gate.clone();
+        let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
         tasks.push(tokio::spawn(async move {
             // The births whose inspection or submitted recovery is in flight, and the last verdict
             // named per birth. The tick never waits on either.
             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
             let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
-            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string());
+            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), park.clone());
             let floor = rafka_mesh_transport::membership::staleness_floor();
             let mut written: WrittenSilence = HashMap::new();
             loop {
@@ -5442,14 +5443,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         if !in_flight.lock().unwrap().insert(birth.clone()) {
                             continue;
                         }
-                        let (recovery, n, in_flight, verdicts) = (recovery.clone(), n.clone(), in_flight.clone(), verdicts.clone());
-                        tokio::spawn(async move {
+                        let (recovery, n, verdicts) = (recovery.clone(), n.clone(), verdicts.clone());
+                        crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
                             recovery.recover_if_proven(&n, &verdicts).await;
-                            in_flight.lock().unwrap().remove(&birth);
                         });
                     }
                 }
-                tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
+                cadence.next().await;
             }
         }));
     }
@@ -6773,13 +6773,16 @@ mod tests {
             t
         };
         let floor = book.staleness_floor().as_millis() as u64;
-        let mut tickle = OfflineTickle::observed_by(me.to_string());
+        let mut tickle = OfflineTickle::observed_by(me.to_string(), crate::park_gate::ParkGate::new());
         let mut offline: HashSet<(NodeId, IncarnationId)> = HashSet::new();
         let pass = async |now: u64, tickle: &mut OfflineTickle, offline: &mut HashSet<(NodeId, IncarnationId)>| {
+            // The rounds the last pass started run beside the loop until this one (each probe here
+            // answers at once).
+            tokio::task::yield_now().await;
             let view = view_now();
             let holds_seat = view.holds_mesh_seat("mesh2", &successor.node.node_id);
             let watched = watched_births(&view, &successor.node.node_id, "mesh2", &[]);
-            let silent = watched.values().map(|n| SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), marked_at_ms: None }).collect();
+            let silent = watched.values().map(|n| SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), incarnation: n.incarnation_id.clone(), marked_at_ms: None }).collect();
             let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
             let report = tickle
                 .tick(
@@ -6818,7 +6821,10 @@ mod tests {
         assert_eq!(report.tickled, vec![holder.node.node_id.to_string()], "round 1 at once, on the window kept since the silence began");
         assert!(report.offline.is_empty() && due.is_empty(), "round 1 opens the hold-down only: {report:?} {due:?}");
         let (_, report, due) = pass(t1 + floor, &mut tickle, &mut offline).await;
-        assert_eq!(report.offline, vec![holder.node.node_id.to_string()], "round 2, one floor later: TRUE OFFLINE");
+        assert_eq!(report.tickled, vec![holder.node.node_id.to_string()], "round 2, one floor later");
+        assert!(report.offline.is_empty() && due.is_empty(), "round 2 runs beside the loop: nothing is decided before a tick folds it: {report:?} {due:?}");
+        let (_, report, due) = pass(t1 + floor + 500, &mut tickle, &mut offline).await;
+        assert_eq!(report.offline, vec![holder.node.node_id.to_string()], "the next tick folds round 2: TRUE OFFLINE");
         assert_eq!(due, vec!["mesh2.admin.1".to_string()], "the old primary is due for recovery at the successor, after the seat moved");
     }
 
