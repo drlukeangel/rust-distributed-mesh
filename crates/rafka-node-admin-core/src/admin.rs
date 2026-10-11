@@ -540,6 +540,29 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
     crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), lost }
 }
 
+/// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
+/// `t` gives it (`live`: a cut-off view authorizes nothing) whose record names another birth, at the
+/// next epoch over that record. The record this admin already holds for itself needs no announcement.
+pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&NodeId, &IncarnationId), seats: &rafka_mesh_transport::membership::SeatBook) -> Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)> {
+    let mesh_primary = live && t.holds_mesh_seat(mesh, me.0);
+    let fabric_primary = live && t.holds_fabric_seat(me.0);
+    let mut said = Vec::new();
+    for (seat, holds) in [(rafka_mesh_entity::Seat::MeshPrimary, mesh_primary), (rafka_mesh_entity::Seat::FabricPrimary, fabric_primary)] {
+        if !holds {
+            continue;
+        }
+        let held = match seat {
+            rafka_mesh_entity::Seat::MeshPrimary => seats.mesh(mesh),
+            rafka_mesh_entity::Seat::FabricPrimary => seats.fabric(),
+        };
+        if held.as_ref().is_some_and(|h| h.is_birth(me.0, me.1)) {
+            continue;
+        }
+        said.push((seat, rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), epoch: held.map(|h| h.epoch + 1).unwrap_or(1) }));
+    }
+    said
+}
+
 /// The observed topology from membership digests and this admin's records,
 /// with the settled primary rule (module docs).
 pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records) -> Topology {
@@ -4336,20 +4359,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // of this loop; every other admin serves the state the holder published.
                 fabric_rounds.climb_step(crate::fabric_rounds::ClimbInputs { is_fabric_primary: fabric_primary, heard: membership.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t }).await;
                 // A seat taken is announced once, when it changes hands: the mesh primary first, then
-                // the fabric primary (R-A2). The record this admin already holds for itself needs no
-                // announcement.
-                for (seat, holds) in [(rafka_mesh_entity::Seat::MeshPrimary, mesh_primary), (rafka_mesh_entity::Seat::FabricPrimary, fabric_primary)] {
-                    if !holds {
-                        continue;
-                    }
-                    let held = match seat {
-                        rafka_mesh_entity::Seat::MeshPrimary => membership.seats().mesh(&mesh),
-                        rafka_mesh_entity::Seat::FabricPrimary => membership.seats().fabric(),
-                    };
-                    if held.as_ref().is_some_and(|h| h.is_birth(&seat_node_id, &seat_incarnation)) {
-                        continue;
-                    }
-                    let holder = rafka_mesh_entity::SeatHolder { mesh: mesh.clone(), node_id: seat_node_id.clone(), incarnation: seat_incarnation.clone(), epoch: held.map(|h| h.epoch + 1).unwrap_or(1) };
+                // the fabric primary (R-A2).
+                for (seat, holder) in seat_announcements(&t, live, &mesh, (&seat_node_id, &seat_incarnation), membership.seats()) {
                     backbone.announce_seat(seat, holder).await;
                 }
                 let heard = membership.book.current(membership.book.staleness_floor());
@@ -4797,6 +4808,56 @@ mod tests {
         book.record(ready);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"));
+    }
+
+    /// CONTRACT (fabric-node-lifecycle-elections.md §4.4, fabric-primary-handover.md step 3): the
+    /// committed next-epoch seat record is the resolver's input and the incumbent yields fabric
+    /// authority. A hierarchy-loop decision is announced against the seat record it was decided
+    /// from: a committed handover that lands while the loop awaits (its round climb) is not
+    /// answered by the incumbent taking the seat back at the next epoch. Must NOT happen: the
+    /// yielded incumbent announcing itself over the committed successor (the e3..e12 seat flap of
+    /// mesh_replace on f06c8197).
+    #[test]
+    fn a_handover_committed_while_the_loop_awaits_is_not_taken_back_by_the_incumbent() {
+        use MemberStatus::*;
+        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        let book = DigestBook::default();
+        let records = Records::default();
+        let me = with_id(digest("mesh1.admin.1", ReadyForTraffic), "500000000000");
+        let sibling = with_id(digest("mesh1.admin.2", ReadyForTraffic), "800000000000");
+        let successor = with_id(digest("mesh2.admin.1", ReadyForTraffic), "300000000000");
+        for d in [&me, &sibling, &successor] {
+            book.record((*d).clone());
+        }
+        book.seats.take(MeshPrimary, &holder_of(&me, 1));
+        book.seats.take(MeshPrimary, &holder_of(&successor, 1));
+        book.seats.take(FabricPrimary, &holder_of(&me, 1));
+        let me_birth = (&me.node.node_id, &me.node.incarnation);
+        // The loop decides: this admin holds both of its seats, and their records already name it.
+        let decided = incumbency_of(&book, &records);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
+        // While the loop awaits its climb, the committed transfer lands: mesh2.admin.1 at epoch 2.
+        book.seats.take(FabricPrimary, &holder_of(&successor, 2));
+        let said = seat_announcements(&t, true, "mesh1", me_birth, &book.seats);
+        assert!(said.is_empty(), "the yielded incumbent announces nothing over the committed successor: {said:?} (decided against {:?})", decided.fabric);
+
+        // A legitimate succession is still announced: the recorded holder's birth proven exited,
+        // the election seats its own mesh's next admin, at the next epoch over that record.
+        let book = DigestBook::default();
+        let records = Records::default();
+        let gone = with_id(digest("mesh1.admin.2", ReadyForTraffic), "100000000000");
+        for d in [&me, &gone] {
+            book.record((*d).clone());
+        }
+        book.seats.take(MeshPrimary, &holder_of(&gone, 5));
+        book.seats.take(FabricPrimary, &holder_of(&gone, 5));
+        records.mark_exited(&gone.node.node_id, &gone.node.incarnation);
+        let decided = incumbency_of(&book, &records);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        let said = seat_announcements(&t, true, "mesh1", me_birth, &book.seats);
+        let epochs: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.epoch)).collect();
+        assert_eq!(epochs, vec![(MeshPrimary, me.node.node_id.clone(), 6), (FabricPrimary, me.node.node_id.clone(), 6)], "the successor of a proven-gone holder takes both seats at the next epoch (decided against {:?})", decided.fabric);
     }
 
     #[test]
