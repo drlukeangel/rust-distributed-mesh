@@ -209,9 +209,10 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_eq!(heard.0["output"]["incarnation"], before["incarnation_id"], "and its exact birth: {:?}", heard.0);
     assert!(heard.1["output"].is_null(), "Complete commits no output: {:?}", heard.1);
 
-    let spans = wait_for("the recovery operation's last step is exported", SETTLE, || async {
+    // Each process exports its own spans: the new node's boot span is read once the new node exported it.
+    let spans = wait_for("the recovery operation's last step and the new node's boot span are exported", SETTLE, || async {
         let spans = estate.spans();
-        step_span(&spans, &birth_build, &attempt, node_path, "Complete").is_some().then_some(spans)
+        (step_span(&spans, &birth_build, &attempt, node_path, "Complete").is_some() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     // Delete, then create: the exited birth departs once, named by its exact birth, before the new node boots.
