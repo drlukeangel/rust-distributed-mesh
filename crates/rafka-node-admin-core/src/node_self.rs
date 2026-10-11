@@ -259,8 +259,13 @@ impl NodeSelf {
 
     /// This surface, completing `actions` before it checks in to a round.
     pub fn with_round_actions(self, actions: Arc<dyn crate::fabric_rounds::RoundActions>) -> Self {
-        *self.round_actions.lock().unwrap() = actions;
+        self.set_round_actions(actions);
         self
+    }
+
+    /// Complete `actions` before checking in to a round, from the next round this birth takes.
+    pub fn set_round_actions(&self, actions: Arc<dyn crate::fabric_rounds::RoundActions>) {
+        *self.round_actions.lock().unwrap() = actions;
     }
 
     /// Serve `commit-state` or `open-traffic` from `commander`, the primary of this birth's mesh
