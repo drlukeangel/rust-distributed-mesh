@@ -220,9 +220,11 @@ async fn fabric(successor_status: NodeStatus, third: bool, serve_incumbent: bool
     (Pair { incumbent, successor, mesh1_id: MeshId::mint() }, third)
 }
 
+/// One call; a call with no reply panics naming the outcome and the leg it used (the dial's failure,
+/// or the pooled connection it rode).
 async fn send(from: &Admin, to: &Admin, req: Request) -> Reply {
-    let (out, _) = from.client.call::<FabricPrimaryHandover>(&NodeTarget::ExactNode(to.resolved.node_id.clone()), &req, &CallOptions::default()).await;
-    out.reply().unwrap_or_else(|| panic!("no reply: {out:?}")).value().clone()
+    let (out, ev) = from.client.call::<FabricPrimaryHandover>(&NodeTarget::ExactNode(to.resolved.node_id.clone()), &req, &CallOptions::default()).await;
+    out.reply().unwrap_or_else(|| panic!("no reply: {out:?} evidence {ev:?}")).value().clone()
 }
 
 fn take(f: &Pair, epoch: u64, operation: &str) -> Request {
