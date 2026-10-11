@@ -29,9 +29,30 @@ impl NodeConfigs {
         Self { client, one_at_a_time: tokio::sync::Mutex::new(()) }
     }
 
-    /// Serve an `UpdateNodeConfig` at the admin `me` deciding over `view`, writing to `storage`.
+    /// Serve an `UpdateNodeConfig` at the admin `me` deciding over `view`, writing to `storage`. One
+    /// span, opened first, holds the whole put: the row write and the call that tells the birth are
+    /// inside it, and its outcome is the reply's name.
     pub async fn update(&self, me: &crate::model::PathName, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateNodeConfig only") };
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-config",
+            node = %me,
+            subject = tracing::field::Empty,
+            node_id = %node_id,
+            incarnation_id = %incarnation.0,
+            keys = config.len(),
+            row_status = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            "otel.kind" = "internal",
+        );
+        let reply = tracing::Instrument::instrument(self.put(me, view, storage, node_id, incarnation, config, &span), span.clone()).await;
+        span.record("outcome", reply.name());
+        span.in_scope(|| tracing::info!("node.config.update decided"));
+        reply
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn put(&self, me: &crate::model::PathName, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rafka_mesh_entity::NodeId, incarnation: &rafka_mesh_entity::IncarnationId, config: &std::collections::BTreeMap<String, String>, span: &tracing::Span) -> StatusReply {
         if let Err(over) = rafka_mesh_entity::check_config(config) {
             return StatusReply::RejectedConfig { over };
         }
@@ -41,6 +62,8 @@ impl NodeConfigs {
         let Some(subject) = view.members().find(|n| n.node_id == *node_id) else {
             return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} is not a member of the fabric-primary's view; its config cannot be put") };
         };
+        span.record("subject", subject.name.to_string().as_str());
+        span.record("row_status", format!("{:?}", subject.status).as_str());
         match subject.incarnation_id.as_ref() {
             Some(held) if held != incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
             None => return StatusReply::PeerUnresolved { reason: format!("{me}: {} has no known birth; its config cannot be put", subject.name) },
@@ -49,28 +72,15 @@ impl NodeConfigs {
         let _one = self.one_at_a_time.lock().await;
         let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
         if let Err(e) = storage.put_node_row(&row).await {
-            return StatusReply::NotReady { reason: format!("{me}: nodes.storage refused the row of {} at {}: {e}", node_id, subject.name) };
+            return StatusReply::ConfigRowRefused { node: subject.name.to_string(), reason: format!("{me}: nodes.storage refused the row of {node_id}: {e}") };
         }
         let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
         let told = NodeRpc::new(&self.client).config_apply(&birth, config.clone(), &CallOptions::default()).await;
-        let reply = match told {
+        match told {
             Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() },
-            Ok(refused) => StatusReply::NotReady { reason: format!("{me}: wrote the row of {} but the birth answered {} to apply-node-config: {refused:?}", subject.name, refused.name()) },
-            Err(end) => StatusReply::NotReady { reason: format!("{me}: wrote the row of {} but apply-node-config to the birth ended {}: {}", subject.name, end.outcome(), describe(&end)) },
-        };
-        tracing::info_span!(
-            "rdm.node_admin.node.update.via-config",
-            node = %me,
-            subject = %subject.name,
-            node_id = %node_id,
-            incarnation_id = %incarnation.0,
-            keys = config.len(),
-            row_status = ?subject.status,
-            outcome = reply.name(),
-            "otel.kind" = "internal",
-        )
-        .in_scope(|| tracing::info!("the fabric-primary wrote the node's row and told the birth its config"));
-        reply
+            Ok(refused) => StatusReply::ConfigNotApplied { node: subject.name.to_string(), answered: refused.name().into(), reason: format!("{me} wrote the row; the birth answered {refused:?}") },
+            Err(end) => StatusReply::ConfigNotApplied { node: subject.name.to_string(), answered: end.outcome().into(), reason: format!("{me} wrote the row; apply-node-config ended {}", describe(&end)) },
+        }
     }
 }
 
