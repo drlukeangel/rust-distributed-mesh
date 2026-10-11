@@ -212,7 +212,9 @@ pub(crate) fn sweep_targets(map: &[MapNode]) -> Vec<MapNode> {
 /// in path order. A draining node refuses `GetTopology` (node-rpc-envelope.md: "A draining node
 /// refuses new non-status calls"), so a settled node that answers is the one to read from.
 pub(crate) fn local_candidates(map: &[MapNode]) -> Vec<MapNode> {
-    map.to_vec()
+    let mut v = map.to_vec();
+    v.sort_by_key(|n| (n.transition.is_some(), n.name.to_string()));
+    v
 }
 
 /// Enter the existing mesh of `ctx.me` from `held`, the topology its source gave: connect to a

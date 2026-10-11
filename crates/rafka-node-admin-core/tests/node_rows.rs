@@ -898,7 +898,7 @@ fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_
 /// the `NodeDeleted` step frees the name the claim takes it, through the one claim every birth
 /// takes, seeded from the `Deleted` row.
 #[test]
-fn a_recovered_node_heard_before_the_exited_ones_node_deleted_takes_the_name_at_it() {
+fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_held_then_seeded() {
     let cap = capture();
     let (row, exited, born) = cap.run(recovered(true));
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold") }), "the new node holds the row once the name is free");
