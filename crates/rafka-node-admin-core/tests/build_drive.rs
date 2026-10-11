@@ -42,6 +42,8 @@ fn view() -> Topology {
 struct Switch {
     authorizes: AtomicBool,
     fenced: AtomicBool,
+    /// The admin a committed seat transfer named in the fence, when the cell sets one.
+    successor: Mutex<Option<String>>,
 }
 
 #[async_trait::async_trait]
@@ -51,7 +53,7 @@ impl Gate for Switch {
     }
     async fn fence(&self) -> Result<(), BuildStateError> {
         if self.fenced.load(Ordering::SeqCst) {
-            Err(BuildStateError::Fenced { node: "mesh1.admin.1".into(), by: "leaving".into() })
+            Err(BuildStateError::Fenced { node: "mesh1.admin.1".into(), by: "leaving".into(), to: self.successor.lock().unwrap().clone() })
         } else {
             Ok(())
         }
@@ -94,7 +96,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let ran = Arc::new(Creates(Mutex::new(Vec::new())));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false) });
+    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
     let env = Arc::new(DriveEnv {
         me: me.clone(),
@@ -155,6 +157,29 @@ async fn a_fenced_fabric_primary_is_refused_fenced_whatever_its_view_shows_and_n
         other => panic!("a fenced seat ends the drive SeatLost: {other:?}"),
     }
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")));
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
+}
+
+/// CONTRACT: a committed seat transfer names the new holder in the fence itself. The old seat's view
+/// is re-projected on its own clock, so right after the transfer it may still show this admin as the
+/// fabric-primary: the callers' streams still end naming the successor the transfer committed, never
+/// an empty seat read from a view that has not moved yet.
+#[tokio::test]
+async fn a_fence_set_by_a_committed_transfer_names_the_successor_while_the_view_still_shows_the_old_seat() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", true, false));
+    let r = rig_for(t, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
+    assert_eq!(r.env.topology.read().await.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the view still shows the old seat");
+    *r.switch.successor.lock().unwrap() = Some("mesh2.admin.1".into());
+    r.switch.fenced.store(true, Ordering::SeqCst);
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    assert!(matches!(r.env.run(&drive).await, DriveEnd::SeatLost(_)), "a fenced seat ends the drive SeatLost");
+    match next_within(&mut reader).await {
+        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh2.admin.1"), "the stream names the committed successor: {loss:?}"),
+        other => panic!("the reader ends with the seat loss, got {other:?}"),
+    }
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
 }
 

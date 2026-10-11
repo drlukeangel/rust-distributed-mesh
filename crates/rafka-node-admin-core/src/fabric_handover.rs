@@ -186,12 +186,13 @@ pub struct HandoverDoor {
     pub contacts: OnceLock<OwnContacts>,
     /// The handovers this node took part in.
     pub handovers: HandoverBook,
-    /// Fences this admin's Build log, naming why, when a committed transfer takes the seat from it.
+    /// Fences this admin's Build log, naming why and the new holder, when a committed transfer takes
+    /// the seat from it.
     pub fence_builds: FenceBuilds,
 }
 
-/// Sets the sticky fence of this admin's Build log; the argument names why.
-pub type FenceBuilds = Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+/// Sets the sticky fence of this admin's Build log: why, and the admin (path.name) the seat moved to.
+pub type FenceBuilds = Arc<dyn Fn(String, Option<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
     Some(HandoverBirth { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone()? })
@@ -540,8 +541,11 @@ impl HandoverDoor {
             return refuse("stale-epoch", format!("a later seat record is held: {held}"), Reply::RejectedStaleEpoch { expected: committed, current: held.epoch });
         }
         // The seat record moved: the Build log is fenced by that move itself, before anything else
-        // this admin does is answered, so no dispatch of the old seat follows the transfer.
-        (self.fence_builds)(format!("the seat is now {} {}", payload.successor.mesh, payload.successor.node_id)).await;
+        // this admin does is answered, so no dispatch of the old seat follows the transfer. The fence
+        // names the committed successor's path.name, resolved by its node id (it is a member of this
+        // view whether or not the view's seat flags have moved yet).
+        let successor = self.topology.read().await.members().find(|n| n.node_id == payload.successor.node_id).map(|n| n.name.to_string());
+        (self.fence_builds)(format!("the seat is now {} {}", payload.successor.mesh, payload.successor.node_id), successor).await;
         if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
             return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
         }
