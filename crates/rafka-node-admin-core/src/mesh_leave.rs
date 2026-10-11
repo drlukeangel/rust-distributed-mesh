@@ -455,17 +455,33 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
 /// The roster a leaving primary runs `LeaveMesh` over, and the owner's step receipts it read for it
 /// (mesh-leave.md, "Resume after the primary's loss", step 3): its `LeavingRoster` `roster` extended
 /// by every roster amendment. This Build's own facts (`own`) are gossip-fed and may not yet hold the
-/// amendment that admits `me`; gossip is never authority, so when `me` is not a birth of the roster
-/// `own` gives, the owner's Build facts are read (`fetch_owner`, the same read `validate_handoff`
-/// makes of the sender's) and the amendments and exit receipts are taken from both. What is read
-/// from the owner is used for this run and written nowhere.
+/// amendment that names `me` final primary, nor the lost primary's exit receipt recorded before it;
+/// gossip is never authority, so when the amendment chain `own` gives does not end at `me`, the
+/// owner's Build facts are read (`fetch_owner`, the same read `validate_handoff` makes of the
+/// sender's) and the amendments and exit receipts are taken from both. A chain that still does not
+/// end at `me` refuses the run by name. What is read from the owner is used for this run and
+/// written nowhere.
 pub async fn admission_roster<F, Fut>(roster: &[RosterBirth], own: &[BuildStepReceipt], operation: &str, me: &RosterBirth, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<Vec<BuildFact>, String>>,
 {
-    let _ = (me, fetch_owner);
-    Ok((amended_roster(roster, own, operation)?, Vec::new()))
+    let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
+    let first = accepted_row(own, operation, STEP_LEAVING_ROSTER).ok_or_else(|| format!("{operation}: no {STEP_LEAVING_ROSTER} receipt is recorded: the leave has no roster to run over"))??.final_primary;
+    let last = |steps: &[BuildStepReceipt]| amendment_chain(&first, steps, operation).map(|c| c.last().map(|a| a.final_primary.clone()).unwrap_or_else(|| first.clone()));
+    if &last(own)? == me {
+        return Ok((amended_roster(roster, own, operation)?, Vec::new()));
+    }
+    let known: Vec<BuildStepReceipt> = fetch_owner().await?.into_iter().filter_map(|f| if let BuildFact::Step(r) = f { Some(r) } else { None }).filter(|r| r.operation == operation || r.operation.starts_with(&format!("{operation}/"))).collect();
+    let all: Vec<BuildStepReceipt> = own.iter().cloned().chain(known.iter().cloned()).collect();
+    let final_primary = last(&all)?;
+    let amendments = amendment_chain(&first, &all, operation)?.len();
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-owner-build-facts", operation = %operation, me = %named(me), final_primary = %named(&final_primary), amendments, owner_receipts = known.len())
+        .in_scope(|| tracing::info!("this admin's own Build facts do not name it final primary: the owner's Build facts are read for the amendments"));
+    if &final_primary != me {
+        return Err(format!("{operation}: {} is not the final primary: the owner's Build facts name {} after {amendments} amendment(s), so no member is stopped", named(me), named(&final_primary)));
+    }
+    Ok((amended_roster(roster, &all, operation)?, known))
 }
 
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
