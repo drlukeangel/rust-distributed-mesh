@@ -1010,6 +1010,18 @@ impl RecoverySubmitter {
         }
     }
 
+    /// The durable runtime rows the tick watches births from, read once per tick. A refused read
+    /// leaves the tick watching the view's births only.
+    pub(crate) async fn durable_rows(&self) -> Vec<crate::storage::RuntimeRow> {
+        match self.nodes_storage.runtimes().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::info!(error = %e, "the durable runtime rows could not be read: this tick watches the view's births only");
+                Vec::new()
+            }
+        }
+    }
+
     /// One TRUE OFFLINE birth on the mesh primary's tick (node-recovery.md "Detection and proof"
     /// step 3, sequence step 1): the provider's inspection, named when its verdict for the birth
     /// changes, and the recovery submitted only on an exit proof. Any other verdict ends here.
@@ -4819,15 +4831,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let holds_seat = view.holds_mesh_seat(&mesh, &me_id);
                 // Every admin watches the same set, the seat holder or not, so a successor tickles on
                 // the window already running; the durable rows are read each tick (one point in time).
-                let durable = match recovery.nodes_storage.runtimes().await {
-                    Ok(rows) => {
-                        let planned = records.planned();
-                        durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
-                    }
-                    Err(e) => {
-                        tracing::info!(error = %e, "the durable runtime rows could not be read: this tick watches the view's births only");
-                        Vec::new()
-                    }
+                let durable = {
+                    let rows = recovery.durable_rows().await;
+                    let planned = records.planned();
+                    durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
                 };
                 let watched = watched_births(&view, &me_id, &mesh, &durable);
                 let silent = watched.values().map(|n| crate::offline::SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string() }).collect();
@@ -5446,7 +5453,8 @@ mod tests {
         }
     }
 
-    /// A nodes store whose point read of a runtime row is refused; every other row is the memory store's.
+    /// A nodes store whose reads of runtime rows (the point read and the whole set) are refused; every
+    /// other row is the memory store's.
     #[derive(Default)]
     struct RuntimeRowUnreadable(crate::storage::MemoryNodesStorage);
 
@@ -5456,7 +5464,7 @@ mod tests {
             self.0.put_runtime(row).await
         }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
-            self.0.runtimes().await
+            Err(crate::record_store::StorageError::Io { file: "runtimes".into(), reason: "Input/output error (os error 5)".into() })
         }
         async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
             Err(crate::record_store::StorageError::Unrecognised { file: format!("runtimes/{node_id}--{}.json", incarnation.0), reason: "format runtime/9 is not one this build reads".into() })
@@ -5592,6 +5600,36 @@ mod tests {
         assert!(attr("outcome").contains("exit-proof row") && attr("outcome").contains("No space left on device (os error 28)"), "the outcome names the row and the store's cause: {a:?}");
         assert_eq!(attr("build_id"), "", "nothing reached the fabric-primary: {a:?}");
         eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
+    /// births, those known only by a durable runtime row included; CLAUDE.md: an error state names
+    /// what failed and where): when the tick's read of the durable runtime rows is refused, the
+    /// refusal is one `rdm.node_admin.node.reject.via-runtime-rows-unreadable` span naming the
+    /// reader, the store and its cause, and the tick watches the view's births only. Must NOT happen:
+    /// the narrowed watch with no span (an info line only).
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_refused_read_of_the_durable_runtime_rows_is_spanned_and_the_tick_watches_the_views_births() {
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic)] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let provider = Arc::new(Answers { domain: String::new(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() });
+        let (recovery, _, _) = recovery_of(&view, book, provider, Arc::new(RuntimeRowUnreadable::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let capture = crate::span_capture::Capture::new("i143-3051-runtime-rows-unreadable");
+        let rows = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            recovery.durable_rows().await
+        };
+        assert!(rows.is_empty(), "no row is read from a refused store: the view's births only");
+        let spans = capture.named("rdm.node_admin.node.reject.via-runtime-rows-unreadable");
+        assert_eq!(spans.len(), 1, "the refused read is spanned: {spans:?}");
+        let a = &spans[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("reader"), attr("store"), attr("error")), ("mesh2.admin.1".to_string(), "nodes.storage".to_string(), "runtimes: Input/output error (os error 5)".to_string()), "{a:?}");
+        eprintln!("span rdm.node_admin.node.reject.via-runtime-rows-unreadable trace_id={} {a:?}", spans[0].trace_id);
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 3: the provider is asked "about the
