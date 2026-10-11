@@ -65,10 +65,12 @@ use std::time::{Duration, Instant};
 /// One step of creating a node, in the order of [`CreateStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateStep {
-    /// Mint the birth's node id, incarnation and deployment id; the create then claims its name at
-    /// the writer of its mesh's rows before anything is launched (`crate::node_rows::NodeRows::claim`).
+    /// Mint the birth's node id, incarnation and deployment id. Its receipt names the node id the
+    /// name claim at the start of `PrepareStorage` is made for.
     AllocateIdentity,
-    /// Ensure the node's transport key in its data directory and hand a node-admin its held runtime rows.
+    /// Claim the birth's name at the writer of its mesh's rows (`crate::node_rows::NodeRows::claim`),
+    /// then ensure the node's transport key in its data directory and hand a node-admin its held
+    /// runtime rows.
     PrepareStorage,
     /// Record that the provider needs nothing per node: the host network namespace is shared and a container provider's network exists per fabric.
     PrepareNetwork,
@@ -1298,19 +1300,8 @@ impl DeploymentPipeline<'_> {
         }
         let rows = self.sink.node_rows();
         let id: Identity = self
-            .step(run, CreateStep::AllocateIdentity.name(), async {
-                let id = Identity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() };
-                // The name claim, by the writer of the mesh's rows, after the node id is minted and
-                // before anything is launched (lifecycles/node-create.md step 1): refused, nothing is.
-                if let Some(rows) = &rows {
-                    rows.claim(&req.node, &id.node_id, &run_operation)
-                        .await
-                        .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
-                }
-                Ok(id)
-            })
+            .step(run, CreateStep::AllocateIdentity.name(), async { Ok(Identity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() }) })
             .await?;
-        *claimed = Some(id.node_id.clone());
         // The node binds port 0 and the operating system assigns the port; the address it
         // reports at its join is the one this admin publishes for the birth.
         let bind_ip = self
@@ -1325,7 +1316,19 @@ impl DeploymentPipeline<'_> {
             Some(d) => d,
             None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
+        let claiming = &mut *claimed;
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
+            // The name claim, by the writer of the mesh's rows (lifecycles/node-create.md step 1):
+            // before anything is prepared or launched for the birth (refused, nothing is), and after
+            // the AllocateIdentity receipt names its node id, so an executor lost at any point leaves
+            // only a claim that receipt names: a rerun reuses the identity and its claim holds the row
+            // (`Claimed::HeldByNode`), or decides afresh and withdraws it (`withdraw_earlier`).
+            if let Some(rows) = &rows {
+                rows.claim(&req.node, &id.node_id, &run_operation)
+                    .await
+                    .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
+                *claiming = Some(id.node_id.clone());
+            }
             // An inherited data dir keeps its key: it is loaded, never minted; both on the blocking pool.
             let key = if inherits {
                 let dir = data_dir.clone();
@@ -1341,6 +1344,9 @@ impl DeploymentPipeline<'_> {
             Ok(key)
         })
         .await?;
+        // A PrepareStorage an earlier run of this operation receipted made the claim: a failure from
+        // here withdraws it as well.
+        *claimed = Some(id.node_id.clone());
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;

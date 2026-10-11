@@ -860,10 +860,10 @@ mod writer {
     }
 
     /// CONTRACT: a `node.create` whose name another live node's row holds launches nothing
-    /// (lifecycles/node-create.md step 1): the mesh-primary claims the name after `AllocateIdentity`
-    /// and before `DeployRuntime`, the store adapter refuses it `NameHeld` naming the holder, the
-    /// create fails at `AllocateIdentity` saying so, the provider is never asked to spawn, and the
-    /// holder's row stands. One `via-node-row` span, `moment` `claim`, outcome `name-held`.
+    /// (lifecycles/node-create.md step 1): the mesh-primary claims the name at the start of
+    /// `PrepareStorage`, before `DeployRuntime`, the store adapter refuses it `NameHeld` naming the
+    /// holder, the create fails at `PrepareStorage` saying so, the provider is never asked to spawn,
+    /// and the holder's row stands. One `via-node-row` span, `moment` `claim`, outcome `name-held`.
     #[test]
     fn a_create_whose_name_another_live_row_holds_launches_nothing() {
         let cap = capture();
@@ -877,7 +877,7 @@ mod writer {
             (err, provider.spawned.load(Ordering::SeqCst), storage.node_row_at(&held.name).await.unwrap(), held)
         });
         let err = err.expect_err("the create is refused");
-        assert!(err.contains("AllocateIdentity") && err.contains(held.node_id.as_str()), "the create fails at AllocateIdentity naming the holder: {err}");
+        assert!(err.contains("PrepareStorage") && err.contains(held.node_id.as_str()), "the create fails at PrepareStorage naming the holder: {err}");
         assert_eq!(spawned, 0, "nothing is launched");
         assert_eq!(row, Some(held.clone()), "the holder's row stands");
         let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
@@ -1004,15 +1004,18 @@ mod writer {
             let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
             let provider = Counted::default();
             let builds = MemoryBuildStateAdapter::new();
+            let (build, other) = (BuildId("build-node-rows-5".into()), BuildId("build-node-rows-6".into()));
+            for id in [&build, &other] {
+                let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 };
+                rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
+            }
             // Lost before the AllocateIdentity receipt of attempt 1.
             let lost = LostAt { inner: &builds, step: "AllocateIdentity" };
-            let build = BuildId("build-node-rows-5".into());
             let lost_before_receipt = create_attempt(&records, &provider, &lost, &build, "mesh1.rpc.5", 1).await;
             let rerun_after_loss = create_attempt(&records, &provider, &builds, &build, "mesh1.rpc.5", 2).await;
             // Lost after the claim: the identity receipt names X, the store holds X's claim row.
             let x = NodeId::mint();
             let identity = serde_json::json!({ "node_id": x, "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": rafka_node_admin_core::model::DeploymentId::mint() });
-            let other = BuildId("build-node-rows-6".into());
             rafka_node_admin_core::build_state::BuildStateAdapter::append_step_receipt(
                 &builds,
                 &rafka_node_admin_core::build_state::BuildStepReceipt { build_id: other.clone(), attempt: 1, operation: "create-node:mesh1.rpc.6".into(), step: "AllocateIdentity".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(identity), executor: None },
@@ -1056,7 +1059,7 @@ mod writer {
             (refused, p1.spawned.load(Ordering::SeqCst), fp_err, p2.spawned.load(Ordering::SeqCst))
         });
         let refused = refused.expect_err("another mesh's primary is refused");
-        assert!(refused.contains("AllocateIdentity") && refused.contains("mesh2.admin.1"), "refused at the claim, naming the fabric-primary as the writer: {refused}");
+        assert!(refused.contains("PrepareStorage") && refused.contains("mesh2.admin.1"), "refused at the claim, naming the fabric-primary as the writer: {refused}");
         assert_eq!(spawned_refused, 0, "nothing is launched");
         assert!(fp_err.expect_err("the spawn fails").contains("DeployRuntime"), "the fabric-primary's claim passes and its create reaches DeployRuntime");
         assert_eq!(spawned_fp, 1);

@@ -13,8 +13,9 @@
 //! names the mesh's primary, or the fabric-primary for a mesh with none), from the exact record it
 //! acts on:
 //!
-//! - `node.create`: the name is claimed after `AllocateIdentity` mints the node id and before
-//!   anything is launched ([`NodeRows::claim`]): insert-and-fail inside the store adapter,
+//! - `node.create`: the name is claimed at the start of `PrepareStorage`, once the
+//!   `AllocateIdentity` receipt names the node id, and before anything is prepared or launched
+//!   ([`NodeRows::claim`]): insert-and-fail inside the store adapter,
 //!   `NameHeld { by }` and nothing launched. The row's config is seeded from the previous row at
 //!   the `path.name` (a `Deleted` row) or the `<name>.old` row. A create that fails after its claim
 //!   withdraws it ([`NodeRows::withdraw`]), the holder's own key only.
@@ -218,10 +219,11 @@ impl NodeRows {
         }
     }
 
-    /// `node.create`'s name claim (lifecycles/node-create.md step 1): after `AllocateIdentity`
-    /// minted `node_id` and before anything is launched, the writer of the mesh's rows puts the
-    /// birth's row at `name`, status `Pending`, its config seeded from the previous row at the
-    /// `path.name` (a `Deleted` row) or the `<name>.old` row. The store adapter's insert-and-fail
+    /// `node.create`'s name claim (lifecycles/node-create.md step 1): at the start of `PrepareStorage`,
+    /// once the `AllocateIdentity` receipt names `node_id` and before anything is prepared or
+    /// launched for the birth, the writer of the mesh's rows puts the birth's row at `name`, status
+    /// `Pending`, its config seeded from the previous row at the `path.name` (a `Deleted` row) or the
+    /// `<name>.old` row. The store adapter's insert-and-fail
     /// refuses a name another node's live row holds, `NameHeld { by }`, and nothing is written. A row
     /// the node holds already is left as it is. One `via-node-row` span, `moment` `claim`.
     pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str) -> Result<Claimed, RowRefused> {
