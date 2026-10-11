@@ -184,7 +184,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
         }
         // Downward exact-node operations reach the subject itself (`self_subject`); an authority
         // that is not the subject is not the receiver they name.
-        StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } => {
+        StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } | StatusRequest::ApplyNodeName { .. } => {
             (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, None)
         }
         // Commands and completions are answered before the decision (`StatusAuthority::apply`).
