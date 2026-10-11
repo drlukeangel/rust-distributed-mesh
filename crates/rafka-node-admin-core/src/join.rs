@@ -125,6 +125,9 @@ pub enum Standing {
     Deployed {
         /// The row's name: the accepted digest is canonicalized to it before anything is installed.
         name: PathName,
+        /// The authority holds the birth (a later join, reconciled to its row), rather than
+        /// admitting its first start under the create spec's name.
+        held: bool,
     },
     /// The node is deployed here and the digest disagrees.
     Mismatch(Mismatch),
@@ -169,7 +172,7 @@ impl Joins {
     pub fn standing(&self, d: &MeshDigest) -> Standing {
         if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
             return match s.deployed.verify(d) {
-                Ok(()) => Standing::Deployed { name: s.deployed.name.clone() },
+                Ok(()) => Standing::Deployed { name: s.deployed.name.clone(), held: s.deployed.last_accepted_name.is_some() },
                 Err(m) => Standing::Mismatch(m),
             };
         }
@@ -252,14 +255,18 @@ impl JoinDoor {
                     .in_scope(|| tracing::warn!("the reported digest disagrees with the deployment"));
                 JoinReply::JoinMismatch { field: m.field.into(), deployed: m.deployed, reported: m.reported }
             }
-            Standing::Deployed { name } => {
+            Standing::Deployed { name, held } => {
                 // Canonicalized to the row's name before anything is issued or installed: the
                 // reported name, when it is the last accepted one, is never admitted (R-JN1).
                 d.node.name = name;
                 span.record("admitted_as", tracing::field::display(&d.node.name));
-                // The row's config, handed beside its name: read before anything is installed, so
-                // a row that cannot be read installs nothing.
-                let config = match (self.row)(d.node.name.clone()).await {
+                // A held birth's row config, handed beside its name: read before anything is
+                // installed, so a row that cannot be read installs nothing. A first start is
+                // admitted under its create spec's name (R-JN1 item 6): the row at that path.name,
+                // if any, is a predecessor's (a recovery's exited node), which the birth's own
+                // claim takes over after it joins (node_rows.rs `claim`), so it is not read here.
+                let row = if held { (self.row)(d.node.name.clone()).await } else { Ok(None) };
+                let config = match row {
                     Ok(None) => None,
                     Ok(Some(row)) if row.node_id == d.node.node_id => Some(row.config),
                     Ok(Some(row)) => {
@@ -471,7 +478,7 @@ mod tests {
         let dep = deployed();
         let rx = joins.expect(dep.clone());
         let d = digest_of(&dep);
-        assert_eq!(joins.standing(&d), Standing::Deployed { name: dep.name.clone() });
+        assert_eq!(joins.standing(&d), Standing::Deployed { name: dep.name.clone(), held: false });
         joins.report(&d);
         assert_eq!(rx.borrow().as_ref().map(|d| d.node.transport_addr), Some(d.node.transport_addr), "the address the node reported is the one the admin publishes");
     }
