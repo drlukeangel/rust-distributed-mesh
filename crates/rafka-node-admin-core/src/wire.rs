@@ -142,6 +142,7 @@ enum WireAction {
     Drain { path: PathName, from_incarnation: IncarnationId },
     Stop { path: PathName, from_incarnation: IncarnationId },
     Start { path: PathName, from_incarnation: IncarnationId },
+    Delete { path: PathName, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -196,6 +197,7 @@ impl From<&AttemptAction> for WireAction {
             AttemptAction::Drain { path, from_incarnation } => Self::Drain { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Delete { path, from_incarnation } => Self::Delete { path: path.clone(), from_incarnation: from_incarnation.clone() },
         }
     }
 }
@@ -207,6 +209,7 @@ impl From<WireAction> for AttemptAction {
             WireAction::Drain { path, from_incarnation } => Self::Drain { path, from_incarnation },
             WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
             WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
+            WireAction::Delete { path, from_incarnation } => Self::Delete { path, from_incarnation },
         }
     }
 }

@@ -145,6 +145,14 @@ impl ControlPlane {
 
     /// [`ControlPlane::submit`] under `span`, which names the surface the change came through.
     pub async fn submit_in(&self, span: tracing::Span, route: &'static str, change: TopologyChange) -> Result<Opened, Refusal> {
+        // `node.delete` of the parked predecessor a replacement left at `<path>.old`: the topology
+        // never names that path, so the delete is the next attempt of the accepted Build, fenced to
+        // the exact parked birth (node-decommission.md).
+        if let TopologyChange::RemoveNode { node } = &change {
+            if node.old {
+                return self.open_attempt_in(span, route, AttemptReason::Delete, node.clone(), ActionKind::Delete, None).await;
+            }
+        }
         // The span is entered by the future on each poll, never by a guard held across an await
         // (a guard stays entered on the worker while the task is parked). A refusal is reported
         // beside the request span, in the caller's span.
@@ -236,7 +244,10 @@ impl ControlPlane {
         async {
             self.authority(route).await?;
             let current = self.current_settled().await?;
-            if !current.topology.contains(&path) {
+            // The topology never names a `.old` path: the parked predecessor a replacement left there
+            // is found in the view alone, and only a delete acts on it.
+            let parked_old = kind == ActionKind::Delete && path.old;
+            if (kind == ActionKind::Delete) != path.old || (!parked_old && !current.topology.contains(&path)) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -273,13 +284,17 @@ impl ControlPlane {
                 let unheard = matches!(n.status, crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
                 // A start is the transition out of Leaving, and only for a parked process; every other action needs a live node.
                 let startable = kind == ActionKind::Start && n.parked;
-                if (kind == ActionKind::Start && !startable) || (kind != ActionKind::Start && !n.status.is_live() && !(replace && unheard)) {
+                // A delete acts on the parked predecessor, or on one whose exit is already proven.
+                let deletable = kind == ActionKind::Delete && (n.parked || n.status == crate::model::NodeStatus::Dead);
+                let needs_live = !matches!(kind, ActionKind::Start | ActionKind::Delete);
+                if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !n.status.is_live() && !(replace && unheard)) {
                     let reason = match kind {
                         ActionKind::Replace => "the node's status is neither live nor an unheard birth a replacement may retire",
                         ActionKind::Restart => "a restart needs a live node",
                         ActionKind::Drain => "a drain needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
                         ActionKind::Start => "a start needs a parked node",
+                        ActionKind::Delete => "a delete of a .old path needs the parked predecessor or one whose exit is proven",
                     };
                     return Err(not_live(&outer, route, &path, n.status, reason));
                 }
@@ -304,6 +319,7 @@ impl ControlPlane {
                 ActionKind::Drain => AttemptAction::Drain { path, from_incarnation },
                 ActionKind::Stop => AttemptAction::Stop { path, from_incarnation },
                 ActionKind::Start => AttemptAction::Start { path, from_incarnation },
+                ActionKind::Delete => AttemptAction::Delete { path, from_incarnation },
             };
             self.open_with(&current, reason, action, route, &outer, &node_name, span.clone()).await
         }
@@ -343,6 +359,8 @@ pub enum ActionKind {
     Stop,
     /// `start-node:<path>`.
     Start,
+    /// `delete-node:<path>.old`.
+    Delete,
 }
 
 /// The restart/replace refusal `node-not-live`, spanned beside the request with the node, the

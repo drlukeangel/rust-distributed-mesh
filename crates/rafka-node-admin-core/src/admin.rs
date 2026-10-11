@@ -1127,7 +1127,7 @@ pub async fn reconcile_drift(
         authority = %authority.name,
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
-        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start" }).unwrap_or("none"),
+        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Delete { .. } => "delete" }).unwrap_or("none"),
         exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
         exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
     );
@@ -2049,6 +2049,24 @@ impl AdminRunner {
         Ok(())
     }
 
+    /// `delete-node:<path>.old` (node-decommission.md): the parked birth `from` a replacement left at
+    /// `node`, fenced by incarnation, ended with the provider's exact Exited proof and deleted
+    /// (`DeploymentPipeline::delete_parked`); what follows its proven exit follows.
+    async fn delete_parked(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId) -> Result<(), String> {
+        let seen = self.topology.read().await.node(node).cloned();
+        let (record, handle) = match seen {
+            Some(n) if n.incarnation_id.as_ref() == Some(from) => self.handle_for(&n).await?,
+            Some(n) => return Err(format!("delete-node:{node} is fenced to birth {}, the view holds {} at that path", from.0, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("none"))),
+            None => self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from)).ok_or_else(|| format!("delete-node:{node}: birth {} is not in this admin's view and no runtime handle of it is held", from.0))?,
+        };
+        let template = self.template_for(node.kind, &node.mesh).await?;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind: RetireKind::Removal };
+        self.pipeline(&template).delete_parked(&req).await.map_err(|e| e.to_string())?;
+        self.after_exit(&record, RetireKind::Removal);
+        self.handles.lock().unwrap().remove(node);
+        Ok(())
+    }
+
     /// What this admin holds for the start of the parked `record`: the deployment its `JoinNode` is
     /// verified against, as the birth was admitted.
     fn deployed_for(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
@@ -2386,6 +2404,10 @@ impl AdminRunner {
             BuildOperation::StopNode { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 self.standalone(build_id, attempt, node, from_incarnation, true).instrument(span).await
+            }
+            BuildOperation::DeleteNode { node, from_incarnation } => {
+                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
+                self.delete_parked(build_id, attempt, node, from_incarnation).instrument(span).await
             }
             BuildOperation::RetireNode { node } => {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);

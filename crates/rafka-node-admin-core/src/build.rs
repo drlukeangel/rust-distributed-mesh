@@ -228,6 +228,15 @@ pub enum BuildOperation {
         /// The birth started.
         from_incarnation: IncarnationId,
     },
+    /// Delete the parked exact birth `from_incarnation` a replacement left at `node`, a `.old` path
+    /// (node-decommission.md): its stop steps are done; `NodeDeleting`, the provider's exact Exited
+    /// proof, `NodeDeleted`, and `Complete` naming the birth. Storage is kept.
+    DeleteNode {
+        /// The parked node's `.old` path.
+        node: PathName,
+        /// The birth deleted.
+        from_incarnation: IncarnationId,
+    },
     /// Remove the logical node through the retire pipeline; what happens to its storage is the
     /// accepted Build's StorageMeta for the path, decided there.
     RetireNode {
@@ -256,6 +265,7 @@ impl BuildOperation {
             Self::DrainNode { node, .. } => format!("drain-node:{node}"),
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::StartNode { node, .. } => format!("start-node:{node}"),
+            Self::DeleteNode { node, .. } => format!("delete-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }

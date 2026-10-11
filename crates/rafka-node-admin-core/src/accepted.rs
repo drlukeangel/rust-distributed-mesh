@@ -235,6 +235,15 @@ pub enum AttemptAction {
         /// The birth started.
         from_incarnation: IncarnationId,
     },
+    /// Delete the parked exact birth a replacement left at `<path>.old` (node-decommission.md): its
+    /// stop steps are done; the provider's exact Exited is the proof, then `NodeDeleted` and its
+    /// Deleted row. The topology never names a `.old` path: this action is its only door.
+    Delete {
+        /// The node's `.old` path.
+        path: PathName,
+        /// The birth deleted.
+        from_incarnation: IncarnationId,
+    },
 }
 
 fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
@@ -384,10 +393,14 @@ impl ReplaceProgress {
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
         // A standalone drain or stop: its operation's `Complete` receipt names the exact birth it
         // completed for; its first step's receipt says the operation began.
-        if let Some(AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation }) = &build.action {
+        if let Some(
+            AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation } | AttemptAction::Delete { path, from_incarnation },
+        ) = &build.action
+        {
             let (operation, first) = match &build.action {
                 Some(AttemptAction::Drain { .. }) => (format!("drain-node:{path}"), "DrainNode"),
                 Some(AttemptAction::Start { .. }) => (format!("start-node:{path}"), "StartNode"),
+                Some(AttemptAction::Delete { .. }) => (format!("delete-node:{path}"), "NodeDeleting"),
                 _ => (format!("stop-node:{path}"), "StopNode"),
             };
             let birth = serde_json::to_value(from_incarnation).unwrap_or_default();
@@ -425,13 +438,17 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
     // the view holds the exact birth, or while its receipts say it began (a stop's view drops the
     // Leaving birth), and not once its `Complete` receipt names the birth.
-    if let Some(AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation }) = action {
+    if let Some(
+        AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation } | AttemptAction::Delete { path, from_incarnation },
+    ) = action
+    {
         let held = observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
         if !replace_progress.finished && (held || replace_progress.started) {
             let (node, from_incarnation) = (path.clone(), from_incarnation.clone());
             ops.push(match action {
                 Some(AttemptAction::Drain { .. }) => BuildOperation::DrainNode { node, from_incarnation },
                 Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, from_incarnation },
+                Some(AttemptAction::Delete { .. }) => BuildOperation::DeleteNode { node, from_incarnation },
                 _ => BuildOperation::StopNode { node, from_incarnation },
             });
         }
@@ -904,6 +921,57 @@ mod tests {
         later.nodes.iter_mut().find(|x| x.name == path).unwrap().incarnation_id = Some(IncarnationId::mint());
         assert_eq!(plan(&cur, &later, Some(&drain)).operations, vec![]);
         assert_eq!(plan(&cur, &later, Some(&stop)).operations, vec![]);
+    }
+
+    /// CONTRACT (node-decommission.md): the delete of the parked predecessor at `<path>.old` plans its
+    /// one operation `delete-node:<path>.old` while the view holds that exact birth there, or once its
+    /// `NodeDeleting` receipt says it began (its NodeDeleted drops it from the view), and nothing once
+    /// its `Complete` names the birth; it never plans a create or repair of the path's successor.
+    #[test]
+    fn a_delete_of_a_parked_old_birth_plans_only_its_operation_until_its_complete_names_the_birth() {
+        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
+        let cur = t(&[("mesh1", 2, 3)]);
+        let path: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        let mut held = mn();
+        let from = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
+        let mut parked = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().clone();
+        parked.name = path.clone();
+        parked.status = NodeStatus::Leaving;
+        parked.parked = true;
+        held.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.2").unwrap().incarnation_id = Some(IncarnationId::mint());
+        held.nodes.push(parked);
+        held.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.3");
+        let delete = AttemptAction::Delete { path: path.clone(), from_incarnation: from.clone() };
+        let op = vec![BuildOperation::DeleteNode { node: path.clone(), from_incarnation: from.clone() }];
+        assert_eq!(plan(&cur, &held, Some(&delete)).operations, op, "only the delete, never a repair of mesh1.rpc.3");
+        assert_eq!(op[0].key(), "delete-node:mesh1.rpc.2.old");
+        let step = |step: &str, birth: Option<&IncarnationId>| BuildStepReceipt {
+            build_id: crate::build::BuildId("b1".into()),
+            attempt: 9,
+            operation: format!("delete-node:{path}"),
+            step: step.into(),
+            outcome: StepOutcome::Complete,
+            output: birth.map(|b| serde_json::json!({ "incarnation": b })),
+            executor: None,
+        };
+        let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
+            build_id: crate::build::BuildId("b1".into()),
+            topology: cur.clone(),
+            submitted_change: None,
+            submitted_at_ms: 0,
+            state: BuildState::Pending,
+            attempt: 9,
+            executor: None,
+            steps,
+            last_failure: None,
+            reason: AttemptReason::Delete,
+            action: Some(delete.clone()),
+        };
+        let gone = mn();
+        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, vec![], "the view never held the parked birth and nothing began");
+        assert_eq!(plan_for_build(&build(vec![step("NodeDeleting", None)]), &gone).operations, op, "begun, the birth gone from the view: still owed");
+        assert_eq!(plan_for_build(&build(vec![step("NodeDeleting", None), step("Complete", Some(&from))]), &gone).operations, vec![], "completed for this birth");
+        assert_eq!(plan_for_build(&build(vec![step("NodeDeleting", None), step("Complete", Some(&IncarnationId::mint()))]), &gone).operations, op, "another birth's Complete is not this delete's");
     }
 
     /// CONTRACT: a standalone stop is planned until its `Complete` receipt names the exact birth; after it,

@@ -61,6 +61,8 @@ pub enum AttemptReason {
     Stop,
     /// A standalone start of a parked birth was requested (`start-node:<path>`).
     Start,
+    /// The delete of a parked birth at its `.old` path was requested (`delete-node:<path>.old`).
+    Delete,
 }
 
 impl AttemptReason {
@@ -75,6 +77,7 @@ impl AttemptReason {
             Self::Drain => "drain",
             Self::Stop => "stop",
             Self::Start => "start",
+            Self::Delete => "delete",
         }
     }
 }
@@ -557,6 +560,7 @@ fn describe_open(o: &AttemptOpened) -> String {
         Some(crate::accepted::AttemptAction::Drain { path, from_incarnation }) => format!("drain of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Delete { path, from_incarnation }) => format!("delete of {path} from {from_incarnation}"),
         None => "no fenced action".to_string(),
     };
     format!("{} ({action}, opened by {})", o.reason.as_str(), o.opened_by)

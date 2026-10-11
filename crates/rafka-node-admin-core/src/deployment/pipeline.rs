@@ -1594,6 +1594,46 @@ impl DeploymentPipeline<'_> {
         Ok(())
     }
 
+    /// `node.delete` of the parked birth `req.node` a replacement left at its `.old` path
+    /// (node-decommission.md), as ONE operation `delete-node:<path>.old`:
+    ///
+    /// ```text
+    /// NodeDeleting -> TerminateRuntime (the provider's exact Exited) -> NodeDeleted -> Complete (the birth)
+    /// ```
+    ///
+    /// Its stop steps are done ("For a crashed process those stop steps are already done", and a
+    /// parked one already sent its `stopped`): it is sent no command. Only the provider's matching
+    /// Exited is the proof, and the executor publishes NodeDeleted from it. Storage is kept: "It
+    /// releases node.id and name, not storage". The lifecycle events name the birth as its own
+    /// digest does (`<path>`), by its exact `(node.id, incarnation)`.
+    pub async fn delete_parked(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt, false);
+        async {
+            let name = &req.node.name;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("delete-node:{name}")).await;
+            let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?;
+            let op = LifecycleOp {
+                build_id: req.build_id.to_string(),
+                attempt: req.attempt,
+                operation: run.operation.clone(),
+                node_id: req.node.node_id.clone(),
+                incarnation: birth,
+                name: PathName { old: false, ..name.clone() },
+                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+            };
+            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.deleting(&op).await;
+            self.terminate_step(&mut run, &req.node, &req.handle).await?;
+            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.deleted(&op).await;
+            self.complete_for_birth(&mut run, &req.node).await
+        }
+        .instrument(span)
+        .await
+    }
+
     /// Retire `req.node` through every step.
     pub async fn retire(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;

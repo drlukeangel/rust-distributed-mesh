@@ -5,7 +5,8 @@
 //! it holds (its topology), a blind put of the `path.name` key, and never reads the store on that
 //! write. A row is written at two moments:
 //!
-//! - `node.delete` (`retire-node:<path>`), read off the step's `Step` frame (the one the executor
+//! - `node.delete` (`retire-node:<path>`, or `delete-node:<path>.old` for a replacement's parked
+//!   predecessor, whose row is at `<path>.old`), read off the step's `Step` frame (the one the executor
 //!   streams, or its receipt read back by a fabric-primary that took the seat since): at
 //!   `NodeDeleted` the row is written with status `Deleted`, the record and its config kept. The
 //!   record is the one held when the executor announced the removal (`NodeDeleting`): the node is
@@ -77,7 +78,7 @@ impl NodeRows {
             // The record of the node an operation acts on, held from its first step while every view
             // still holds it live at its path.name: a removal's (or a recovery's) `NodeDeleting`, a
             // replace's `DrainNode` (its stop then drops the parked predecessor from every book).
-            ("retire-node" | "replace-node", "NodeDeleting") | ("replace-node", "DrainNode") => {
+            ("retire-node" | "replace-node" | "delete-node", "NodeDeleting") | ("replace-node", "DrainNode") => {
                 // A receipt read after the step names its node by id: by then the view may hold a
                 // replace's successor at the path.name. A `DrainNode` receipt names none, and the
                 // rename's receipt decides whose record it is (`moved_to_old`).
@@ -89,7 +90,9 @@ impl NodeRows {
                     self.announced.lock().unwrap().entry(operation.to_string()).or_insert(n);
                 }
             }
-            ("retire-node", "NodeDeleted") => self.deleted(me, view, operation, &name, subject).await,
+            // `node.delete` of a parked predecessor: its operation names its `.old` path, where its
+            // row is (node-decommission.md step 3).
+            ("retire-node" | "delete-node", "NodeDeleted") => self.deleted(me, view, operation, &name, subject).await,
             // A replace: the predecessor gives up its path.name (its row moves to `<path>.old`). It
             // stays parked there; a recovery's departure is written there.
             ("replace-node", "RenamePredecessor") => self.moved_to_old(me, view, operation, &name, subject).await,
