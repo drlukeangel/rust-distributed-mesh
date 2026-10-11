@@ -454,16 +454,13 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
 
 /// The provider's exact Exited of the lost final primary `lost`, whose runtime was admitted as
 /// `runtime` (mesh-leave.md, "Resume after the primary's loss", step 1), proven from the durable
-/// runtime row this admin stored for that birth (`rows`, the blind put every admin makes the moment
-/// it first holds a birth): the same runtime by fingerprint, adopted in this admin's provider domain,
-/// and that runtime's own terminal status. A birth no row names, another runtime, or a runtime not
-/// proven exited proves nothing.
-pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::DeploymentProvider, rows: &[crate::storage::RuntimeRow], lost: &RosterBirth, runtime: &RuntimeProof) -> Result<TerminalReceipt, String> {
+/// runtime row this admin stored for that birth (`row`, the point read of the blind put every admin
+/// makes the moment it first holds a birth): the same runtime by fingerprint, adopted in this
+/// admin's provider domain, and that runtime's own terminal status. A birth with no row, another
+/// runtime, or a runtime not proven exited proves nothing.
+pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, lost: &RosterBirth, runtime: &RuntimeProof) -> Result<TerminalReceipt, String> {
     let named = format!("{} {}", lost.node, lost.incarnation_id);
-    let row = rows
-        .iter()
-        .find(|r| r.node_id.to_string() == lost.node_id && r.incarnation_id.0 == lost.incarnation_id)
-        .ok_or_else(|| format!("no durable runtime row of {named} is held ({} rows): its runtime is unknown", rows.len()))?;
+    let row = row.ok_or_else(|| format!("no durable runtime row of {named} was ever written here: its runtime is unknown"))?;
     if &RuntimeProof::of(&row.runtime) != runtime {
         return Err(format!("the durable runtime row of {named} names the runtime {:?}, not the one admitted for it {runtime:?}", RuntimeProof::of(&row.runtime)));
     }
@@ -477,17 +474,17 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
 
 /// The fabric-primary's resume after the leaving mesh's final primary `admitted.final_primary` was
 /// lost and `held` (runtime `held_runtime`) is the mesh's node-admin primary now (mesh-leave.md,
-/// "Resume after the primary's loss", steps 1-2): the lost birth's exact Exited, proven from the
-/// durable runtime rows `rows` unless the Build already holds it, is recorded as its roster receipt,
+/// "Resume after the primary's loss", steps 1-2): the lost birth's exact Exited, proven from its
+/// durable runtime row `row` unless the Build already holds it, is recorded as its roster receipt,
 /// then `RosterAmended` admits `held`. A lost primary not proven exited refuses the resume by name
 /// and nothing is amended (R-D1).
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, rows: &[crate::storage::RuntimeRow], key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
+pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
     let operation = key.operation.as_str();
     let lost = &admitted.final_primary;
     let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
     if !exit_receipts(&steps, operation, std::slice::from_ref(lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
-        let terminal = prove_predecessor_exit(provider, rows, lost, &admitted.final_runtime).await.map_err(|reason| {
+        let terminal = prove_predecessor_exit(provider, row, lost, &admitted.final_runtime).await.map_err(|reason| {
             span_unproven(key, lost, &reason);
             format!("{operation} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost.node, lost.incarnation_id, held.node, held.incarnation_id)
         })?;

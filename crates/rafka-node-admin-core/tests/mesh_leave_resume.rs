@@ -860,9 +860,9 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
         let _in_root = root.enter();
         let admitted = |steps: &[BuildStepReceipt]| admitted_of(steps, &outer).unwrap().unwrap();
         let adm = admitted(&builds.read_build(&build_id).await.unwrap().steps);
-        let without_row = resume_after_loss(&builds, &fleet, &[], &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
+        let without_row = resume_after_loss(&builds, &fleet, None, &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
         let before = admitted(&builds.read_build(&build_id).await.unwrap().steps);
-        let with_row = resume_after_loss(&builds, &fleet, std::slice::from_ref(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
+        let with_row = resume_after_loss(&builds, &fleet, Some(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
         let after = admitted(&builds.read_build(&build_id).await.unwrap().steps);
         (without_row, with_row, before, after, trace_id)
     });

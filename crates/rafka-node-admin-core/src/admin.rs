@@ -933,6 +933,26 @@ fn held_births(book: &DigestBook, fabric: &FabricId, me: &NodeId) -> Vec<MeshDig
     book.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
 }
 
+/// The durable runtime row of the exact birth `(node_id, incarnation)` of `node`, read by its key
+/// (`NodesStorage::runtime`, the point read; never a list of every row searched for it), with
+/// `reader` naming the admin that reads it. A row never written (`Ok(None)`) and a store that could
+/// not be read (`Err`, naming the store's cause) are two facts, each on its own span.
+pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, node: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, String> {
+    match nodes.runtime(node_id, incarnation).await {
+        Ok(Some(row)) => Ok(Some(row)),
+        Ok(None) => {
+            tracing::info_span!("rdm.node_admin.node.reject.via-no-runtime-row", reader = %reader, node = %node, node_id = %node_id, incarnation_id = %incarnation.0, store = "nodes.storage")
+                .in_scope(|| tracing::info!("no durable runtime row of this birth was ever written here"));
+            Ok(None)
+        }
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.node.reject.via-runtime-row-unreadable", reader = %reader, node = %node, node_id = %node_id, incarnation_id = %incarnation.0, store = "nodes.storage", error = %e)
+                .in_scope(|| tracing::info!("the durable runtime row of this birth could not be read"));
+            Err(format!("the durable runtime row of {node} ({node_id}) at {} could not be read from {reader}'s nodes.storage: {e}", incarnation.0))
+        }
+    }
+}
+
 /// The provider's proof that the exact birth a digest or a durable row names exited: the runtime
 /// fact is the digest's (when it is of this birth) or the row's, adopted in this provider's control
 /// domain and inspected, and only the runtime's own terminal status counts. `Ok` carries the exit
@@ -1333,9 +1353,15 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
             return Err(format!("{executor} holds no incarnation id to inspect"));
         };
         let held_row = self.book.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
-        let durable = self.nodes.runtimes().await.map_err(|e| format!("the durable runtime rows could not be read: {e}"))?;
-        let row = durable.iter().find(|r| r.node_id == n.node_id && r.incarnation_id == incarnation);
-        let (code, source) = crate::admin::exit_proof_of(&*self.provider, &held_row, row).await?;
+        // The birth's digest names its runtime; else its own durable runtime row does (a point read).
+        let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
+            None
+        } else {
+            Some(birth_runtime_row(&*self.nodes, &self.me, &n.name, &n.node_id, &incarnation).await?.ok_or_else(|| {
+                format!("the book holds no runtime for {executor} ({}) at {} and no durable runtime row of that birth was ever written at {}", n.node_id, incarnation.0, self.me)
+            })?)
+        };
+        let (code, source) = crate::admin::exit_proof_of(&*self.provider, &held_row, row.as_ref()).await?;
         tracing::info_span!("rdm.node_admin.build.update.via-executor-exit-proof", node = %n.name, node_id = %n.node_id, incarnation_id = %incarnation.0, exit_code = code.map(|c| c.to_string()).unwrap_or_default(), exit_proof = source)
             .in_scope(|| tracing::info!("the executor's exact runtime is inspected and exited"));
         self.records.mark_exited(&n.node_id, &incarnation);
@@ -2369,7 +2395,7 @@ impl AdminRunner {
         // durable runtime row its maker handed over.
         let held = self.book.get(node.node_id.as_str()).map(|(d, _)| d).or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id == node.node_id)).filter(|d| d.node.incarnation == incarnation);
         let row = match (&held, self.records.contacts.get()) {
-            (None, Some(store)) => store.runtimes().await.ok().and_then(|rows| rows.into_iter().find(|r| r.node_id == node.node_id && r.incarnation_id == incarnation)),
+            (None, Some(store)) => birth_runtime_row(&**store, &self.me, &node.name, &node.node_id, &incarnation).await?,
             _ => None,
         };
         let (published, data_dir) = match (&held, &row) {
