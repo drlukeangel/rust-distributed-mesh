@@ -47,7 +47,7 @@ pub struct WireDigest {
     data_dir: Option<String>,
     mesh_id: Option<MeshId>,
     in_flight: Option<u64>,
-    extra: BTreeMap<String, String>,
+    config: BTreeMap<String, String>,
     load: Option<NodeLoad>,
     gossip: Option<GossipStats>,
 }
@@ -82,7 +82,7 @@ impl From<&MeshDigest> for WireDigest {
             data_dir: d.data_dir.clone(),
             mesh_id: d.mesh_id.clone(),
             in_flight: d.in_flight,
-            extra: d.extra.clone(),
+            config: d.config.clone(),
             load: d.load,
             gossip: d.gossip,
         }
@@ -119,7 +119,7 @@ impl From<WireDigest> for MeshDigest {
             data_dir: w.data_dir,
             mesh_id: w.mesh_id,
             in_flight: w.in_flight,
-            extra: w.extra,
+            config: w.config,
             load: w.load,
             gossip: w.gossip,
         }

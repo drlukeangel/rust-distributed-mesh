@@ -281,7 +281,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
         data_dir: None,
         mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
         in_flight: None,
-        extra: Default::default(),
+        config: Default::default(),
         load: None,
         gossip: None,
     };

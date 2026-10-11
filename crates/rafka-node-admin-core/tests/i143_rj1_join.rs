@@ -110,7 +110,7 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
         data_dir: Some(d.data_dir.clone()),
         mesh_id: None,
         in_flight: None,
-        extra: Default::default(),
+        config: Default::default(),
         load: None,
         gossip: None,
     }
