@@ -157,7 +157,7 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Pending)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Leaving)).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Draining)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
-    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id).map(|(_, s)| s), Some(NodeState::Leaving));
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Leaving));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -247,7 +247,7 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::Indeterminate(_)), "{out:?}");
     assert!(ev.unwrap().committed);
-    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id).map(|(_, s)| s), Some(NodeState::ReadyForTraffic), "applied before the reply was lost");
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "applied before the reply was lost");
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions::default()).await;
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
 }
@@ -271,7 +271,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == rafka_node_rpc_contract::outcome::IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was withheld");
     rig.withhold.reached().await;
-    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id).map(|(_, s)| s), Some(NodeState::ReadyForTraffic), "applied before the reply was withheld");
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "applied before the reply was withheld");
     assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 1, "the handler ran once for the lost call");
 
     // The reply goes out only now, after the caller classified the call.

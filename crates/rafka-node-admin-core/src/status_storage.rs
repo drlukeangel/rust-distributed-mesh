@@ -4,9 +4,10 @@
 //! member as that member's mesh primary (`offline::put_silence_status`).
 //!
 //! A status fact is a blind put of its own key: `(mesh_id, state)` for a Mesh, `(fabric_id,
-//! event)` for a Fabric event, `node_id` for a node's declared state (a new cycle tombstones it),
+//! event)` for a Fabric event, `(node_id, incarnation, state)` for a node's declared state (a new
+//! cycle tombstones the birth's rows),
 //! `(node_id, incarnation)` for a birth's silence status. Nothing is read back to be written again.
-//! A reader folds the rows: the greatest state per Mesh, the set of events per Fabric. `Applied` means the row's put was
+//! A reader folds the rows: the greatest state per Mesh and per birth, the set of events per Fabric. `Applied` means the row's put was
 //! acknowledged before the answer left; a restarted admin folds the rows it wrote into what it
 //! has applied.
 
@@ -52,9 +53,11 @@ impl FabricEventRow {
     }
 }
 
-/// One node's declared state as its authority applied it: the state the birth `incarnation_id`
-/// declared. Keyed by the node: one current fact per node, written only by the authority; a start
-/// beginning the node's next cycle tombstones it.
+/// One node declared-state fact as its authority applied it: the birth `incarnation_id` entered
+/// `state`. Keyed by the fact itself, `(node_id, incarnation, state)`, as a Mesh status row is:
+/// two declarations of one birth put two rows and neither overwrites the other, whatever order
+/// their puts land in. A reader folds the greatest state per birth. Written only by the authority;
+/// a start beginning the birth's next cycle tombstones that birth's rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeDeclaredRow {
     /// The node.
@@ -66,10 +69,35 @@ pub struct NodeDeclaredRow {
 }
 
 impl NodeDeclaredRow {
-    /// The row's key: the node.
+    /// The row's key: the natural key of the fact.
     pub fn key(&self) -> String {
-        self.node_id.to_string()
+        Self::key_of(&self.node_id, &self.incarnation_id, self.state)
     }
+
+    fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId, state: NodeState) -> String {
+        format!("{node_id}--{}--{state:?}", incarnation_id.0)
+    }
+
+    /// Every key a birth's declared-state rows can hold: what a cycle begin tombstones, blind.
+    pub fn keys_of_birth(node_id: &NodeId, incarnation_id: &IncarnationId) -> Vec<String> {
+        // Exhaustive: a new state is a compile error here until its key is tombstoned too.
+        let every = |s: NodeState| match s {
+            NodeState::Pending | NodeState::ReadyForTraffic | NodeState::Draining | NodeState::Leaving => s,
+        };
+        [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving].into_iter().map(every).map(|s| Self::key_of(node_id, incarnation_id, s)).collect()
+    }
+}
+
+/// The greatest declared state per birth.
+pub fn fold_declared(rows: impl IntoIterator<Item = NodeDeclaredRow>) -> HashMap<(NodeId, IncarnationId), NodeState> {
+    let mut out = HashMap::new();
+    for r in rows {
+        let e = out.entry((r.node_id, r.incarnation_id)).or_insert(r.state);
+        if r.state > *e {
+            *e = r.state;
+        }
+    }
+    out
 }
 
 /// The silence status a mesh primary holds for one birth of its own mesh (fabric-node-lifecycle.md
@@ -106,11 +134,11 @@ pub trait StatusStorage: Send + Sync {
     async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError>;
     /// The events held, per Fabric, each once.
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError>;
-    /// A blind put of the node's declared-state row.
+    /// A blind put of the declared-state fact's own key.
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError>;
-    /// A blind tombstone of `node_id`'s declared-state row.
-    async fn remove_node_declared(&self, node_id: &NodeId) -> Result<(), StorageError>;
-    /// Every node's declared-state row.
+    /// A blind tombstone of every declared-state key of the birth `(node_id, incarnation_id)`.
+    async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError>;
+    /// Every declared-state row held.
     async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError>;
     /// A blind put of the birth's silence-status row.
     async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError>;
@@ -164,8 +192,11 @@ impl StatusStorage for MemoryStatusStorage {
         self.declared.lock().unwrap().insert(row.key(), row.clone());
         Ok(())
     }
-    async fn remove_node_declared(&self, node_id: &NodeId) -> Result<(), StorageError> {
-        self.declared.lock().unwrap().remove(node_id.as_str());
+    async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let mut d = self.declared.lock().unwrap();
+        for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
+            d.remove(&k);
+        }
         Ok(())
     }
     async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
@@ -182,12 +213,12 @@ impl StatusStorage for MemoryStatusStorage {
 
 const MESH_STATUS_FORMAT: &str = "mesh-status/1";
 const FABRIC_EVENT_FORMAT: &str = "fabric-event/1";
-const NODE_DECLARED_FORMAT: &str = "node-declared/1";
+const NODE_DECLARED_FORMAT: &str = "node-declared/2";
 const NODE_SILENCE_FORMAT: &str = "node-silence/1";
 
 /// One row per file: `<data dir>/status/meshes/<mesh_id>-<state>.json`,
 /// `<data dir>/status/fabric/<fabric_id>-<hex of the event key>.json`,
-/// `<data dir>/status/declared/<node_id>.json` and
+/// `<data dir>/status/declared/<node_id>--<incarnation>--<state>.json` and
 /// `<data dir>/status/silence/<node_id>--<incarnation>.json`.
 #[derive(Debug)]
 pub struct FileStatusStorage {
@@ -226,8 +257,11 @@ impl StatusStorage for FileStatusStorage {
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
         self.declared.write(&row.key(), NODE_DECLARED_FORMAT, row).await
     }
-    async fn remove_node_declared(&self, node_id: &NodeId) -> Result<(), StorageError> {
-        self.declared.remove(node_id.as_str()).await
+    async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
+            self.declared.remove(&k).await?;
+        }
+        Ok(())
     }
     async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
         self.declared.list(NODE_DECLARED_FORMAT)

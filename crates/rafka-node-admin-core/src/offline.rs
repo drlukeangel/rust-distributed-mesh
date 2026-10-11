@@ -359,8 +359,8 @@ mod tests {
         async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_declared(row).await
         }
-        async fn remove_node_declared(&self, node_id: &crate::model::NodeId) -> Result<(), crate::record_store::StorageError> {
-            self.inner.remove_node_declared(node_id).await
+        async fn remove_node_declared(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_node_declared(node_id, incarnation_id).await
         }
         async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::record_store::StorageError> {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

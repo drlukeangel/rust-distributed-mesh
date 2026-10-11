@@ -538,9 +538,9 @@ impl StatusStorage for Refusing {
         self.check()?;
         self.inner.put_node_declared(row).await
     }
-    async fn remove_node_declared(&self, node_id: &rafka_mesh_entity::NodeId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+    async fn remove_node_declared(&self, node_id: &rafka_mesh_entity::NodeId, incarnation_id: &rafka_mesh_entity::IncarnationId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.check()?;
-        self.inner.remove_node_declared(node_id).await
+        self.inner.remove_node_declared(node_id, incarnation_id).await
     }
     async fn node_declared(&self) -> Result<Vec<rafka_node_admin_core::status_storage::NodeDeclaredRow>, rafka_node_admin_core::record_store::StorageError> {
         self.inner.node_declared().await
@@ -655,7 +655,7 @@ fn status_authority_refuses_every_backward_move_by_name() {
                 assert_eq!(reply(&call(&node_rig, s, &decl(*start), &CallOptions::default()).await), StatusReply::AlreadyApplied, "a repeat of {start:?}");
                 repeats += 1;
             }
-            assert_eq!(node_rig.authority.declared.lock().unwrap().node(&s.node.node_id).map(|(_, st)| st), Some(*start), "refusals moved nothing");
+            assert_eq!(node_rig.authority.declared.lock().unwrap().node(&s.node.node_id, s.node.incarnation_id.as_ref().unwrap()), Some(*start), "refusals moved nothing");
         }
         for start in meshes {
             let id = MeshId::mint();
@@ -844,10 +844,10 @@ fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_appli
         }
         let in_flight = reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Leaving), &CallOptions::default()).await);
         assert_eq!(in_flight, StatusReply::RejectedStaleIncarnation { held: new_inc.clone() });
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id), Some((old_inc.clone(), NodeState::Draining)), "the stale declaration moved nothing");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, &old_inc), Some(NodeState::Draining), "the stale declaration moved nothing");
         let fresh = reply(&call(&rig, &subject, &decl(&new_inc, NodeState::Pending), &CallOptions::default()).await);
         assert_eq!(fresh, StatusReply::Applied, "the new birth starts on a clean key: Pending after the old birth's Draining is not backward");
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id), Some((new_inc.clone(), NodeState::Pending)));
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, &new_inc), Some(NodeState::Pending));
         let spans = finish(&capture, &dir, json!({"cell": cell, "in_flight": format!("{in_flight:?}"), "fresh": format!("{fresh:?}"), "new_incarnation": new_inc.to_string()}));
         let stale = spans_where(&spans, DECLARATION, &[("outcome", "rejected-stale-incarnation")]);
         assert_eq!(stale.len(), 1, "{stale:?}");
@@ -884,7 +884,7 @@ fn status_route_loss_never_synthesizes_dead() {
         let t = rig.authority.topology.read().await;
         assert!(t.nodes.iter().all(|n| n.status == NodeStatus::ReadyForTraffic), "no node became Dead or Leaving: {:?}", t.nodes.iter().map(|n| (n.name.to_string(), n.status)).collect::<Vec<_>>());
         drop(t);
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id).map(|(_, s)| s), Some(NodeState::ReadyForTraffic), "the applied state is unchanged");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the applied state is unchanged");
         let spans = finish(&capture, &dir, json!({"cell": cell, "no_route": out.name(), "declaration_spans_before": served_before}));
         assert_eq!(spans_where(&spans, DECLARATION, &[]).len(), served_before, "the unsent call reached no handler");
         assert!(spans.iter().all(|s| !s["name"].as_str().unwrap_or("").contains("dead")), "no span names a death");

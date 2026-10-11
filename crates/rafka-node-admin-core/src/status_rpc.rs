@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 /// What this admin applied, by natural key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Declared {
-    /// Per node id: the birth whose state was declared, and the state.
-    pub nodes: BTreeMap<NodeId, (IncarnationId, NodeState)>,
+    /// Per birth `(node id, incarnation)`: the greatest state it declared.
+    pub nodes: std::collections::HashMap<(NodeId, IncarnationId), NodeState>,
     /// Per mesh id.
     pub meshes: std::collections::HashMap<MeshId, MeshState>,
     /// Per fabric id: the events applied, in order, each once.
@@ -44,24 +44,22 @@ pub struct MeshReport {
 }
 
 impl Declared {
-    /// The incarnation and state declared for `node_id`, when one was.
-    pub fn node(&self, node_id: &NodeId) -> Option<(IncarnationId, NodeState)> {
-        self.nodes.get(node_id).cloned()
+    /// The state the birth `(node_id, incarnation)` declared, when it declared one.
+    pub fn node(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<NodeState> {
+        self.nodes.get(&(node_id.clone(), incarnation.clone())).copied()
     }
 }
 
 impl Declared {
     /// What an admin applied before it last stopped, folded from the rows it put: the greatest
-    /// state per Mesh, each Fabric event once, and each node's declared-state row. A reader folds;
-    /// nothing is written back.
+    /// state per Mesh, each Fabric event once, and the greatest declared state per birth. A reader
+    /// folds; nothing is written back.
     pub async fn rehydrate(status: &dyn crate::status_storage::StatusStorage) -> Result<Self, String> {
         let mut declared = Self { meshes: status.mesh_statuses().await.map_err(|e| format!("status.storage: {e}"))?, ..Self::default() };
         for e in status.fabric_events().await.map_err(|e| format!("status.storage: {e}"))? {
             declared.fabric.entry(e.fabric_id).or_default().push(e.event);
         }
-        for r in status.node_declared().await.map_err(|e| format!("status.storage: {e}"))? {
-            declared.nodes.insert(r.node_id, (r.incarnation_id, r.state));
-        }
+        declared.nodes = crate::status_storage::fold_declared(status.node_declared().await.map_err(|e| format!("status.storage: {e}"))?);
         Ok(declared)
     }
 }
@@ -143,7 +141,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
                 Some(held) => return (StatusReply::RejectedStaleIncarnation { held: held.clone() }, None),
                 None => return (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, None),
             }
-            let current = declared.node(&sender.node_id).and_then(|(inc, s)| (inc == *incarnation).then_some(s));
+            let current = declared.node(&sender.node_id, incarnation);
             match transition(current, *state) {
                 Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
                 Transition::Backward { current } => (StatusReply::RejectedInvalidNodeTransition { current }, None),
@@ -311,11 +309,11 @@ impl StatusAuthority {
     /// `ReadyForTraffic` run forward again from the start. The cleared state is a row put before it
     /// is held, as every applied state is.
     pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
-        let held = self.declared.lock().unwrap().node(&node.node_id).filter(|(inc, _)| inc == birth).map(|(_, s)| s);
+        let held = self.declared.lock().unwrap().node(&node.node_id, birth);
         let Some(state) = held else { return };
-        let outcome = match self.status_storage.remove_node_declared(&node.node_id).await {
+        let outcome = match self.status_storage.remove_node_declared(&node.node_id, birth).await {
             Ok(()) => {
-                self.declared.lock().unwrap().nodes.remove(&node.node_id);
+                self.declared.lock().unwrap().nodes.remove(&(node.node_id.clone(), birth.clone()));
                 "begun"
             }
             Err(_) => "refused",
@@ -372,9 +370,9 @@ impl StatusAuthority {
         let reply = {
             let mut declared = self.declared.lock().unwrap();
             match &effect {
-                Effect::Node(row, state) => match transition(declared.node(&row.node_id).and_then(|(inc, s)| (inc == row.incarnation_id).then_some(s)), *state) {
+                Effect::Node(row, state) => match transition(declared.node(&row.node_id, &row.incarnation_id), *state) {
                     Transition::Apply => {
-                        declared.nodes.insert(row.node_id.clone(), (row.incarnation_id.clone(), *state));
+                        declared.nodes.insert((row.node_id.clone(), row.incarnation_id.clone()), *state);
                         StatusReply::Applied
                     }
                     Transition::AlreadyApplied => StatusReply::AlreadyApplied,
@@ -647,8 +645,8 @@ mod tests {
             }
             Ok(())
         }
-        async fn remove_node_declared(&self, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
-            self.inner.remove_node_declared(node_id).await
+        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_node_declared(node_id, incarnation_id).await
         }
         async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::record_store::StorageError> {
             self.inner.node_declared().await
@@ -701,10 +699,10 @@ mod tests {
         let (leaving, ready) = (declare(NodeState::Leaving), declare(NodeState::ReadyForTraffic));
         let (a, b) = tokio::join!(authority.apply(Some(rpc.clone()), &leaving), authority.apply(Some(rpc.clone()), &ready));
         assert_eq!((a, b), (R::Applied, R::Applied), "both decided forward from the same held state");
-        let held = authority.declared.lock().unwrap().node(&rpc.node_id);
-        assert_eq!(held, Some((birth.clone(), NodeState::Leaving)), "memory holds the greater state");
+        let held = authority.declared.lock().unwrap().node(&rpc.node_id, &birth);
+        assert_eq!(held, Some(NodeState::Leaving), "memory holds the greater state");
         let rehydrated = Declared::rehydrate(&*status).await.unwrap();
-        assert_eq!(rehydrated.node(&rpc.node_id), held, "a restarted authority folds the rows back to a state behind the one it held");
+        assert_eq!(rehydrated.node(&rpc.node_id, &birth), held, "a restarted authority folds the rows back to a state behind the one it held");
     }
 
     /// CONTRACT (#2803 detection): a fabric primary probes ANOTHER mesh's node-admin through a
