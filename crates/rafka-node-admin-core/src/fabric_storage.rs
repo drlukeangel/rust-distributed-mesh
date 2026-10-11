@@ -388,6 +388,19 @@ pub struct FileFabricStorage {
     writer: crate::model::IncarnationId,
     /// The seat-transfer store of each mesh opened so far.
     transfers: Mutex<std::collections::BTreeMap<String, std::sync::Arc<crate::record_store::FileRecords>>>,
+    /// Where this writer reads whether it holds the fabric seat: the committed fabric seat record
+    /// (`crate::admin::fabric_seat_source`). Set once at start.
+    seat: SeatSlot,
+}
+
+/// The fabric seat source a [`FileFabricStorage`] reads before it puts a pointer.
+#[derive(Default)]
+struct SeatSlot(std::sync::OnceLock<crate::fabric_builds::SeatSource>);
+
+impl std::fmt::Debug for SeatSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.get().is_some() { "SeatSlot(set)" } else { "SeatSlot(unset)" })
+    }
 }
 
 impl FileFabricStorage {
@@ -410,7 +423,13 @@ impl FileFabricStorage {
             meshes_dir: own_data_dir.join("meshes"),
             writer: writer.clone(),
             transfers: Mutex::new(Default::default()),
+            seat: SeatSlot::default(),
         })
+    }
+
+    /// The committed fabric seat record this writer reads before it puts a pointer (set once).
+    pub fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
+        let _ = self.seat.0.set(seat);
     }
 
     /// The seat-transfer rows of `mesh`: `meshes/<mesh>/seat-transfers/`.

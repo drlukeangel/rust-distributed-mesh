@@ -91,3 +91,38 @@ async fn a_pointer_move_held_mid_write_never_moves_the_pointer_back_past_a_newer
 
     assert_eq!(store.build_id().await, Some(newer), "a held, older pointer write lands after the newer one and must not move the pointer back");
 }
+
+/// A file `fabric.storage` on `root` whose committed fabric seat record answers `seat`.
+fn file_writer(root: &rafka_node_admin_core::store_root::StoreRoot, seat: Option<rafka_node_admin_core::fabric_builds::SeatRecord>) -> rafka_node_admin_core::fabric_storage::FileFabricStorage {
+    let s = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(root, &rafka_node_admin_core::model::IncarnationId::mint()).unwrap();
+    if let Some(seat) = seat {
+        s.set_seat_source(rafka_node_admin_core::fabric_builds::SeatSource { read: Arc::new(move || seat.clone()), changed: None });
+    }
+    s
+}
+
+/// CONTRACT (R14 item 2: "Writers are exactly the ladder. Fabric-primary: `fabric/`"; item 9:
+/// pre-commit behaviour unchanged): on the fabric's store root only the fabric seat holder puts a
+/// pointer. N, whose committed fabric seat record names P's live birth, is refused by name, naming
+/// the record, and leaves no pointer row; a writer that has no seat source to read is refused by
+/// name too. P, whose record is open to it (it names P, or none: Day 0 before any record), puts
+/// the pointer and every reader of the root folds it.
+#[tokio::test]
+async fn only_the_fabric_seat_holder_puts_a_pointer_on_the_store_root() {
+    use rafka_node_admin_core::fabric_builds::SeatRecord;
+    let d = std::env::temp_dir().join(format!("fabric-pointer-holder-{}", rafka_node_admin_core::model::NodeId::mint()));
+    let root = rafka_node_admin_core::store_root::StoreRoot::at(&d);
+    let fabric_id = FabricId::mint();
+    let moved = SeatRecord::Moved { by: "the fabric seat record names mesh1 000000000001 (birth p) at epoch 3".into(), to: Some("mesh1.admin.1".into()) };
+    let (n, unset, p) = (file_writer(&root, Some(moved)), file_writer(&root, None), file_writer(&root, Some(SeatRecord::Open)));
+    p.put_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap();
+    let pointer = |b: &str, at: u64| FabricPointer { build_id: BuildId(b.into()), submitted_at_ms: at };
+    let refused = n.put_pointer(&pointer("bld-n", 10)).await.expect_err("a writer that does not hold the fabric seat puts no pointer");
+    assert!(refused.to_string().contains("mesh1.admin.1") && refused.to_string().contains("epoch 3"), "the refusal names the holder and its record: {refused}");
+    let unread = unset.put_pointer(&pointer("bld-u", 11)).await.expect_err("a writer with no seat source puts no pointer");
+    assert!(unread.to_string().contains("seat"), "the refusal names the missing seat source: {unread}");
+    assert_eq!(p.fabric().await.unwrap().and_then(|r| r.build_id), None, "no refused pointer left a row");
+    p.put_pointer(&pointer("bld-p", 12)).await.expect("the seat holder puts the pointer");
+    assert_eq!(n.fabric().await.unwrap().and_then(|r| r.build_id), Some(BuildId("bld-p".into())), "every reader of the root folds the holder's pointer");
+    let _ = std::fs::remove_dir_all(&d);
+}
