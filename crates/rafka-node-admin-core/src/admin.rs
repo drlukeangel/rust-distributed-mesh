@@ -6722,7 +6722,8 @@ mod tests {
     /// birth is routable only while it is ready-for-traffic and its mesh is ready-for-traffic, as this
     /// admin holds them. A `Pending` birth of a ready mesh, and a ready birth of a mesh this admin
     /// holds `pending` or `leaving` (or holds no status of), are listed and not routable; a ready
-    /// birth of a ready mesh is routable. Must NOT happen: a listed status other than
+    /// birth of a ready mesh is routable; a birth listed only from this admin's launch record is
+    /// Pending and not routable. Must NOT happen: a listed status other than
     /// ready-for-traffic, or a mesh not held ready-for-traffic, answering routable.
     #[test]
     fn the_view_routes_a_birth_only_while_it_and_its_mesh_are_ready_for_traffic() {
@@ -6740,8 +6741,16 @@ mod tests {
         for d in [&ready, &pending, &of_pending_mesh, &of_leaving_mesh, &of_unheard_mesh] {
             assert!(book.record(d.clone()));
         }
-        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        // A birth this admin launched that membership has not spoken for yet: listed from its
+        // launch record, Pending, nothing realised.
+        let records = Records::default();
+        let launched: PathName = "mesh1.rpc.3".parse().unwrap();
+        records.nodes.lock().unwrap().insert(launched.clone(), crate::model::Node::allocated(launched.clone()));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         let routable = |d: &MeshDigest| t.node(&d.node.name).unwrap_or_else(|| panic!("{} is listed", d.node.name)).routable;
+        let unheard = t.node(&launched).expect("the launch record lists the unheard birth");
+        assert_eq!(unheard.status, NodeStatus::Pending);
+        assert!(!unheard.routable, "a launched birth membership has not spoken for is Pending: a routing stop");
         assert!(routable(&ready), "a ready-for-traffic birth of a ready-for-traffic mesh is routable");
         assert!(!routable(&pending), "a Pending birth is a routing stop");
         assert!(!routable(&of_pending_mesh), "a birth of a pending mesh is a routing stop");
