@@ -224,4 +224,31 @@ mod tests {
         again.remove("a").await.unwrap();
         assert_eq!(again.list::<String>("thing/1").unwrap(), ["two"]);
     }
+
+    /// CONTRACT: a record removed while another caller lists the store is a record that is gone;
+    /// the list answers the records that remain and never fails on the one that vanished.
+    #[tokio::test]
+    async fn a_list_racing_a_removal_answers_the_records_that_remain() {
+        let d = tempdir("records-race");
+        let r = std::sync::Arc::new(FileRecords::open(&d, "things").unwrap());
+        for round in 0..20 {
+            for k in 0..200 {
+                r.write(&format!("k{k:03}"), "thing/1", &k).await.unwrap();
+            }
+            let remover = {
+                let r = r.clone();
+                tokio::spawn(async move {
+                    for k in 0..200 {
+                        r.remove(&format!("k{k:03}")).await.unwrap();
+                    }
+                })
+            };
+            while !remover.is_finished() {
+                let r = r.clone();
+                let listed = tokio::task::spawn_blocking(move || r.list::<u32>("thing/1")).await.unwrap();
+                assert!(listed.is_ok(), "round {round}: a list racing a removal failed: {:?}", listed.err());
+            }
+            remover.await.unwrap();
+        }
+    }
 }
