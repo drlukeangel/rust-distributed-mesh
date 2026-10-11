@@ -683,6 +683,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
             endpoint: Some("ep-1".into()),
             transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
             exe: Some("rpc-node@abc123".into()),
+            runtime: Some("dep-1".into()),
             status: rafka_node_admin_client::NodeStatus::ReadyForTraffic,
             name: "mesh1.rpc.1".parse().unwrap(),
             mesh: "mesh1".into(),

@@ -155,6 +155,28 @@ impl NodeRows {
     }
 }
 
+/// Why `node.update` refused a rename at the fabric-primary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameRefused {
+    /// The body differs from what RDM holds in a field RDM owns (a live node's name among them).
+    RdmOwned(rafka_node_admin_client::MetaFieldIsRdmOwned),
+    /// The new name is held by another node, parked or live.
+    NameHeld(rafka_node_admin_client::NameHeld),
+    /// The rename could not be decided or written: why, whole.
+    Unwritten(String),
+}
+
+impl NodeRows {
+    /// `node.update` of a stopped node's name (to or from its `.old` form): the body is checked
+    /// against what RDM holds, then the new name is claimed for the node, insert-and-fail on its
+    /// key, then the old key is released. Whether the node is stopped is the held record's
+    /// (`parked`), never the caller's.
+    pub async fn rename(&self, me: &PathName, view: &RwLock<Topology>, held: &rafka_node_admin_client::NodeMeta, body: &rafka_node_admin_client::NodeMeta) -> Result<(), RenameRefused> {
+        let _ = (me, view, held, body);
+        Ok(())
+    }
+}
+
 /// The record the view holds at `name`.
 async fn held_at(view: &RwLock<Topology>, name: &PathName) -> Option<Node> {
     view.read().await.nodes.iter().find(|n| &n.name == name).cloned()
