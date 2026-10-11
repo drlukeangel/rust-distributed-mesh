@@ -532,13 +532,16 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
         async move { found }
     })
     .await;
-    // The offline tickle of a silent node-admin is on the staleness floor, not on the backbone rounds:
-    // the mark at the floor, round 1 half a floor later (at most one tickle round), round 2 at least
-    // one floor after round 1 found no path (at most one tickle round), and the tickle loop sleeps one
-    // gossip interval between ticks. The failed round 2 is awaited for exactly that long from the freeze.
+    // The offline tickle of a silent node-admin is on the staleness floors, not on the backbone rounds.
+    // The fabric primary holds the peer mesh's node-admins from their primary's forwarded topology, so
+    // it marks them at the forwarded staleness floor; round 1 half a floor later (at most one tickle
+    // round), round 2 at least one floor after round 1 found no path (at most one tickle round), and
+    // the tickle loop sleeps one gossip interval between ticks. The failed round 2 is awaited for
+    // exactly that long from the freeze.
     let tickle_round = rafka_node_admin_core::offline::tickle_round_at_default_budget();
     let floor = Duration::from_millis(floor_ms());
-    let round_two_by = floor + floor / 2 + tickle_round + floor + tickle_round + rafka_mesh_transport::membership::gossip_interval() * 2;
+    let marked = rafka_mesh_transport::membership::forwarded_staleness_floor();
+    let round_two_by = marked + floor / 2 + tickle_round + floor + tickle_round + rafka_mesh_transport::membership::gossip_interval() * 2;
     wait_for("a frozen node-admin of the peer mesh is tickled to round 2", round_two_by.saturating_sub(frozen_at.elapsed()), || {
         let spans = f.estate.spans();
         let found = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().find(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost))).cloned();
