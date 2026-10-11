@@ -713,16 +713,19 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
 
     async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
         use rafka_node_admin_core::node_self::StartFailed;
-        let name = self.name.to_string();
-        let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %self.name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
-        let join_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-join-admitted", node = %self.name, launcher = %authority);
+        // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
+        // rides it, never the birth's frozen name (R-JN1).
+        let held = self.membership.with_config(&self.digest);
+        let name = held.node.name.to_string();
+        let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
+        let join_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %authority);
         let Some((auth, _)) = self.membership.book.get(authority.as_str()) else {
             return Err(StartFailed { step: "node.join", reason: format!("{name}: the admin that commanded the start ({authority}) is not held by this node, so it cannot be joined through") });
         };
         let key = auth.node.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| StartFailed { step: "node.join", reason: format!("{}: its endpoint id is not an iroh key: {e}", auth.node.name) })?;
         self.resolver.apply(rafka_node_rpc::ResolvedNode { node_id: auth.node.node_id.clone(), name: auth.node.name.clone(), endpoint_id: key, transport_addr: auth.node.transport_addr, incarnation: auth.node.incarnation.clone() }, None);
-        // 1. The join: the same digest this birth was admitted with, Pending, to the admin that commanded the start.
-        let mut join_digest = self.digest.clone();
+        // 1. The join: the digest this birth holds, Pending, to the admin that commanded the start.
+        let mut join_digest = held;
         join_digest.status = MemberStatus::Pending;
         let joined = match rafka_node_admin_core::join::call_join(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &key.fmt_short().to_string(), &join_digest, 5).await {
             Ok(a) => a,
