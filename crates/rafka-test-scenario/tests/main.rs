@@ -10,6 +10,26 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
     assert!(foreign.is_empty(), "spans outside the cell's story were exported: {foreign:?}");
 }
 
+/// How long after a member's exact runtime is killed its mesh-primary's node recovery has put a
+/// new node, ready, at its path.name (node-recovery.md "Detection and proof" and the numbered
+/// sequence): the silence (one staleness floor, marked on the pruner's gossip-interval sweep);
+/// half a floor after the mark, on the next tick, tickle round 1 (one direct connect, then up to
+/// `VIA_PEER_TICKLE_FANOUT` connects through peers, one after another, each to a killed process
+/// and so spending the call's whole budget); round 2 one floor after round 1 began, or once round
+/// 1 ended if that is later, and its own round; TRUE OFFLINE, the provider's exit proof and the
+/// submit on the next tick; then the recovery Build's run (node.delete, node.create through the
+/// new node's start), one call budget.
+pub fn node_recovery_due() -> std::time::Duration {
+    let floor = rafka_mesh_entity::cadence::staleness_floor();
+    let gossip = rafka_mesh_entity::cadence::gossip_interval();
+    let call = match rafka_node_rpc::CallOptions::default().budget {
+        rafka_node_rpc::Budget::Overall(d) => d,
+        other => panic!("the default call budget is not one overall deadline: {other:?}"),
+    };
+    let round = call * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32);
+    floor + gossip + floor / 2 + gossip + floor.max(round) + round + gossip + call
+}
+
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 mod chaos_kit__restored_faults;
