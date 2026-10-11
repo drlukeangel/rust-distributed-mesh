@@ -280,7 +280,7 @@ impl HandoverDoor {
             }
             Some((p, _)) => p,
             None => {
-                let incumbent = view.fabric_primary().filter(|n| n.name == self.me).and_then(birth_of).ok_or_else(|| HandoverError::Refused(format!("{} does not hold the fabric seat in its view: it cannot hand it over", self.me)))?;
+                let incumbent = view.fabric_primary().filter(|n| n.node_id == self.node_id).and_then(birth_of).ok_or_else(|| HandoverError::Refused(format!("{} does not hold the fabric seat in its view: it cannot hand it over", self.me)))?;
                 let successor = crate::election::fabric_successor_excluding(&nodes, &self.incumbency(), mesh).and_then(|n| birth_of(&n));
                 let Some(successor) = successor else {
                     let p = Payload { fabric: self.fabric.clone(), incumbent: incumbent.clone(), successor: incumbent, expected_epoch: held.as_ref().map(|h| h.epoch).unwrap_or(0), operation: operation.clone() };

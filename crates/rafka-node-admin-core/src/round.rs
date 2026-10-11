@@ -167,6 +167,8 @@ struct Round {
 /// it adopted the fabric's. A round exists exactly while its status is adopted and unpublished.
 pub(crate) struct RoundDriver {
     me: PathName,
+    /// The node id this admin was born with: its own row and its seats are found by it.
+    me_id: crate::model::NodeId,
     mesh: Option<Round>,
     fabric: Option<Round>,
     /// The mesh primaries this admin, as the fabric-primary, has sent the down op to, by mesh: the
@@ -175,8 +177,8 @@ pub(crate) struct RoundDriver {
 }
 
 impl RoundDriver {
-    pub fn new(me: PathName) -> Self {
-        Self { me, mesh: None, fabric: None, addressed: BTreeMap::new() }
+    pub fn new(me: PathName, me_id: crate::model::NodeId) -> Self {
+        Self { me, me_id, mesh: None, fabric: None, addressed: BTreeMap::new() }
     }
 
     /// The fabric-primary's view of a mesh's primary changed (a mesh primary appeared, moved or
@@ -199,7 +201,7 @@ impl RoundDriver {
         let mut targets = Vec::new();
         let mut present = Vec::new();
         for m in &view.meshes {
-            let Some(p) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.name != self.me) else { continue };
+            let Some(p) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.node_id != self.me_id) else { continue };
             present.push(m.name.clone());
             let now = Addressed::of(p, m);
             if self.addressed.get(&m.name) != Some(&now) {
@@ -234,7 +236,7 @@ impl RoundDriver {
             let missing = match &i.planned {
                 None => vec![Missing { who: mesh_name.clone(), why: "accepted-build-unreadable" }],
                 Some(planned) => {
-                    let me_ready = i.view.members().any(|n| n.name == self.me && n.status == crate::model::NodeStatus::ReadyForTraffic);
+                    let me_ready = i.view.own(&self.me_id).is_some_and(|n| n.status == crate::model::NodeStatus::ReadyForTraffic);
                     let (heard, known) = (i.book.heard_direct_since(round.began), i.book.all());
                     missing_members(planned, &self.me, me_ready, &heard, &known, &|id| i.book.is_departed(id))
                 }
@@ -264,7 +266,7 @@ impl RoundDriver {
                 .iter()
                 .map(|m| {
                     let p = i.view.cohort_primary(&m.name, NodeKind::NodeAdmin);
-                    (m.name.clone(), p.and_then(|p| p.incarnation_id.clone()), p.is_some_and(|p| p.name == self.me))
+                    (m.name.clone(), p.and_then(|p| p.incarnation_id.clone()), p.is_some_and(|p| p.node_id == self.me_id))
                 })
                 .collect();
             if first {
@@ -456,7 +458,7 @@ mod tests {
     fn fabric_primary_addresses_a_mesh_primary_when_its_view_of_it_changes() {
         let me = member("mesh1.admin.1", true, true);
         let first = member("mesh2.admin.1", true, false);
-        let mut driver = RoundDriver::new(me.name.clone());
+        let mut driver = RoundDriver::new(me.name.clone(), me.node_id.clone());
         let v0 = view(vec![me.clone()]);
         assert!(driver.changed_mesh_primaries(&v0, true).is_empty(), "no other mesh primary in view: nobody to address");
 
@@ -475,7 +477,7 @@ mod tests {
         let mut early = first.clone();
         early.endpoint_id = None;
         let mut v_early = view(vec![me.clone(), early.clone()]);
-        let mut driver = RoundDriver::new(me.name.clone());
+        let mut driver = RoundDriver::new(me.name.clone(), me.node_id.clone());
         assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1);
         assert!(driver.changed_mesh_primaries(&v_early, true).is_empty());
         for n in &mut v_early.nodes {
@@ -495,7 +497,7 @@ mod tests {
         let records = Records::default();
         records.set_adopted_degraded(true);
         let book = DigestBook::default();
-        let mut driver = RoundDriver::new(me.name.clone());
+        let mut driver = RoundDriver::new(me.name.clone(), me.node_id.clone());
         let awaiting = Announced { mesh_awaiting_round: false, fabric_awaiting_round: true };
         let inputs = || Inputs { view: &v, planned: None, book: &book, client: None, records: &records };
         // A ready primary of a newer birth is in the view; nobody has reported to this holder.
@@ -518,7 +520,7 @@ mod tests {
         let v = view(vec![me.clone(), rpc.clone()]);
         let records = Records::default();
         let book = DigestBook::default();
-        let mut driver = RoundDriver::new(me.name.clone());
+        let mut driver = RoundDriver::new(me.name.clone(), me.node_id.clone());
         let awaiting = Announced { mesh_awaiting_round: true, fabric_awaiting_round: false };
         let planned = vec![me.name.clone(), rpc.name.clone()];
         let inputs = || Inputs { view: &v, planned: Some(planned.clone()), book: &book, client: None, records: &records };
@@ -534,7 +536,7 @@ mod tests {
         let done = driver.step(awaiting, inputs()).await;
         assert!(done.mesh, "every planned birth checked in after the round began");
         // An unreadable accepted Build holds the round by name.
-        let mut unreadable = RoundDriver::new(me.name.clone());
+        let mut unreadable = RoundDriver::new(me.name.clone(), me.node_id.clone());
         let done = unreadable.step(awaiting, Inputs { view: &v, planned: None, book: &book, client: None, records: &records }).await;
         assert!(!done.mesh);
     }

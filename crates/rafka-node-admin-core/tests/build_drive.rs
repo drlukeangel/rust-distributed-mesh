@@ -90,6 +90,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let topology = Arc::new(RwLock::new(t.clone()));
+    let fp_id = t.node(&"mesh1.admin.1".parse().unwrap()).expect("the fabric-primary is in the view").node_id.clone();
     let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
     cp.topology = topology.clone();
     let opened = cp.submit("test", change).await.unwrap();
@@ -103,7 +104,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         topology: topology.clone(),
         accepted,
         builds: builds.clone(),
-        door: Arc::new(ClaimDoor { me, topology, builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: fp_id, me, topology, builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: dispatch.clone(),
         gate: switch.clone(),
         departure: proofs.clone(),

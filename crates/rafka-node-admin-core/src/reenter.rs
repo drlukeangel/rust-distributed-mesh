@@ -280,6 +280,8 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
 /// What the standard decommission of an unreached node needs.
 pub(crate) struct Decommission {
     pub me: PathName,
+    /// The node id this admin was born with: whether it is the fabric-primary is decided by it.
+    pub me_id: NodeId,
     pub topology: Arc<tokio::sync::RwLock<crate::topology::Topology>>,
     pub accepted: Arc<crate::accepted::AcceptedStore>,
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
@@ -326,7 +328,7 @@ pub(crate) async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapN
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 continue;
             };
-            let opened: Result<u32, String> = if fp.name == d.me {
+            let opened: Result<u32, String> = if fp.node_id == d.me_id {
                 d.control.open_attempt("sweep decommission", crate::build_state::AttemptReason::Replace, n.name.clone(), crate::http::ActionKind::Replace, Some(n.incarnation.clone())).await.map(|o| o.attempt).map_err(|r| format!("{r:?}"))
             } else {
                 match fp.admin_api_base.as_deref() {

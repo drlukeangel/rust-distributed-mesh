@@ -263,7 +263,7 @@ impl Declarer {
     /// (`authority`), decided exactly as a peer's would be; no seat is assumed. `addressed` is
     /// the authorities that sent this admin their down op since the last round.
     pub async fn round(&self, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>, addressed: &BTreeSet<NodeId>) {
-        self.withdraw_unowned(me, view);
+        self.withdraw_unowned(me, me_id, view);
         self.reowe_moved(me, view);
         for (p, target) in self.due(me_id, view, addressed) {
             let classify = |reply: &StatusReply| match reply {
@@ -326,7 +326,7 @@ impl Declarer {
     /// it is not its Mesh's admin primary, a fabric event once it is not the fabric-primary. A
     /// key withdrawn is forgotten whole, so holding the seat again owes it afresh. A view that
     /// names no holder of the seat withdraws nothing: the seat is unknown, not moved.
-    pub(crate) fn withdraw_unowned(&self, me: &PathName, view: &Topology) {
+    pub(crate) fn withdraw_unowned(&self, me: &PathName, me_id: &NodeId, view: &Topology) {
         let holder = |key: &Key| match key {
             Key::OwnState(..) => None,
             Key::Mesh(..) | Key::Round(..) => Some(view.cohort_primary(&me.mesh, NodeKind::NodeAdmin)),
@@ -338,7 +338,7 @@ impl Declarer {
             .unwrap()
             .keys()
             .filter_map(|k| match holder(k) {
-                Some(Some(n)) if &n.name != me => Some((k.clone(), n.name.to_string())),
+                Some(Some(n)) if &n.node_id != me_id => Some((k.clone(), n.name.to_string())),
                 _ => None,
             })
             .collect();
@@ -381,10 +381,10 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
 
 /// The declarations an admin owes from its view and its own state, derived each round so a
 /// successor or a restarted admin owes the same ones from the same facts.
-pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_ready: bool, mesh_round_done: bool, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
+pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &str, own_ready: bool, mesh_round_done: bool, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, once it is ready: to the fabric-primary.
     if own_ready {
-        if let Some(my) = view.nodes.iter().find(|n| &n.name == me) {
+        if let Some(my) = view.own(me_id) {
             d.owe(
                 Key::OwnState(me_incarnation.to_string(), NodeState::ReadyForTraffic),
                 Authority::FabricPrimary,
@@ -392,8 +392,8 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, 
             );
         }
     }
-    let i_am_mesh_primary = view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).is_some_and(|n| &n.name == me);
-    let i_am_fabric_primary = view.fabric_primary().is_some_and(|n| &n.name == me);
+    let i_am_mesh_primary = view.holds_mesh_seat(&me.mesh, me_id);
+    let i_am_fabric_primary = view.holds_fabric_seat(me_id);
     // My Mesh's status, as its primary, to the fabric-primary: the report that its round is complete,
     // owed only once every planned birth of the accepted Build checked in (`crate::round`).
     if i_am_mesh_primary && mesh_round_done {
@@ -423,8 +423,17 @@ mod tests {
     use super::*;
     use crate::model::*;
 
+    /// The one node id `name` is born with across every view of a cell: a node finds itself by it.
+    fn id_of(name: &str) -> NodeId {
+        let p: PathName = name.parse().unwrap();
+        let mesh: u32 = p.mesh.trim_start_matches("mesh").parse().unwrap();
+        let kind = if p.kind == NodeKind::NodeAdmin { 1 } else { 2 };
+        NodeId::parse(&format!("{mesh}{kind}{:010}", p.ordinal)).unwrap()
+    }
+
     fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());
+        n.node_id = id_of(name);
         n.status = NodeStatus::ReadyForTraffic;
         n.incarnation_id = Some(IncarnationId::mint());
         n.is_primary = primary;
@@ -455,14 +464,14 @@ mod tests {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let d = Declarer::new();
         owe_all(&d);
-        d.withdraw_unowned(&me, &view("mesh1.admin.1", "mesh1.admin.1"));
+        d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh1.admin.1", "mesh1.admin.1"));
         assert_eq!(d.owed(), 3, "every seat is still this admin's");
 
-        d.withdraw_unowned(&me, &view("mesh1.admin.2", "mesh1.admin.1"));
+        d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh1.admin.2", "mesh1.admin.1"));
         let left: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
         assert_eq!(left, vec![Key::OwnState("inc".into(), NodeState::ReadyForTraffic), Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into())], "the Mesh key is the new mesh primary's");
 
-        d.withdraw_unowned(&me, &view("mesh1.admin.2", "mesh2.admin.1"));
+        d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh1.admin.2", "mesh2.admin.1"));
         let left: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
         assert_eq!(left, vec![Key::OwnState("inc".into(), NodeState::ReadyForTraffic)], "the fabric event is the new fabric-primary's; its own birth stays owed");
     }
@@ -487,14 +496,14 @@ mod tests {
         d.reowe_moved(&me, &view("mesh1.admin.2", "mesh1.admin.2"));
         assert_eq!(d.owed(), 1, "a successor fabric-primary is owed the completion");
         assert!(d.pending.lock().unwrap().get(&key).unwrap().trace.is_some(), "the completion keeps the round's trace");
-        d.withdraw_unowned(&me, &view("mesh2.admin.1", "mesh1.admin.2"));
+        d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh2.admin.1", "mesh1.admin.2"));
         assert_eq!(d.owed(), 1, "this admin is still its mesh's primary");
         let mut v = view("mesh2.admin.1", "mesh1.admin.2");
         for n in v.nodes.iter_mut().filter(|n| n.mesh == "mesh2") {
             n.is_primary = false;
         }
         v.nodes.push({ let mut n = node("mesh2.admin.2", true, false); n.mesh = "mesh2".into(); n });
-        d.withdraw_unowned(&me, &v);
+        d.withdraw_unowned(&me, &id_of(&me.to_string()), &v);
         assert_eq!(d.owed(), 0, "a former mesh primary withdraws the completion whole");
     }
 
@@ -505,7 +514,7 @@ mod tests {
         owe_all(&d);
         d.done.lock().unwrap().insert(Key::Mesh("m1".into(), MeshState::ReadyForTraffic), ("applied".into(), NodeId::mint(), None));
         d.pending.lock().unwrap().remove(&Key::Mesh("m1".into(), MeshState::ReadyForTraffic));
-        d.withdraw_unowned(&me, &view("mesh1.admin.2", "mesh1.admin.1"));
+        d.withdraw_unowned(&me, &id_of(&me.to_string()), &view("mesh1.admin.2", "mesh1.admin.1"));
         assert_eq!(d.answered(&Key::Mesh("m1".into(), MeshState::ReadyForTraffic)), None, "forgotten whole");
         owe_all(&d);
         assert!(d.pending.lock().unwrap().contains_key(&Key::Mesh("m1".into(), MeshState::ReadyForTraffic)), "owed again once the seat is back");
@@ -521,7 +530,7 @@ mod tests {
             n.is_primary = false;
             n.is_fabric_primary = false;
         }
-        d.withdraw_unowned(&me, &v);
+        d.withdraw_unowned(&me, &id_of(&me.to_string()), &v);
         assert_eq!(d.owed(), 3);
     }
 
@@ -698,12 +707,12 @@ mod tests {
         let d = Declarer::new();
         let ids: BTreeMap<String, String> = [("mesh1".to_string(), MeshId::mint().to_string())].into();
         let none = BTreeSet::new();
-        owed_from_view(&d, &me, "inc", false, false, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", false, false, &v, &ids);
         assert!(d.due(&NodeId::mint(), &v, &none).is_empty(), "not ready, gate closed: nothing is owed");
-        owed_from_view(&d, &me, "inc", true, false, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", true, false, &v, &ids);
         let own: Vec<Key> = d.due(&NodeId::mint(), &v, &none).into_iter().map(|(p, _)| p.key).collect();
         assert_eq!(own, vec![Key::OwnState("inc".into(), NodeState::ReadyForTraffic)], "own readiness owes its birth");
-        owed_from_view(&d, &me, "inc", true, true, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", true, true, &v, &ids);
         let both = d.due(&NodeId::mint(), &v, &none).len();
         assert_eq!(both, 2, "the gate opening owes the Mesh declaration");
     }
@@ -722,15 +731,16 @@ mod tests {
         let retired = v.nodes.iter_mut().find(|n| n.name == me).unwrap();
         retired.status = NodeStatus::Draining;
         let retired = retired.clone();
-        let reborn = node("mesh1.admin.1", false, false);
+        let mut reborn = node("mesh1.admin.1", false, false);
+        reborn.node_id = NodeId::mint();
         assert_ne!(retired.node_id, reborn.node_id, "a replace mints a new node id");
         assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds the fabric seat in this view");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
-        owed_from_view(&d, &me, "inc", false, true, &v, &ids);
+        owed_from_view(&d, &me, &reborn.node_id, "inc", false, true, &v, &ids);
         assert_eq!(d.owed(), 0, "the retired birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
         d.owe(mesh_key(), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic });
-        d.withdraw_unowned(&me, &v);
+        d.withdraw_unowned(&me, &reborn.node_id, &v);
         assert_eq!(d.owed(), 0, "the mesh seat is the retired birth's, not this admin's: the Mesh key is withdrawn");
     }
 

@@ -278,6 +278,8 @@ pub(crate) const PROBE_FANOUT: usize = 3;
 pub struct Watch {
     /// This admin's `path.name`.
     pub me: PathName,
+    /// The node id this admin was born with: whether it holds the fabric seat is decided by it.
+    pub me_id: crate::model::NodeId,
     /// The length of a backbone round.
     pub round: Duration,
     /// The admin's membership.
@@ -314,7 +316,7 @@ pub async fn run(w: Watch) {
     loop {
         tokio::time::sleep(w.round).await;
         let view = w.topology.read().await.clone();
-        let fabric_primary = view.fabric_primary().is_some_and(|n| n.name == w.me);
+        let fabric_primary = view.holds_fabric_seat(&w.me_id);
         if !(fabric_primary && w.membership.authorizes()) {
             w.ladder.lock().unwrap().clear();
             seat_since = None;

@@ -135,7 +135,7 @@ impl AdminRunner {
     pub(super) async fn admit_leave(self: Arc<Self>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
         let StatusRequest::LeaveMesh { mesh_id, build_id, attempt, operation } = req else { unreachable!("admit_leave serves leave-mesh") };
         let view = self.topology.read().await.clone();
-        let Some(me) = view.nodes.iter().find(|n| n.name == self.me).cloned() else {
+        let Some(me) = view.own(&self.node_id).cloned() else {
             return StatusReply::NotReady { reason: format!("{} holds no view of itself yet; leave-mesh for {mesh_id} is refused", self.me) };
         };
         let held = self.records.meshes.lock().unwrap().get(&me.mesh).cloned().or_else(|| view.meshes.iter().find(|m| m.name == me.mesh).and_then(|m| m.id.clone()));
@@ -205,8 +205,8 @@ impl AdminRunner {
     /// terminal receipt) every other node-admin in parallel; then the one manifest receipt.
     async fn leave_members(&self, key: &LeaveKey) -> Result<ExitManifest, String> {
         let view = self.topology.read().await.clone();
-        let me = view.nodes.iter().find(|n| n.name == self.me).cloned().ok_or_else(|| format!("{} holds no view of itself", self.me))?;
-        let others: Vec<Node> = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.name != me.name).cloned().collect();
+        let me = view.own(&self.node_id).cloned().ok_or_else(|| format!("{} holds no view of itself", self.me))?;
+        let others: Vec<Node> = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.node_id != me.node_id).cloned().collect();
         let (admins, ordinary): (Vec<Node>, Vec<Node>) = others.iter().cloned().partition(|n| n.kind == NodeKind::NodeAdmin);
         let mut receipts: Vec<TerminalReceipt> = Vec::new();
         for (tier, members) in [("ordinary-nodes", ordinary), ("node-admins", admins)] {
@@ -266,7 +266,7 @@ impl AdminRunner {
     async fn hand_off(&self, key: &LeaveKey, owner: &NodeId, manifest: &ExitManifest) {
         let reference = manifest_reference(&key.build_id, key.attempt, &key.operation, false);
         let view = self.topology.read().await.clone();
-        let (Some(me), Some(owner_node), Some(node_rpc)) = (view.nodes.iter().find(|n| n.name == self.me).cloned(), view.nodes.iter().find(|n| &n.node_id == owner).cloned(), self.node_rpc.as_ref()) else {
+        let (Some(me), Some(owner_node), Some(node_rpc)) = (view.own(&self.node_id).cloned(), view.nodes.iter().find(|n| &n.node_id == owner).cloned(), self.node_rpc.as_ref()) else {
             tracing::info!(operation = %key.operation, owner = %owner, "the owner of this workflow is not held in this view: the handoff waits for a repeated leave-mesh");
             return;
         };

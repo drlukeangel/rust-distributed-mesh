@@ -6,7 +6,7 @@
 //! Mesh and Fabric views publish the live owning node-admin's control API
 //! base; callers switch control only from these views.
 
-use crate::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, PathName};
+use crate::model::{Fabric, Mesh, Node, NodeId, NodeKind, NodeStatus, PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -190,6 +190,24 @@ impl Topology {
         let mut p = self.members().filter(|n| n.is_fabric_primary && n.status.is_live());
         let first = p.next()?;
         p.next().is_none().then_some(first)
+    }
+
+    /// The row of the node born as `node_id`, among the members: how a node finds itself (and a
+    /// seat holder is told apart from another birth). Never by path.name: a replace or a recovery
+    /// keeps the path.name and mints a new node id, and the one row this view holds at a path
+    /// ([`crate::admin::project_at`] keys it by `PathName`) can be the retired birth's.
+    pub fn own(&self, node_id: &NodeId) -> Option<&Node> {
+        self.members().find(|n| n.node_id == *node_id)
+    }
+
+    /// Whether the node born as `node_id` is the fabric primary of this view.
+    pub fn holds_fabric_seat(&self, node_id: &NodeId) -> bool {
+        self.fabric_primary().is_some_and(|n| n.node_id == *node_id)
+    }
+
+    /// Whether the node born as `node_id` is `mesh`'s primary node-admin in this view.
+    pub fn holds_mesh_seat(&self, mesh: &str, node_id: &NodeId) -> bool {
+        self.cohort_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == *node_id)
     }
 
     /// The live owning node-admin control endpoint of `mesh` (its admin primary's).
