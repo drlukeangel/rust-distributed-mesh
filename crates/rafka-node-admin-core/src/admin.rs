@@ -4905,11 +4905,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     if written.get(&node.node_id) == Some(&fact) {
                         return;
                     }
-                    match crate::offline::put_silence_status(&*status_storage, &node, status).await {
-                        Ok(_) => {
-                            written.insert(node.node_id.clone(), fact);
-                        }
-                        Err(e) => tracing::info!(node = %node.name, error = %e, "the node's silence status could not be written to status.storage"),
+                    // A refusal is spanned where it happened (`offline::put_silence_status`); the memo
+                    // keeps the last status that stands, and nothing below waits on this row.
+                    if crate::offline::put_silence_status(&*status_storage, &node, status).await.is_ok() {
+                        written.insert(node.node_id.clone(), fact);
                     }
                 };
                 if holds_seat {
