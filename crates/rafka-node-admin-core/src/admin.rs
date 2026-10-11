@@ -6637,6 +6637,59 @@ mod tests {
         eprintln!("span rdm.node_admin.node.delete.via-node-row trace_id={} {:?}", deleted.trace_id, deleted.attributes);
     }
 
+    /// CONTRACT (R-MD1 = A, i143-rulings-2026-10-11-dev.md: "The mesh-primary commits the mesh row
+    /// Dead at mesh.deleted ... At mesh-left the fabric-primary writes the final primary's row
+    /// Deleted, unchanged. Its ensure-Dead operation returns AlreadyApplied if the mesh-primary wrote
+    /// Dead; only when no primary survives to make that write does the fabric-primary write Dead as
+    /// acting primary ... Retries cause no second transition"; status_storage.rs: a mesh's status
+    /// rows live under `status/<mesh>/`): with mesh2's row Dead already among mesh2's status rows
+    /// (its primary's write), mesh-left's Dead write answers AlreadyApplied, writes nothing, and its
+    /// `rdm.node_admin.mesh.update.via-dead-row` span says `already-applied` by `mesh-primary`; with
+    /// none (no primary survived), the fabric-primary puts the row Dead among mesh2's status rows as
+    /// acting primary (`applied`, `acting-primary`), and its replay answers AlreadyApplied. No Dead
+    /// row of mesh2 is ever put among the fabric-primary's own mesh's rows. Must NOT happen: a second
+    /// transition over the mesh-primary's Dead (the fabric-primary deciding from what it applied
+    /// itself, which holds nothing of mesh2), or the row written under the fabric-primary's mesh.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn mesh_lefts_dead_write_is_already_applied_over_the_mesh_primarys_dead_and_the_acting_primarys_when_none_survived() {
+        use crate::status_storage::{MeshStatusRow, StatusStorage};
+        let dead = |m: &str| MeshStatusRow { mesh_id: mesh_id(m), state: rafka_node_rpc_contract::status::MeshState::Dead };
+        let key = crate::mesh_leave::LeaveKey { mesh_id: mesh_id("mesh2"), build_id: "bld-leave".into(), attempt: 1, operation: format!("shutdown-mesh:{}", mesh_id("mesh2")) };
+        for case in ["surviving-primary-wrote-dead", "no-survivor"] {
+            let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+            let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
+            let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
+            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+            crate::mesh_leave::hold_exits(&records, [&exited_receipt(&last)]).unwrap();
+            records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+            let status = crate::status_storage::MemoryStatusStorage::default();
+            if case == "surviving-primary-wrote-dead" {
+                // mesh2's primary committed Dead at mesh.deleted, among mesh2's status rows (R-MD1 item 1).
+                status.put_mesh_status_of("mesh2", &dead("mesh2")).await.unwrap();
+            }
+            let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
+            let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
+            let capture = crate::span_capture::Capture::new(&format!("i143-3068-r-md1-{case}"));
+            {
+                let _g = tracing::dispatcher::set_default(&capture.dispatch);
+                for _replay in 0..2 {
+                    crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
+                }
+            }
+            assert!(status.mesh_status_held_of("mesh2", &dead("mesh2")).await.unwrap(), "{case}: mesh2's row Dead stands among mesh2's status rows");
+            assert_eq!(status.mesh_statuses().await.unwrap().get(&mesh_id("mesh2")), None, "{case}: no Dead row of mesh2 among the fabric-primary's own mesh's rows");
+            let spans = capture.named("rdm.node_admin.mesh.update.via-dead-row");
+            let said: Vec<(String, String)> = spans.iter().map(|s| (s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("writer").cloned().unwrap_or_default())).collect();
+            let expected: Vec<(String, String)> = match case {
+                "surviving-primary-wrote-dead" => vec![("already-applied".into(), "mesh-primary".into()); 2],
+                _ => vec![("applied".into(), "acting-primary".into()), ("already-applied".into(), "acting-primary".into())],
+            };
+            assert_eq!(said, expected, "{case}: one transition at most, and the span names who wrote the row: {spans:?}");
+            eprintln!("{case}: span rdm.node_admin.mesh.update.via-dead-row trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
+        }
+    }
+
     /// CONTRACT (mesh-leave.md, "Resume after the primary's loss", steps 1-2: the lost final
     /// primary's exact Exited is proven and recorded first, then the fabric-primary creates the one
     /// node-admin of a mesh with no live admin; R11: record predecessor Exited first): the proven

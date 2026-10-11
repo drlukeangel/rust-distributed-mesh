@@ -303,8 +303,10 @@ impl SeatStores {
             WriteCutOff::Set { reason, fabric_seat } => {
                 if fabric_seat {
                     seat.extend(self.fabric.fabric_primary_records());
-                    // The fabric-primary seat authorizes other meshes' rows on the shared root too.
+                    // The fabric-primary seat authorizes other meshes' rows on the shared root too
+                    // (their node rows, and the status rows it writes as acting primary).
                     self.nodes.cut_off_other_meshes(&reason).await;
+                    self.status.cut_off_other_meshes(&reason).await;
                 }
                 crate::record_store::cut_off_and_drain(&seat, &reason).await;
             }
@@ -313,6 +315,7 @@ impl SeatStores {
                     s.lift_cut_off();
                 }
                 self.nodes.lift_other_meshes();
+                self.status.lift_other_meshes();
             }
         }
     }

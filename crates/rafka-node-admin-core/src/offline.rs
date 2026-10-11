@@ -729,6 +729,12 @@ pub(crate) mod tests {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.node_exit(node_id, incarnation_id).await
         }
+        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.mesh_status_held_of(mesh, row).await
+        }
+        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status_of(mesh, row).await
+        }
     }
 
     /// CONTRACT (#3051, node-recovery.md "Exited is the proof, recorded durably"): the mesh
@@ -820,6 +826,12 @@ pub(crate) mod tests {
         }
         async fn node_exit(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
             self.inner.node_exit(node_id, incarnation_id).await
+        }
+        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.mesh_status_held_of(mesh, row).await
+        }
+        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status_of(mesh, row).await
         }
     }
 
