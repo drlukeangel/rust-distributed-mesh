@@ -396,6 +396,45 @@ mod tests {
         assert_eq!(who(&shutdown("mesh1"), &moved), "mesh2.admin.1", "once the seat moved, the new fabric primary is the executor");
     }
 
+    /// CONTRACT (fabric-node-lifecycle-elections.md section 5: "a holder that yields or whose exact
+    /// birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of its own mesh";
+    /// section 4.3: the fabric seat leaves its holder's mesh only when every node-admin birth of that
+    /// mesh is gone): the fabric primary P holds both seats of mesh1; mesh1.admin.2 is Ready with a
+    /// HIGHER NodeId than mesh2's primary. P's replace, retire, restart, drain and stop are executed
+    /// by mesh1.admin.2, the admin its own mesh seats once P's birth is gone, never by the
+    /// lowest-NodeId mesh primary of another mesh. With no other admin in mesh1, the seat leaves the
+    /// mesh: mesh2's primary executes.
+    #[test]
+    fn the_fabric_primarys_own_operations_go_to_its_own_meshs_successor_whatever_the_node_ids() {
+        let with = |path: &str, id: &str, primary: bool, fabric: bool| {
+            let mut n = node(path, primary, fabric);
+            n.node_id = rafka_mesh_entity::ids::NodeId::parse(id).unwrap();
+            n.incarnation_id = Some(crate::model::IncarnationId::mint());
+            n
+        };
+        let mut t = mm(true);
+        t.nodes = vec![
+            with("mesh1.admin.1", "5000000000aa", true, true),
+            with("mesh1.admin.2", "9000000000aa", false, false),
+            with("mesh1.rpc.1", "6000000000aa", true, false),
+            with("mesh2.admin.1", "1000000000aa", true, false),
+        ];
+        let p: PathName = "mesh1.admin.1".parse().unwrap();
+        let birth = || crate::model::IncarnationId::mint();
+        for op in [
+            BuildOperation::ReplaceNode { node: p.clone(), from_incarnation: birth() },
+            BuildOperation::RetireNode { node: p.clone() },
+            BuildOperation::RestartNode { node: p.clone() },
+            BuildOperation::DrainNode { node: p.clone(), from_incarnation: birth() },
+            BuildOperation::StopNode { node: p.clone(), from_incarnation: birth() },
+        ] {
+            assert_eq!(who(&op, &t), "mesh1.admin.2", "{op:?}: P's own mesh seats mesh1.admin.2 once P is gone; mesh2.admin.1's lower NodeId is no input");
+        }
+        // mesh1's only admin: no birth of mesh1 survives, so the seat leaves the mesh.
+        t.nodes.retain(|n| n.name.to_string() != "mesh1.admin.2");
+        assert_eq!(who(&BuildOperation::ReplaceNode { node: p.clone(), from_incarnation: birth() }, &t), "mesh2.admin.1");
+    }
+
     #[test]
     fn a_mesh_without_an_admin_primary_has_its_members_run_by_the_fabric_primary() {
         let t = mm(false);
