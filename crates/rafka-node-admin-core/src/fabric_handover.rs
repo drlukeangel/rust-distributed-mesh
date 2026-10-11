@@ -52,11 +52,11 @@
 use crate::fabric_storage::{FabricStorage, HandoverRow, HandoverStage, SeatRow, SeatTransferRow};
 use crate::model::{EndpointId, IncarnationId, NodeId, NodeKind, PathName};
 use crate::topology::Topology;
-use rafka_mesh_entity::{CommittedSeat, LifecycleOp, Seat, SeatHolder};
+use rafka_mesh_entity::{LifecycleOp, Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Backbone, DigestBook, Membership, SeatTaken};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::handover::{FabricPrimaryHandover, FabricPrimaryHandoverReply as Reply, FabricPrimaryHandoverRequest as Request, HandoverBirth, SeatEpoch};
+use rafka_node_rpc_contract::handover::{FabricPrimaryHandover, FabricPrimaryHandoverReply as Reply, FabricPrimaryHandoverRequest as Request, CommittedSeat, HandoverBirth, Seat as WireSeat, SeatEpoch};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -299,7 +299,7 @@ fn births(b: &HandoverBirth) -> String {
 }
 
 fn epoch_of(seats: &[CommittedSeat], seat: Seat) -> String {
-    seats.iter().find(|c| c.seat == seat).map(|c| c.holder.epoch.to_string()).unwrap_or_default()
+    seats.iter().find(|c| c.seat.kind() == seat).map(|c| c.epoch.to_string()).unwrap_or_default()
 }
 
 fn reject_seats(side: &'static str, reason: &'static str, detail: &str, t: &TakeSeatsCall) {
@@ -728,22 +728,22 @@ impl HandoverDoor {
             return refuse("not-authority", format!("{} holds no seat", self.me), Reply::RejectedNotAuthority);
         }
         for (seat, h) in &held {
-            if !t.seats.iter().any(|e| e.seat == *seat) {
-                return refuse("stale-seat", format!("the call does not name the {} seat this admin holds at epoch {}", seat.name(), h.epoch), Reply::RejectedStaleSeat { seat: *seat, expected: 0, current: h.epoch });
+            if !t.seats.iter().any(|e| e.seat == WireSeat::of(*seat, &self.me.mesh)) {
+                return refuse("stale-seat", format!("the call does not name the {} seat this admin holds at epoch {}", seat.name(), h.epoch), Reply::RejectedStaleSeat { seat: WireSeat::of(*seat, &self.me.mesh), expected: 0, current: h.epoch });
             }
         }
         let mut committed = Vec::new();
         for e in &t.seats {
-            let Some((_, h)) = held.iter().find(|(s, _)| *s == e.seat) else {
+            let Some((_, h)) = held.iter().find(|(s, _)| WireSeat::of(*s, &self.me.mesh) == e.seat) else {
                 return refuse("not-authority", format!("{} does not hold the {} seat", self.me, e.seat.name()), Reply::RejectedNotAuthority);
             };
             if h.epoch != e.expected_epoch {
-                return refuse("stale-seat", format!("the {} seat is at epoch {}", e.seat.name(), h.epoch), Reply::RejectedStaleSeat { seat: e.seat, expected: e.expected_epoch, current: h.epoch });
+                return refuse("stale-seat", format!("the {} seat is at epoch {}", e.seat.name(), h.epoch), Reply::RejectedStaleSeat { seat: e.seat.clone(), expected: e.expected_epoch, current: h.epoch });
             }
             let Some(next) = h.epoch.checked_add(1) else {
                 return refuse("not-ready", format!("the {} seat epoch cannot advance", e.seat.name()), Reply::NotReady { reason: format!("{}: the {} seat epoch {} cannot advance", self.me, e.seat.name(), h.epoch) });
             };
-            committed.push(CommittedSeat { seat: e.seat, holder: SeatHolder { mesh: t.successor.mesh.clone(), node_id: t.successor.node_id.clone(), incarnation: t.successor.incarnation.clone(), epoch: next } });
+            committed.push(CommittedSeat { seat: e.seat.clone(), holder: t.successor.clone(), epoch: next });
         }
         // The one row: the fence and the commit. Before it nothing has moved; after it the row is the answer.
         let row = SeatTransferRow { operation: t.operation.clone(), fabric: t.fabric.clone(), build_id: t.build_id.clone(), attempt: t.attempt, holder: t.holder.clone(), successor: t.successor.clone(), expected: t.seats.clone(), seats: committed.clone() };
@@ -752,10 +752,10 @@ impl HandoverDoor {
         }
         self.handovers.transfers.lock().unwrap().insert(t.operation.clone(), row);
         let op = LifecycleOp { build_id: t.build_id.clone(), attempt: t.attempt, operation: t.operation.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.me.clone(), event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
-        let successor = committed[0].holder.clone();
+        let successor = committed[0].record();
         book.take_together(&op, &successor, &committed, true);
         // Build dispatch from the old seat ends at the row: the fence names the executor, the seat's new holder.
-        if committed.iter().any(|c| c.seat == Seat::FabricPrimary) {
+        if committed.iter().any(|c| c.seat.kind() == Seat::FabricPrimary) {
             (self.fence_builds)(format!("the seats moved to {} {} by {}", t.successor.mesh, t.successor.node_id, t.operation), Some(sender.name.to_string())).await;
         }
         self.committed_span(&t, &committed, false);
@@ -792,7 +792,7 @@ impl HandoverDoor {
         let is_holder = |h: &Option<SeatHolder>| h.clone().filter(|h| h.is_birth(&hb.node_id, &hb.incarnation));
         let seats: Vec<SeatEpoch> = [(Seat::MeshPrimary, is_holder(&book.mesh(&holder.mesh))), (Seat::FabricPrimary, is_holder(&book.fabric()))]
             .into_iter()
-            .filter_map(|(seat, h)| h.map(|h| SeatEpoch { seat, expected_epoch: h.epoch }))
+            .filter_map(|(seat, h)| h.map(|h| SeatEpoch { seat: WireSeat::of(seat, &holder.mesh), expected_epoch: h.epoch }))
             .collect();
         if seats.is_empty() {
             return Ok(SeatTransferOutcome::NotAHolder);
@@ -808,7 +808,7 @@ impl HandoverDoor {
             match self.call(&hb.node_id, &req).await {
                 Ok(Reply::SeatsCommitted { seats }) => {
                     let op = LifecycleOp { build_id: t.build_id.clone(), attempt, operation: t.operation.clone(), node_id: hb.node_id.clone(), incarnation: hb.incarnation.clone(), name: holder.name.clone(), event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
-                    let successor = seats.first().map(|c| c.holder.clone()).ok_or_else(|| format!("{} answered SeatsCommitted with no seat", holder.name))?;
+                    let successor = seats.first().map(|c| c.record()).ok_or_else(|| format!("{} answered SeatsCommitted with no seat", holder.name))?;
                     let taken = book.take_together(&op, &successor, &seats, false);
                     tracing::info_span!(
                         "rdm.node_admin.seat.update.via-seats-installed",
@@ -858,11 +858,11 @@ impl HandoverDoor {
             .seats
             .iter()
             .filter_map(|e| {
-                let h = match e.seat {
+                let h = match e.seat.kind() {
                     Seat::MeshPrimary => book.mesh(&t.holder.mesh),
                     Seat::FabricPrimary => book.fabric(),
                 }?;
-                (h.is_birth(&self.node_id, &self.incarnation) && h.epoch > e.expected_epoch).then_some(CommittedSeat { seat: e.seat, holder: h })
+                (h.is_birth(&self.node_id, &self.incarnation) && h.epoch > e.expected_epoch).then(|| CommittedSeat::of(e.seat.kind(), &h))
             })
             .collect();
         if held.len() == t.seats.len() {

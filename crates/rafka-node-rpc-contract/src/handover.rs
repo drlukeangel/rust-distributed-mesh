@@ -11,8 +11,9 @@
 //! P it is about to drain, inside P's mesh ("TakeSeats: Build-driven seat transfer"): P commits one
 //! durable row holding every seat it transfers at each seat's next epoch and answers
 //! [`FabricPrimaryHandoverReply::SeatsCommitted`]; a seat epoch that is not P's is
-//! [`FabricPrimaryHandoverReply::RejectedStaleSeat`]. A seat is the existing
-//! [`rafka_mesh_entity::Seat`] (the mesh is the holder birth's).
+//! [`FabricPrimaryHandoverReply::RejectedStaleSeat`]. [`Seat`], [`CommittedSeat`] and
+//! [`HandoverBirth`] are the doc's shapes (`rafka_mesh_entity::seat::transfer`, which the
+//! `SeatedTogether` gossip frame carries too).
 //!
 //! The doc's reply enum holds nine variants. The family sits on the framework's six outcomes, so
 //! `PeerUnresolved`, `Busy`, `Draining` and `Unauthorized` are appended after the doc's nine;
@@ -20,22 +21,11 @@
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-use rafka_mesh_entity::{CommittedSeat, IncarnationId, NodeId, Seat};
+pub use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat};
 use serde::{Deserialize, Serialize};
 
 /// The fabric-primary handover protocol.
 pub struct FabricPrimaryHandover;
-
-/// An exact birth named by a handover: its mesh, node and incarnation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct HandoverBirth {
-    /// The mesh the birth belongs to.
-    pub mesh: String,
-    /// The birth's node.
-    pub node_id: NodeId,
-    /// The birth's incarnation.
-    pub incarnation: IncarnationId,
-}
 
 /// A seat a [`FabricPrimaryHandoverRequest::TakeSeats`] moves, with the epoch the caller holds for it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

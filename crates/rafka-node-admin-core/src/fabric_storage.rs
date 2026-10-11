@@ -117,7 +117,7 @@ pub struct SeatTransferRow {
     /// The seats and epochs the call named.
     pub expected: Vec<rafka_node_rpc_contract::handover::SeatEpoch>,
     /// Every seat moved, at its committed epoch.
-    pub seats: Vec<rafka_mesh_entity::CommittedSeat>,
+    pub seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat>,
 }
 
 impl SeatTransferRow {
@@ -127,7 +127,7 @@ impl SeatTransferRow {
 
     /// The seat records the row commits.
     pub fn seat_rows(&self) -> impl Iterator<Item = SeatRow> + '_ {
-        self.seats.iter().map(|c| SeatRow { seat: c.seat, holder: c.holder.clone() })
+        self.seats.iter().map(|c| SeatRow { seat: c.seat.kind(), holder: c.record() })
     }
 }
 
@@ -542,8 +542,8 @@ mod tests {
             attempt: 2,
             holder: birth("100000000000", "p"),
             successor: birth("200000000000", "n"),
-            expected: vec![rafka_node_rpc_contract::handover::SeatEpoch { seat: MeshPrimary, expected_epoch: 3 }],
-            seats: vec![rafka_mesh_entity::CommittedSeat { seat: MeshPrimary, holder: n(4) }, rafka_mesh_entity::CommittedSeat { seat: FabricPrimary, holder: n(8) }],
+            expected: vec![rafka_node_rpc_contract::handover::SeatEpoch { seat: rafka_node_rpc_contract::handover::Seat::MeshPrimary { mesh: "mesh1".into() }, expected_epoch: 3 }],
+            seats: vec![rafka_mesh_entity::seat::transfer::CommittedSeat::of(MeshPrimary, &n(4)), rafka_mesh_entity::seat::transfer::CommittedSeat::of(FabricPrimary, &n(8))],
         };
         let d = tempdir();
         let s = FileFabricStorage::open(&d).unwrap();

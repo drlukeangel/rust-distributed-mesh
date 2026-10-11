@@ -146,7 +146,7 @@ fn frames() -> Vec<Frame> {
         Frame::SeatedTogether {
             op: op("replace-node:mesh2.admin.1"),
             successor: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 },
-            seats: [rafka_mesh_entity::Seat::MeshPrimary, rafka_mesh_entity::Seat::FabricPrimary].into_iter().map(|seat| rafka_mesh_entity::CommittedSeat { seat, holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 } }).collect(),
+            seats: [rafka_mesh_entity::Seat::MeshPrimary, rafka_mesh_entity::Seat::FabricPrimary].into_iter().map(|seat| rafka_mesh_entity::seat::transfer::CommittedSeat::of(seat, &rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 })).collect(),
         },
         Frame::StateCommitting { hook: round_hook("commit-state"), forwarded_by: None },
         Frame::StateCommitted { hook: round_hook("commit-state"), forwarded_by: Some("mesh2.admin.1".into()) },

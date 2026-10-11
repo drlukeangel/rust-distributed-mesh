@@ -31,5 +31,5 @@ pub use lifecycle::{LifecycleOp, RoundHook, DEPARTED_RETENTION};
 pub use ids::{EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, CROCKFORD60_LEN, ID_FORMAT, OPAQUE_ID_LEN};
 pub use publisher::PublisherId;
 pub use path::{NodeKind, PathName, PathNameError};
-pub use seat::{CommittedSeat, Seat, SeatHolder};
+pub use seat::{Seat, SeatHolder};
 pub use runtime::{RuntimeFact, RuntimeFactError, RuntimeLocator, RuntimeProvider};

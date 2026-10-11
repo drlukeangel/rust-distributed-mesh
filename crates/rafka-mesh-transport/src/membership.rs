@@ -25,7 +25,8 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rafka_mesh_entity::{CommittedSeat, FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, SeatHolder, DEPARTED_RETENTION};
+use rafka_mesh_entity::seat::transfer::CommittedSeat;
+use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, SeatHolder, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1038,30 +1039,31 @@ impl SeatBook {
     /// persists the held records writes nothing more for them. Returns what happened per seat.
     pub fn take_together(&self, op: &LifecycleOp, successor: &SeatHolder, seats: &[CommittedSeat], durable: bool) -> Vec<SeatTaken> {
         let mut held = self.inner.lock().unwrap();
-        let current = |held: &HeldSeats, c: &CommittedSeat| match c.seat {
-            Seat::FabricPrimary => held.fabric.clone(),
-            Seat::MeshPrimary => held.meshes.get(&c.holder.mesh).cloned(),
+        let current = |held: &HeldSeats, c: &CommittedSeat| match c.mesh_key() {
+            None => held.fabric.clone(),
+            Some(mesh) => held.meshes.get(mesh).cloned(),
         };
         let decided: Vec<SeatTaken> = seats
             .iter()
             .map(|c| match current(&held, c) {
-                Some(h) if h == c.holder => SeatTaken::Same,
-                Some(h) if !c.holder.supersedes(&h) => SeatTaken::Refused { held: h },
+                Some(h) if h == c.record() => SeatTaken::Same,
+                Some(h) if !c.record().supersedes(&h) => SeatTaken::Refused { held: h },
                 previous => SeatTaken::Held { previous },
             })
             .collect();
         if decided.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
-            return seats.iter().map(|c| SeatTaken::Refused { held: current(&held, c).unwrap_or_else(|| c.holder.clone()) }).collect();
+            return seats.iter().map(|c| SeatTaken::Refused { held: current(&held, c).unwrap_or_else(|| c.record()) }).collect();
         }
         for c in seats {
-            match c.seat {
-                Seat::FabricPrimary => held.fabric = Some(c.holder.clone()),
-                Seat::MeshPrimary => {
-                    held.meshes.insert(c.holder.mesh.clone(), c.holder.clone());
+            let record = c.record();
+            match c.mesh_key() {
+                None => held.fabric = Some(record.clone()),
+                Some(mesh) => {
+                    held.meshes.insert(mesh.to_string(), record.clone());
                 }
             }
             if durable {
-                held.durable.insert((c.seat, c.holder.mesh.clone(), c.holder.epoch));
+                held.durable.insert((c.seat.kind(), record.mesh.clone(), record.epoch));
             }
         }
         held.together = Some((op.clone(), successor.clone(), seats.to_vec()));
@@ -1131,12 +1133,12 @@ impl SeatBook {
         // The last transfer, while every seat it moved is still the record held, replays as the one
         // frame: two `Seated` frames would re-open the window between two installs.
         let together = held.together.as_ref().filter(|(_, _, seats)| {
-            seats.iter().all(|c| match c.seat {
-                Seat::FabricPrimary => held.fabric.as_ref() == Some(&c.holder),
-                Seat::MeshPrimary => held.meshes.get(&c.holder.mesh) == Some(&c.holder),
+            seats.iter().all(|c| match c.mesh_key() {
+                None => held.fabric.as_ref() == Some(&c.record()),
+                Some(mesh) => held.meshes.get(mesh) == Some(&c.record()),
             })
         });
-        let in_together = |seat: Seat, h: &SeatHolder| together.is_some_and(|(_, _, seats)| seats.iter().any(|c| c.seat == seat && &c.holder == h));
+        let in_together = |seat: Seat, h: &SeatHolder| together.is_some_and(|(_, _, seats)| seats.iter().any(|c| c.seat.kind() == seat && &c.record() == h));
         let mut out: Vec<Frame> = held.meshes.values().filter(|h| !in_together(Seat::MeshPrimary, h)).map(|h| Frame::Seated { seat: Seat::MeshPrimary, holder: h.clone() }).collect();
         out.sort_by_key(|f| if let Frame::Seated { holder, .. } = f { holder.mesh.clone() } else { String::new() });
         if let Some(h) = held.fabric.as_ref().filter(|h| !in_together(Seat::FabricPrimary, h)) {
@@ -2299,7 +2301,7 @@ impl View {
             return;
         }
         let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) { "refused-not-newer" } else { "held" };
-        let named: Vec<String> = seats.iter().map(|c| format!("{}={}", c.seat.name(), c.holder)).collect();
+        let named: Vec<String> = seats.iter().map(|c| format!("{}={}", c.seat.name(), c.record())).collect();
         tracing::info_span!("rdm.mesh.seat.update.via-seated-together", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, successor = %successor, seats = %named.join(","), via, outcome)
             .in_scope(|| tracing::info!("a committed seat transfer was heard"));
     }
@@ -3260,7 +3262,7 @@ impl Backbone {
     /// The seat holder that committed a Build-driven seat transfer says so once, from its row: the
     /// backbone, its own mesh channel and its own view, before it answers SeatsCommitted.
     pub async fn announce_seats_together(&self, op: LifecycleOp, successor: SeatHolder, seats: Vec<CommittedSeat>) {
-        let named: Vec<String> = seats.iter().map(|c| format!("{}={}", c.seat.name(), c.holder)).collect();
+        let named: Vec<String> = seats.iter().map(|c| format!("{}={}", c.seat.name(), c.record())).collect();
         let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-seated-together", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, successor = %successor, seats = %named.join(","));
         let frame = Frame::SeatedTogether { op, successor, seats };
         let send = async {

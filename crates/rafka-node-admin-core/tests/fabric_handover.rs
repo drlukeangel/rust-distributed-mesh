@@ -13,8 +13,7 @@ use rafka_node_admin_core::fabric_storage::{FabricStorage, FileFabricStorage, Ha
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::handover::{FabricPrimaryHandover, FabricPrimaryHandoverReply as Reply, FabricPrimaryHandoverRequest as Request, HandoverBirth, SeatEpoch};
-use rafka_mesh_entity::CommittedSeat;
+use rafka_node_rpc_contract::handover::{CommittedSeat, FabricPrimaryHandover, FabricPrimaryHandoverReply as Reply, FabricPrimaryHandoverRequest as Request, HandoverBirth, Seat as WireSeat, SeatEpoch};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -671,7 +670,7 @@ fn take_seats(holder: &Admin, successor: &Admin, mesh_epoch: u64, fabric_epoch: 
         fabric: "fabric1".into(),
         holder: birth(holder),
         successor: birth(successor),
-        seats: vec![SeatEpoch { seat: Seat::MeshPrimary, expected_epoch: mesh_epoch }, SeatEpoch { seat: Seat::FabricPrimary, expected_epoch: fabric_epoch }],
+        seats: vec![SeatEpoch { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, expected_epoch: mesh_epoch }, SeatEpoch { seat: WireSeat::FabricPrimary, expected_epoch: fabric_epoch }],
         build_id: build.into(),
         attempt: 1,
         operation: operation.into(),
@@ -679,7 +678,7 @@ fn take_seats(holder: &Admin, successor: &Admin, mesh_epoch: u64, fabric_epoch: 
 }
 
 fn committed_to(a: &Admin, mesh_epoch: u64, fabric_epoch: u64) -> Vec<CommittedSeat> {
-    vec![CommittedSeat { seat: Seat::MeshPrimary, holder: holder_of(a, mesh_epoch) }, CommittedSeat { seat: Seat::FabricPrimary, holder: holder_of(a, fabric_epoch) }]
+    vec![CommittedSeat::of(Seat::MeshPrimary, &holder_of(a, mesh_epoch)), CommittedSeat::of(Seat::FabricPrimary, &holder_of(a, fabric_epoch))]
 }
 
 /// CONTRACT (R-EL1a; node-rpc-envelope.md "TakeSeats"): the executor N calls the holder P. P commits
@@ -751,7 +750,7 @@ async fn a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_b
     let r = send(&f.m, &f.p, take_seats(&f.p, &f.m, 3, 7, "b2", "stop-node:mesh1.admin.1")).await;
     assert!(matches!(&r, Reply::RejectedNotEligible { reason } if reason.contains("mesh1.admin.2")), "{r:?}");
     // N with a stale mesh epoch.
-    assert_eq!(send(&f.n, &f.p, take_seats(&f.p, &f.n, 2, 7, "b1", "drain-node:mesh1.admin.1")).await, Reply::RejectedStaleSeat { seat: Seat::MeshPrimary, expected: 2, current: 3 });
+    assert_eq!(send(&f.n, &f.p, take_seats(&f.p, &f.n, 2, 7, "b1", "drain-node:mesh1.admin.1")).await, Reply::RejectedStaleSeat { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, expected: 2, current: 3 });
     // N naming another birth of P.
     let mut wrong = take_seats(&f.p, &f.n, 3, 7, "b1", "restart-node:mesh1.admin.1");
     if let Request::TakeSeats { holder, .. } = &mut wrong {
