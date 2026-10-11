@@ -866,6 +866,22 @@ impl Estate {
     /// `node`'s data dir. Only the admin that launched a node advertises it,
     /// and that is whichever admin executed its creation, so every live
     /// admin's view is asked.
+    /// The fabric's store root, `<estate store_dir>/<fabric id>/` (R14): the one fabric directory the
+    /// estate's store_dir holds.
+    pub fn fabric_store_root(&self) -> PathBuf {
+        let store = estate_store_dir(&self.root);
+        let fabrics: Vec<PathBuf> = std::fs::read_dir(&store).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        match fabrics.as_slice() {
+            [one] => one.clone(),
+            other => panic!("the estate's store_dir {} holds {} fabric roots, not one: {other:?}", store.display(), other.len()),
+        }
+    }
+
+    /// The node's own connections rows and raw log on the fabric's store root: `connections/<node>/`.
+    pub fn connections_dir_of(&self, node: &str) -> PathBuf {
+        self.fabric_store_root().join("connections").join(node)
+    }
+
     pub async fn data_dir_of(&self, node: &str) -> String {
         let bases: Vec<String> = std::iter::once(self.admin.clone())
             .chain(self.nodes().await.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").filter_map(|n| n["admin_api_base"].as_str().map(String::from)))

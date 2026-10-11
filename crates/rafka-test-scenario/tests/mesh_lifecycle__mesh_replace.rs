@@ -124,11 +124,13 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
         })
         .await;
     }
-    // The durable Node rows are not deleted: mesh1's admin still holds its own row and a contact
-    // row for every other birth it launched.
+    // The durable Node rows are not deleted: mesh1's admin still holds its own row in its data dir,
+    // and the fabric's store root holds the contact row mesh1's primary wrote for every mesh1 birth
+    // (R14: `nodes/<mesh>/` on the shared root, written by that mesh's primary).
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.admin.1's own Node row remains in {mesh1_dir}");
-    for (name, id) in mesh1_ids.iter().filter(|(n, _)| n != "mesh1.admin.1") {
-        assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/contacts/{id}.json")).exists(), "the Node row of {name} ({id}) remains in {mesh1_dir}");
+    let contacts = estate.fabric_store_root().join("nodes").join("mesh1").join("contacts");
+    for (name, id) in mesh1_ids.iter() {
+        assert!(contacts.join(format!("{id}.json")).exists(), "the contact row of {name} ({id}) remains in {}", contacts.display());
     }
     // states.md: the mesh's `leaving` is entered by the leave-mesh down op, and "one commit stores
     // the row, applies it, gossips it and answers the op"; fabric-node-lifecycle.md (2.7): the mesh's
