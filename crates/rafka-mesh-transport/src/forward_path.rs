@@ -10,6 +10,12 @@
 //! source and publisher, and one task sending one decision at a time keeps them in order and
 //! contiguous. The queue is unbounded and never drops: topology forwards are low-rate.
 //!
+//! Only the holder of the forwarder role (the mesh's primary) decides or carries anything. The role
+//! and its term live under the forwarder's lock: taking or losing it clears the baseline and begins
+//! a new term in one step, every decision reads the role under that same lock, and each queued
+//! entry carries the term it was decided in. The sender drops an entry whose term is not the
+//! current one: what a node decided as primary is never sent once it no longer is.
+//!
 //! The forwarder advances its baseline when it decides, before the send. A frame the channel
 //! refuses, or a queue whose task is gone, sets `owes_full`: the next publication of the primary
 //! puts the full of every source into the mesh (the seat's mechanism), with no timer and no retry.
@@ -27,11 +33,12 @@ use tokio::sync::mpsc;
 pub(crate) type Sink = Arc<dyn Fn(Frame) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
 /// One entry of the queue, in the order it was made.
+/// `epoch` is the term of the forwarder role the entry was decided in.
 enum Job {
     /// What the forwarder decided; `source` names the single source of a `source` decision.
-    Forwarded { me: String, source: Option<(String, PublisherId, u64)>, out: Forward },
+    Forwarded { me: String, epoch: u64, source: Option<(String, PublisherId, u64)>, out: Forward },
     /// A lifecycle frame this primary carries into its mesh.
-    Carried { me: String, frame: Frame },
+    Carried { me: String, epoch: u64, frame: Frame },
 }
 
 /// The forwarder, and the one queue its frames are sent from.
@@ -47,7 +54,7 @@ impl ForwardPath {
     /// `owes_full` is the flag whose set state makes the next publication a full of every source.
     pub(crate) fn new(forwarder: Arc<Mutex<Forwarder>>, owes_full: Arc<AtomicBool>, sink: Sink) -> Self {
         let (queue, rx) = mpsc::unbounded_channel();
-        tokio::spawn(send_in_order(rx, sink, owes_full.clone()));
+        tokio::spawn(send_in_order(rx, sink, owes_full.clone(), forwarder.clone()));
         Self { forwarder, queue, owes_full }
     }
 
@@ -55,22 +62,37 @@ impl ForwardPath {
     /// frame queued before it.
     pub(crate) fn source(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) {
         let mut forwarder = self.forwarder.lock().unwrap();
+        let Some(epoch) = forwarder.role() else { return };
         let out = forwarder.source(me, source_mesh, publisher, version, full, now_ms);
         if matches!(out, Forward::Nothing(_)) {
             return;
         }
-        self.enqueue(Job::Forwarded { me: me.to_string(), source: Some((source_mesh.to_string(), publisher.clone(), version)), out });
+        self.enqueue(Job::Forwarded { me: me.to_string(), epoch, source: Some((source_mesh.to_string(), publisher.clone(), version)), out });
     }
 
     /// The first publication of every source in `held` (taking the seat, or owing a full): one
     /// decision, queued behind every frame queued before it.
     pub(crate) fn fulls(&self, me: &str, node_mesh: &str, reason: &'static str, held: &[(String, PublisherId, u64, Full)], now_ms: u64) {
         let mut forwarder = self.forwarder.lock().unwrap();
+        let Some(epoch) = forwarder.role() else { return };
         let frames = forwarder.fulls(me, held, now_ms);
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
         tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %me, mesh = %node_mesh, reason, sources = held.len(), chunks = frames.len(), bytes)
             .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
-        self.enqueue(Job::Forwarded { me: me.to_string(), source: None, out: Forward::Full(frames) });
+        self.enqueue(Job::Forwarded { me: me.to_string(), epoch, source: None, out: Forward::Full(frames) });
+    }
+
+    /// Take (`true`) or lose (`false`) the forwarder role: this mesh's primary. A forwarder that
+    /// takes or loses the seat has published nothing into its mesh: under the forwarder's lock its
+    /// baseline is cleared, a new term begins, and the first publication of every source after
+    /// taking it is owed as a full (gossip.md §3.3). Returns whether the role changed.
+    pub(crate) fn set_role(&self, on: bool) -> bool {
+        let mut forwarder = self.forwarder.lock().unwrap();
+        let changed = forwarder.set_role(on);
+        if changed {
+            self.owes_full.store(on, Ordering::Relaxed);
+        }
+        changed
     }
 
     /// The flag whose set state makes the next publication a full of every source.
@@ -80,7 +102,9 @@ impl ForwardPath {
 
     /// Carry a lifecycle frame into the mesh, behind every frame queued before it.
     pub(crate) fn carry(&self, me: &str, frame: Frame) {
-        self.enqueue(Job::Carried { me: me.to_string(), frame });
+        let forwarder = self.forwarder.lock().unwrap();
+        let Some(epoch) = forwarder.role() else { return };
+        self.enqueue(Job::Carried { me: me.to_string(), epoch, frame });
     }
 
     /// Queue `job`, called while the lock that decided it is held. A queue whose task is gone
@@ -89,7 +113,7 @@ impl ForwardPath {
         if let Err(mpsc::error::SendError(job)) = self.queue.send(job) {
             let (me, frames) = match job {
                 Job::Forwarded { me, out, .. } => (me, frames_of(out)),
-                Job::Carried { me, frame } => (me, vec![frame]),
+                Job::Carried { me, frame, .. } => (me, vec![frame]),
             };
             let cause = anyhow::anyhow!("the forward queue of node {me} has no sender task");
             for frame in &frames {
@@ -133,18 +157,49 @@ fn refused(owes_full: &AtomicBool, me: &str, frame: &Frame, cause: &anyhow::Erro
     }
 }
 
-/// The one sender: each entry in the order it was queued, every frame of it before the next.
-async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, owes_full: Arc<AtomicBool>) {
+/// The one sender: each entry in the order it was queued, every frame of it before the next. An
+/// entry decided in a term of the forwarder role that is not the current one is dropped, named:
+/// the node lost the role (or lost and retook it, owing a full) after deciding it.
+async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, owes_full: Arc<AtomicBool>, forwarder: Arc<Mutex<Forwarder>>) {
     while let Some(job) = rx.recv().await {
+        let epoch = match &job {
+            Job::Carried { epoch, .. } | Job::Forwarded { epoch, .. } => *epoch,
+        };
+        let current = forwarder.lock().unwrap().role();
+        if current != Some(epoch) {
+            role_dropped(job, epoch, current);
+            continue;
+        }
         match job {
-            Job::Carried { me, frame } => {
+            Job::Carried { me, frame, .. } => {
                 if let Err(cause) = sink(frame.clone()).await {
                     refused(&owes_full, &me, &frame, &cause);
                 }
             }
-            Job::Forwarded { me, source, out } => send_forward(&sink, &owes_full, me, source, out).await,
+            Job::Forwarded { me, source, out, .. } => send_forward(&sink, &owes_full, me, source, out).await,
         }
     }
+}
+
+/// An entry decided in term `epoch` of the forwarder role reached the sender in `current` (none:
+/// the node no longer holds the role). It is not sent; the span names what was dropped.
+fn role_dropped(job: Job, epoch: u64, current: Option<u64>) {
+    let (me, kind, frames) = match job {
+        Job::Forwarded { me, out, .. } => (me, "forwarded", frames_of(out)),
+        Job::Carried { me, frame, .. } => (me, "carried", vec![frame]),
+    };
+    let sources: BTreeSet<String> = frames.iter().filter_map(|f| identity(f).map(|(mesh, publisher, version)| format!("{mesh}:{publisher}@{version}"))).collect();
+    let current = current.map(|c| c.to_string()).unwrap_or_else(|| "none".to_string());
+    tracing::info_span!(
+        "rdm.mesh.membership.reject.via-forwarder-role-dropped",
+        node = %me,
+        kind = %kind,
+        decided_in_epoch = epoch,
+        current_epoch = %current,
+        frames = frames.len(),
+        sources = %sources.into_iter().collect::<Vec<_>>().join(","),
+    )
+    .in_scope(|| tracing::info!("decided while this node was its mesh's primary, reached the sender after it lost that role: not sent"));
 }
 
 /// Put what the forwarder decided onto the mesh channel, and name it.
@@ -294,6 +349,7 @@ mod tests {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder { first_takes: Duration::from_millis(100), ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
+        path.set_role(true);
         let p = publisher();
         path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
@@ -346,6 +402,8 @@ mod tests {
         let rec = Recorder { fail: Arc::new(Mutex::new(vec![1])), ..Recorder::default() };
         let owes = Arc::new(AtomicBool::new(false));
         let path = ForwardPath::new(Arc::default(), owes.clone(), rec.sink());
+        path.set_role(true);
+        owes.store(false, Ordering::Relaxed);
         let p = publisher();
         path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         assert_eq!(rec.seen_after(1).await, vec![(0, 10)]);
@@ -374,12 +432,113 @@ mod tests {
         let (queue, rx) = mpsc::unbounded_channel();
         drop(rx);
         let path = ForwardPath { forwarder: Arc::default(), queue, owes_full: owes.clone() };
+        path.forwarder.lock().unwrap().set_role(true);
         let p = publisher();
         path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
         let failed = spans.named("rdm.mesh.membership.update.via-forward-send-failed").await;
         assert_eq!(failed.len(), 1);
         assert!(failed[0]["cause"].contains("no sender task"), "{}", failed[0]["cause"]);
         assert!(owes.load(Ordering::Relaxed));
+    }
+
+    /// A sink whose first send blocks until the test lets it go; every frame it is handed is
+    /// recorded once the send completes.
+    #[derive(Clone)]
+    struct Gate {
+        seen: Arc<Mutex<Vec<(u64, u64)>>>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Semaphore>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Gate {
+        fn new() -> Self {
+            Self { seen: Arc::default(), entered: Arc::default(), release: Arc::new(tokio::sync::Semaphore::new(0)), calls: Arc::default() }
+        }
+
+        fn sink(&self) -> Sink {
+            let me = self.clone();
+            Arc::new(move |f: Frame| {
+                let me = me.clone();
+                Box::pin(async move {
+                    if me.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        me.entered.notify_one();
+                        me.release.acquire().await.unwrap().forget();
+                    }
+                    let key = match &f {
+                        Frame::MembersDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
+                        Frame::Members { topology_version, .. } => (0, *topology_version),
+                        Frame::Digest { .. } => (1, 1),
+                        other => panic!("not a forward: {other:?}"),
+                    };
+                    me.seen.lock().unwrap().push(key);
+                    Ok(())
+                })
+            })
+        }
+    }
+
+    /// CONTRACT: a forward decided while this node was the primary and still queued when it loses
+    /// the role is never sent: the role dropped between the decision and the send, and a node that
+    /// is no longer its mesh's primary puts nothing into the mesh. The full v10 is on the channel
+    /// before the role drops; the delta v10 to v11 and a carried frame queued behind it are not.
+    /// Taking the role again sends the full of the new term, behind nothing of the old one.
+    #[tokio::test]
+    async fn a_forward_queued_before_the_role_dropped_is_never_sent() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = Spans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let ids = vec![(NodeId::mint(), IncarnationId::mint())];
+        let gate = Gate::new();
+        let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
+        let p = publisher();
+        path.set_role(true);
+        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        gate.entered.notified().await;
+        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
+        path.set_role(false);
+        gate.release.add_permits(1);
+        path.set_role(true);
+        path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 12, source_at(&ids, 12))], 3);
+        for _ in 0..400 {
+            if gate.seen.lock().unwrap().contains(&(0, 12)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (0, 12)], "nothing queued before the role dropped reaches the channel");
+        let dropped = spans.named("rdm.mesh.membership.reject.via-forwarder-role-dropped").await;
+        let named: Vec<(String, String, String, String)> = dropped.iter().map(|f| (f["kind"].clone(), f["decided_in_epoch"].clone(), f["current_epoch"].clone(), f["sources"].clone())).collect();
+        assert_eq!(
+            named,
+            vec![("forwarded".to_string(), "1".to_string(), "3".to_string(), format!("mesh1:{p}@11")), ("carried".to_string(), "1".to_string(), "3".to_string(), String::new())],
+            "each dropped entry is named with the term it was decided in and the term that dropped it"
+        );
+    }
+
+    /// CONTRACT: a node that does not hold the role decides nothing: a source moving, a seat full
+    /// and a carried frame put nothing into the mesh, and leave no baseline behind.
+    #[tokio::test]
+    async fn a_node_without_the_role_forwards_nothing() {
+        let ids = vec![(NodeId::mint(), IncarnationId::mint())];
+        let gate = Gate::new();
+        gate.release.add_permits(1);
+        let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
+        let p = publisher();
+        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
+        path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
+        assert!(path.forwarder.lock().unwrap().snapshots().is_empty(), "no baseline is recorded without the role");
+        path.set_role(true);
+        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        for _ in 0..400 {
+            if !gate.seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 11)], "the first publication after taking the role is a full, and nothing before it was sent");
     }
 
     /// CONTRACT: every producer shares the one order: a seat full, a carried lifecycle frame and a
@@ -389,6 +548,7 @@ mod tests {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder { first_takes: Duration::from_millis(100), carried_marker: true, ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
+        path.set_role(true);
         let p = publisher();
         path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
         path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
@@ -412,6 +572,7 @@ mod tests {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let rec = Recorder { first_takes: Duration::from_millis(100), ..Recorder::default() };
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
+        path.set_role(true);
         let (p, q) = (publisher(), publisher());
         let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::Members { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: None, topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, departed: dep }).len();
         assert!(chunks > 1, "the full spans {chunks} chunks");

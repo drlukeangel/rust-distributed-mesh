@@ -645,6 +645,11 @@ pub enum Forward {
 pub struct Forwarder {
     published: HashMap<String, Published>,
     snapshots: u64,
+    /// Whether this node holds the forwarder role (it is its mesh's primary) now.
+    role_on: bool,
+    /// The term of the role: bumped on every take and every loss, so a decision made in one term
+    /// is recognisably not of the next.
+    role_epoch: u64,
 }
 
 impl Forwarder {
@@ -652,6 +657,24 @@ impl Forwarder {
     /// every source is a full.
     pub fn reset(&mut self) {
         self.published.clear();
+    }
+
+    /// Take (`true`) or lose (`false`) the forwarder role. A change clears what was published
+    /// (the first publication of every source after taking the role is a full) and begins a new
+    /// term. Returns whether the role changed.
+    pub fn set_role(&mut self, on: bool) -> bool {
+        if self.role_on == on {
+            return false;
+        }
+        self.reset();
+        self.role_on = on;
+        self.role_epoch += 1;
+        true
+    }
+
+    /// The current term of the forwarder role, while this node holds it.
+    pub fn role(&self) -> Option<u64> {
+        self.role_on.then_some(self.role_epoch)
     }
 
     fn full_frames(&mut self, me: &str, mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) -> Vec<Frame> {
