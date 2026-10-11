@@ -154,3 +154,56 @@ async fn ready_waits_on_a_complete_receipt_for_every_runtime_prerequisite() {
 async fn ready_follows_every_runtime_prerequisite_receipt() {
     create_losing(None).await;
 }
+
+/// The live observer, except the birth's runtime exits the moment readiness is first asked, as a
+/// node that joined and then failed to start does.
+struct ExitsWhenAsked<'a> {
+    live: &'a LiveMesh,
+    provider: &'a ProcessDeploymentProvider,
+    builds: &'a MemoryBuildStateAdapter,
+    build_id: BuildId,
+}
+
+#[async_trait::async_trait]
+impl NodeObserver for ExitsWhenAsked<'_> {
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
+        self.live.joined(node_id, incarnation).await
+    }
+    async fn ready(&self, _node: &Node) -> Result<(), String> {
+        let view = self.builds.read_build(&self.build_id).await.unwrap();
+        let handle = view.steps.iter().find(|r| r.step == CreateStep::DeployRuntime.name()).and_then(|r| r.output.clone()).expect("the runtime was deployed");
+        self.provider.terminate(&serde_json::from_value(handle).unwrap(), TerminationMode::Immediate).await.unwrap();
+        Err("not Ready: the node does not answer".to_string())
+    }
+}
+
+/// CONTRACT: a create whose runtime has exited is refused at `WaitForNodeReady` naming the exit,
+/// as soon as the provider proves it; it does not wait out the readiness deadline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
+    let fabric = FabricId::mint();
+    let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
+    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+    let builds = MemoryBuildStateAdapter::new();
+    let build_id = publish_build(&builds, add_node()).await;
+    let provider = ProcessDeploymentProvider::new();
+    let observer = ExitsWhenAsked { live: &admin.observer, provider: &provider, builds: &builds, build_id: build_id.clone() };
+    let sink = Published::default();
+    let pipeline = DeploymentPipeline {
+        provider: &provider,
+        joins: &admin.joins,
+        observer: &observer,
+        sink: &sink,
+        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+        builds: &builds,
+        template: &template,
+        timeouts: Timeouts { ready: Duration::from_secs(120), ..Timeouts::default() },
+    };
+    let req = CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+    let asked = std::time::Instant::now();
+    let err = pipeline.create(&req).await.err().expect("a create over an exited runtime");
+    assert!(asked.elapsed() < Duration::from_secs(60), "the create waited {:?} on a runtime already proven exited", asked.elapsed());
+    assert_eq!(err.step, CreateStep::WaitForNodeReady.name());
+    assert!(err.reason.contains("runtime exited") && err.reason.contains("before it was Ready"), "{}", err.reason);
+    let _ = std::fs::remove_dir_all(&template.data_root);
+}
