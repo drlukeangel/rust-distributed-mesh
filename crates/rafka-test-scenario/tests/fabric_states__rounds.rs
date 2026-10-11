@@ -8,7 +8,7 @@
 //! wrote.
 
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
-use rafka_test_scenario::faults::{binding_set, binding_set_with_roles, candidate_sha};
+use rafka_test_scenario::faults::{binding_set, binding_set_with_roles, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -310,6 +310,139 @@ async fn two_mesh_climb(mut estate: Estate, shape: Value, members: &[&str]) {
     let climb_states: Vec<&str> = vec!["state-sync", "state-commit", "ready-for-traffic"];
     assert!(seen.windows(3).any(|w| w == climb_states), "FabricStatus went state-sync, state-commit, ready-for-traffic: {seen:?}");
     estate.record_trace_url(&s(&root["trace_id"]));
+}
+
+/// Every row under the fabric's store root, as a path relative to it, sorted. A row is a file: the
+/// directories the stores open are not rows.
+fn rows_on(root: &std::path::Path) -> Vec<String> {
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, root, out);
+            } else {
+                out.push(p.strip_prefix(root).unwrap().display().to_string());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+/// Wait until the fabric is ready-for-traffic under the climb of `build`.
+async fn ready_under(estate: &Estate, build: &str) {
+    wait_for(&format!("the fabric is ready-for-traffic under {build}"), Duration::from_secs(90), || async {
+        let spans = estate.spans();
+        let climbed = named(&spans, "rdm.node_admin.fabric.update.via-state-entered").into_iter().any(|e| e["attributes"]["to"] == "ready-for-traffic" && climb_root_build(&spans, e).as_deref() == Some(build));
+        (climbed && fabric_state(estate).await == "ready-for-traffic").then_some(())
+    })
+    .await;
+}
+
+/// CONTRACT (states.md, Rounds: "Before state-commit, RDM holds its rows in the scratchpad;
+/// state-commit publishes the required held rows to the configured stores"; fabric-state-commit.md
+/// step 2; node-identity-and-state.md §2.7, The write; node-admin-lifecycle.md §7; R14 item 9): while
+/// the fabric is held in state-sync, every node of a two-mesh fabric up and ready (the fabric-primary,
+/// the other mesh's primary and a member in each mesh), the fabric's store root holds no row: each
+/// node holds what it wrote in its scratchpad. The state-commit round publishes it: each node's
+/// commit-state action writes what it holds before its check-in (the fabric-primary the Fabric row,
+/// each mesh primary its Mesh row and its members' Node rows, every node its connections rows). After
+/// that first state-commit the store exists: a node born later writes straight to it, and the next
+/// round's commit-state action of every node has nothing held to publish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node_holds() {
+    let test = "the_store_root_holds_no_row_until_state_commit_publishes_what_each_node_holds";
+    let mut estate = estate_with(test, "hold").await;
+    let door = Door::open(&estate.root, "mesh1.admin.1", "").await;
+    let root = estate.fabric_store_root();
+    let shape = |m: &str, rpc: u32| json!({"name": m, "node_admin": 1, "rpc_node": rpc});
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [shape("mesh1", 1), shape("mesh2", 1)]})).await;
+    assert_eq!(status, 202, "{a}");
+    let first = s(&a["build_id"]);
+    estate.await_build(&first, Duration::from_secs(120)).await;
+    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|n| n.to_string()).collect();
+    let nodes = estate.settled(&want, Duration::from_secs(60)).await;
+    // The application took the two-mesh Build's state-sync round and the door holds its answer: the
+    // fabric cannot reach state-commit.
+    wait_for("the fabric is in state-sync under the two-mesh Build, its answer held at the door", Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        let taken = named(&spans, "rdm.testkit.app.update.via-sync-state-taken").into_iter().any(|t| t["attributes"]["build_id"] == first.as_str());
+        let held = door.cut("state-sync").await["held"] == true;
+        (taken && held && fabric_state(&estate).await == "state-sync").then_some(())
+    })
+    .await;
+    let before = rows_on(&root);
+    estate.artifact("rows-before-state-commit.json", &json!(before));
+    assert!(before.is_empty(), "no row reaches the store root {} before state-commit; found {}: {before:#?}", root.display(), before.len());
+    door.release("state-sync").await;
+    ready_under(&estate, &first).await;
+    let after = rows_on(&root);
+    estate.artifact("rows-after-state-commit.json", &json!(after));
+    let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    let holds = |prefix: &str| after.iter().any(|r| r.starts_with(prefix));
+    assert!(holds("fabric/identity.json") && holds("fabric/pointers/"), "the fabric-primary published the Fabric row: {after:#?}");
+    for mesh in ["mesh1", "mesh2"] {
+        assert!(holds(&format!("meshes/{mesh}.json")), "{mesh}'s primary published its Mesh row: {after:#?}");
+    }
+    for name in &want {
+        let mesh = name.split('.').next().unwrap();
+        assert!(holds(&format!("nodes/{mesh}/contacts/{}.json", id_of[name])), "{mesh}'s primary published {name}'s Node row: {after:#?}");
+        assert!(holds(&format!("connections/{name}/")), "{name} published its connections rows: {after:#?}");
+    }
+
+    // A node born after the first state-commit writes straight to the store, and the second round's
+    // commit-state actions publish nothing: nothing is held any more.
+    let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [shape("mesh1", 1), shape("mesh2", 2)]})).await;
+    assert_eq!(status, 202, "{b}");
+    let second = s(&b["build_id"]);
+    estate.await_build(&second, Duration::from_secs(120)).await;
+    let mut want_later = want.clone();
+    want_later.insert("mesh2.rpc.2".into());
+    estate.settled(&want_later, Duration::from_secs(60)).await;
+    ready_under(&estate, &second).await;
+    let later = rows_on(&root);
+    estate.artifact("rows-after-second-state-commit.json", &json!(later));
+    estate.stop().await;
+    let spans = estate.spans();
+
+    // The first round: each node's commit-state action published what it held, before its check-in.
+    let (first_root, first_climb) = climb_of(&spans, &first);
+    let actions = |climb: &[&Value]| -> std::collections::BTreeMap<String, Value> {
+        climb.iter().filter(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-round-action" && sp["attributes"]["round"] == "commit-state").map(|sp| (s(&sp["attributes"]["node"]), (*sp).clone())).collect()
+    };
+    let published = actions(&first_climb);
+    for name in &want {
+        let a = published.get(name).unwrap_or_else(|| panic!("{name}'s commit-state action is in the first climb: {:?}", published.keys().collect::<Vec<_>>()));
+        assert!(flag(&a["attributes"]["bound"]), "{name}'s commit-state action publishes its scratchpad: {a}");
+        assert!(a["attributes"]["rows"].as_u64().unwrap_or(0) > 0, "{name} published the rows it held: {a}");
+        let stores = s(&a["attributes"]["stores"]);
+        assert!(stores.contains("connections"), "{name} published its connections rows: {stores}");
+        if name.contains(".admin.") {
+            assert!(stores.contains("meshes") && stores.contains("nodes"), "{name}, its mesh's primary, published its Mesh row and its members' Node rows: {stores}");
+        }
+        let check_in = named(&spans, "rdm.node_admin.fabric.update.via-round-hook")
+            .into_iter()
+            .find(|h| h["attributes"]["hook"] == "state-committed" && s(&h["attributes"]["subject_id"]) == id_of[name] && flag(&h["attributes"]["bound"]) && start(h) >= start(first_root));
+        if let Some(h) = check_in {
+            assert!(a["end_unix_nano"].as_u64().unwrap() <= start(h), "{name} published before it checked in: action {a}, check-in {h}");
+        }
+    }
+    assert!(s(&published["mesh1.admin.1"]["attributes"]["stores"]).contains("fabric"), "the fabric-primary published the Fabric row: {}", published["mesh1.admin.1"]);
+
+    // The node born after the first state-commit opened its store on the store root; the second
+    // round's actions had nothing held.
+    assert!(later.iter().any(|r| r.starts_with("connections/mesh2.rpc.2/")), "mesh2.rpc.2 wrote its connections rows straight to the store: {later:#?}");
+    let opened = named(&spans, "rdm.mesh.node.resolve.via-connections-hydrated").into_iter().find(|sp| sp["attributes"]["node"] == "mesh2.rpc.2").expect("mesh2.rpc.2 opened its connections store");
+    assert_eq!(opened["attributes"]["writes_to"], "store-root", "a node born after state-commit writes to the store root: {opened}");
+    let (_, second_climb) = climb_of(&spans, &second);
+    let republished = actions(&second_climb);
+    assert!(!republished.is_empty(), "the second round ran commit-state actions");
+    for (name, a) in &republished {
+        assert_eq!(a["attributes"]["rows"].as_u64(), Some(0), "{name} held nothing to publish in the second round: {a}");
+    }
+    estate.record_trace_url(&s(&first_root["trace_id"]));
 }
 
 fn climb_root_build(spans: &[Value], entered: &Value) -> Option<String> {

@@ -37,8 +37,8 @@ async fn main() {
         }
         // The testkit's application answers the fabric's hooks as `RDM_TEST_APP` says.
         let mode = test_app::Mode::from_env(|k| std::env::var(k).ok()).unwrap_or_else(|e| fail("test app", e));
-        let mut wiring = admin_faults::wiring(faults);
-        wiring.fabric_hooks = test_app::hooks(mode);
+        let mut wiring = admin_faults::wiring(faults.clone());
+        wiring.fabric_hooks = test_app::hooks(mode, faults).unwrap_or_else(|e| fail("test app", e));
         wiring.certs = rafka_node_admin_core::certs::CertChoice::Signer(std::sync::Arc::new(rafka_node_rpc_testkit::test_certs::TestCertSigner));
         wiring
     })
