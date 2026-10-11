@@ -875,10 +875,19 @@ pub const MESH_READY_FOR_TRAFFIC: &str = "ready-for-traffic";
 
 /// The statuses a node holds, each until the next change: a mesh's by its name, the fabric's. A
 /// frame older than the one held is refused by name, the same one again is taken once.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct StatusBook {
     meshes: Arc<Mutex<HashMap<String, MeshStatus>>>,
     fabric: Arc<Mutex<Option<FabricStatus>>>,
+    /// Ticks each time a mesh status is taken: a routing fact (states.md "Routing"). A local
+    /// observation; nothing is sent.
+    mesh_changes: Arc<tokio::sync::watch::Sender<u64>>,
+}
+
+impl Default for StatusBook {
+    fn default() -> Self {
+        Self { meshes: Arc::default(), fabric: Arc::default(), mesh_changes: Arc::new(tokio::sync::watch::Sender::new(0)) }
+    }
 }
 
 impl StatusBook {
@@ -891,6 +900,8 @@ impl StatusBook {
                     return false;
                 }
                 held.insert(mesh.clone(), MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });
+                drop(held);
+                self.mesh_changes.send_modify(|v| *v += 1);
                 true
             }
             Frame::FabricStatus { fabric: f, status, publisher, changed_at_rafka_ms, .. } if f == fabric => {
@@ -916,6 +927,11 @@ impl StatusBook {
             Some(h) => h == offered,
             None => false,
         }
+    }
+
+    /// Ticks each time a mesh status is taken.
+    pub fn mesh_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.mesh_changes.subscribe()
     }
 
     /// The status held for `mesh`.
@@ -3484,13 +3500,15 @@ impl Default for DigestBook {
 }
 
 /// The routing facts a book holds, watched: a held member first held, its birth or status changed,
-/// heard again after silence; a lifecycle overlay opened or closed; a departure. What application
+/// heard again after silence; a lifecycle overlay opened or closed; a departure; a mesh status
+/// taken. What application
 /// routing's view rebuild wakes on, so a fact is applied on receipt (states.md "Routing"). A local
 /// observation of the book; nothing is sent.
 pub struct RoutingWatch {
     heard: tokio::sync::watch::Receiver<u64>,
     births: tokio::sync::watch::Receiver<u64>,
     overlays: tokio::sync::watch::Receiver<u64>,
+    meshes: tokio::sync::watch::Receiver<u64>,
 }
 
 impl RoutingWatch {
@@ -3500,6 +3518,7 @@ impl RoutingWatch {
         self.heard.borrow_and_update();
         self.births.borrow_and_update();
         self.overlays.borrow_and_update();
+        self.meshes.borrow_and_update();
     }
 
     /// Returns when a fact moved since [`RoutingWatch::seen`]. A book that is gone moves nothing:
@@ -3509,6 +3528,7 @@ impl RoutingWatch {
             r = self.heard.changed() => r.is_ok(),
             r = self.births.changed() => r.is_ok(),
             r = self.overlays.changed() => r.is_ok(),
+            r = self.meshes.changed() => r.is_ok(),
         };
         if !ok {
             std::future::pending::<()>().await;
@@ -4211,7 +4231,7 @@ impl DigestBook {
 
     /// The routing facts this book holds, watched ([`RoutingWatch`]).
     pub fn routing_watch(&self) -> RoutingWatch {
-        RoutingWatch { heard: self.heard.subscribe(), births: self.births.subscribe(), overlays: self.overlays.subscribe() }
+        RoutingWatch { heard: self.heard.subscribe(), births: self.births.subscribe(), overlays: self.overlays.subscribe(), meshes: self.statuses.mesh_changes() }
     }
 
     /// Ticks each time a member is first held, changes its birth or its status, or is heard again

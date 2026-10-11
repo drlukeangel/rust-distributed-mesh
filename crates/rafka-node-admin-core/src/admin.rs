@@ -955,10 +955,14 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
 /// (a member silent past the staleness floor, a terminal `Leaving` one gossip interval old).
 const VIEW_POLL: Duration = Duration::from_millis(200);
 
-/// The view's next rebuild is due: after `poll`.
+/// The view's next rebuild is due: at once when a routing fact the book holds moved since the last
+/// rebuild read it (a birth's status, an overlay, a departure, a mesh status: states.md "Routing",
+/// applied on receipt), else after `poll`.
 pub(crate) async fn view_rebuild_due(facts: &mut rafka_mesh_transport::membership::RoutingWatch, poll: Duration) {
-    let _ = facts;
-    tokio::time::sleep(poll).await;
+    tokio::select! {
+        _ = tokio::time::sleep(poll) => {}
+        _ = facts.moved() => {}
+    }
 }
 
 /// Every birth of `fabric` this admin's book holds besides itself, heard a moment ago or only
