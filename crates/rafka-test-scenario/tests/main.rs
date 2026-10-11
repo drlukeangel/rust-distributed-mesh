@@ -71,6 +71,7 @@ mod mesh_elections__role_cohort;
 mod mesh_elections__sticky_seat;
 mod mesh_identity__canonical_ids;
 mod mesh_lifecycle__mesh_create;
+mod mesh_lifecycle__mesh_leave_resume;
 mod mesh_lifecycle__mesh_recover;
 mod mesh_lifecycle__mesh_replace;
 mod mesh_membership__backbone;
