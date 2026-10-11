@@ -565,3 +565,53 @@ fn a_birth_that_leaves_the_view_and_returns_is_claimed_once() {
     assert_eq!(claims.len(), 1, "one claim for one birth in one seat tenure: {claims:#?}");
     assert_eq!(claims[0]["attributes"]["outcome"], "row-claimed", "{claims:#?}");
 }
+
+/// The receipts an earlier attempt of the replace of `mesh1.rpc.1` wrote (`mesh1.admin.2` ran it up
+/// to `RenamePredecessor` and was cut off), and the claim of the next attempt by the same executor:
+/// the Build is running at attempt 2 when this fabric-primary's drive first reads it.
+async fn earlier_attempt_renamed(r: &Rig) {
+    use rafka_node_admin_core::build_state::{BuildAttemptClaim, BuildStepReceipt, StepOutcome};
+    let claim = |attempt| BuildAttemptClaim { build_id: r.build.clone(), attempt, executor: "mesh1.admin.2".into() };
+    r.env.builds.claim_attempt(&claim(1)).await.unwrap();
+    for step in ["NodeDeleting", "DrainNode", "RenamePredecessor"] {
+        let receipt = BuildStepReceipt { build_id: r.build.clone(), attempt: 1, operation: "replace-node:mesh1.rpc.1".into(), step: step.into(), outcome: StepOutcome::Complete, output: None, executor: Some("mesh1.admin.2".into()) };
+        r.env.builds.append_step_receipt(&receipt).await.unwrap();
+    }
+    r.env.builds.claim_attempt(&claim(2)).await.unwrap();
+}
+
+/// CONTRACT: a fabric-primary that takes the seat mid-replace moves the predecessor's row at the
+/// replace's `RenamePredecessor` even though it reads that step only as a receipt of an earlier
+/// attempt (the next attempt reuses the step and sends no frame for it): a completed step's receipt
+/// is the same event as its live frame, and the row writer handles it once. The predecessor's row
+/// moves to `<path>.old` and ends `Deleted`, and the successor takes the `path.name` seeded from it,
+/// never refused by the predecessor's stale row.
+#[test]
+fn a_seat_taken_mid_replace_moves_the_row_from_the_rename_receipt() {
+    let cap = capture();
+    let (old_row, row, pred, succ) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let successor = node("mesh1.rpc.1", false, false);
+        let succ = successor.node_id.clone();
+        let op = "replace-node:mesh1.rpc.1";
+        let heard = Act::View(Box::new(move |v: &mut Topology| {
+            v.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
+            v.nodes.push(successor);
+        }));
+        let acts = vec![Act::Frame(op, "AllocateIdentity"), heard, Act::Frame(op, "WaitForNodeReady"), Act::Frame(op, "NodeDeleted"), Act::Frame(op, "ReleaseStorage"), Act::Frame(op, "Complete")];
+        let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
+        let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        earlier_attempt_renamed(&r).await;
+        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
+        (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ)
+    });
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Deleted, config: tier("gold") }), "the predecessor's row moved to .old at the receipt and says Deleted");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the successor holds the path.name, seeded from the .old row");
+    let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
+    let outcomes: Vec<&str> = renames.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
+    assert_eq!(outcomes, vec!["renamed"], "{renames:#?}");
+    let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
+    assert_eq!(deleted.len(), 1, "{deleted:#?}");
+    assert_eq!((deleted[0]["attributes"]["subject"].as_str(), deleted[0]["attributes"]["held_from"].as_str()), (Some("mesh1.rpc.1.old"), Some("node-deleting")), "{deleted:#?}");
+}
