@@ -1234,6 +1234,46 @@ mod tests {
         assert_eq!(auth.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
     }
 
+    /// CONTRACT (node-rpc.md §14; round.rs `fabric_missing`: "a report counts only from the exact
+    /// birth that is the mesh's primary now"): a Mesh's `ReadyForTraffic` declaration is decided for
+    /// the mesh it names, whoever sends it, and the fabric-primary keeps it as that mesh's report from
+    /// the birth that sent it. A later declaration of the same mesh from another birth (a member, an
+    /// old primary) never displaces the primary's report, and a declaration from a node of mesh1 is
+    /// never kept as mesh1's report. What must NOT happen: the primary's report lost, which holds the
+    /// fabric round on `report-of-another-birth` with nothing owed to re-send it.
+    #[tokio::test]
+    async fn a_mesh_report_is_kept_for_the_mesh_it_names_and_the_birth_that_sent_it() {
+        let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {
+            let mut n = node(name);
+            n.kind = NodeKind::NodeAdmin;
+            n.mesh = mesh.into();
+            n.status = crate::model::NodeStatus::ReadyForTraffic;
+            n.is_primary = primary;
+            n.is_fabric_primary = fabric_primary;
+            n.endpoint_id = Some(EndpointId(format!("key-{name}")));
+            n
+        };
+        let fp = admin("mesh1.admin.1", "mesh1", true, true);
+        let m1_member = admin("mesh1.admin.2", "mesh1", false, false);
+        let m2_primary = admin("mesh2.admin.1", "mesh2", true, false);
+        let m2_member = admin("mesh2.admin.2", "mesh2", false, false);
+        let m2_id = MeshId::mint();
+        let mut view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![fp.clone(), m1_member.clone(), m2_primary.clone(), m2_member.clone()],
+        };
+        view.meshes.push(crate::model::Mesh { id: Some(m2_id.clone()), name: "mesh2".into(), status: crate::model::ScopeStatus::ReadyForTraffic });
+        let auth = authority_of(&fp, view);
+        let ready = StatusRequest::DeclareMeshState { mesh_id: m2_id.clone(), state: MeshState::ReadyForTraffic };
+        assert_eq!(auth.apply(Some(m2_primary.clone()), &ready).await, R::Applied);
+        assert_eq!(auth.apply(Some(m2_member.clone()), &ready).await, R::AlreadyApplied, "decided for mesh2, whoever sends it");
+        assert_eq!(auth.apply(Some(m1_member.clone()), &ready).await, R::AlreadyApplied);
+        let reports = auth.declared.lock().unwrap().reports.clone();
+        assert_eq!(reports.get("mesh2").map(|r| r.incarnation.clone()), m2_primary.incarnation_id.clone(), "the primary's report stands: {reports:?}");
+        assert!(!reports.contains_key("mesh1"), "a declaration of mesh2 is never mesh1's report: {reports:?}");
+    }
+
     fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rafka_mesh_entity::MeshDigest {
         rafka_mesh_entity::MeshDigest {
             fabric_id: FabricId::mint(),
