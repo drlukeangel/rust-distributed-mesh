@@ -459,8 +459,20 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
 /// and that runtime's own terminal status. A birth no row names, another runtime, or a runtime not
 /// proven exited proves nothing.
 pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::DeploymentProvider, rows: &[crate::storage::RuntimeRow], lost: &RosterBirth, runtime: &RuntimeProof) -> Result<TerminalReceipt, String> {
-    let _ = (provider, rows, runtime);
-    Err(format!("this view holds no record of {} {}", lost.node, lost.incarnation_id))
+    let named = format!("{} {}", lost.node, lost.incarnation_id);
+    let row = rows
+        .iter()
+        .find(|r| r.node_id.to_string() == lost.node_id && r.incarnation_id.0 == lost.incarnation_id)
+        .ok_or_else(|| format!("no durable runtime row of {named} is held ({} rows): its runtime is unknown", rows.len()))?;
+    if &RuntimeProof::of(&row.runtime) != runtime {
+        return Err(format!("the durable runtime row of {named} names the runtime {:?}, not the one admitted for it {runtime:?}", RuntimeProof::of(&row.runtime)));
+    }
+    let handle = crate::deployment::provider::adopt(provider, &row.runtime).map_err(|r| format!("the runtime of {named} cannot be adopted in this provider domain: {r}"))?;
+    let inspected = provider.inspect(&handle).await;
+    match crate::deployment::provider::exit_proof(inspected, &row.runtime, row.data_dir.as_deref().map(std::path::Path::new), &lost.incarnation_id) {
+        crate::deployment::provider::DeploymentStatus::Exited { code } => Ok(TerminalReceipt { node: lost.node.clone(), node_id: lost.node_id.clone(), incarnation_id: lost.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: code }),
+        other => Err(format!("the runtime of {named} is not proven exited: {other:?}")),
+    }
 }
 
 /// The fabric-primary's resume after the leaving mesh's final primary `admitted.final_primary` was
