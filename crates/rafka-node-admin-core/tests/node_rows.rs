@@ -595,3 +595,59 @@ fn a_rename_handled_again_after_the_successor_took_the_name_leaves_its_row() {
     let outcomes: Vec<&str> = renames.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
     assert_eq!(outcomes, vec!["already-moved"], "the rename is the predecessor's, read by its node id from the NodeDeleting receipt, and it was made: {renames:#?}");
 }
+
+/// The recovery of `mesh1.rpc.1` (node-recovery.md steps 3-4): the exited birth's `NodeDeleting`,
+/// its departure, its `NodeDeleted`, and the new node at the same `path.name` heard `before` or
+/// after the `NodeDeleted` frame reaches the fabric-primary. Returns the row at `mesh1.rpc.1`, the
+/// exited node and the new one.
+async fn recovered(new_heard_first: bool) -> (Option<NodeRow>, NodeId, NodeId) {
+    let op = "recover-node:mesh1.rpc.1";
+    let birth = node("mesh1.rpc.1", false, false);
+    let born = birth.node_id.clone();
+    let heard = Act::View(Box::new(move |v: &mut Topology| v.nodes.push(birth)));
+    let mut acts = vec![Act::Frame(op, "NodeDeleting"), gone("mesh1.rpc.1")];
+    if new_heard_first {
+        acts.extend([heard, Act::Frame(op, "NodeDeleted")]);
+    } else {
+        acts.extend([Act::Frame(op, "NodeDeleted"), heard]);
+    }
+    acts.extend([Act::Frame(op, "WaitForNodeReady"), Act::Frame(op, "Complete")]);
+    let storage = Arc::new(MemoryNodesStorage::default());
+    let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
+    let exited = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap().node_id.clone();
+    // The exited birth's row, as its create claimed it.
+    r.storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }).await.unwrap();
+    assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
+    (r.storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap(), exited, born)
+}
+
+/// CONTRACT (node-recovery.md step 3: "the node's mesh-primary writes the row with status Deleted";
+/// step 4: "Its config is seeded from the Deleted row at that path.name"): a recovery's
+/// `NodeDeleted` leaves the exited node's row `Deleted`, so the new node created at the same
+/// `path.name` claims it, seeded from it: the new node id, its status, the exited node's config.
+/// One `delete.via-node-row` span (`row-deleted`) and one `create.via-node-row` span
+/// (`row-seeded`, seeded from the exited node) name the two writes.
+#[test]
+fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_seeded() {
+    let cap = capture();
+    let (row, exited, born) = cap.run(recovered(false));
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the new node holds the row, seeded from the exited node's");
+    let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
+    assert_eq!(deleted.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(exited.as_str()), Some("row-deleted"))], "{deleted:#?}");
+    let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["seeded_from"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some(exited.as_str()), Some("row-seeded"))], "{created:#?}");
+}
+
+/// CONTRACT: the new node of a recovery that enters the fabric-primary's view before the
+/// recovery's `NodeDeleted` reaches it finds the exited node's live row at its `path.name` (its
+/// claim is refused, `name-held`); the `NodeDeleted` that frees the name hands it to the birth the
+/// view holds there, through the one claim every birth takes, seeded from the `Deleted` row.
+#[test]
+fn a_recovered_node_heard_before_the_exited_ones_node_deleted_takes_the_name_at_it() {
+    let cap = capture();
+    let (row, exited, born) = cap.run(recovered(true));
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the new node holds the row once the name is free");
+    let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some("name-held")), (Some(born.as_str()), Some("row-seeded"))], "{created:#?}");
+    assert_eq!(created[1]["attributes"]["seeded_from"].as_str(), Some(exited.as_str()));
+}
