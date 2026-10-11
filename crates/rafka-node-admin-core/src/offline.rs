@@ -194,16 +194,25 @@ impl OfflineTickle {
 }
 
 /// Write the status the mesh primary holds for a silent birth (`PendingReconnect`, `Dead`, or
-/// `None` once it is heard again) on that birth's row in nodes.storage. Returns whether a row was
-/// put.
+/// `None` once it is heard again) on that birth's row in nodes.storage. The row is the record the
+/// admin holds for the birth, put whole; the stored row is never read back and changed (the banned
+/// read-modify-write). A held record with no endpoint, address or incarnation yet has no row to
+/// put: that is named, never a silent skip.
 pub(crate) async fn put_silence_status(store: &dyn crate::storage::NodesStorage, node: &crate::model::Node, status: Option<crate::model::NodeStatus>) -> Result<bool, String> {
-    let contacts = store.contacts().await.map_err(|e| format!("nodes.storage: {e}"))?;
-    let Some(mut row) = contacts.into_iter().find(|c| c.node_id == node.node_id) else { return Ok(false) };
-    if row.status == status {
-        return Ok(false);
-    }
-    row.status = status;
-    store.put_contact(&row).await.map_err(|e| format!("nodes.storage: {e}"))?;
+    let (Some(incarnation_id), Some(endpoint_id), Some(transport_addr)) = (node.incarnation_id.clone(), node.endpoint_id.clone(), node.transport_addr) else {
+        return Err(format!("{} ({}) holds no incarnation, endpoint id or transport address: no row to put", node.name, node.node_id));
+    };
+    let row = crate::storage::NodeRecord {
+        node_id: node.node_id.clone(),
+        name: node.name.clone(),
+        incarnation_id,
+        endpoint_id,
+        transport_addr,
+        listeners: node.listeners.clone(),
+        declared: node.declared.clone(),
+        status,
+    };
+    store.put_contact(&row).await.map_err(|e| format!("nodes.storage put of {} ({}): {e}", node.name, node.node_id))?;
     Ok(true)
 }
 
