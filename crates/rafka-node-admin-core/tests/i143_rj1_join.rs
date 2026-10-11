@@ -119,8 +119,9 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
 /// both incarnations; a digest of a node this admin deployed nothing for is `NotAuthority`;
 /// neither installs an address or completes the wait for the node's report. The matching digest
 /// installs exactly the address the node reported (the OS-assigned port), and that report is what
-/// the deployment's `WaitForBind` receives. A digest sent by an endpoint other than the one it
-/// names is `Unauthorized`.
+/// the deployment's `WaitForBind` receives. Nothing inside the mesh checks who is calling
+/// (node-rpc.md §14): a digest sent by an endpoint other than the one it names is decided on the
+/// digest, as the node's own is.
 #[test]
 fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match() {
     let cell = "join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match";
@@ -181,7 +182,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         assert_eq!(*installed.lock().unwrap(), vec![good.node.transport_addr], "the reported address is installed for the key");
         assert_eq!(reported.borrow().as_ref().map(|d| d.node.transport_addr), Some(good.node.transport_addr), "WaitForBind receives the node's own report");
         let forged = door.serve(EndpointId("someone-else".into()), ask(&good)).await;
-        assert!(matches!(forged, JoinReply::Unauthorized { .. }), "{forged:?}");
+        assert!(matches!(forged, JoinReply::Joined { .. }), "a join is decided on its digest, never on its caller: {forged:?}");
         json!({
             "cell": cell,
             "mismatch": format!("{mismatch:?}"),

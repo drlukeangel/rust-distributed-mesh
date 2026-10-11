@@ -52,14 +52,14 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             timeouts: Timeouts::default(),
         };
         let node: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
-        let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, data_dir: None, held_runtimes: Vec::new() };
+        let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
 
         let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
         let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
         let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral
         pipeline
-            .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, exit: None })
+            .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), exit: None })
             .await
             .unwrap_or_else(|e| panic!("retire: {e}"));
 
@@ -145,7 +145,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         release.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, released).unwrap();
         let again_build = publish_build(&builds, release).await;
         pipeline
-            .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, exit: None })
+            .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), exit: None })
             .await
             .unwrap();
         assert!(matches!(provider.inspect(&again.handle).await, DeploymentStatus::Exited { .. }), "the delete ended the runtime");

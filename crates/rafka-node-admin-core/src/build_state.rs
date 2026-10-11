@@ -1273,15 +1273,16 @@ mod tests {
         let open = in_flight_ops(&facts, &fold(&facts)).ops;
         assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");
 
-        // A restart's pre-event is a step of its retire half; the restart is open until its
-        // create half (`restart-node:<path>`) completes, whoever reads the facts.
+        // A restart is one operation (`restart-node:<path>`): its pre-event opens it, the stop of the
+        // live process leaves it open, and only its `Complete`, after the start, closes it, whoever
+        // reads the facts.
         let c = rafka_mesh_entity::LifecycleOp { operation: "restart-node:mesh1.rpc.3".into(), name: "mesh1.rpc.3".parse().unwrap(), ..op("mesh1.rpc.3") };
         let mut facts = facts;
-        facts.push(with("retire-node:mesh1.rpc.3", "NodeRestarting", &c));
-        facts.push(with("retire-node:mesh1.rpc.3", "TerminateRuntime", &c));
+        facts.push(with("restart-node:mesh1.rpc.3", "NodeRestarting", &c));
+        facts.push(with("restart-node:mesh1.rpc.3", "AwaitNodeLeft", &c));
         assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![b.clone(), c.clone()], "a successor holds the restart from the Build facts alone");
         facts.push(with("restart-node:mesh1.rpc.3", "Complete", &c));
-        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![b], "the restart's create half completing closes it");
+        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![b], "the restart's Complete closes it");
         assert!(in_flight_ops(&facts, &fold(&facts)).unrecognised.is_empty());
         assert_eq!(
             in_flight_ops(&facts, &fold(&facts)).restarts_completed,
@@ -1315,7 +1316,7 @@ mod tests {
             BuildFact::Step(BuildStepReceipt {
                 build_id: BuildId("b1".into()),
                 attempt: op.attempt,
-                operation: format!("retire-node:{}", op.name),
+                operation: op.operation.clone(),
                 step: "NodeRestarting".into(),
                 outcome: StepOutcome::Complete,
                 output: Some(serde_json::to_value(op).unwrap()),

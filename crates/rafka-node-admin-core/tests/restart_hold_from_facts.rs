@@ -112,7 +112,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
         // The pre-event enters the log: the hold opens on the exact birth, the overlay watch ticks.
         let mut overlays = book.overlay_changes();
         overlays.borrow_and_update();
-        builds.append_step_receipt(&receipt(format!("retire-node:{path}"), "NodeRestarting")).await.unwrap();
+        builds.append_step_receipt(&receipt(op.operation.clone(), "NodeRestarting")).await.unwrap();
         tokio::time::timeout(NEVER, overlays.changed()).await.expect("the NodeRestarting receipt entered the log and no hold opened: the hold waits on a round").unwrap();
         assert_eq!(book.restart_of(node_id.as_str(), &incarnation).map(|o| o.operation), Some(op.operation.clone()), "the hold is the restart's, on the exact birth");
 
@@ -287,7 +287,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
         let pre_event = |op: &LifecycleOp| BuildStepReceipt {
             build_id: build_id.clone(),
             attempt: op.attempt,
-            operation: format!("retire-node:{}", op.name),
+            operation: op.operation.clone(),
             step: "NodeRestarting".into(),
             outcome: StepOutcome::Complete,
             output: Some(serde_json::to_value(op).unwrap()),

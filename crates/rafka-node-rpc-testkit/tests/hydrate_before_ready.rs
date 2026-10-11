@@ -124,8 +124,8 @@ fn spans_named(spans: &Spans, name: &str) -> Vec<std::collections::BTreeMap<Stri
     spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect()
 }
 
-/// One downward command from the authority to the node, once the node holds the authority as a
-/// node-admin in its own book (the node refuses a command from a stranger).
+/// One downward command from the authority to the node, answered by the node whoever sends it
+/// (node-rpc.md §14: nothing inside the mesh checks who is calling).
 async fn command(b: &Birth, req: impl Fn(&MeshDigest) -> StatusRequest) -> StatusReply {
     let book = &b.admin.observer.membership.book;
     until(book, "the authority heard the node's digest", |book| book.get(b.launch.node_id.as_str()).is_some()).await;
@@ -138,14 +138,10 @@ async fn command(b: &Birth, req: impl Fn(&MeshDigest) -> StatusRequest) -> Statu
         transport_addr: d.node.transport_addr,
     });
     let target = NodeTarget::ExactNode(d.node.node_id.clone());
-    let deadline = tokio::time::Instant::now() + WRONG;
-    loop {
-        let (out, _) = b.admin.observer.client.call::<Status>(&target, &req(&d), &CallOptions::default()).await;
-        match out {
-            RpcOutcome::Reply(r) if !matches!(r.value(), StatusReply::RejectedNotAuthority { .. }) => return r.into_value(),
-            _ if tokio::time::Instant::now() < deadline => tokio::time::sleep(Duration::from_millis(50)).await,
-            other => panic!("the node never took the command: {other:?}"),
-        }
+    let (out, _) = b.admin.observer.client.call::<Status>(&target, &req(&d), &CallOptions::default()).await;
+    match out {
+        RpcOutcome::Reply(r) => r.into_value(),
+        other => panic!("the node never took the command: {other:?}"),
     }
 }
 

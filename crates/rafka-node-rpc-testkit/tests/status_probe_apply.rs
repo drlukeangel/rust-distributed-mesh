@@ -60,7 +60,7 @@ fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
             timeouts: Timeouts::default(),
         };
         let created = pipeline
-            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, data_dir: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
             .await
             .expect("the node is born");
         let node = created.node.clone();
@@ -84,18 +84,9 @@ fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
             }
         };
 
-        // The node admits a downward operation only from a node-admin it holds in its own membership
-        // book; the admin's digest reaches it by gossip after its join. Probe until the node has heard
-        // the admin (bounded), then hold it to its answer.
+        // The node answers the probe whoever sends it (node-rpc.md §14): the first probe is answered.
         let probe = StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-        let first = loop {
-            let reply = call(probe.clone()).await;
-            if !matches!(reply, StatusReply::RejectedNotAuthority { .. }) || tokio::time::Instant::now() >= deadline {
-                break reply;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        };
+        let first = call(probe.clone()).await;
         assert_eq!(first, StatusReply::Current { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic });
         // A stale incarnation: refused with the one held.
         let stale = StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: IncarnationId::mint() };

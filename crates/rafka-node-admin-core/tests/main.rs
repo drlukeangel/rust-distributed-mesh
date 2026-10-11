@@ -68,6 +68,7 @@ mod readiness_gates;
 mod receipt_refusal;
 mod recovery_admission;
 mod restart_hold_from_facts;
+mod restart_one_operation;
 mod seat_transfer_step;
 mod status_declarations;
 mod status_seat_fold;

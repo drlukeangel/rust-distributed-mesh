@@ -384,7 +384,7 @@ impl FabricRounds {
         let mut out = mesh_blockers(view, &meshes, &self.env.records.planned());
         let primaries: Vec<(String, Option<IncarnationId>, bool)> =
             meshes.iter().map(|m| { let p = view.cohort_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
-        let reports = self.env.records.declared.lock().unwrap().reports.clone();
+        let reports = crate::round::reports_of(&self.env.records.declared.lock().unwrap(), view, meshes.iter().map(String::as_str));
         out.extend(crate::round::fabric_missing(&primaries, self.env.records.declare_gate(), &reports));
         out
     }
@@ -549,7 +549,7 @@ impl FabricRounds {
         // This admin's own mesh: it is the mesh primary of it, so it runs that mesh's round itself.
         if !self.mesh_book.is_open(key) {
             self.mesh_book.open(key);
-            self.spawn_mesh_driver(key.clone(), None, parent.clone());
+            self.spawn_mesh_driver(key.clone(), false, parent.clone());
         }
         for (node_id, expected, event) in self.fabric_book.take_due(key, view) {
             if node_id == self.env.node_id {
@@ -611,22 +611,22 @@ impl FabricRounds {
     // ----------------------------------------------------------------- the mesh primary
 
     /// Drive `key` as this mesh's primary: command every planned member of this mesh, run this
-    /// admin's own action, and when the checklist is complete report upward. `commander` is the
-    /// fabric-primary that sent the down op; `None` when this admin is the fabric-primary and the
-    /// mesh round is its own.
-    fn spawn_mesh_driver(self: &Arc<Self>, key: RoundKey, commander: Option<NodeId>, parent: tracing::Span) {
+    /// admin's own action, and when the checklist is complete report upward. `owes_upward`: the
+    /// round came down from the fabric-primary, which the completion is owed to; `false` when this
+    /// admin is the fabric-primary and the mesh round is its own.
+    fn spawn_mesh_driver(self: &Arc<Self>, key: RoundKey, owes_upward: bool, parent: tracing::Span) {
         if !self.drivers.lock().unwrap().insert(key.clone()) {
             return;
         }
         let this = self.clone();
         tokio::spawn(async move {
             let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-mesh-round", node = %this.env.me, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, "otel.kind" = "internal");
-            this.drive_mesh(&key, commander).instrument(span.clone()).await;
+            this.drive_mesh(&key, owes_upward).instrument(span.clone()).await;
             this.drivers.lock().unwrap().remove(&key);
         });
     }
 
-    async fn drive_mesh(self: &Arc<Self>, key: &RoundKey, commander: Option<NodeId>) {
+    async fn drive_mesh(self: &Arc<Self>, key: &RoundKey, owes_upward: bool) {
         let mesh = self.env.me.mesh.clone();
         let mut own_done = false;
         let round_span = tracing::Span::current();
@@ -681,8 +681,8 @@ impl FabricRounds {
                 _ = view_tick.changed() => {}
             }
         }
-        match commander {
-            Some(_) => {
+        match owes_upward {
+            true => {
                 // The completion is owed to the fabric-primary as the view names it now, sent on every
                 // eligible event, and owed again to a successor (R-S2).
                 let req = key.kind.up(key, self.env.node_id.clone(), self.env.incarnation.clone());
@@ -691,7 +691,7 @@ impl FabricRounds {
                 self.env.declarer.owe_in(Key::Round(format!("{}/{}/{}/{}", key.kind.completion(), key.fabric_id, key.build_id, key.attempt)), Authority::FabricPrimary, req, crate::build_claim::current_context().traceparent);
                 self.env.wake.poke();
             }
-            None => {
+            false => {
                 self.fabric_book.check_in_local(key, &self.env.node_id, &self.env.incarnation);
                 self.climb_wake.notify_one();
                 tracing::info!("this admin's own mesh round is complete");
@@ -712,7 +712,7 @@ impl FabricRounds {
     pub async fn serve(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
         let Some(op) = RoundOp::of(req) else { return StatusReply::NotReady { reason: format!("{} is not a round op", req.op()) } };
         let me = self.env.me.to_string();
-        let reply = if op.is_down { self.serve_down(view, sender, req, &op, own).await } else { self.serve_up(view, sender, req) };
+        let reply = if op.is_down { self.serve_down(view, sender, req, &op, own).await } else { self.serve_up(view, req, &op) };
         tracing::info_span!(
             "rdm.node_admin.status.update.via-round-op",
             node = %me,
@@ -728,11 +728,15 @@ impl FabricRounds {
         reply
     }
 
+    /// A round command naming this admin, served by what this admin is in its own view, whoever
+    /// calls (node-rpc.md §14): a mesh-primary runs its mesh's round and reports it to the
+    /// fabric-primary; any other admin takes it as a member and checks in with its mesh's primary
+    /// (fabric-state-commit.md: "Each member checks in with its primary, node → mesh-primary →
+    /// fabric-primary"). The fabric-primary carries rounds down and is not a receiver of one.
     async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
         let Some(me) = view.own(&self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
-        let Some(sender) = sender else { return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } } };
         if *op.node_id != me.node_id {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } };
         }
@@ -746,12 +750,17 @@ impl FabricRounds {
         if op.operation != want {
             return StatusReply::NotReady { reason: format!("{}: {} names operation {}, the round's is {want}", self.env.me, req.op(), op.operation) };
         }
-        if sender.is_fabric_primary && sender.node_id != me.node_id && me.is_primary {
-            // This admin is a mesh primary and the fabric-primary commands its mesh.
+        if me.is_fabric_primary {
+            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("a mesh-primary the fabric-primary commands, or a member of a mesh: {} holds the fabric seat and carries {} down", self.env.me, req.op()) } };
+        }
+        if me.is_primary {
+            // This admin is a mesh primary: it runs its mesh's round and reports to the fabric-primary.
             let key = op.key();
-            self.env.wake.addressed_by(&sender.node_id);
+            if let Some(from) = sender {
+                self.env.wake.addressed_by(&from.node_id);
+            }
             if self.mesh_book.open(&key) {
-                self.spawn_mesh_driver(key, Some(sender.node_id.clone()), tracing::Span::current());
+                self.spawn_mesh_driver(key, true, tracing::Span::current());
                 StatusReply::Applied
             } else {
                 // The round is held: a successor fabric-primary asking again is owed the completion
@@ -759,30 +768,37 @@ impl FabricRounds {
                 self.env.wake.poke();
                 StatusReply::AlreadyApplied
             }
-        } else if sender.kind == NodeKind::NodeAdmin && sender.is_primary && sender.mesh == me.mesh && sender.node_id != me.node_id {
-            match own {
-                Some(own) => own.serve(&sender.node_id, None, req).await.expect("a round op"),
-                None => StatusReply::NotReady { reason: format!("{} has not yet joined its mesh; {} from {} is refused", self.env.me, req.op(), sender.name) },
-            }
         } else {
-            StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender.name.to_string() } }
+            // A member: it checks in with its mesh's primary, as this admin's view names it.
+            let primary = view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).filter(|p| p.node_id != me.node_id).map(|p| p.node_id.clone());
+            match (own, primary) {
+                (Some(own), Some(primary)) => own.serve(Some(&primary), None, req).await.expect("a round op"),
+                (None, _) => StatusReply::NotReady { reason: format!("{} has not yet joined its mesh; {} is refused", self.env.me, req.op()) },
+                (Some(_), None) => StatusReply::NotReady { reason: format!("{}: its view names no primary of {} to check {} in to", self.env.me, me.mesh, req.op()) },
+            }
         }
     }
 
-    fn serve_up(&self, view: &Topology, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
+    /// A check-in, decided for the subject it names as this admin's view holds it, whoever calls
+    /// (node-rpc.md §14): a mesh-primary's for its mesh counts at the fabric-primary, a member's at
+    /// its mesh's primary.
+    fn serve_up(&self, view: &Topology, req: &StatusRequest, op: &RoundOp<'_>) -> StatusReply {
         let Some(me) = view.own(&self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
-        let who = sender.map(|n| (&n.node_id, n.incarnation_id.as_ref(), n.name.to_string()));
-        let who_ref = who.as_ref().map(|(a, b, c)| (*a, *b, c.as_str()));
-        match sender {
-            Some(s) if me.is_fabric_primary && s.kind == NodeKind::NodeAdmin && s.is_primary && s.mesh != me.mesh => {
-                let reply = self.fabric_book.check_in(&self.env.me.to_string(), who_ref, req);
-                self.climb_wake.notify_one();
-                reply
-            }
-            Some(s) if me.is_primary && s.mesh == me.mesh && s.node_id != me.node_id => self.mesh_book.check_in(&self.env.me.to_string(), who_ref, req),
-            _ => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the fabric-primary, or the mesh-primary of the sender's mesh".into() } },
+        let Some(subject) = view.births().find(|n| n.node_id == *op.node_id) else {
+            return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+        };
+        let held = Some((subject.incarnation_id.as_ref(), subject.name.to_string()));
+        let held = held.as_ref().map(|(i, n)| (*i, n.as_str()));
+        if me.is_fabric_primary && subject.kind == NodeKind::NodeAdmin && subject.is_primary && subject.mesh != me.mesh {
+            let reply = self.fabric_book.check_in(&self.env.me.to_string(), held, req);
+            self.climb_wake.notify_one();
+            reply
+        } else if me.is_primary && subject.mesh == me.mesh && subject.node_id != me.node_id {
+            self.mesh_book.check_in(&self.env.me.to_string(), held, req)
+        } else {
+            StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("the fabric-primary, or the mesh-primary of {}", subject.mesh) } }
         }
     }
 }
@@ -863,7 +879,7 @@ mod tests {
         for admitted in [StatusReply::Applied, StatusReply::AlreadyApplied] {
             assert!(matches!(delivery_of(Some(&admitted), "Reply"), Delivery::Answered(_)), "{admitted:?}");
         }
-        let refusal = StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "mesh1.admin.2".into() } };
+        let refusal = StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the mesh-primary of mesh1".into() } };
         assert!(matches!(delivery_of(Some(&refusal), "Reply"), Delivery::Undelivered { typed: true, .. }), "a refusal by name is undelivered, typed");
         let not_ready = StatusReply::NotReady { reason: "authority not filled".into() };
         assert!(matches!(delivery_of(Some(&not_ready), "Reply"), Delivery::Undelivered { typed: true, .. }));

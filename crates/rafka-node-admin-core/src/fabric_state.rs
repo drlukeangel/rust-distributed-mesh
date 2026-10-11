@@ -400,18 +400,17 @@ impl RoundBook {
             .collect()
     }
 
-    /// The check-in `req` makes, decided by this primary. `sender` is the authenticated caller:
-    /// `(node id, incarnation held for it, path.name)`. A refusal names the one fact that is wrong,
-    /// `NotReady` for a round this primary does not hold open (an unmatched round is never a check-in).
-    pub fn check_in(&self, receiver: &str, sender: Option<(&NodeId, Option<&IncarnationId>, &str)>, req: &StatusRequest) -> StatusReply {
+    /// The check-in `req` makes, decided by this primary for the subject it names, whoever calls
+    /// (node-rpc.md §14). `subject` is that birth as this primary's view holds it: `(incarnation
+    /// held for it, path.name)`, `None` when the view holds no such node. A refusal names the one
+    /// fact that is wrong, `NotReady` for a round this primary does not hold open (an unmatched round
+    /// is never a check-in).
+    pub fn check_in(&self, receiver: &str, subject: Option<(Option<&IncarnationId>, &str)>, req: &StatusRequest) -> StatusReply {
         let Some(op) = RoundOp::of(req).filter(|o| !o.is_down) else { return StatusReply::NotReady { reason: format!("{receiver}: {} is not a completion call", req.op()) } };
         let completion = op.kind.completion();
-        let Some((from, held, from_name)) = sender else {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } };
+        let Some((held, from_name)) = subject else {
+            return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
         };
-        if from != op.node_id {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: from_name.to_string() } };
-        }
         match held {
             Some(held) if held != op.incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
             None => return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown },
@@ -472,16 +471,16 @@ mod tests {
     }
 
     /// CONTRACT: a check-in counts only for a planned birth, in an open round of the same Build and
-    /// attempt, from the birth itself; every other case is refused naming the one fact that is wrong,
-    /// and a repeat is already applied.
+    /// attempt, for the birth the receiver holds; every other case is refused naming the one fact
+    /// that is wrong, and a repeat is already applied.
     #[test]
     fn a_check_in_counts_only_as_the_planned_birth_of_the_open_round() {
         let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
         let book = RoundBook::default();
         let k = key("bld_1", 1, &fabric);
         let up = |build: &str, attempt: u32, inc: &IncarnationId| RoundKind::StateCommit.up(&key(build, attempt, &fabric), node.clone(), inc.clone());
-        fn sender<'a>(node: &'a NodeId, held: &'a IncarnationId) -> Option<(&'a NodeId, Option<&'a IncarnationId>, &'static str)> {
-            Some((node, Some(held), "mesh2.admin.1"))
+        fn sender<'a>(_node: &'a NodeId, held: &'a IncarnationId) -> Option<(Option<&'a IncarnationId>, &'static str)> {
+            Some((Some(held), "mesh2.admin.1"))
         }
 
         let early = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("bld_1", 1, &inc));
@@ -498,8 +497,7 @@ mod tests {
         assert!(matches!(&old, StatusReply::NotReady { reason } if reason.contains("field attempt: round holds 1, reported 2")), "{old:?}");
         let other = IncarnationId::mint();
         assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &other), &up("bld_1", 1, &inc)), StatusReply::RejectedStaleIncarnation { held: other.clone() });
-        let stranger = NodeId::mint();
-        assert!(matches!(book.check_in("mesh1.admin.1", Some((&stranger, Some(&inc), "mesh3.admin.1")), &up("bld_1", 1, &inc)), StatusReply::RejectedNotAuthority { .. }));
+        assert_eq!(book.check_in("mesh1.admin.1", None, &up("bld_1", 1, &inc)), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
 
         assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("bld_1", 1, &inc)), StatusReply::Applied);
         assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("bld_1", 1, &inc)), StatusReply::AlreadyApplied);
@@ -509,6 +507,22 @@ mod tests {
         book.expect(&k, planned(&node, &reborn, "mesh2.admin.1"), Vec::new());
         assert!(!book.complete(&k), "a rolled birth does not match its planned birth by the old birth's check-in");
         assert_eq!(book.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "checked-in-as-another-birth" }]);
+    }
+
+    /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who is calling"): a check-in is
+    /// decided for the subject it names, as this primary's view holds it, never for its caller. A
+    /// subject the view does not hold is the direction refusal `SubjectUnknown`, and nothing counts.
+    /// What must NOT happen: `SenderNotSubject` "unknown peer".
+    #[test]
+    fn a_check_in_for_a_subject_the_view_does_not_hold_is_subject_unknown() {
+        let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
+        let book = RoundBook::default();
+        let k = key("bld_1", 1, &fabric);
+        book.open(&k);
+        book.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
+        let up = RoundKind::StateCommit.up(&k, node.clone(), inc.clone());
+        assert_eq!(book.check_in("mesh1.admin.1", None, &up), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+        assert!(!book.complete(&k), "nothing counted");
     }
 
     fn target(inc: &IncarnationId, status: NodeStatus) -> Node {

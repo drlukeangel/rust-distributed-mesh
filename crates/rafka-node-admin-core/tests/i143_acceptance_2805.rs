@@ -206,8 +206,9 @@ fn reply(out: &RpcOutcome<StatusReply>) -> StatusReply {
 /// CONTRACT (#2805): the fabric-primary applies Pending at a mesh's bootstrap admin by the natural
 /// key (MeshId, state): a lost reply is Indeterminate at the caller, and the same request again is
 /// AlreadyApplied with no second write; the wire carries no transition id. Refused by name: a stale
-/// MeshId, a sender that is not the fabric-primary, a backward transition, and a DeclareNodeState
-/// for anyone but the sender itself (upward self-report only).
+/// MeshId and a backward transition. Nothing checks who is calling (node-rpc.md §14): the same
+/// Pending from a sender that is not the fabric-primary is decided for the mesh it names
+/// (AlreadyApplied), and a DeclareNodeState sent by another node is decided for the birth it names.
 #[test]
 fn status_authority_retries_pending_by_natural_key_returns_already_applied() {
     let cell = "status_authority_retries_pending_by_natural_key_returns_already_applied";
@@ -246,14 +247,17 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let stale_reply = reply(&call(&rig, &fabric_primary, &stale, &CallOptions::default()).await);
     assert_eq!(stale_reply, StatusReply::RejectedStaleMesh { held: mesh2.clone() });
     let wrong_sender = reply(&call(&rig, &not_primary, &pending, &CallOptions::default()).await);
-    assert!(matches!(wrong_sender, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }), "{wrong_sender:?}");
+    assert_eq!(wrong_sender, StatusReply::AlreadyApplied, "decided for the mesh it names, whoever sends it");
     let forward = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::ReadyForTraffic };
     assert_eq!(reply(&call(&rig, &fabric_primary, &forward, &CallOptions::default()).await), StatusReply::Applied);
     let backward = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
     assert!(matches!(backward, StatusReply::RejectedInvalidMeshTransition { current: MeshState::ReadyForTraffic }), "{backward:?}");
     let forged = StatusRequest::DeclareNodeState { node_id: other.node.node_id.clone(), incarnation: other.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving };
     let forged_reply = reply(&call(&rig, &member, &forged, &CallOptions::default()).await);
-    assert!(matches!(forged_reply, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }), "a declaration is the sender's own: {forged_reply:?}");
+    assert_eq!(forged_reply, StatusReply::Applied, "a declaration is decided for the birth it names, whoever sends it");
+    let never_born = birth("mesh2.rpc.9", NodeKind::RpcNode, "mesh2", false, false);
+    let unknown = StatusRequest::DeclareNodeState { node_id: never_born.node.node_id.clone(), incarnation: never_born.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving };
+    assert_eq!(reply(&call(&rig, &member, &unknown, &CallOptions::default()).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a birth this admin does not hold");
     let meshes_final = rig.authority.declared.lock().unwrap().meshes.clone();
     assert_eq!(meshes_final.len(), 1, "one mesh held, by its own id");
 
@@ -369,7 +373,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
 async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completion {
     use rafka_node_admin_core::build::BuildId;
     use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
-    use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink};
+    use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, RetireRequest, RetireStep, Timeouts, TopologySink};
     use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 
     struct Running;
@@ -466,7 +470,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal, exit: None };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
     let _ = pipeline.retire(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
     // command (DrainNode), its completion wait (AwaitNodeDrained: the deadline arm); and never
@@ -697,8 +701,8 @@ fn status_authority_refuses_every_backward_move_by_name() {
 }
 
 /// CONTRACT (#2805, adversary): a declaration to a receiver that does not hold the seat it needs
-/// is refused naming the seat, and one from a sender that is not the subject or the authority is
-/// refused naming the sender; a stranger whose key the view does not hold is refused as unknown;
+/// is refused naming the seat, whoever sends it (nothing checks who is calling, node-rpc.md §14); a
+/// subject the view does not hold is refused as unknown;
 /// a stale Fabric id and a stale Mesh id are refused naming the id the receiver holds. What must
 /// NOT happen: any of these applied, or answered as a transport failure.
 #[test]
@@ -737,14 +741,15 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         // The fabric-primary applies a Mesh state at an admin of another mesh.
         let r = reply(&call(&rig, &fp, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending }, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "an admin of mesh2"), "{r:?}");
-        // A sender that is not the fabric-primary applies an event or a Mesh state.
+        // The same applies from a sender that is not the fabric-primary are refused for the
+        // receiver, never the caller (node-rpc.md §14).
         let r = reply(&call(&rig, &other_admin, &event, &CallOptions::default()).await);
-        not_authority(&r, "sender-not-subject");
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
         let r = reply(&call(&rig, &rpc, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
-        not_authority(&r, "sender-not-subject");
-        // A stranger the view does not hold.
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed.starts_with("the mesh-primary of mesh1")), "{r:?}");
+        // A subject the view does not hold, from a stranger the view does not hold either.
         let r = reply(&call(&rig, &stranger, &decl_node(&stranger), &CallOptions::default()).await);
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } if sender == "unknown peer"), "{r:?}");
+        not_authority(&r, "subject-unknown");
         // Stale ids: another Fabric's event at the mesh primary; another Mesh id for a held name.
         let mp_receiver = birth("mesh1.admin.3", NodeKind::NodeAdmin, "mesh1", true, false);
         let held = MeshId::mint();
@@ -767,13 +772,15 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
 }
 
 /// CONTRACT (#2805, acceptance 10): an event applied by the fabric-primary stays applied when the
-/// seat moves: the old authority's in-flight application is refused (not the sender), the new
-/// authority's repeat of the same natural key is AlreadyApplied, a new event applies, and a
-/// receiver restarted over its rows still answers the first event AlreadyApplied. What must NOT
-/// happen: the old authority applied after it lost the seat, or an applied event applied twice.
+/// seat moves. Each event applies once at the mesh primary on its natural key, whoever sends it
+/// (node-rpc.md §14: nothing inside the mesh checks who is calling; the fence that stops an old
+/// fabric-primary is its own moved seat record, at the sender): the old authority's repeat of an
+/// applied key and the new authority's are AlreadyApplied, a new event applies once, and a
+/// receiver restarted over its rows still answers both AlreadyApplied. What must NOT happen: an
+/// applied event applied twice, or a refusal naming the caller.
 #[test]
-fn applied_events_survive_authority_change_and_the_old_authority_is_refused() {
-    let cell = "applied_events_survive_authority_change_and_the_old_authority_is_refused";
+fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_it() {
+    let cell = "applied_events_survive_authority_change_and_each_applies_once_whoever_sends_it";
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
@@ -799,11 +806,11 @@ fn applied_events_survive_authority_change_and_the_old_authority_is_refused() {
             }
         }
         let shutdown = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } };
-        let old = reply(&call(&rig, &fp1, &shutdown, &CallOptions::default()).await);
-        assert!(matches!(&old, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } if sender == "mesh1.admin.1"), "the old authority's in-flight work: {old:?}");
-        assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), reply_of_not_authority(&old), "even a repeat of an applied key is refused to the old authority");
+        let old = reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await);
+        assert_eq!(old, StatusReply::AlreadyApplied, "the old authority's repeat of an applied key is the same event");
         assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");
-        assert_eq!(reply(&call(&rig, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::Applied, "the new authority applies new work");
+        assert_eq!(reply(&call(&rig, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::Applied, "a new event applies");
+        assert_eq!(reply(&call(&rig, &fp1, &shutdown, &CallOptions::default()).await), StatusReply::AlreadyApplied, "once, whoever sends it");
         // The receiver restarts over its rows.
         let folded = Declared::rehydrate(&*store).await.unwrap();
         let receiver2 = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
@@ -822,13 +829,9 @@ fn applied_events_survive_authority_change_and_the_old_authority_is_refused() {
         let spans = finish(&capture, &dir, json!({"cell": cell, "old_authority": format!("{old:?}"), "events_held": store.fabric_events().await.unwrap().len()}));
         assert_eq!(store.fabric_events().await.unwrap().len(), 2, "each event is one row");
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "applied")]).len(), 2);
-        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "rejected-not-authority"), ("sender", "mesh1.admin.1")]).len(), 2);
-        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "already-applied")]).len(), 3);
+        assert!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "rejected-not-authority")]).is_empty(), "no event refused for its caller");
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "already-applied")]).len(), 5);
     });
-}
-
-fn reply_of_not_authority(r: &StatusReply) -> StatusReply {
-    r.clone()
 }
 
 /// CONTRACT (#2805, adversary): a declaration racing a restart. The subject's birth is replaced in
@@ -1047,10 +1050,10 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
 /// CONTRACT (#2805, acceptance 10 and the elected-primary legs of 4 and 5): the fabric primary is
 /// the admin with the lowest node id fabric-wide, so the seat moves to a newly born admin of
 /// another mesh. That new holder validates a Mesh declaration against the Mesh ids it hears in its
-/// view, not only against the ones its own Build created: the primary of a Mesh it never
-/// created is applied, a sender that is not that Mesh's primary is refused naming the sender, and a
-/// Mesh id that is not the sender's own Mesh is refused the same way. What must NOT happen: a
-/// perpetual `sender-not-subject` for a Mesh primary whose Mesh the new holder only heard of.
+/// view, not only against the ones its own Build created: a Mesh it never created is applied,
+/// whoever sends the declaration (node-rpc.md §14), and a Mesh id it holds neither way is refused
+/// `SubjectUnknown`. What must NOT happen: a perpetual refusal for a Mesh the new holder only heard
+/// of, or a refusal naming the caller.
 #[test]
 fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
     let cell = "new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of";
@@ -1076,12 +1079,14 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
         let applied = reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await);
         assert_eq!(applied, StatusReply::Applied, "mesh1's primary, a Mesh this holder only heard of");
         let not_primary = reply(&call(&rig, &mesh1_other, &declare(&id1), &CallOptions::default()).await);
-        assert!(matches!(&not_primary, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } if sender == "mesh1.admin.3"), "{not_primary:?}");
-        let wrong_mesh = reply(&call(&rig, &mesh1_primary, &declare(&id2), &CallOptions::default()).await);
-        assert!(matches!(&wrong_mesh, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } if sender == "mesh1.admin.2"), "a primary declares only its own Mesh: {wrong_mesh:?}");
+        assert_eq!(not_primary, StatusReply::AlreadyApplied, "decided for mesh1, whoever sends it");
+        let own_mesh = reply(&call(&rig, &mesh1_primary, &declare(&id2), &CallOptions::default()).await);
+        assert_eq!(own_mesh, StatusReply::Applied, "the Mesh this holder's own Build created");
+        let unknown = reply(&call(&rig, &mesh1_primary, &declare(&MeshId::mint()), &CallOptions::default()).await);
+        assert_eq!(unknown, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a Mesh this holder holds neither way");
         assert_eq!(reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await), StatusReply::AlreadyApplied);
-        let spans = finish(&capture, &dir, json!({"cell": cell, "applied": format!("{applied:?}"), "non_primary": format!("{not_primary:?}"), "wrong_mesh": format!("{wrong_mesh:?}")}));
-        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "applied")]).len(), 1);
-        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "rejected-not-authority")]).len(), 2);
+        let spans = finish(&capture, &dir, json!({"cell": cell, "applied": format!("{applied:?}"), "non_primary": format!("{not_primary:?}"), "own_mesh": format!("{own_mesh:?}"), "unknown_mesh": format!("{unknown:?}")}));
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "applied")]).len(), 2);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "rejected-not-authority")]).len(), 1);
     });
 }

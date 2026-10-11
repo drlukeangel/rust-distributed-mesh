@@ -326,11 +326,11 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
                         check_ins.send_modify(|held| held.push(req));
                         return Ok(rafka_node_rpc_contract::status::StatusReply::Applied);
                     }
-                    let (R::NodeDrained { node_id, incarnation, .. } | R::NodeLeft { node_id, incarnation, .. }) = &req else {
+                    let (R::NodeDrained { incarnation, .. } | R::NodeLeft { incarnation, .. }) = &req else {
                         return Ok(rafka_node_rpc_contract::status::StatusReply::NotReady { reason: "the admin side serves completion calls only".into() });
                     };
-                    let (node_id, incarnation) = (node_id.clone(), incarnation.clone());
-                    Ok(rafka_node_admin_core::node_commands::accept_completion(&commands, &receiver, Some((&node_id, Some(&incarnation), "the commanded birth")), &req))
+                    let incarnation = incarnation.clone();
+                    Ok(rafka_node_admin_core::node_commands::accept_completion(&commands, &receiver, Some((Some(&incarnation), "the commanded birth")), "", &req))
                 }
             })
         }
@@ -340,9 +340,8 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
         .expect("the admin side's catalog seals");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, rpc_server).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
-    // A node admits a downward lifecycle operation (a probe, a drain) only from a node-admin it
-    // holds in its own membership book, so the admin side publishes its digest as a real
-    // node-admin does on joining.
+    // The admin side publishes its digest as a real node-admin does on joining: a node addresses a
+    // drain's completion and its start's join to the admin its membership book holds.
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     let admin_digest = rafka_mesh_entity::digest::MeshDigest {
         fabric_id: fabric.clone(),

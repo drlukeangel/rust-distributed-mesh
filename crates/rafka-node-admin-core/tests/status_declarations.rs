@@ -2,8 +2,8 @@
 //!
 //! The admin's `Status` service runs in-process over a view fixture (one fabric, two meshes, this
 //! admin the primary of mesh1 and the fabric-primary); nodes declare over real Node RPC on
-//! loopback. The cells prove the decision table of `status_rpc`: who may declare what, the
-//! natural-key idempotency, forward-only transitions, stale births, and that `Applied` is on the
+//! loopback. The cells prove the decision table of `status_rpc`: which seat decides which
+//! subject's declaration, whoever calls (node-rpc.md §14), the natural-key idempotency, forward-only transitions, stale births, and that `Applied` is on the
 //! subject's declared-state row in `status.storage` before it is answered. Certainty: a cut before the request
 //! commits is `NotSent` with nothing applied; a reply lost after the apply is `Indeterminate`,
 //! and the same declaration again is `AlreadyApplied` — one logical event.
@@ -182,18 +182,23 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Leaving));
 }
 
+/// CONTRACT: the authority is the seat the subject's declaration needs, never the caller
+/// (node-rpc.md §14). rpc.2 sending rpc.1's declaration is decided for rpc.1, on rpc.1's row; a
+/// subject the view does not hold is `SubjectUnknown`; a birth the view no longer holds is stale; a
+/// subject of another mesh, or a node-admin's declaration once the fabric seat moved away, is
+/// refused naming the seat it needs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn authority_is_the_peer_and_the_seat_never_the_request() {
+async fn authority_is_the_seat_the_subject_needs_never_the_caller() {
     let (rig, b) = rig().await;
     let (rpc1, rpc2, admin2, m2admin) = (&b["rpc1"], &b["rpc2"], &b["admin2"], &b["m2admin"]);
-    // rpc.2 declaring rpc.1's state: the sender is not the subject.
-    let r = reply(&call(&rig, rpc2, &declare(rpc1, NodeState::ReadyForTraffic)).await);
-    assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "mesh1.rpc.2".into() } });
-    assert!(rig.authority.declared.lock().unwrap().nodes.is_empty(), "nothing applied");
-    // A peer the view does not hold at all.
+    // rpc.2 sending rpc.1's state: decided for rpc.1.
+    assert_eq!(reply(&call(&rig, rpc2, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "applied for the subject");
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc2.node.node_id, rpc2.node.incarnation_id.as_ref().unwrap()), None, "nothing applied for the caller");
+    // A subject the view does not hold at all.
     let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
     let r = reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await);
-    assert!(matches!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }), "{r:?}");
+    assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
     // A stale birth: the view holds a newer incarnation of the subject.
     let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic };
     assert_eq!(reply(&call(&rig, rpc1, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
@@ -214,6 +219,40 @@ async fn authority_is_the_peer_and_the_seat_never_the_request() {
     assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "fabric-primary of mesh2".into() } });
 }
 
+/// CONTRACT: nothing inside the mesh checks who is calling (node-rpc.md §14; node-rpc-envelope.md,
+/// Status: "Nothing inside the mesh checks who is calling"): a declaration from an endpoint this
+/// authority's view holds no birth for is decided for the subject the request names, on the
+/// receiver's own seat. The direction refusals stay, decided by the subject and the seat: a subject
+/// the view does not hold is `SubjectUnknown`, a subject of a mesh this admin is not the primary of
+/// is `ReceiverNotPrimary`, and a birth the view no longer holds is `RejectedStaleIncarnation`.
+/// What must NOT happen: a refusal naming the caller (`SenderNotSubject`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declaration_from_an_endpoint_the_authority_never_heard_of_is_decided_for_its_subject() {
+    let (rig, b) = rig().await;
+    let (rpc1, admin2) = (&b["rpc1"], &b["admin2"]);
+    // A fresh endpoint key, in no birth of the view.
+    let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
+    assert!(rig.topology.read().await.births().all(|n| n.endpoint_id != stranger.node.endpoint_id), "the stranger is in no birth of the view");
+    // A member's declaration is decided for that member: Applied, on its row first.
+    assert_eq!(reply(&call(&rig, &stranger, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    let row = rig.storage.node_declared().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    assert_eq!((row.state, row.name.clone()), (NodeState::ReadyForTraffic, rpc1.node.name.clone()), "the row is the subject's, at its own path.name");
+    // A node-admin's declaration reaches the fabric seat this admin holds.
+    assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    // A mesh's declaration reaches the fabric-primary for a mesh it holds.
+    let m2 = StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: MeshState::ReadyForTraffic };
+    assert_eq!(reply(&call(&rig, &stranger, &m2).await), StatusReply::Applied);
+    // The direction refusals stay.
+    assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
+    let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
+    assert_eq!(reply(&call(&rig, &stranger, &unknown_mesh).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a mesh the fabric-primary does not hold");
+    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Leaving };
+    assert_eq!(reply(&call(&rig, &stranger, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
+    let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
+    rig.topology.write().await.nodes.push(foreign.node.clone());
+    assert_eq!(reply(&call(&rig, &stranger, &declare(&foreign, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     let (rig, b) = rig().await;
@@ -223,22 +262,15 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::AlreadyApplied);
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Pending)).await), StatusReply::RejectedInvalidMeshTransition { current: MeshState::ReadyForTraffic });
-    // Not mesh2's primary (an ordinary node; a non-primary admin of another mesh): refused.
-    assert!(matches!(reply(&call(&rig, rpc1, &m2(MeshState::Leaving)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
-    assert!(matches!(reply(&call(&rig, admin2, &m2(MeshState::Leaving)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
-    // A fabric event applied here must come from the fabric-primary: while this admin holds the
-    // fabric seat, mesh2's primary is not it. Then the seat moves to mesh2's primary (the view
-    // says so), and its events and Pending hand-offs apply here, each once.
+    // The declaration is decided for the mesh it names, whoever calls (an ordinary node; a
+    // non-primary admin of another mesh): forward applies once, a mesh the holder does not hold is
+    // `SubjectUnknown`.
+    assert_eq!(reply(&call(&rig, rpc1, &m2(MeshState::Leaving)).await), StatusReply::Applied);
+    assert_eq!(reply(&call(&rig, admin2, &m2(MeshState::Leaving)).await), StatusReply::AlreadyApplied);
+    let unknown = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
+    assert_eq!(reply(&call(&rig, m2admin, &unknown).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+    // A fabric event is applied at a mesh primary (this admin is mesh1's), whoever sends it, once.
     let ev = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: FabricEvent::ReadyForTraffic };
-    assert!(matches!(reply(&call(&rig, m2admin, &ev).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
-    rig.topology.write().await.nodes.iter_mut().for_each(|n| {
-        if n.name == rig.admin.node.name {
-            n.is_fabric_primary = false
-        }
-        if n.name == m2admin.node.name {
-            n.is_fabric_primary = true
-        }
-    });
     assert_eq!(reply(&call(&rig, m2admin, &ev).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, m2admin, &ev).await), StatusReply::AlreadyApplied);
     let wrong = StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ReadyForTraffic };
@@ -250,7 +282,7 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     assert!(matches!(reply(&call(&rig, m2admin, &pend(&m2id, "mesh2")).await), StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } }));
     assert_eq!(reply(&call(&rig, m2admin, &pend(&other, "mesh1")).await), StatusReply::RejectedStaleMesh { held: m1id.clone() }, "never a replacement mesh id");
     assert_eq!(reply(&call(&rig, m2admin, &pend(&m1id, "mesh1")).await), StatusReply::Applied);
-    assert_eq!(reply(&call(&rig, rpc1, &pend(&m1id, "mesh1")).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "mesh1.rpc.1".into() } }, "only the fabric-primary applies a Pending");
+    assert_eq!(reply(&call(&rig, rpc1, &pend(&m1id, "mesh1")).await), StatusReply::AlreadyApplied, "the Pending is decided for the mesh it names, whoever sends it");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -313,9 +345,11 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
 }
 
 /// Drain admission never prevents an authority from receiving the upward certainty calls
-/// that finish lifecycle work. The status handler must still enforce its own authority checks.
+/// that finish lifecycle work. The status handler still decides each for its subject: a
+/// declaration sent by another node is decided for the subject it names (here already applied),
+/// and a subject the view does not hold is refused by name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_draining_authority_accepts_upward_status_but_still_refuses_an_impostor() {
+async fn a_draining_authority_accepts_upward_status_and_decides_it_for_the_subject() {
     let (rig, b) = rig().await;
     rig.server.drain();
     for subject in [&b["rpc1"], &b["admin2"]] {
@@ -325,9 +359,10 @@ async fn a_draining_authority_accepts_upward_status_but_still_refuses_an_imposto
             assert_eq!(reply(&call(&rig, subject, &request).await), StatusReply::AlreadyApplied);
         }
     }
-    let forged = declare(&b["rpc1"], NodeState::Leaving);
-    assert!(matches!(reply(&call(&rig, &b["rpc2"], &forged).await),
-        StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
+    let for_another = declare(&b["rpc1"], NodeState::Leaving);
+    assert_eq!(reply(&call(&rig, &b["rpc2"], &for_another).await), StatusReply::AlreadyApplied, "decided for rpc.1, whoever sends it");
+    let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
+    assert_eq!(reply(&call(&rig, &b["rpc2"], &declare(&stranger, NodeState::Leaving)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
 }
 
 /// A birth of the fixture serving Status on its own key, recording every request it decodes and
@@ -681,10 +716,10 @@ fn a_config_update_for_another_meshs_member_reaches_it_through_that_meshs_primar
 }
 
 /// CONTRACT (ops-naming "Node data": the node applies the config and carries it in its next digest; a
-/// node-admin is a node like any other): `ApplyNodeConfig` naming this admin, from another node-admin,
-/// is answered by the admin itself: `Applied`, after it handed the whole map to what holds it and
-/// publishes its digest. One naming another incarnation of it is `RejectedStaleIncarnation` with the
-/// one held; one from a member that is not a node-admin is `RejectedNotAuthority`. Neither holds anything.
+/// node-admin is a node like any other): `ApplyNodeConfig` naming this admin is answered by the admin
+/// itself, whoever sends it (node-rpc.md §14): `Applied`, after it handed the whole map to what holds
+/// it and publishes its digest, from another node-admin and from a member alike. One naming another
+/// incarnation of it is `RejectedStaleIncarnation` with the one held, and holds nothing.
 #[test]
 fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
     let cap = capture();
@@ -703,8 +738,8 @@ fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
         assert_eq!(reply(&call(&rig, admin2, &told(me.incarnation_id.clone().unwrap(), config.clone())).await), StatusReply::Applied);
         assert_eq!(held.lock().unwrap().clone(), vec![config.clone()], "the admin holds the whole config it was told");
         assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), config.clone())).await), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
-        assert!(matches!(reply(&call(&rig, rpc1, &told(me.incarnation_id.clone().unwrap(), config)).await), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its config");
-        assert_eq!(held.lock().unwrap().len(), 1, "neither refusal held anything");
+        assert_eq!(reply(&call(&rig, rpc1, &told(me.incarnation_id.clone().unwrap(), config.clone())).await), StatusReply::Applied, "the subject answers whoever sends it");
+        assert_eq!(held.lock().unwrap().clone(), vec![config.clone(), config], "the refusal held nothing; each apply held the whole config");
     });
     for name in ["rdm.node_rpc.request.update.via-call", "rdm.node_rpc.connection.create.via-dial"] {
         for (trace, attrs, events) in cap.spans_with_events(name) {
@@ -1037,9 +1072,9 @@ fn a_stopped_nodes_rename_at_its_mesh_primary_writes_the_row_and_tells_the_node_
 /// CONTRACT (R12; node-rpc-envelope.md :434, the ApplyNodeName answers): `ApplyNodeName` naming this
 /// admin, from another node-admin, is answered by the admin itself from what its name decision says:
 /// `Applied` once it holds the name, `AlreadyApplied` for the name it holds, `Busy` naming its
-/// held connections while it holds any. One naming another incarnation is
-/// `RejectedStaleIncarnation`, one from a member that is not a node-admin `RejectedNotAuthority`, one
-/// whose name is not a path.name `Malformed`; none of the three reaches the decision.
+/// held connections while it holds any, and the same from a member (nothing checks who is calling,
+/// node-rpc.md §14). One naming another incarnation is `RejectedStaleIncarnation` and one whose name
+/// is not a path.name `Malformed`; neither reaches the decision.
 #[test]
 fn a_node_admin_told_its_name_answers_from_its_own_decision() {
     let cap = capture();
@@ -1048,7 +1083,7 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
         let asked: Arc<Mutex<Vec<PathName>>> = Arc::default();
         let a = asked.clone();
-        let decisions = Arc::new(Mutex::new(vec![rafka_node_admin_core::node_name::NameApply::Busy { routes: vec!["mesh1.rpc.1 (direct, entry 3123456789ab)".into(), "mesh1.rpc.2 (direct, entry 4123456789ab)".into()] }, rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Applied]));
+        let decisions = Arc::new(Mutex::new(vec![rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Busy { routes: vec!["mesh1.rpc.1 (direct, entry 3123456789ab)".into(), "mesh1.rpc.2 (direct, entry 4123456789ab)".into()] }, rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Applied]));
         let held: PathName = rig.admin.node.name.clone();
         let _ = rig.authority.rename.set(Arc::new(move |name: PathName| {
             let (a, d, held) = (a.clone(), decisions.clone(), held.clone());
@@ -1064,12 +1099,12 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
         assert_eq!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::AlreadyApplied);
         assert!(matches!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::Busy { reason } if reason.contains("2 connections: mesh1.rpc.1 (direct, entry 3123456789ab), mesh1.rpc.2")));
         assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), "mesh1.admin.1.old")).await), StatusReply::RejectedStaleIncarnation { held: inc.clone() });
-        assert!(matches!(reply(&call(&rig, rpc1, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its name");
+        assert_eq!(reply(&call(&rig, rpc1, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::AlreadyApplied, "the subject answers a member from its own decision");
         assert!(matches!(reply(&call(&rig, admin2, &told(inc, "not a path name")).await), StatusReply::Malformed { .. }));
-        assert_eq!(asked.lock().unwrap().len(), 3, "only the three admitted applies reached the decision");
+        assert_eq!(asked.lock().unwrap().len(), 4, "only the four admitted applies reached the decision");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-apply-node-name");
     let outcomes: Vec<_> = spans.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect();
-    assert_eq!(outcomes.len(), 3, "{spans:?}");
+    assert_eq!(outcomes.len(), 4, "{spans:?}");
     eprintln!("trace {}: rdm.node_admin.node.update.via-apply-node-name outcomes={outcomes:?}", spans[0].0);
 }

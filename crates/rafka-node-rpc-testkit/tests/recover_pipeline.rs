@@ -12,7 +12,7 @@ use common::{add_node, admin_side, publish_build, template, LiveMesh, Published,
 use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, RetireKind, RetireRequest, Timeouts, UpdateRequest};
+use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, RetireRequest, Timeouts, UpdateRequest};
 use rafka_node_admin_core::node_commands::NodeCommand;
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus, TerminationMode};
@@ -165,7 +165,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, data_dir: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -184,14 +184,14 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     let recover_build = publish_build(&rig.builds, add_node()).await;
     // node.delete of the crashed target, on the mesh-primary's exit proof.
     pipeline
-        .retire(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), kind: RetireKind::Removal, exit: Some(exit) })
+        .retire(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), exit: Some(exit) })
         .await
         .unwrap_or_else(|e| panic!("delete: {e}"));
     // The executor fences the exited birth before the create that takes its key.
     rig.log.lock().unwrap().push(format!("fenced:{}", first.node.node_id));
     // node.create over the exited birth's data dir.
     let second = pipeline
-        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, restart_of: None, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create over the inherited data dir: {e}"));
     // node.update copying the exited birth's caller-owned meta onto the new node.
@@ -272,7 +272,7 @@ async fn a_crashed_target_delete_on_another_births_exit_proof_is_refused_by_name
     let pipeline = rig.pipeline(&observer, &recorder);
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, data_dir: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
@@ -280,7 +280,7 @@ async fn a_crashed_target_delete_on_another_births_exit_proof_is_refused_by_name
     let other = rafka_node_admin_core::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: rafka_mesh_entity::IncarnationId::mint(), exit_code: None, proof: "provider".into(), observed_at_ms: 1 };
     let build = publish_build(&rig.builds, add_node()).await;
     let err = pipeline
-        .retire(&RetireRequest { build_id: build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), kind: RetireKind::Removal, exit: Some(other.clone()) })
+        .retire(&RetireRequest { build_id: build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), exit: Some(other.clone()) })
         .await
         .expect_err("another birth's exit proof deletes nothing");
     assert_eq!(err.step, "NodeDeleting");
@@ -309,7 +309,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, data_dir: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -320,7 +320,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
 
     let recover_build = publish_build(&rig.builds, add_node()).await;
     let outcome = pipeline
-        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, restart_of: None, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
         .await;
     let err = match outcome {
         Err(e) => e,

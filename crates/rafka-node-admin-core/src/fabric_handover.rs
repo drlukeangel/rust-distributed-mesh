@@ -52,7 +52,7 @@
 //! the committed result and N installs it, no row means the transfer never happened.
 
 use crate::fabric_storage::{FabricStorage, HandoverRow, HandoverStage, SeatRow, SeatTransferRow};
-use crate::model::{EndpointId, IncarnationId, NodeId, NodeKind, PathName};
+use crate::model::{IncarnationId, NodeId, PathName};
 use crate::topology::Topology;
 use rafka_mesh_entity::{LifecycleOp, Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Backbone, DigestBook, Membership, SeatTaken};
@@ -403,9 +403,16 @@ impl HandoverDoor {
         HandoverBirth { mesh: self.me.mesh.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }
     }
 
-    /// The node of the view an authenticated peer is.
-    async fn sender_of(&self, peer: &EndpointId) -> Option<crate::model::Node> {
-        self.topology.read().await.births().find(|n| n.endpoint_id.as_ref() == Some(peer)).cloned()
+    /// The birth a payload names as `role`, checked against the birth of that node this admin's view
+    /// holds: the exact-birth check a handover makes on the births it names. Nothing checks who is
+    /// calling (node-rpc.md §14). `None` when they match; else the refusal detail.
+    async fn named_birth_not_held(&self, named: &HandoverBirth) -> Option<String> {
+        let held = self.topology.read().await.births().find(|n| n.node_id == named.node_id).cloned();
+        match held.as_ref().and_then(birth_of) {
+            Some(b) if &b == named => None,
+            Some(b) => Some(format!("names {}, this admin's view holds {}", births(named), births(&b))),
+            None => Some(format!("names {}, a node this admin's view holds no birth of", births(named))),
+        }
     }
 
     /// Make `stage` of `payload`'s handover durable, then hold it. A stage that could not be made
@@ -518,7 +525,7 @@ impl HandoverDoor {
 
     // ---- the successor: serve the command ----
 
-    async fn serve_take(self: &Arc<Self>, peer: EndpointId, payload: Payload) -> Reply {
+    async fn serve_take(self: &Arc<Self>, payload: Payload) -> Reply {
         let _one_at_a_time = self.handovers.serving.lock().await;
         let side = "successor";
         let refuse = |reason: &'static str, detail: String, reply: Reply| {
@@ -531,14 +538,8 @@ impl HandoverDoor {
         if payload.successor != self.me_birth() {
             return refuse("wrong-birth", format!("the command names successor {}:{}:{}, this admin is {}:{}:{}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.0, self.me.mesh, self.node_id, self.incarnation.0), Reply::RejectedWrongBirth { role: "successor".into() });
         }
-        let Some(sender) = self.sender_of(&peer).await else {
-            return refuse("unauthorized", format!("the calling endpoint {} is not a node of this admin's view", peer.0), Reply::Unauthorized { reason: format!("{}: the calling endpoint {} is not a node of this admin's view", self.me, peer.0) });
-        };
-        if sender.kind != NodeKind::NodeAdmin {
-            return refuse("unauthorized", format!("{} is a {:?}", sender.name, sender.kind), Reply::Unauthorized { reason: format!("{}: {} is a {:?}, and only a node-admin hands the fabric over", self.me, sender.name, sender.kind) });
-        }
-        if birth_of(&sender).as_ref() != Some(&payload.incumbent) {
-            return refuse("wrong-birth", format!("the command names incumbent {}:{}:{}, the caller is {}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.0, sender.name), Reply::RejectedWrongBirth { role: "incumbent".into() });
+        if let Some(detail) = self.named_birth_not_held(&payload.incumbent).await {
+            return refuse("wrong-birth", format!("the command's incumbent {detail}"), Reply::RejectedWrongBirth { role: "incumbent".into() });
         }
         // Replay lookup precedes stale-epoch rejection.
         if let Some((recorded, stage)) = self.handovers.get(&payload.operation) {
@@ -676,7 +677,7 @@ impl HandoverDoor {
 
     // ---- the incumbent: serve the completion ----
 
-    async fn serve_taken(&self, peer: EndpointId, payload: Payload, committed: u64) -> Reply {
+    async fn serve_taken(&self, payload: Payload, committed: u64) -> Reply {
         let _one_at_a_time = self.handovers.serving.lock().await;
         let side = "incumbent";
         let refuse = |reason: &'static str, detail: String, reply: Reply| {
@@ -689,11 +690,8 @@ impl HandoverDoor {
         if payload.incumbent != self.me_birth() {
             return refuse("wrong-birth", format!("the completion names incumbent {}:{}:{}, this admin is {}:{}:{}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.0, self.me.mesh, self.node_id, self.incarnation.0), Reply::RejectedWrongBirth { role: "incumbent".into() });
         }
-        let Some(sender) = self.sender_of(&peer).await else {
-            return refuse("unauthorized", format!("the calling endpoint {} is not a node of this admin's view", peer.0), Reply::Unauthorized { reason: format!("{}: the calling endpoint {} is not a node of this admin's view", self.me, peer.0) });
-        };
-        if birth_of(&sender).as_ref() != Some(&payload.successor) {
-            return refuse("wrong-birth", format!("the completion names successor {}:{}:{}, the caller is {}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.0, sender.name), Reply::RejectedWrongBirth { role: "successor".into() });
+        if let Some(detail) = self.named_birth_not_held(&payload.successor).await {
+            return refuse("wrong-birth", format!("the completion's successor {detail}"), Reply::RejectedWrongBirth { role: "successor".into() });
         }
         let recorded = self.handovers.get(&payload.operation);
         if let Some((rec, stage)) = &recorded {
@@ -748,7 +746,7 @@ impl HandoverDoor {
 
     // ---- the seat holder: serve TakeSeats ----
 
-    async fn serve_take_seats(self: &Arc<Self>, peer: EndpointId, t: TakeSeatsCall) -> Reply {
+    async fn serve_take_seats(self: &Arc<Self>, t: TakeSeatsCall) -> Reply {
         let _one_at_a_time = self.handovers.serving.lock().await;
         let refuse = |reason: &'static str, detail: String, reply: Reply| {
             reject_seats("holder", reason, &detail, &t);
@@ -760,15 +758,13 @@ impl HandoverDoor {
         if t.holder != self.me_birth() {
             return refuse("wrong-birth", format!("the call names holder {}, this admin is {}", births(&t.holder), births(&self.me_birth())), Reply::RejectedWrongBirth { role: "holder".into() });
         }
-        let Some(sender) = self.sender_of(&peer).await else {
-            return refuse("unauthorized", format!("the calling endpoint {} is not a node of this admin's view", peer.0), Reply::Unauthorized { reason: format!("{}: the calling endpoint {} is not a node of this admin's view", self.me, peer.0) });
+        // The successor the call names, at its exact birth as this admin's view holds it: N, whose
+        // path.name the Won claim names. Nothing checks who is calling (node-rpc.md §14).
+        let successor = self.topology.read().await.births().find(|n| n.node_id == t.successor.node_id).cloned();
+        let Some(successor) = successor.filter(|n| birth_of(n).as_ref() == Some(&t.successor)) else {
+            let detail = self.named_birth_not_held(&t.successor).await.unwrap_or_default();
+            return refuse("wrong-birth", format!("the call's successor {detail}"), Reply::RejectedWrongBirth { role: "successor".into() });
         };
-        if sender.kind != NodeKind::NodeAdmin {
-            return refuse("unauthorized", format!("{} is a {:?}", sender.name, sender.kind), Reply::Unauthorized { reason: format!("{}: {} is a {:?}, and only a node-admin takes seats", self.me, sender.name, sender.kind) });
-        }
-        if birth_of(&sender).as_ref() != Some(&t.successor) {
-            return refuse("wrong-birth", format!("the call names successor {}, the caller is {}", births(&t.successor), sender.name), Reply::RejectedWrongBirth { role: "successor".into() });
-        }
         // An identical retry is answered from the row before any other check: a point read of the
         // operation's row under this holder's mesh.
         let recorded = match self.storage.seat_transfer(&self.me.mesh, &t.operation).await {
@@ -784,9 +780,9 @@ impl HandoverDoor {
         }
         // N must be the executor the attempt's Won claim names ...
         match self.claims.executor(&t.build_id, t.attempt).await {
-            Ok(Some(e)) if e == sender.name.to_string() => {}
+            Ok(Some(e)) if e == successor.name.to_string() => {}
             Ok(Some(e)) => {
-                let detail = format!("the Won claim of attempt {} of Build {} names {e}, not {}", t.attempt, t.build_id, sender.name);
+                let detail = format!("the Won claim of attempt {} of Build {} names {e}, not {}", t.attempt, t.build_id, successor.name);
                 return refuse("not-the-claimed-executor", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
             }
             Ok(None) => {
@@ -799,7 +795,7 @@ impl HandoverDoor {
         let view = self.topology.read().await.clone();
         let seated = crate::executor::seat_successor(&self.me, &view);
         if seated.as_ref().and_then(birth_of).as_ref() != Some(&t.successor) {
-            let detail = format!("the election seats {} once {} is gone, not {}", seated.map(|n| n.name.to_string()).unwrap_or_else(|| "no admin of its mesh".into()), self.me, sender.name);
+            let detail = format!("the election seats {} once {} is gone, not {}", seated.map(|n| n.name.to_string()).unwrap_or_else(|| "no admin of its mesh".into()), self.me, successor.name);
             return refuse("not-seated-once-gone", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
         }
         // Every seat this birth holds is named, at the epoch it holds.
@@ -1004,12 +1000,12 @@ impl HandoverDoor {
         Ok(SeatTransferOutcome::CommittedRow { seats: row.seats })
     }
 
-    /// A request off the wire.
-    pub async fn serve(self: &Arc<Self>, peer: EndpointId, req: Request) -> Reply {
+    /// A request off the wire, decided on the births it names, whoever calls (node-rpc.md §14).
+    pub async fn serve(self: &Arc<Self>, req: Request) -> Reply {
         match req {
-            Request::TakeFabricPrimary { fabric, incumbent, successor, expected_epoch, operation } => self.serve_take(peer, Payload { fabric, incumbent, successor, expected_epoch, operation }).await,
-            Request::FabricPrimaryTaken { fabric, incumbent, successor, expected_epoch, committed_epoch, operation } => self.serve_taken(peer, Payload { fabric, incumbent, successor, expected_epoch, operation }, committed_epoch).await,
-            Request::TakeSeats { fabric, holder, successor, seats, build_id, attempt, operation } => self.serve_take_seats(peer, TakeSeatsCall { fabric, holder, successor, seats, build_id, attempt, operation }).await,
+            Request::TakeFabricPrimary { fabric, incumbent, successor, expected_epoch, operation } => self.serve_take(Payload { fabric, incumbent, successor, expected_epoch, operation }).await,
+            Request::FabricPrimaryTaken { fabric, incumbent, successor, expected_epoch, committed_epoch, operation } => self.serve_taken(Payload { fabric, incumbent, successor, expected_epoch, operation }, committed_epoch).await,
+            Request::TakeSeats { fabric, holder, successor, seats, build_id, attempt, operation } => self.serve_take_seats(TakeSeatsCall { fabric, holder, successor, seats, build_id, attempt, operation }).await,
         }
     }
 }
@@ -1037,13 +1033,13 @@ pub type HandoverSlot = Arc<OnceLock<Arc<HandoverDoor>>>;
 
 /// Serve the fabric-primary handover on this admin. Until `slot` is filled a call is `NotReady`.
 pub fn serve(b: ServerBuilder, slot: HandoverSlot) -> ServerBuilder {
-    b.serve::<FabricPrimaryHandover, _, _>(OpOwner::Product("rdm".into()), move |peer: PeerContext, req: Request| {
+    b.serve::<FabricPrimaryHandover, _, _>(OpOwner::Product("rdm".into()), move |_peer: PeerContext, req: Request| {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
                 return Ok(Reply::NotReady { reason: "this admin holds no view yet".into() });
             };
-            Ok(door.serve(EndpointId(peer.endpoint_id.to_string()), req).await)
+            Ok(door.serve(req).await)
         }
     })
 }

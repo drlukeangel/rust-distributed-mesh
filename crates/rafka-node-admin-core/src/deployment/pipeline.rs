@@ -71,7 +71,7 @@ use std::time::{Duration, Instant};
 /// One step of creating a node, in the order of [`CreateStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateStep {
-    /// Mint the birth's incarnation and deployment id, and the node id unless the birth restarts a node.
+    /// Mint the birth's node id, incarnation and deployment id.
     AllocateIdentity,
     /// Ensure the node's transport key in its data directory and hand a node-admin its held runtime rows.
     PrepareStorage,
@@ -344,7 +344,6 @@ impl CurrentRuntimeAdoption {
             provider = ?kind,
             node = %node,
             attempt = 1u32,
-            restart = false,
         );
         let mut a = Self { node: node.clone(), data_dir: data_dir.to_path_buf(), span, receipts: Vec::new(), fact: None };
         a.fact = a.step(AdoptStep::AdoptCurrentRuntime, |n| {
@@ -524,19 +523,6 @@ pub(crate) fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operati
         .map(|s| s.name())
         .filter(|s| !ours.iter().any(|r| r.attempt > ended && r.step == *s && r.outcome == StepOutcome::Complete))
         .collect()
-}
-
-/// The lifecycle events a Mesh executor publishes around a retirement: the pre-notice once its
-/// own journal holds the step that records it, the departure once the provider proved the
-/// runtime terminal. Membership carries them; this trait is how the pipeline reaches it.
-/// Why a birth is being retired: the lifecycle events follow it. Neither kind releases storage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RetireKind {
-    /// The logical node leaves the topology.
-    Removal,
-    /// The birth drains and stops and its process stays, parked: the same process starts again.
-    Restart,
 }
 
 /// The typed output of a `ReleaseStorage` receipt ([`crate::wire::RELEASE_STORAGE_STEP`]). No step
@@ -850,9 +836,6 @@ pub struct CreateRequest {
     pub node: PathName,
     /// The endpoint plan of the node's kind.
     pub spec: &'static KindSpec,
-    /// `Some(current record)` for a restart: same node id, data dir and
-    /// transport key, a new incarnation.
-    pub restart_of: Option<Node>,
     /// The data dir the create's spec names (node-recovery.md sequence step 4: node recovery's
     /// create, over the exited birth's data dir): taken over whole, its endpoint key loaded and never
     /// minted. `None`: a fresh data dir.
@@ -880,10 +863,6 @@ pub struct RetireRequest {
     pub node: Node,
     /// The runtime handle of the birth.
     pub handle: DeploymentHandle,
-    /// A removal of the logical node (the pre-notice and the departure are published, and the
-    /// storage goes by the Build's StorageMeta), or the retire half of a restart (the birth stops,
-    /// the logical node and its storage stay).
-    pub kind: RetireKind,
     /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
     /// mesh-primary's recorded exit proof of the exact birth. Its stop steps are already done:
     /// nothing is sent to it, and node.deleted is published from this proof. `None`: a live target.
@@ -919,14 +898,15 @@ pub(crate) enum StopEnd {
 /// What a stop's wait step must have seen to complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StopProof {
-    /// Whatever the birth answered: the shutdown leg of a restart, a retire or a mesh leave member,
-    /// which the provider's terminal proof judges.
+    /// Whatever the birth answered: the shutdown leg of a retire or a mesh leave member, which the
+    /// provider's terminal proof judges.
     Lenient,
     /// `stopped` received once stop-node was admitted; a predecessor that never admitted it is
     /// retired by its exact runtime (a replace of a birth that does not answer).
     StoppedIfAdmitted,
-    /// stop-node admitted and `stopped` received, or the step fails by name: a standalone stop,
-    /// whose only proof is that reply (node-stop.md).
+    /// stop-node admitted and `stopped` received, or the step fails by name: a whole node.stop, a
+    /// standalone one or the stop a restart composes, whose only proof is that reply (node-stop.md
+    /// "Completion": the matching `node.stopped`).
     Stopped,
 }
 
@@ -1077,12 +1057,15 @@ pub struct Created {
 pub(crate) struct Identity {
     node_id: NodeId,
     incarnation: IncarnationId,
+    /// Always `None`: a create mints a new node and supersedes no birth (node-restart.md "No
+    /// supersedes lineage"). The field keeps its position in the receipt's wire form
+    /// (`wire::WireOutput::Identity`, positional in every Build message).
     supersedes: Option<IncarnationId>,
     deployment_id: DeploymentId,
 }
 
 /// Write (if absent) and read back the node's transport key in its data dir;
-/// a restart reuses it, a fresh data dir gets a new one.
+/// a data dir that holds one keeps it, a fresh data dir gets a new one.
 fn ensure_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
     let path = data_dir.join("node-key");
@@ -1163,7 +1146,7 @@ impl DeploymentPipeline<'_> {
         Run { build_id, attempt, node, operation, done, owner, reusing: true }
     }
 
-    fn pipeline_span(&self, kind: &'static str, build_id: &BuildId, node: &PathName, attempt: u32, restart: bool) -> tracing::Span {
+    fn pipeline_span(&self, kind: &'static str, build_id: &BuildId, node: &PathName, attempt: u32) -> tracing::Span {
         tracing::info_span!(
             "rdm.node_admin.deployment.update.via-pipeline",
             pipeline = kind,
@@ -1171,7 +1154,6 @@ impl DeploymentPipeline<'_> {
             provider = ?self.provider.kind(),
             node = %node,
             attempt,
-            restart,
         )
     }
 
@@ -1248,7 +1230,7 @@ impl DeploymentPipeline<'_> {
         r.map_err(|reason| PipelineError { step, reason })
     }
 
-    /// Create (or restart) `req.node` through every step.
+    /// Create `req.node` through every step.
     pub async fn create(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
         self.create_with(req, None).await
     }
@@ -1257,13 +1239,12 @@ impl DeploymentPipeline<'_> {
     /// its mesh and before it is asked to be Ready.
     pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt, req.restart_of.is_some());
+        let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
         self.create_steps(req, before_ready).instrument(span).await
     }
 
     async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
-        let op = if req.restart_of.is_some() { "restart-node" } else { "create-node" };
-        let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("{op}:{}", req.node)).await;
+        let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("create-node:{}", req.node)).await;
         let mut created = self.create_to_ready(&mut run, req, before_ready, None).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         self.step(&mut run, CreateStep::Complete.name(), async {
@@ -1322,26 +1303,17 @@ impl DeploymentPipeline<'_> {
                 run.done.clear();
             }
         }
-        let prior = req.restart_of.clone();
         let id: Identity = self
-            .step(run, CreateStep::AllocateIdentity.name(), async {
-                Ok(Identity {
-                    node_id: prior.as_ref().map(|p| p.node_id.clone()).unwrap_or_else(NodeId::mint),
-                    incarnation: IncarnationId::mint(),
-                    supersedes: prior.as_ref().and_then(|p| p.incarnation_id.clone()),
-                    deployment_id: DeploymentId::mint(),
-                })
-            })
+            .step(run, CreateStep::AllocateIdentity.name(), async { Ok(Identity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() }) })
             .await?;
         // The node binds port 0 and the operating system assigns the port; the address it
         // reports at its join is the one this admin publishes for the birth.
         let bind_addr = SocketAddr::new(self.provider.bind_ip(&req.node), 0);
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
         let inherits = req.data_dir.is_some();
-        let data_dir = match (req.data_dir.clone(), prior.as_ref().and_then(|p| p.data_dir.clone())) {
-            (Some(d), _) => d,
-            (None, Some(d)) => PathBuf::from(d),
-            (None, None) => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
+        let data_dir = match req.data_dir.clone() {
+            Some(d) => d,
+            None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
             // An inherited data dir keeps its key: it is loaded, never minted.
@@ -1370,7 +1342,7 @@ impl DeploymentPipeline<'_> {
             name: req.node.clone(),
             node_id: id.node_id.clone(),
             incarnation: id.incarnation.clone(),
-            supersedes: id.supersedes.clone(),
+            supersedes: None,
             bind_addr,
             listeners: bind_listeners.clone(),
             launcher: Some(self.template.launcher.clone()),
@@ -1424,7 +1396,7 @@ impl DeploymentPipeline<'_> {
                 name: req.node.clone(),
                 node_id: id.node_id.clone(),
                 incarnation: id.incarnation.clone(),
-                supersedes: id.supersedes.clone(),
+                supersedes: None,
                 endpoint_id: endpoint_id.clone(),
                 runtime,
                 data_dir: data_dir.display().to_string(),
@@ -1508,9 +1480,6 @@ impl DeploymentPipeline<'_> {
         node.transport_addr = Some(bound.transport);
         node.listeners = bound.listeners.clone();
         node.status = NodeStatus::Pending;
-        if let Some(p) = &prior {
-            node.is_primary = p.is_primary;
-        }
         // One coherent birth projection: the node record (topology and data
         // dir) here; the fact itself the birth publishes with its own digest,
         // which WaitForMeshJoin holds to exactly this fact and data dir.
@@ -1600,7 +1569,7 @@ impl DeploymentPipeline<'_> {
     /// running; nothing stops it and nothing is deleted.
     pub async fn drain(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("drain", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("drain", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("drain-node:{name}")).await;
@@ -1620,7 +1589,7 @@ impl DeploymentPipeline<'_> {
     /// runtime exit is asked and no departure is published.
     pub async fn stop(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await;
@@ -1643,7 +1612,7 @@ impl DeploymentPipeline<'_> {
     /// birth, whose reply is `Started` once it rejoined, then the wait for it to report ready.
     pub async fn start(&self, req: &StartRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("start", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("start", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("start-node:{name}")).await;
@@ -1656,18 +1625,38 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// A restart (node-restart.md): `restart-node:<path>` holds the birth through its Leaving (the
-    /// pre-event), the birth drains and stops (it parks, its process alive), and the same process
-    /// starts again: the same node id, incarnation, endpoint key and port. `Complete` ends the restart.
+    /// A restart (node-restart.md): ONE operation, `restart-node:<path>`, on the live process, which
+    /// never exits. Its `NodeRestarting` pre-event holds the birth through the stop that follows; the
+    /// birth's seats move (a node-admin), it drains and stops and parks, its process alive; the same
+    /// process starts again, the same node id, incarnation, endpoint key and port. The stop and the
+    /// start are the stop and start steps every stop and start runs, here as steps of this one
+    /// operation, and its one `Complete`, after the start, ends the restart.
     pub async fn restart(&self, req: &StartRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("restart", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("restart", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut node = req.node.clone();
-            // The first half is the retire pipeline's, as a restart (the birth is held, not departed).
-            self.retire_steps(&RetireRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: req.node.clone(), handle: req.handle.clone(), kind: RetireKind::Restart, exit: None }).await?;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("restart-node:{name}")).await;
+            let mut node = req.node.clone();
+            // The pre-event: the receipt first, then the publish, so the Build facts carry the hold
+            // from the moment it is announced and a successor derives it from the same facts.
+            let op = LifecycleOp {
+                build_id: req.build_id.to_string(),
+                attempt: req.attempt,
+                operation: run.operation.clone(),
+                node_id: node.node_id.clone(),
+                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") })?,
+                name: name.clone(),
+                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+            };
+            let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.restarting(&op).await;
+            // The stop of the live process: it parks and stays, and its `stopped` is the stop's
+            // completion. `NodeRestarting` holds it, so no `NodeStopped` is published for it.
+            self.seat_transfer_step(&mut run, &node).await?;
+            self.drain_steps(&mut run, &mut node, &req.handle).await?;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: false }).await?;
+            // The start of the same process.
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
             self.step(&mut run, CreateStep::Complete.name(), async {
                 self.sink.publish(node.clone());
@@ -1736,7 +1725,7 @@ impl DeploymentPipeline<'_> {
     /// Retire `req.node` through every step.
     pub async fn retire(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
         self.retire_steps(req).instrument(span).await
     }
 
@@ -1746,59 +1735,38 @@ impl DeploymentPipeline<'_> {
         let mut node = req.node.clone();
         let handle = &req.handle;
         // A crashed target is deleted only on the exit proof of exactly its birth: a proof of
-        // another birth, or one handed to a restart, is refused by name before anything is written.
+        // another birth is refused by name before anything is written.
         if let Some(exit) = &req.exit {
-            if req.kind != RetireKind::Removal || exit.node_id != node.node_id || node.incarnation_id.as_ref() != Some(&exit.incarnation_id) {
+            if exit.node_id != node.node_id || node.incarnation_id.as_ref() != Some(&exit.incarnation_id) {
                 return Err(PipelineError {
                     step: RetireStep::NodeDeleting.name(),
                     reason: format!(
-                        "{name}: the exit proof names birth {} at {}, the {:?} is of {} at {}",
+                        "{name}: the exit proof names birth {} at {}, the delete is of {} at {}",
                         exit.node_id,
                         exit.incarnation_id.0,
-                        req.kind,
                         node.node_id,
                         node.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")
                     ),
                 });
             }
         }
-        // The pre-notice, for a departure only: this executor's journal holds its Claim for the
-        // attempt (it runs nothing before that) and now records this operation; every node hears
-        // the node is being removed and stops routing to it, while it stays found. A restart
-        // (`RetireKind::Restart`) stops the birth and keeps the logical node: it never emits a
-        // departure, so the same NodeId's next incarnation is taken.
-        let op = if req.kind == RetireKind::Removal {
-            let op = LifecycleOp {
-                build_id: req.build_id.to_string(),
-                attempt: req.attempt,
-                operation: run.operation.clone(),
-                node_id: node.node_id.clone(),
-                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?,
-                name: name.clone(),
-                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
-            };
-            // The receipt first, then the publish: the Build facts carry the overlay from the
-            // moment it is announced, so a successor derives it from the same facts.
-            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
-            self.lifecycle.deleting(&op).await;
-            Some(op)
-        } else {
-            // A restart: the pre-event of `restart-node:<path>` on the same receipt-then-publish
-            // order, so every node holds the birth through the Leaving that follows.
-            let op = LifecycleOp {
-                build_id: req.build_id.to_string(),
-                attempt: req.attempt,
-                operation: format!("restart-node:{name}"),
-                node_id: node.node_id.clone(),
-                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") })?,
-                name: name.clone(),
-                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
-            };
-            let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
-            self.lifecycle.restarting(&op).await;
-            None
+        // The pre-notice: this executor's journal holds its Claim for the attempt (it runs nothing
+        // before that) and now records this operation; every node hears the node is being removed
+        // and stops routing to it, while it stays found.
+        let op = LifecycleOp {
+            build_id: req.build_id.to_string(),
+            attempt: req.attempt,
+            operation: run.operation.clone(),
+            node_id: node.node_id.clone(),
+            incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?,
+            name: name.clone(),
+            event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
         };
-        let _terminal = if req.kind == RetireKind::Removal && (node.parked || req.exit.is_some()) {
+        // The receipt first, then the publish: the Build facts carry the overlay from the
+        // moment it is announced, so a successor derives it from the same facts.
+        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+        self.lifecycle.deleting(&op).await;
+        let _terminal = if node.parked || req.exit.is_some() {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
@@ -1812,19 +1780,11 @@ impl DeploymentPipeline<'_> {
             // terminal proof. A caller that puts other work between them (a replace) calls the halves.
             self.seat_transfer_step(&mut run, &node).await?;
             self.drain_steps(&mut run, &mut node, handle).await?;
-            if req.kind == RetireKind::Restart {
-                // The birth parks and stays: its process is the one that starts again.
-                self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Park { publish_stopped: false }).await?;
-                // The retire leg of this restart is finished: the next restart of the node runs it afresh.
-                self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
-                return Ok(());
-            }
-            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.1.expect("a stop that terminates yields the provider's receipt")
+            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.1.expect("a stop that terminates yields the provider's receipt")
         };
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is. A crashed target's node.deleted is
         // published from its mesh-primary's recorded exit proof (node-recovery.md sequence step 3).
-        let Some(op) = op else { unreachable!("a restart returned after its park") };
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
         let exit = req.exit.as_ref();
         let op = self
@@ -1899,7 +1859,7 @@ impl DeploymentPipeline<'_> {
     pub async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let path = node.name.clone();
-        let span = self.pipeline_span("shutdown-member", build_id, &path, attempt, false);
+        let span = self.pipeline_span("shutdown-member", build_id, &path, attempt);
         async {
             let mut run = self.begin(build_id, attempt, &path, crate::mesh_leave::member_operation(outer_operation, &path.to_string())).await;
             self.drain_steps(&mut run, node, handle).await?;
@@ -2121,7 +2081,7 @@ impl DeploymentPipeline<'_> {
         Fut: std::future::Future<Output = Result<(), String>>,
     {
         use tracing::Instrument;
-        let span = self.pipeline_span("replace", &req.build_id, &req.predecessor.name, req.attempt, false);
+        let span = self.pipeline_span("replace", &req.build_id, &req.predecessor.name, req.attempt);
         self.replace_steps(req, before_ready, after_ready).instrument(span).await
     }
 
@@ -2190,7 +2150,7 @@ impl DeploymentPipeline<'_> {
             Ok(())
         })
         .await?;
-        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, data_dir: None, held_runtimes: req.held_runtimes.clone() };
+        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, data_dir: None, held_runtimes: req.held_runtimes.clone() };
         let replacing = Replacing { build_id: &req.build_id, predecessor: &old, handle: &req.handle, terminated: !parked };
         let mut created = self.create_to_ready(&mut run, &creq, before_ready, Some(&replacing)).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
@@ -2215,7 +2175,7 @@ impl DeploymentPipeline<'_> {
     /// at the exited birth's path.name, never the exited birth.
     pub async fn update(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("update", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("update", &req.build_id, &req.node.name, req.attempt);
         self.update_steps(req).instrument(span).await
     }
 
