@@ -166,12 +166,12 @@ mod tests {
     fn port_holder_names_this_process_for_its_own_listener_and_no_socket_for_a_free_port() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
-        let who = port_holder(addr, SlotTransport::Tcp);
+        let who = port_holder(addr, SlotTransport::Tcp).unwrap();
         assert!(who.contains("listen"), "{who}");
         assert!(who.contains(&format!("pid {} ", std::process::id())), "{who}");
         drop(l);
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        assert_eq!(port_holder(free, SlotTransport::Tcp), "no socket");
+        assert_eq!(port_holder(free, SlotTransport::Tcp).unwrap(), "no socket");
     }
 
     /// CONTRACT: a port another live process listens on is released by the exited runtime (its
@@ -181,10 +181,40 @@ mod tests {
     fn a_port_another_live_process_listens_on_is_released_by_the_exited_runtime() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
-        assert!(released_by(addr, SlotTransport::Tcp, Some(1)), "another live pid listens: released");
-        assert!(!released_by(addr, SlotTransport::Tcp, Some(std::process::id())), "the exited pid itself still listens: not released");
+        assert!(released_by(addr, SlotTransport::Tcp, Some(1)).unwrap(), "another live pid listens: released");
+        assert!(!released_by(addr, SlotTransport::Tcp, Some(std::process::id())).unwrap(), "the exited pid itself still listens: not released");
         drop(l);
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        assert!(released_by(free, SlotTransport::Tcp, Some(1)));
+        assert!(released_by(free, SlotTransport::Tcp, Some(1)).unwrap());
+    }
+
+    /// CONTRACT: a socket table that exists but cannot be read is an error naming the table and
+    /// why, never "no holder": a port must not read as released when its table was never read.
+    #[test]
+    fn an_unreadable_socket_table_is_an_error_naming_it() {
+        let dir = crate::record_store::tempdir("port-table-unreadable");
+        // A directory where the table is: it exists, and reading it fails (EISDIR).
+        let table = dir.join("tcp");
+        std::fs::create_dir_all(&table).unwrap();
+        let addr: SocketAddr = "127.0.0.1:4242".parse().unwrap();
+        let err = port_holders_in(&[table.as_path()], std::path::Path::new("/proc"), addr).unwrap_err();
+        assert!(err.contains(&table.display().to_string()), "the error names the table: {err}");
+    }
+
+    /// CONTRACT: a table the kernel does not provide (`/proc/net/tcp6` on a host without IPv6)
+    /// is skipped; the tables that exist still answer their sockets.
+    #[test]
+    fn a_missing_tcp6_table_is_skipped_and_the_tcp_table_answers() {
+        let dir = crate::record_store::tempdir("port-table-missing-tcp6");
+        let tcp = dir.join("tcp");
+        let tcp6 = dir.join("tcp6");
+        std::fs::write(
+            &tcp,
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:1092 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 987654321 1 0000000000000000 100 0 0 10 0\n",
+        )
+        .unwrap();
+        let addr: SocketAddr = "127.0.0.1:4242".parse().unwrap();
+        let holders = port_holders_in(&[tcp.as_path(), tcp6.as_path()], std::path::Path::new("/proc"), addr).unwrap();
+        assert_eq!(holders, vec![PortHolder { state: "listen".into(), inode: 987654321, pid: None, comm: String::new() }]);
     }
 }
