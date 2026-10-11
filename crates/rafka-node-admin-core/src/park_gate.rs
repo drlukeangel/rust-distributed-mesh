@@ -11,7 +11,8 @@
 //!   turn has ended, so nothing a turn does follows the stop's cut;
 //! - a task that takes no such lock is spawned through the gate ([`ParkGate::spawn`]): while the
 //!   gate is parked its future is not polled, so it holds its place at the await it was at.
-//! The gate neither cancels nor restarts a task.
+//! Work a stop retires with the birth instead of holding it runs as [`ParkGate::until_parked`]: it
+//! ends at the park and never resumes. The gate restarts nothing.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -170,6 +171,26 @@ impl ParkGate {
                     _ = rx.wait_for(|s| s.parked) => {}
                     out = &mut task => return out,
                 }
+            }
+        }
+    }
+
+    /// `work`, ended the moment the gate parks: `None` when the park came first (or the gate was
+    /// already parked). For work a stop retires with the birth instead of holding it (a tickle round, a
+    /// recovery follower): it is dropped where it stands, a lock it held or was queued on included, and
+    /// never resumes; the next turn after a start decides again. The park is looked at first, so work
+    /// woken by its own progress and by the park at once is never polled past the park.
+    pub fn until_parked<F>(&self, work: F) -> impl Future<Output = Option<F::Output>> + Send + 'static
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let mut rx = self.state.subscribe();
+        async move {
+            tokio::select! {
+                biased;
+                _ = rx.wait_for(|s| s.parked) => None,
+                out = work => Some(out),
             }
         }
     }

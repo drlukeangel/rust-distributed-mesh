@@ -349,11 +349,15 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     // releases the first recovering node-admin only: one attempt, for mesh node-admin 1. Every other node of the
     // mesh is reconciled once the mesh is heard again (by the reborn mesh primary's own sweep or the drift pass).
     // The window ends when the fabric primary hears the reborn mesh again, or when it loses the seat to the reborn
-    // mesh (its drift pass is then no one's but the new holder's).
-    let heard_again = named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict")
+    // mesh (its drift pass is then no one's but the new holder's). Heard again is its first direct backbone receipt
+    // of the mesh after the verdict (the snapshot installed off the backbone), the instant the R-D1 fence reads
+    // (`Ladder::fence` over `DigestBook::mesh_unheard`); the ladder's own heard-again verdict comes on its next
+    // round, after it.
+    let heard_again = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed")
         .into_iter()
-        .filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "outcome") == "heard-again")
+        .filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "channel") == "backbone" && at_ns(sp) >= at_ns(rebirth_verdict))
         .map(at_ns)
+        .chain(named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "outcome") == "heard-again").map(at_ns))
         .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(rebirth_verdict)).map(at_ns))
         .min()
         .unwrap_or_else(|| panic!("{fp} heard {} again after the rebirth, or gave up the seat", f.lost));
