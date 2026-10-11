@@ -1045,15 +1045,21 @@ async fn follow(frames: &mut dyn RecoveryFrames) -> Result<RecoveryEnd, String> 
             Some(RecoveryFrame::Progress) => continue,
             Some(RecoveryFrame::End(end)) => return Ok(end),
             Some(RecoveryFrame::Broken(why)) => return Err(why),
-            None => return Ok(RecoveryEnd::Complete { attempt: 0 }),
+            None => return Err("the recovery's stream ended before its terminal frame".to_string()),
         }
     }
 }
 
 /// The submit span's `outcome` and the submit's result, from how the followed recovery ended.
+/// A Failed recovery ends the submit in an error: the birth is released, and the next tick finds it
+/// still proven exited and submits again (node-recovery.md "Failure and receipts").
 fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), String>) {
     match end {
-        Ok(_) => ("submitted".to_string(), Ok(())),
+        Ok(RecoveryEnd::Complete { attempt }) => (format!("complete: attempt {attempt}"), Ok(())),
+        Ok(RecoveryEnd::Failed { attempt, operation, step, reason }) => {
+            let failed = format!("failed: attempt {attempt} {operation} step {step}: {reason}");
+            (failed.clone(), Err(failed))
+        }
         Err(e) => (e.clone(), Err(e)),
     }
 }
