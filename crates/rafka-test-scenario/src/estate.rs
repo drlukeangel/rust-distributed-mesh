@@ -306,7 +306,7 @@ pub fn binary(name: &str) -> PathBuf {
 fn package_of(name: &str) -> &'static str {
     match name {
         "rafka-node-admin" => "rafka-node-admin-core",
-        "rafka-rpc-probe" | "rafka-rpc-node" => "rafka-node-rpc-testkit",
+        "rafka-rpc-probe" | "rafka-rpc-node" | "faulted-node-admin" => "rafka-node-rpc-testkit",
         "rafka-broker" => "rafka-broker",
         "rafka-gateway" => "rafka-gateway",
         "rafka-compute" => "rafka-compute",

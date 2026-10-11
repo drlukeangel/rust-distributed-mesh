@@ -75,10 +75,14 @@ pub fn candidate_sha() -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// The executable `name` in `dir`, built and present.
+/// The executable `name` in `dir`, built, present and built from the source this tree holds now
+/// ([`crate::estate::binary_is_fresh`]): a stale one is refused by name with its rebuild command.
 pub fn executable_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let p = dir.join(name);
     assert!(p.exists(), "RED: executable `{name}` is not built at {} (cargo build -p rafka-node-rpc-testkit --bins)", p.display());
+    if let Err(why) = crate::estate::binary_is_fresh(name, &p) {
+        panic!("{why}");
+    }
     p.canonicalize().unwrap()
 }
 
