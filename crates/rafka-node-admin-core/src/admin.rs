@@ -5488,8 +5488,7 @@ mod tests {
 
     /// The mesh primary `mesh2.admin.1`'s recovery of its own mesh's births, over `book`, `provider`
     /// and `nodes_storage`, and the TRUE OFFLINE member `mesh2.rpc.1` of `view`.
-    fn recovery_of(view: &Topology, book: DigestBook, provider: Arc<dyn DeploymentProvider>, nodes_storage: Arc<dyn crate::storage::NodesStorage>) -> (RecoverySubmitter, Arc<crate::status_storage::MemoryStatusStorage>, Node) {
-        let status = Arc::new(crate::status_storage::MemoryStatusStorage::default());
+    fn recovery_of(view: &Topology, book: DigestBook, provider: Arc<dyn DeploymentProvider>, nodes_storage: Arc<dyn crate::storage::NodesStorage>, status: Arc<dyn crate::status_storage::StatusStorage>) -> (RecoverySubmitter, Arc<dyn crate::status_storage::StatusStorage>, Node) {
         let member = view.node(&"mesh2.rpc.1".parse().unwrap()).cloned().expect("the member is in the view");
         let recovery = RecoverySubmitter {
             me: "mesh2.admin.1".parse().unwrap(),
@@ -5506,8 +5505,7 @@ mod tests {
 
     /// What the mesh primary's two ticks over one TRUE OFFLINE birth left: the verdict, the
     /// inspection spans, the submit spans, and the birth's exit-proof row.
-    async fn two_ticks(recovery: &RecoverySubmitter, status: &crate::status_storage::MemoryStatusStorage, member: &Node, cell: &str) -> (Inspected, Vec<crate::span_capture::Captured>, usize, Option<crate::status_storage::NodeExitRow>) {
-        use crate::status_storage::StatusStorage;
+    async fn two_ticks(recovery: &RecoverySubmitter, status: &dyn crate::status_storage::StatusStorage, member: &Node, cell: &str) -> (Inspected, Vec<crate::span_capture::Captured>, usize, Option<crate::status_storage::NodeExitRow>) {
         let capture = crate::span_capture::Capture::new(cell);
         let verdicts = Mutex::new(HashMap::new());
         let outcome = {
@@ -5541,8 +5539,8 @@ mod tests {
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() });
-        let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()));
-        let (outcome, inspections, submits, proof) = two_ticks(&recovery, &status, &node, "i143-3051-provider-unknown").await;
+        let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let (outcome, inspections, submits, proof) = two_ticks(&recovery, &*status, &node, "i143-3051-provider-unknown").await;
         assert_eq!(outcome, Inspected::NotExited("its runtime is not proven exited: Unknown".into()), "Unknown is no proof");
         assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 2, "the provider was asked about the exact runtime on each tick");
         assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
@@ -5553,6 +5551,43 @@ mod tests {
         assert_eq!(attr("inspector"), "mesh2.admin.1", "{a:?}");
         assert_eq!((submits, proof), (0, None), "no exit-proof row and no recovery submit without an exit proof");
         eprintln!("span rdm.node_admin.node.resolve.via-provider-inspection trace_id={} {a:?}", inspections[0].trace_id);
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
+    /// durably"; CLAUDE.md: an error state names what failed and where): the provider proves a TRUE
+    /// OFFLINE member exited and status.storage refuses the birth's exit-proof row. The submit ends
+    /// there, on its own `via-node-recovery` span, whose outcome names the row and the store's own
+    /// cause; nothing reaches the fabric-primary (no Build named) and no row stands. Must NOT happen:
+    /// a refused exit-proof write with no span (an info line only), or a submit without its row.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_refused_exit_proof_write_ends_the_recovery_submit_on_its_span_naming_the_stores_cause() {
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-exit-refused").unwrap();
+        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        member.node.runtime = Some(fact.clone());
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() });
+        let refusing = crate::offline::tests::SilenceRefusing { exit: true, ..Default::default() };
+        let (recovery, status, node) = recovery_of(&view, book, provider, Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(refusing));
+        let capture = crate::span_capture::Capture::new("i143-3051-exit-proof-refused");
+        let outcome = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+        };
+        assert_eq!(outcome, Inspected::Exited(Some(1), "provider"), "the provider proved the exit");
+        assert_eq!(status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap(), None, "no exit-proof row stands");
+        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+        assert_eq!(submits.len(), 1, "the submit that ended on the refused row is spanned: {submits:?}");
+        let a = &submits[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.0.clone()), "the exact birth: {a:?}");
+        assert!(attr("outcome").contains("exit-proof row") && attr("outcome").contains("No space left on device (os error 28)"), "the outcome names the row and the store's cause: {a:?}");
+        assert_eq!(attr("build_id"), "", "nothing reached the fabric-primary: {a:?}");
+        eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 3: the provider is asked "about the
@@ -5574,8 +5609,8 @@ mod tests {
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         // The provider would prove an exit: it must never be asked without the birth's runtime fact.
         let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() });
-        let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(RuntimeRowUnreadable::default()));
-        let (outcome, inspections, submits, proof) = two_ticks(&recovery, &status, &node, "i143-3051-runtime-row-unreadable").await;
+        let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(RuntimeRowUnreadable::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let (outcome, inspections, submits, proof) = two_ticks(&recovery, &*status, &node, "i143-3051-runtime-row-unreadable").await;
         let why = format!("the durable runtime row of {} at {} could not be read: runtimes/{}--{}.json is not a record this build recognises: format runtime/9 is not one this build reads", node.node_id, member.node.incarnation.0, node.node_id, member.node.incarnation.0);
         assert_eq!(outcome, Inspected::NotExited(why.clone()), "an unreadable row is no proof, and is named as unreadable");
         assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 0, "with no runtime fact the provider is not asked");

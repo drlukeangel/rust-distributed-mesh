@@ -327,7 +327,7 @@ pub(crate) async fn put_exit_proof(store: &dyn crate::status_storage::StatusStor
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const FLOOR: u64 = 30_000;
@@ -710,10 +710,12 @@ mod tests {
         assert!(put_silence_status(&store, &held, None).await.is_err(), "a held record with no birth is named, never skipped");
     }
 
-    /// A status store whose every put of a silence row is refused, as a full or read-only disk would.
+    /// A status store whose puts of silence rows and, when `exit`, of exit-proof rows are refused,
+    /// as a full or read-only disk would.
     #[derive(Default)]
-    struct SilenceRefusing {
-        inner: crate::status_storage::MemoryStatusStorage,
+    pub(crate) struct SilenceRefusing {
+        pub inner: crate::status_storage::MemoryStatusStorage,
+        pub exit: bool,
     }
 
     #[async_trait::async_trait]
@@ -746,6 +748,9 @@ mod tests {
             self.inner.node_silences().await
         }
         async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            if self.exit {
+                return Err(crate::record_store::StorageError::Io { file: format!("status/exit/{}", row.key()), reason: "No space left on device (os error 28)".into() });
+            }
             self.inner.put_node_exit(row).await
         }
         async fn node_exit(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
