@@ -22,6 +22,8 @@ use tokio::sync::RwLock;
 
 /// The fabric-primary's writer of node rows.
 pub struct NodeRows {
+    /// This admin's `path.name`: it writes only while its view names it the fabric-primary.
+    me: PathName,
     storage: Arc<dyn NodesStorage>,
     /// The record held when each removal was announced (`NodeDeleting`), by operation, until its
     /// `NodeDeleted` writes it.
@@ -29,9 +31,9 @@ pub struct NodeRows {
 }
 
 impl NodeRows {
-    /// The writer over `storage`, the fabric-primary's nodes store.
-    pub fn new(storage: Arc<dyn NodesStorage>) -> Self {
-        Self { storage, announced: Mutex::new(HashMap::new()) }
+    /// The writer of the admin `me` over `storage`, the fabric-primary's nodes store.
+    pub fn new(me: PathName, storage: Arc<dyn NodesStorage>) -> Self {
+        Self { me, storage, announced: Mutex::new(HashMap::new()) }
     }
 
     /// The store the rows are written to.

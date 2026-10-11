@@ -133,7 +133,7 @@ fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Ar
         gate: Arc::new(OpenGate),
         departure: proofs,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     })
 }
 

@@ -179,7 +179,7 @@ async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
 }
@@ -205,7 +205,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
 }
