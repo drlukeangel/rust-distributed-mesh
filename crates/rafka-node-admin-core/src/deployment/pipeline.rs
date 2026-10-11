@@ -499,9 +499,6 @@ pub enum RetireKind {
     Removal,
     /// The birth drains and stops and its process stays, parked: the same process starts again.
     Restart,
-    /// The birth's process already exited (proven drift, or an exit the stop ladder ends): the
-    /// provider proves the exit and the logical node is relaunched over its data dir, a successor birth.
-    Relaunch,
 }
 
 /// What a removal did with the logical node's storage, by the accepted Build's

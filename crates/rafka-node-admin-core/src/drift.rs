@@ -29,14 +29,6 @@ pub(crate) struct ExitedBirth {
     pub source: &'static str,
 }
 
-impl ExitedBirth {
-    /// The proof names `TRANSPORT_STOPPED`: exactly the reserved exit code, never inferred from a
-    /// network symptom. Every other exit, and an unknown reason, is a replacement.
-    pub fn transport_stopped(&self) -> bool {
-        self.code == Some(rafka_mesh_entity::runtime::TRANSPORT_STOPPED_EXIT_CODE)
-    }
-}
-
 /// One cohort below what the topology names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Shortfall {

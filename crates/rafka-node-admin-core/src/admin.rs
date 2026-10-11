@@ -1331,11 +1331,9 @@ pub async fn reconcile_drift(
     let attempt = current.attempt + 1;
     let (key, scope, action) = match first_exited {
         Some((path, birth)) => {
-            let action = if birth.transport_stopped() {
-                crate::accepted::AttemptAction::Restart { path: path.clone(), from_incarnation: birth.incarnation.clone() }
-            } else {
-                crate::accepted::AttemptAction::Replace { path: path.clone(), from_incarnation: birth.incarnation.clone() }
-            };
+            // Only a node-admin reaches here (an ordinary member is its mesh-primary's to recover), and
+            // a proven-exited birth has no process to restart (node-restart.md): it is replaced.
+            let action = crate::accepted::AttemptAction::Replace { path: path.clone(), from_incarnation: birth.incarnation.clone() };
             let scope = short.iter().filter(|s| s.exited.iter().any(|e| *e == path.to_string())).map(ToString::to_string).collect::<Vec<_>>().join("; ");
             (vec![path.to_string()], scope, Some(action))
         }
@@ -2648,42 +2646,18 @@ impl AdminRunner {
                 .await
             }
             BuildOperation::RestartNode { node } => {
+                // node-restart.md: the live process parks and rejoins; there is no relaunch. A member
+                // proven exited is node recovery's (node-recovery.md), a node-admin the drift's replace.
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
-                async {
-                    // A birth whose process is alive restarts in place (stop, then start). One whose
-                    // process the provider already proves exited (proven drift) is relaunched over its
-                    // data dir: there is no process to park.
-                    let seen = self.topology.read().await.node(node).cloned();
-                    let exited = match &seen {
-                        Some(n) => match self.handle_for(n).await {
-                            Ok((_, handle)) => matches!(self.provider.inspect(&handle).await, crate::deployment::provider::DeploymentStatus::Exited { .. }),
-                            Err(_) => false,
-                        },
-                        None => false,
-                    };
-                    if exited {
-                        let prior = self.retire_with(build_id, attempt, node, RetireKind::Relaunch).await?;
-                        self.create(build_id, attempt, node, prior, None).await
-                    } else {
-                        self.restart_in_place(build_id, attempt, node).await
-                    }
-                }
-                .instrument(span)
-                .await
+                self.restart_in_place(build_id, attempt, node).instrument(span).await
             }
             BuildOperation::StartNode { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 self.start_parked(build_id, attempt, node, from_incarnation).instrument(span).await
             }
             BuildOperation::ReplaceNode { node, from_incarnation } => {
-                // node-replace.md names the operation's span `node.update.via-build`; node-recovery.md,
-                // for a birth the reconciler proved exited, `node.create.via-build`.
-                let recovery = self.builds.read_build(build_id).await.is_ok_and(|b| b.reason == crate::build_state::AttemptReason::ProvenDrift);
-                let span = if recovery {
-                    tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt)
-                } else {
-                    tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt)
-                };
+                // node-replace.md names the operation's span `node.update.via-build`.
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 self.replace(build_id, attempt, node, from_incarnation).instrument(span).await
             }
             BuildOperation::DrainNode { node, from_incarnation } => {
@@ -4056,19 +4030,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
     // primary reborn into its mesh from its durable map): connect to a local node, read its
     // topology and sweep the own mesh once with a Ping. Ready waits for the sweep; every node that
-    // did not answer then enters the standard decommission.
+    // did not answer is unheard, and node recovery's to prove (mesh-recovery.md step 6).
     let sweep_slot: Arc<std::sync::OnceLock<crate::reenter::SweepReport>> = Arc::new(std::sync::OnceLock::new());
     if let (true, Some((source, map))) = (entering_existing_mesh, entry_map.take()) {
         let ctx = crate::reenter::EntryCtx { me: name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), membership: membership.clone(), time: rafka_time.clone() };
         let (slot, records, provider_kind) = (sweep_slot.clone(), records.clone(), policy.provider);
-        let decommission = crate::reenter::Decommission {
-            me: name.clone(),
-            topology: control.topology.clone(),
-            accepted: accepted.clone(),
-            builds: builds_dyn.clone(),
-            control: control.clone(),
-        };
-        let digest = digest.clone();
         tasks.push(park_gate.spawn(async move {
             let report = crate::reenter::enter_existing_mesh(&ctx, source, map).await;
             // The entry read has told this admin what the mesh knows of its seats (or no one could).
@@ -4081,13 +4047,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             for (n, _) in &report.not_reached {
                 records.publish(n.as_node(NodeStatus::PendingReconnect, provider_kind));
             }
-            let unreached: Vec<crate::reenter::MapNode> = report.not_reached.iter().map(|(n, _)| n.clone()).collect();
+            // A node not reached is unheard, so the mesh-primary's tick watches it: its tickle, then
+            // the provider's exact exit proof, then node recovery only on proof (mesh-recovery.md step 6).
             let _ = slot.set(report);
-            // The decommission is the Build rectifier's: this admin takes part once it is Ready.
-            while digest.lock().unwrap().status != MemberStatus::ReadyForTraffic {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            crate::reenter::decommission_unreached(&decommission, unreached).await;
         }));
     }
     // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
