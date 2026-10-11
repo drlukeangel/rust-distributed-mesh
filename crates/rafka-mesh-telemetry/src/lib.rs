@@ -11,7 +11,7 @@
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SimpleSpanProcessor, TracerProvider};
+use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, TracerProvider};
 use tracing_subscriber::filter::{filter_fn, FilterExt};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -20,6 +20,8 @@ pub mod export;
 pub mod logs;
 mod log_sink;
 pub mod watchdog;
+mod pipeline;
+pub use pipeline::{install_span_capture, span_export_layer, span_processor, CountingBatchProcessor, SpanCapture, SpanLoss};
 
 use export::{ExportRuntime, WatchedLogs, WatchedSpans};
 
@@ -31,27 +33,19 @@ struct Exporters {
     /// The OTLP log provider the log adapter emits through, when a collector is configured.
     logs: Option<opentelemetry_sdk::logs::LoggerProvider>,
     drained: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// The local evidence sink's writer, drained before anything waits on the collector.
-    evidence: Option<std::sync::Arc<std::sync::Mutex<EvidenceWriter>>>,
 }
 
 impl Exporters {
-    fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<std::sync::Arc<std::sync::Mutex<EvidenceWriter>>>) -> Self {
-        Self { provider, logs, drained: Default::default(), evidence }
+    fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>) -> Self {
+        Self { provider, logs, drained: Default::default() }
     }
 
-    /// Drain the local evidence sink (a file write; every ended span is already queued to it),
-    /// then shut the providers down (the shutdown drains what is queued for the collector), each
+    /// Shut the providers down (the shutdown drains what is queued for the collector), each
     /// on a thread of its own: waited for at most [`export::DRAIN_BOUND`] together, and not at
     /// all while the collector is known to be down, because what is queued for it is dropped.
     fn drain(&self, what: &'static str) {
         if self.drained.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
-        }
-        if let Some(evidence) = &self.evidence {
-            if let Ok(mut writer) = evidence.lock() {
-                writer.shutdown();
-            }
         }
         let provider = self.provider.clone();
         let mut jobs: Vec<Box<dyn FnOnce() + Send>> = vec![Box::new(move || {
@@ -101,8 +95,8 @@ impl Drop for TelemetryGuard {
     }
 }
 
-fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<std::sync::Arc<std::sync::Mutex<EvidenceWriter>>>) -> TelemetryGuard {
-    let exporters = Exporters::new(provider, logs, evidence);
+fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>) -> TelemetryGuard {
+    let exporters = Exporters::new(provider, logs);
     let _ = EXIT_FLUSH.set(exporters.clone());
     TelemetryGuard { exporters }
 }
@@ -120,7 +114,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    guard(provider, None, None)
+    guard(provider, None)
 }
 
 /// Initialize OTLP tracing for short-lived CLI processes.
@@ -135,7 +129,7 @@ pub fn init_telemetry_for_cli(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    guard(provider, None, None)
+    guard(provider, None)
 }
 
 fn install_propagator() {
@@ -204,10 +198,12 @@ fn build_batch_provider(
 
 /// The batch processors' bounds: 200 ms between exports, a full queue drops, and one export
 /// request takes at most [`export::EXPORT_TIMEOUT`].
-fn batch_config() -> opentelemetry_sdk::trace::BatchConfig {
+pub(crate) fn batch_config() -> opentelemetry_sdk::trace::BatchConfig {
     BatchConfigBuilder::default()
         .with_scheduled_delay(std::time::Duration::from_millis(200))
         .with_max_export_timeout(export::EXPORT_TIMEOUT)
+        .with_max_queue_size(65536)
+        .with_max_export_batch_size(2048)
         .build()
 }
 
@@ -307,51 +303,10 @@ pub fn current_tracestate() -> Option<String> {
 /// An evidence write at or beyond this length is named on stderr.
 pub(crate) const EVIDENCE_WRITE_STALL: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Writes evidence lines on its own OS thread: the thread that closes a span (a runtime worker)
-/// only hands the lines over, so a write the kernel holds stalls this thread, never the runtime.
-/// Lines are written in the order they were handed over; shutdown drains every line handed over
-/// before it returns.
-#[derive(Debug)]
-struct EvidenceWriter {
-    tx: Option<std::sync::mpsc::Sender<String>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl EvidenceWriter {
-    fn start(mut file: std::fs::File) -> std::io::Result<Self> {
-        use std::io::Write;
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        let thread = std::thread::Builder::new().name("rdm-evidence".into()).spawn(move || {
-            for out in rx {
-                let started = std::time::Instant::now();
-                if let Err(e) = file.write_all(out.as_bytes()) {
-                    eprintln!("telemetry: evidence write failed: {e}");
-                }
-                let took = started.elapsed();
-                if took >= EVIDENCE_WRITE_STALL {
-                    eprintln!("telemetry: evidence write stalled {} ms ({} bytes) on the evidence thread", took.as_millis(), out.len());
-                }
-            }
-        })?;
-        Ok(Self { tx: Some(tx), thread: Some(thread) })
-    }
-
-    fn send(&self, out: String) -> Result<(), String> {
-        self.tx.as_ref().ok_or_else(|| "the evidence writer is shut down".to_string())?.send(out).map_err(|e| e.to_string())
-    }
-
-    fn shutdown(&mut self) {
-        self.tx.take();
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct JsonlSpanExporter {
     service: String,
-    writer: std::sync::Arc<std::sync::Mutex<EvidenceWriter>>,
+    file: std::fs::File,
 }
 
 impl JsonlSpanExporter {
@@ -360,7 +315,7 @@ impl JsonlSpanExporter {
         let ns = std::fs::read_link("/proc/self/ns/pid").ok().and_then(|l| l.to_string_lossy().trim_start_matches("pid:[").trim_end_matches(']').parse::<u64>().ok()).unwrap_or(0);
         let path = dir.join(format!("{service}.{}-{ns}.spans.jsonl", std::process::id()));
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { service: service.to_string(), writer: std::sync::Arc::new(std::sync::Mutex::new(EvidenceWriter::start(file)?)) })
+        Ok(Self { service: service.to_string(), file })
     }
 
     fn line(&self, s: &opentelemetry_sdk::export::trace::SpanData) -> String {
@@ -389,23 +344,25 @@ impl JsonlSpanExporter {
 }
 
 impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
+    /// Runs on the evidence thread of [`CountingBatchProcessor`]: formats the batch and appends
+    /// it at once, so a killed process loses only what was queued behind the write in flight.
     fn export(
         &mut self,
         batch: Vec<opentelemetry_sdk::export::trace::SpanData>,
     ) -> futures_util::future::BoxFuture<'static, opentelemetry_sdk::export::trace::ExportResult> {
+        use std::io::Write;
         let mut out = String::new();
         for s in &batch {
             out.push_str(&self.line(s));
             out.push('\n');
         }
-        let r = self.writer.lock().map_err(|e| e.to_string()).and_then(|w| w.send(out));
-        Box::pin(async move { r.map_err(|e| opentelemetry::trace::TraceError::Other(e.into())) })
-    }
-
-    fn shutdown(&mut self) {
-        if let Ok(mut w) = self.writer.lock() {
-            w.shutdown();
+        let started = std::time::Instant::now();
+        let r = self.file.write_all(out.as_bytes());
+        let took = started.elapsed();
+        if took >= EVIDENCE_WRITE_STALL {
+            eprintln!("telemetry: evidence write stalled {} ms ({} bytes) on the evidence thread", took.as_millis(), out.len());
         }
+        Box::pin(async move { r.map_err(|e| opentelemetry::trace::TraceError::Other(format!("evidence write failed: {e}").into())) })
     }
 }
 
@@ -419,12 +376,10 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     let service = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| service_name.to_string());
     let mut builder = TracerProvider::builder().with_resource(build_resource(&service));
     let mut any = false;
-    let mut evidence = None;
     if let Ok(dir) = std::env::var("RDM_EVIDENCE_DIR") {
         match JsonlSpanExporter::create(std::path::Path::new(&dir), &service) {
             Ok(e) => {
-                evidence = Some(e.writer.clone());
-                builder = builder.with_span_processor(SimpleSpanProcessor::new(Box::new(e)));
+                builder = builder.with_span_processor(span_processor("evidence", e));
                 any = true;
             }
             Err(e) => eprintln!("telemetry: RDM_EVIDENCE_DIR={dir} is unusable: {e}"),
@@ -446,8 +401,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
             }
             Err(e) => eprintln!("telemetry: the OTLP log exporter for {endpoint} could not be built: {e}"),
         }
-        let processor = BatchSpanProcessor::builder(build_exporter(endpoint), export_rt.clone()).with_batch_config(batch_config()).build();
-        builder = builder.with_span_processor(processor);
+        builder = builder.with_span_processor(span_processor("otlp", build_exporter(endpoint)));
         any = true;
     }
     let stderr_sink = log_sink::LogSink::start(std::io::stderr());
@@ -458,18 +412,16 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         return None;
     }
     let provider = builder.build();
-    let tracer = provider.tracer(service.clone());
-    let otel_filter = span_export_filter().and(filter_fn(export::admits_source));
     let log_filter = tracing_subscriber::filter::LevelFilter::from_level(otlp_log_export_level()).and(filter_fn(export::admits_source));
     use opentelemetry::logs::LoggerProvider as _;
     let log_layer = logs.as_ref().map(|p| logs::LogAdapter::new(p.logger("rafka-mesh")).with_filter(log_filter));
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter))
-        .with(OpenTelemetryLayer::new(tracer).with_filter(otel_filter))
+        .with(span_export_layer(&provider, &service))
         .with(log_layer)
         .try_init();
     let _ = watchdog::spawn();
-    Some(guard(provider, logs, evidence))
+    Some(guard(provider, logs))
 }
 
 /// What span export (OTLP and the evidence files) carries, as rafka-v2's telemetry
@@ -496,3 +448,40 @@ pub(crate) fn otlp_log_export_level() -> tracing::Level {
     std::env::var("RDM_OTLP_LOG_LEVEL").ok().and_then(|v| v.parse::<tracing::Level>().ok()).unwrap_or(tracing::Level::WARN)
 }
 
+
+#[cfg(test)]
+mod evidence_tests {
+    use opentelemetry::trace::{Tracer, TracerProvider as _};
+
+    /// CONTRACT: a span ended just before the provider shuts down (the guard's drop) is a complete
+    /// JSON line of the evidence file, in order, and a flush alone already puts the spans ended
+    /// before it on disk; nothing was lost on the way.
+    #[test]
+    fn evidence_file_holds_every_span_ended_before_shutdown() {
+        let dir = std::env::temp_dir().join(format!("rdm-evidence-complete-{}", std::process::id()));
+        let exporter = super::JsonlSpanExporter::create(&dir, "evidence-complete").unwrap();
+        let processor = super::span_processor("evidence", exporter);
+        let loss = processor.loss();
+        let provider = opentelemetry_sdk::trace::TracerProvider::builder().with_span_processor(processor).build();
+        let tracer = provider.tracer("t");
+        let read = || {
+            let file = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+            std::fs::read_to_string(file).unwrap()
+        };
+        for i in 0..300 {
+            drop(tracer.start(format!("s{i}")));
+        }
+        for r in provider.force_flush() {
+            r.expect("the flush returned an error");
+        }
+        assert_eq!(read().lines().count(), 300, "a flush returned with spans still queued");
+        for i in 300..600 {
+            drop(tracer.start(format!("s{i}")));
+        }
+        provider.shutdown().unwrap();
+        let names: Vec<String> = read().lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["name"].as_str().unwrap().to_string()).collect();
+        assert_eq!(names, (0..600).map(|i| format!("s{i}")).collect::<Vec<_>>());
+        assert_eq!(loss.lost(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
