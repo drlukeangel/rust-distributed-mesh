@@ -19,6 +19,14 @@ pub enum StorageError {
         /// Why it failed.
         reason: String,
     },
+    /// A write refused because this store's writer gave up its authority (a seat transfer's
+    /// cut-off, R14 item 4): it never reached the disk.
+    CutOff {
+        /// The file.
+        file: String,
+        /// The cut-off's reason.
+        reason: String,
+    },
     /// A file this build does not recognise: refused, never read as a value.
     Unrecognised {
         /// The file.
@@ -32,6 +40,7 @@ impl std::fmt::Display for StorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io { file, reason } => write!(f, "{file}: {reason}"),
+            Self::CutOff { file, reason } => write!(f, "{file}: this store's writes are cut off: {reason}"),
             Self::Unrecognised { file, reason } => write!(f, "{file} is not a record this build recognises: {reason}"),
         }
     }
@@ -138,6 +147,16 @@ impl FileRecords {
         self.path(key).exists()
     }
 
+    /// Wait for every write this store issued: the write lock taken once and released.
+    pub async fn drain(&self) {
+        drop(self.write.lock().await);
+    }
+
+    /// Refuse every write from now on, naming `reason`.
+    pub fn cut_off(&self, reason: String) {
+        let _ = reason;
+    }
+
     /// Remove the record under `key`, if any.
     pub async fn remove(&self, key: &str) -> Result<(), StorageError> {
         let path = self.path(key);
@@ -217,6 +236,110 @@ pub(crate) fn tempdir(tag: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A current-thread runtime whose blocking pool has one thread: a disk job queued behind a
+    /// parked one stays issued and unfinished until the test releases the parked one.
+    fn one_blocking_thread() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap()
+    }
+
+    /// Park the one blocking thread until the returned sender is sent to (or dropped).
+    fn park_the_blocking_pool() -> std::sync::mpsc::Sender<()> {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        drop(tokio::task::spawn_blocking(move || {
+            let _ = rx.recv();
+        }));
+        tx
+    }
+
+    /// Poll `f` until it has issued its disk job and waits on it (two scheduler rounds), then drop it.
+    async fn cancel_after_issue<F: std::future::Future>(f: F) -> bool {
+        let mut rounds = 0;
+        tokio::pin!(f);
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut f => return true,
+                _ = tokio::task::yield_now() => {
+                    rounds += 1;
+                    if rounds == 2 {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    /// CONTRACT (R14 item 4): a writer whose caller is cancelled while its disk job is issued keeps
+    /// the store's write lock until the disk job finishes, so taking the lock once (the drain) waits
+    /// for every issued write and no cancellation releases it early.
+    #[test]
+    fn a_cancelled_writer_holds_the_store_lock_until_its_disk_job_finishes() {
+        one_blocking_thread().block_on(async {
+            let d = tempdir("records-cancel");
+            let r = FileRecords::open(&d, "things").unwrap();
+            let release = park_the_blocking_pool();
+            assert!(!cancel_after_issue(r.write("a", "thing/1", &"one".to_string())).await, "the write finished while the blocking pool was parked");
+            assert!(r.write.try_lock().is_err(), "the cancelled caller released the store's write lock while its disk job was still issued");
+            release.send(()).unwrap();
+            r.drain().await;
+            assert_eq!(r.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"), "the drain returned before the cancelled write landed");
+        });
+    }
+
+    /// CONTRACT (R14 item 4): a write queued on the lock before the cut-off and granted it after the
+    /// cut-off is refused by name; it never reaches the disk.
+    #[test]
+    fn a_write_queued_before_the_cut_off_and_granted_after_it_is_refused_by_name() {
+        one_blocking_thread().block_on(async {
+            let d = tempdir("records-cut-off");
+            let r = std::sync::Arc::new(FileRecords::open(&d, "things").unwrap());
+            let release = park_the_blocking_pool();
+            // The first write holds the lock across its (parked) disk job.
+            let first = tokio::spawn({
+                let r = r.clone();
+                async move { r.write("a", "thing/1", &"one".to_string()).await }
+            });
+            tokio::task::yield_now().await;
+            // The second is queued on the lock before the cut-off.
+            let queued = tokio::spawn({
+                let r = r.clone();
+                async move { r.write("b", "thing/1", &"two".to_string()).await }
+            });
+            tokio::task::yield_now().await;
+            assert!(!queued.is_finished(), "the queued write did not wait on the lock");
+            r.cut_off("the seats moved to mesh1.admin.2 by take-seats:b1".into());
+            release.send(()).unwrap();
+            first.await.unwrap().unwrap();
+            let refused = queued.await.unwrap();
+            assert!(
+                matches!(&refused, Err(StorageError::CutOff { file, reason }) if file.ends_with("b.json") && reason.contains("take-seats:b1")),
+                "a write queued before the cut-off and granted the lock after it must be refused by name: {refused:?}"
+            );
+            assert_eq!(r.read::<String>("b", "thing/1").await.unwrap(), None, "the refused write reached the disk");
+        });
+    }
+
+    /// CONTRACT (R14 item 5): a write, an insert or a delete whose directory fsync fails is a failed
+    /// write, named: the store directory is searchable and writable but unreadable, so the file
+    /// lands and the directory cannot be opened to sync.
+    #[tokio::test]
+    async fn a_directory_fsync_failure_fails_the_write_the_insert_and_the_delete_by_name() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempdir("records-dir-fsync");
+        let r = FileRecords::open(&d, "things").unwrap();
+        r.write("gone", "thing/1", &"x".to_string()).await.unwrap();
+        let dir = d.join("things");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300)).unwrap();
+        let named = |e: &Result<(), StorageError>| matches!(e, Err(StorageError::Io { reason, .. }) if reason.contains("directory") && reason.contains("could not be synced"));
+        let wrote = r.write("a", "thing/1", &"one".to_string()).await;
+        let inserted = r.insert("b", "thing/1", &"two".to_string()).await.map(|_| ());
+        let removed = r.remove("gone").await;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(named(&wrote), "a write whose directory fsync failed answered {wrote:?}");
+        assert!(named(&inserted), "an insert whose directory fsync failed answered {inserted:?}");
+        assert!(named(&removed), "a delete whose directory fsync failed answered {removed:?}");
+    }
 
     #[tokio::test]
     async fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
