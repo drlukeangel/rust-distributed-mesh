@@ -309,6 +309,9 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .collect();
     let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some("mesh1.admin.2")).unwrap_or_else(|| panic!("B's reconcile span among {reconciles:?}"));
     assert_eq!(takeover.get("attempt").map(String::as_str), Some("2"));
+    // The span names the executor the takeover follows: the admin that held attempt 1, not the
+    // claim of attempt 2 the executor absorbed before it runs.
+    assert_eq!(takeover.get("previous_executor").map(String::as_str), Some("mesh1.admin.1"), "the takeover names the executor it follows: {takeover:?}");
     assert_eq!(takeover.get("operations").map(String::as_str), Some("create-node:mesh1.admin.1,create-node:mesh1.rpc.3"));
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
     let proven = all
