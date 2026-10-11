@@ -1021,6 +1021,60 @@ mod tests {
         assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&from))]), &gone).operations, replace);
     }
 
+    /// CONTRACT (node-recovery.md, Operation summary "Steps"): an admitted recovery plans exactly one
+    /// `recover-node:<path>` operation for its exited birth, never a generic create of that path, and
+    /// never sweeps another member the view lacks or holds unheard. It is planned whatever the view
+    /// holds at the path (the exited birth unheard, nothing, or the new node mid-attempt) until the
+    /// operation's `Complete` receipt names the exited birth; another birth's `Complete` is not it.
+    #[test]
+    fn an_admitted_recovery_plans_exactly_its_recover_operation_and_sweeps_no_other_path() {
+        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
+        let cur = t(&[("mesh1", 2, 3)]);
+        let path: PathName = "mesh1.rpc.2".parse().unwrap();
+        let (node_id, from) = (NodeId::mint(), IncarnationId::mint());
+        let complete = |id: &NodeId, inc: &IncarnationId| BuildStepReceipt {
+            build_id: crate::build::BuildId("b1".into()),
+            attempt: 4,
+            operation: format!("recover-node:{path}"),
+            step: "Complete".into(),
+            outcome: StepOutcome::Complete,
+            output: Some(serde_json::json!({ "node_id": id, "incarnation": inc })),
+            executor: None,
+        };
+        let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
+            build_id: crate::build::BuildId("b1".into()),
+            topology: cur.clone(),
+            submitted_change: None,
+            submitted_at_ms: 0,
+            state: BuildState::Pending,
+            attempt: 4,
+            executor: None,
+            steps,
+            last_failure: None,
+            reason: AttemptReason::Recovery,
+            action: Some(AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }),
+        };
+        let recover = vec![BuildOperation::RecoverNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
+        // The exited birth unheard, another member unheard and a third missing: only the recovery.
+        for dead in [NodeStatus::PendingReconnect, NodeStatus::Dead] {
+            let mut o = mn();
+            o.nodes.iter_mut().find(|x| x.name == path).unwrap().status = dead;
+            o.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.3").unwrap().status = dead;
+            o.nodes.retain(|x| x.name.to_string() != "mesh1.admin.2");
+            assert_eq!(plan_for_build(&build(vec![]), &o).operations, recover, "{dead:?}");
+        }
+        // The view lacks the path entirely, or holds the new node live mid-attempt: still owed.
+        let mut gone = mn();
+        gone.nodes.retain(|x| x.name != path);
+        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, recover, "absent from the view");
+        assert_eq!(plan_for_build(&build(vec![]), &mn()).operations, recover, "another birth live at the path, no Complete for the exited one");
+        // Another birth's Complete is not this recovery's; the exited birth's Complete ends it.
+        assert_eq!(plan_for_build(&build(vec![complete(&NodeId::mint(), &from)]), &gone).operations, recover, "another node_id");
+        assert_eq!(plan_for_build(&build(vec![complete(&node_id, &IncarnationId::mint())]), &gone).operations, recover, "another incarnation");
+        assert_eq!(plan_for_build(&build(vec![complete(&node_id, &from)]), &gone).operations, vec![], "recovered");
+        assert_eq!(plan_for_build(&build(vec![complete(&node_id, &from)]), &mn()).operations, vec![], "recovered, the new node live");
+    }
+
     /// CONTRACT (lock D): a mesh from its counts carries explicit meta for every path, the kind's
     /// migration default; a grow mints meta with the path and a shrink drops it; a path without
     /// meta, or meta without a path, is refused by name; meta set explicitly stands.
