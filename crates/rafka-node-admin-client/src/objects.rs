@@ -163,13 +163,6 @@ impl NodeMeta {
         NodeMeta { otel_debug: predecessor.otel_debug, ..self.clone() }
     }
 
-    /// Whether putting `self` over `held` changes only what a caller may change. `stopped` is
-    /// whether the node is stopped: its name may change only then ([`Traffic::Stopped`]); a live
-    /// node is taken to route traffic ([`Traffic::Routed`]). See [`Self::check_update`].
-    pub fn check_put(&self, held: &NodeMeta, stopped: bool) -> Result<(), MetaFieldIsRdmOwned> {
-        self.check_update(held, if stopped { Traffic::Stopped } else { Traffic::Routed })
-    }
-
     /// `node.update`'s validation from the held record, in the documented order
     /// (node-rpc-envelope.md "Meta and config"; R13 step 2 and the first half of step 3): every
     /// RDM-owned field equals the held value, else `MetaFieldIsRdmOwned { field }`; a changed name
@@ -478,7 +471,7 @@ mod tests {
     #[test]
     fn a_put_changing_a_field_rdm_owns_is_refused_naming_the_field() {
         let held = held();
-        assert_eq!(NodeMeta { otel_debug: true, ..held.clone() }.check_put(&held, false), Ok(()));
+        assert_eq!(NodeMeta { otel_debug: true, ..held.clone() }.check_update(&held, Traffic::Routed), Ok(()));
         let cases: Vec<(NodeMeta, MetaField)> = vec![
             (NodeMeta { node_id: NodeId::mint(), ..held.clone() }, MetaField::NodeId),
             (NodeMeta { incarnation: Some(IncarnationId::mint()), ..held.clone() }, MetaField::Incarnation),
@@ -492,7 +485,7 @@ mod tests {
             (NodeMeta { name: "mesh2.rpc.1".parse().unwrap(), ..held.clone() }, MetaField::Path),
         ];
         for (body, field) in cases {
-            assert_eq!(body.check_put(&held, true), Err(MetaFieldIsRdmOwned { field }), "{}", field.name());
+            assert_eq!(body.check_update(&held, Traffic::Stopped), Err(MetaFieldIsRdmOwned { field }), "{}", field.name());
         }
     }
 
@@ -502,11 +495,11 @@ mod tests {
     fn a_name_changes_only_while_stopped_and_only_to_or_from_old() {
         let held = held();
         let old = NodeMeta { name: held.name.renamed(), ..held.clone() };
-        assert_eq!(old.check_put(&held, false), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "a live node keeps its name");
-        assert_eq!(old.check_put(&held, true), Ok(()), "a stopped node gives up its name to <name>.old");
-        assert_eq!(held.check_put(&old, true), Ok(()), "and takes it back");
+        assert_eq!(old.check_update(&held, Traffic::Routed), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "a live node keeps its name");
+        assert_eq!(old.check_update(&held, Traffic::Stopped), Ok(()), "a stopped node gives up its name to <name>.old");
+        assert_eq!(held.check_update(&old, Traffic::Stopped), Ok(()), "and takes it back");
         let renumbered = NodeMeta { name: PathName { ordinal: 9, ..held.name.clone() }, ..held.clone() };
-        assert_eq!(renumbered.check_put(&held, true), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "no rename but .old exists");
+        assert_eq!(renumbered.check_update(&held, Traffic::Stopped), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "no rename but .old exists");
     }
 
     /// CONTRACT (R13 step 3; node-replace.md steps 3-4 and rollback 1): a successor born `<name>.new`
