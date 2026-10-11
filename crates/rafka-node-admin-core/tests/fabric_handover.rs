@@ -868,8 +868,8 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_
     assert!(!step.is_finished(), "an uncertain call is never the end of the step");
     // P's SeatedTogether reaches N, and P's birth is proven gone.
     let op = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: op_key.into(), node_id: p_node.node_id.clone(), incarnation: p_inc.clone(), name: "mesh1.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
-    n.door.membership.seats().mark_gone(p_inc.clone());
     n.door.membership.seats().take_together(&op, &holder_of(&n, 4), &seats, false);
+    n.door.membership.seats().mark_gone(p_inc.clone());
     let out = tokio::time::timeout(std::time::Duration::from_secs(30), step).await.expect("a proven-lost holder ends the wait").unwrap();
     assert_eq!(out, Ok(SeatTransferOutcome::HeldRecords { seats: committed_to(&n, 4, 8) }));
     // M, which heard no transfer, holds none: the ordinary election applies.
