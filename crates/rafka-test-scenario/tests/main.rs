@@ -13,9 +13,9 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 /// How long after a member's exact runtime is killed its mesh-primary's node recovery has put a
 /// new node, ready, at its path.name (node-recovery.md "Detection and proof" and the numbered
 /// sequence): the silence (one staleness floor, marked on the pruner's gossip-interval sweep);
-/// half a floor after the mark, on the next tick, tickle round 1 (one direct connect, then up to
-/// `VIA_PEER_TICKLE_FANOUT` connects through peers, one after another, each to a killed process
-/// and so spending the call's whole budget); round 2 one floor after round 1 began, or once round
+/// half a floor after the mark, on the next tick, tickle round 1 (one direct connect, then the
+/// connects through up to `VIA_PEER_TICKLE_FANOUT` peers at once, each to a killed process and so
+/// spending the call's whole budget: `offline::tickle_round`); round 2 one floor after round 1 began, or once round
 /// 1 ended if that is later, and its own round; TRUE OFFLINE, the provider's exit proof and the
 /// submit on the next tick; then the recovery Build's run (node.delete, node.create through the
 /// new node's start), one call budget.
@@ -26,7 +26,7 @@ pub fn node_recovery_due() -> std::time::Duration {
         rafka_node_rpc::Budget::Overall(d) => d,
         other => panic!("the default call budget is not one overall deadline: {other:?}"),
     };
-    let round = call * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32);
+    let round = rafka_node_admin_core::offline::tickle_round(call);
     floor + gossip + floor / 2 + gossip + floor.max(round) + round + gossip + call
 }
 
