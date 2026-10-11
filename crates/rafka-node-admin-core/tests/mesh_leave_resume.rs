@@ -14,7 +14,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{accepted_roster, accepted_row, admission_roster, admitted_of, amend_roster, amended_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
 use serde_json::{json, Value};
@@ -828,4 +828,57 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     assert!(named("rdm.node_admin.mesh.resolve.via-owner-build-facts").iter().any(|s| s["attributes"]["amendments"] == "1" && s["attributes"]["me"].as_str().is_some_and(|m| m.contains(OTHER_ADMIN))), "the admission read the owner's Build facts");
     assert!(named("rdm.node_admin.mesh.resolve.via-retained-receipts").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "1" && s["attributes"]["remaining"] == "0"));
+}
+
+/// CONTRACT: the fabric-primary's own resume branch proves the lost final primary's exit from its
+/// durable runtime row, never from the view (R11 steps 2-3; mesh-leave.md, "Resume after the
+/// primary's loss", steps 1-2). No topology view is consulted: the lost `mesh2.admin.1` has left
+/// every projection. With no runtime row of that birth the resume is refused by name and nothing is
+/// amended (R-D1); with the row every admin stored the moment it first held the birth, the provider's
+/// exact Exited is recorded as its roster receipt and `RosterAmended` admits `mesh2.admin.2`.
+#[test]
+fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_and_amends() {
+    let cap = capture();
+    let records: Vec<Node> = [OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 47_000 + i as u32))).collect();
+    let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(), ..Default::default() };
+    let birth = |name: &str| RosterBirth::of(records.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();
+    let (lost, survivor) = (birth(FINAL), birth(OTHER_ADMIN));
+    let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[FINAL].fact().unwrap()), RuntimeProof::of(&handles[OTHER_ADMIN].fact().unwrap()));
+    let lost_node = records.iter().find(|n| n.name.to_string() == FINAL).unwrap();
+    let row = rafka_node_admin_core::storage::RuntimeRow { node_id: lost_node.node_id.clone(), name: lost_node.name.clone(), incarnation_id: lost_node.incarnation_id.clone().unwrap(), runtime: handles[FINAL].fact().unwrap(), data_dir: None };
+    let (without_row, with_row, before, after, trace_id) = cap.run(async {
+        let builds = WireBuilds(MemoryBuildStateAdapter::new());
+        let build_id = BuildId::mint();
+        builds.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        let mesh_id = MeshId::mint();
+        let outer = operation(&mesh_id);
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
+        let root = tracing::info_span!("cell.mesh-leave-fp-resume", build_id = %build_id, operation = %outer);
+        let trace_id = trace_id(&root);
+        let _in_root = root.enter();
+        let admitted = |steps: &[BuildStepReceipt]| admitted_of(steps, &outer).unwrap().unwrap();
+        let adm = admitted(&builds.read_build(&build_id).await.unwrap().steps);
+        let without_row = resume_after_loss(&builds, &fleet, &[], &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
+        let before = admitted(&builds.read_build(&build_id).await.unwrap().steps);
+        let with_row = resume_after_loss(&builds, &fleet, std::slice::from_ref(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
+        let after = admitted(&builds.read_build(&build_id).await.unwrap().steps);
+        (without_row, with_row, before, after, trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("fp_resume");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    let refusal = without_row.expect_err("no runtime row of the lost birth: the resume is refused");
+    assert!(refusal.contains("not proven exited") && refusal.contains(FINAL) && refusal.contains("no durable runtime row"), "the refusal names the lost birth and the missing row: {refusal}");
+    assert_eq!(before.final_primary, lost, "nothing is amended while the lost primary is unproven");
+    assert_eq!(with_row, Ok(Amended::Applied), "with the durable runtime row the exit is proven and the amendment recorded");
+    assert_eq!(after.final_primary, survivor, "the amendment admits the surviving admin");
+    assert_eq!(after.final_runtime, survivor_runtime);
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    assert!(named("rdm.node_admin.mesh.reject.via-unproven-primary").iter().any(|s| s["attributes"]["reason"].as_str().is_some_and(|r| r.contains("no durable runtime row"))));
+    assert!(named("rdm.node_admin.mesh.update.via-predecessor-exit-recorded").iter().any(|s| s["attributes"]["predecessor"].as_str().is_some_and(|p| p.contains(FINAL))));
+    assert!(named("rdm.node_admin.mesh.update.via-roster-amended").iter().any(|s| s["attributes"]["outcome"] == "applied" && s["attributes"]["final_primary"].as_str().is_some_and(|p| p.contains(OTHER_ADMIN))));
 }
