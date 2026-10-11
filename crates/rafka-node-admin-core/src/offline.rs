@@ -109,13 +109,21 @@ impl OfflineTickle {
     {
         let mut report = OfflineTickReport::default();
         let silent_ids: HashSet<String> = silent.iter().map(|n| n.node_id.clone()).collect();
-        let returned: Vec<String> = self.first_seen.keys().filter(|id| !silent_ids.contains(*id)).cloned().collect();
+        let left: Vec<String> = self.first_seen.keys().filter(|id| !silent_ids.contains(*id)).cloned().collect();
         self.first_seen.retain(|id, _| silent_ids.contains(id));
         self.offline.retain(|id| silent_ids.contains(id));
-        for id in returned {
-            tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!(node_id = %id, "a silent node is heard again: its tickle and its status end"));
-            report.returned.push(id);
+        for id in left {
+            // Heard again only while the view still holds the node; a node id the view no longer
+            // holds was deleted (or recovered under a new node.id at its path.name): gone.
+            if in_view(&id) {
+                tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!(node_id = %id, "a silent node is heard again: its tickle and its status end"));
+                report.returned.push(id);
+            } else {
+                tracing::info_span!("rdm.node_admin.node.remove.via-offline-gone", node_id = %id, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!(node_id = %id, "a silent node left the view: its tickle and its status end, it was not heard again"));
+                report.gone.push(id);
+            }
         }
         if holds_seat {
             self.hold_down.retain(|id, _| silent_ids.contains(id));
