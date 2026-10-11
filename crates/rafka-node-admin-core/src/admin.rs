@@ -479,9 +479,13 @@ impl Records {
     /// write lock, [`Self::install_projected`]): the row of every birth a projection draws from `book`
     /// and these records (each digest held, each stopped birth with or without a digest, each launch
     /// record) and of every seat holder the book records, a point read among its own mesh's status
-    /// rows, and what was read held as the proven exits. The store root is the fabric's own (R14),
-    /// so a birth of another fabric names no row there. A row that cannot be read proves nothing and
-    /// is named on one `rdm.node_admin.node.reject.via-exit-row-unreadable` span.
+    /// rows, and the proven exits held. The store root is the fabric's own (R14), so a birth of
+    /// another fabric names no row there. An exit-proof row is never withdrawn (the status store
+    /// puts and point-reads it, nothing removes it), so the fold is monotone for every birth this
+    /// pass names: what this pass read, plus every exit already held for a birth it names (a read
+    /// older than one already stored, or a read that failed, takes nothing away). A birth this pass
+    /// no longer names drops out. A row that cannot be read proves nothing new and is named on one
+    /// `rdm.node_admin.node.reject.via-exit-row-unreadable` span.
     pub async fn read_exits(&self, book: &DigestBook) {
         let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
         let mut births: HashMap<(NodeId, IncarnationId), (String, String)> = HashMap::new();
@@ -499,6 +503,7 @@ impl Records {
         for h in book.seats.fabric().into_iter().chain(book.seats.meshes().into_values()) {
             births.entry((h.node_id.clone(), h.incarnation.clone())).or_insert((h.mesh.clone(), format!("the {} seat holder", h.mesh)));
         }
+        let named: std::collections::HashSet<(NodeId, IncarnationId)> = births.keys().cloned().collect();
         let mut read: HashMap<(NodeId, IncarnationId), (String, crate::status_storage::NodeExitRow)> = HashMap::new();
         let mut unreadable = Vec::new();
         for ((node_id, inc), (mesh, named)) in births {
@@ -512,13 +517,14 @@ impl Records {
         }
         if !unreadable.is_empty() {
             tracing::info_span!("rdm.node_admin.node.reject.via-exit-row-unreadable", rows = unreadable.len(), detail = %unreadable.join("; "))
-                .in_scope(|| tracing::info!("an exit-proof row could not be read: that birth is not held exited by this projection"));
+                .in_scope(|| tracing::info!("an exit-proof row could not be read: this pass proves nothing new of that birth"));
         }
-        // What is held now (another install may have stored since this pass began) names the exits entering.
+        // The fold, against what is held now (another install may have stored since this pass began).
         let entered: Vec<(String, crate::status_storage::NodeExitRow)> = {
             let mut exited = self.exited.lock().unwrap();
             let entered = read.iter().filter(|(k, _)| !exited.contains(*k)).map(|(_, v)| v.clone()).collect();
-            *exited = read.into_keys().collect();
+            let kept: std::collections::HashSet<(NodeId, IncarnationId)> = exited.iter().filter(|k| named.contains(*k)).cloned().collect();
+            *exited = kept.into_iter().chain(read.into_keys()).collect();
             entered
         };
         for (mesh, row) in entered {
@@ -7913,6 +7919,8 @@ mod tests {
         records.set_book((*book).clone());
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
         let status = |t: &Topology| t.node(&lost.node.name).map(|n| n.status);
+        let capture = crate::span_capture::Capture::new("i143-3068-exit-proof-never-withdrawn");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
         // The older install: its read finds no row, and it is held before it stores.
         let older = {
             let (records, topology, book) = (records.clone(), topology.clone(), book.clone());
@@ -7933,6 +7941,10 @@ mod tests {
         let failed = records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         assert_eq!(status(&failed), Some(NodeStatus::Dead), "a failed read withdrew the proof");
         assert_eq!(status(&*topology.read().await), Some(NodeStatus::Dead));
+        let (read, unreadable) = (capture.named("rdm.node_admin.node.resolve.via-exit-proof-row"), capture.named("rdm.node_admin.node.reject.via-exit-row-unreadable"));
+        assert_eq!((read.len(), unreadable.len()), (1, 1), "the proof enters once, and the failed read is named once: {read:?} {unreadable:?}");
+        eprintln!("span rdm.node_admin.node.resolve.via-exit-proof-row trace_id={} {:?}", read[0].trace_id, read[0].attributes);
+        eprintln!("span rdm.node_admin.node.reject.via-exit-row-unreadable trace_id={} {:?}", unreadable[0].trace_id, unreadable[0].attributes);
     }
 
     const STORE_DIR: &str = "/tmp/rdm-admin-cells/store";
