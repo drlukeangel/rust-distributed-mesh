@@ -73,6 +73,14 @@ impl ForwardPath {
         self.enqueue(Job::Forwarded { me: me.to_string(), source: None, out: Forward::Full(frames) });
     }
 
+    /// Take (`true`) or lose (`false`) the forwarder role: this mesh's primary. A forwarder that
+    /// takes or loses the seat has published nothing into its mesh: its baseline is cleared and the
+    /// first publication of every source after taking it is a full (gossip.md §3.3).
+    pub(crate) fn set_role(&self, on: bool) {
+        self.forwarder.lock().unwrap().reset();
+        self.owes_full.store(on, Ordering::Relaxed);
+    }
+
     /// The flag whose set state makes the next publication a full of every source.
     pub(crate) fn owes_full(&self) -> Arc<AtomicBool> {
         self.owes_full.clone()
@@ -380,6 +388,96 @@ mod tests {
         assert_eq!(failed.len(), 1);
         assert!(failed[0]["cause"].contains("no sender task"), "{}", failed[0]["cause"]);
         assert!(owes.load(Ordering::Relaxed));
+    }
+
+    /// A sink whose first send blocks until the test lets it go; every frame it is handed is
+    /// recorded once the send completes.
+    #[derive(Clone)]
+    struct Gate {
+        seen: Arc<Mutex<Vec<(u64, u64)>>>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Semaphore>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Gate {
+        fn new() -> Self {
+            Self { seen: Arc::default(), entered: Arc::default(), release: Arc::new(tokio::sync::Semaphore::new(0)), calls: Arc::default() }
+        }
+
+        fn sink(&self) -> Sink {
+            let me = self.clone();
+            Arc::new(move |f: Frame| {
+                let me = me.clone();
+                Box::pin(async move {
+                    if me.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        me.entered.notify_one();
+                        me.release.acquire().await.unwrap().forget();
+                    }
+                    let key = match &f {
+                        Frame::MembersDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
+                        Frame::Members { topology_version, .. } => (0, *topology_version),
+                        Frame::Digest { .. } => (1, 1),
+                        other => panic!("not a forward: {other:?}"),
+                    };
+                    me.seen.lock().unwrap().push(key);
+                    Ok(())
+                })
+            })
+        }
+    }
+
+    /// CONTRACT: a forward decided while this node was the primary and still queued when it loses
+    /// the role is never sent: the role dropped between the decision and the send, and a node that
+    /// is no longer its mesh's primary puts nothing into the mesh. The full v10 is on the channel
+    /// before the role drops; the delta v10 to v11 and a carried frame queued behind it are not.
+    /// Taking the role again sends the full of the new term, behind nothing of the old one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_forward_queued_before_the_role_dropped_is_never_sent() {
+        let ids = vec![(NodeId::mint(), IncarnationId::mint())];
+        let gate = Gate::new();
+        let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
+        let p = publisher();
+        path.set_role(true);
+        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        gate.entered.notified().await;
+        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
+        path.set_role(false);
+        gate.release.add_permits(1);
+        path.set_role(true);
+        path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 12, source_at(&ids, 12))], 3);
+        for _ in 0..400 {
+            if gate.seen.lock().unwrap().contains(&(0, 12)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (0, 12)], "nothing queued before the role dropped reaches the channel");
+    }
+
+    /// CONTRACT: a node that does not hold the role decides nothing: a source moving, a seat full
+    /// and a carried frame put nothing into the mesh, and leave no baseline behind.
+    #[tokio::test]
+    async fn a_node_without_the_role_forwards_nothing() {
+        let ids = vec![(NodeId::mint(), IncarnationId::mint())];
+        let gate = Gate::new();
+        gate.release.add_permits(1);
+        let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
+        let p = publisher();
+        path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
+        path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
+        assert!(path.forwarder.lock().unwrap().snapshots().is_empty(), "no baseline is recorded without the role");
+        path.set_role(true);
+        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+        for _ in 0..400 {
+            if !gate.seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 11)], "the first publication after taking the role is a full, and nothing before it was sent");
     }
 
     /// CONTRACT: every producer shares the one order: a seat full, a carried lifecycle frame and a
