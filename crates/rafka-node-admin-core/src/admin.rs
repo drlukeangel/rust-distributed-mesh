@@ -3672,7 +3672,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 }
             }),
             known: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
-            primary: Arc::new(move || topo.mesh_primary().map(|p| p.node.name.to_string())),
+            primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
             issuer: issuer.clone(),
         });
         let _ = join_slot.set(door);
