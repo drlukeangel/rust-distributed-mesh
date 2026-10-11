@@ -631,6 +631,44 @@ fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_a
     eprintln!("trace {trace_id}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.admin.1 > rdm.node_admin.node.update.via-config node=mesh1.admin.1 outcome=config-updated");
 }
 
+/// CONTRACT (ops-naming "Node data" :78-79: the mesh-primary writes its mesh's rows, its own
+/// included, and the node applies the config; a node-admin is a node like any other): a config
+/// update naming mesh1's primary itself, sent to it, writes its row and the admin applies the
+/// config in-process (what holds it receives the whole map once) before `ConfigUpdated` is
+/// answered; no call to itself is made. The via-config span says `config-updated`, `apply=in-process`.
+#[test]
+fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+        let held: Arc<Mutex<Vec<BTreeMap<String, String>>>> = Arc::default();
+        let h = held.clone();
+        let _ = rig.authority.configure.set(Arc::new(move |config: BTreeMap<String, String>| {
+            let h = h.clone();
+            Box::pin(async move { h.lock().unwrap().push(config) })
+        }));
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        let me = &rig.admin.node;
+        let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
+        let client = client_of(&rig, admin2).await;
+        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&me.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap() });
+        let row = rig.storage.node_row_at(&me.name).await.unwrap().expect("mesh1's primary wrote its own row");
+        assert_eq!((row.node_id.clone(), row.config.clone()), (me.node_id.clone(), config.clone()));
+        assert_eq!(held.lock().unwrap().clone(), vec![config], "the admin holds the whole config, once");
+        assert!(node.seen.lock().unwrap().is_empty(), "no other node is told");
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let (trace_id, attrs) = &spans[0];
+    assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-updated"), "{attrs:?}");
+    assert_eq!(attrs.get("subject").map(String::as_str), Some("mesh1.admin.1"), "{attrs:?}");
+    assert_eq!(attrs.get("apply").map(String::as_str), Some("in-process"), "{attrs:?}");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config node=mesh1.admin.1 subject=mesh1.admin.1 apply=in-process outcome=config-updated");
+}
+
 /// The spans a cell's own run exported through the product span pipeline
 /// (`rafka_mesh_telemetry::span_capture`), with their trace ids.
 struct Capture {
