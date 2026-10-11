@@ -171,16 +171,16 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
 
         // The node-admin's stop and its start after the stop, commanded by the root.
         let own = admin.node_self();
-        assert!(matches!(own.serve(&root_id, None, &stop(&admin_launch)).await, Some(StatusReply::Stopped { .. })), "the launched admin stops");
+        assert!(matches!(own.serve(Some(&root_id), None, &stop(&admin_launch)).await, Some(StatusReply::Stopped { .. })), "the launched admin stops");
         let _ = root.runner.joins.expect(deployed(&admin_launch, Some(&admin_launch.name)));
-        let started = tokio::time::timeout(WRONG, own.serve(&root_id, None, &start(&admin_launch))).await.expect("the admin's start answers");
+        let started = tokio::time::timeout(WRONG, own.serve(Some(&root_id), None, &start(&admin_launch))).await.expect("the admin's start answers");
         assert_eq!(started, Some(StatusReply::Started), "the launched admin starts after its stop");
         until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
 
         // The rpc node's stop and its start after the stop, commanded by the root.
-        assert!(matches!(rpc.own.serve(&root_id, None, &stop(&rpc_launch)).await, Some(StatusReply::Stopped { .. })), "the rpc node stops");
+        assert!(matches!(rpc.own.serve(Some(&root_id), None, &stop(&rpc_launch)).await, Some(StatusReply::Stopped { .. })), "the rpc node stops");
         let _ = root.runner.joins.expect(deployed(&rpc_launch, Some(&rpc_launch.name)));
-        let started = tokio::time::timeout(WRONG, rpc.own.serve(&root_id, None, &start(&rpc_launch))).await.expect("the rpc node's start answers");
+        let started = tokio::time::timeout(WRONG, rpc.own.serve(Some(&root_id), None, &start(&rpc_launch))).await.expect("the rpc node's start answers");
         assert_eq!(started, Some(StatusReply::Started), "the rpc node starts after its stop");
 
         let paths = [
