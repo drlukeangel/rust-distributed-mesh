@@ -919,6 +919,11 @@ impl StatusBook {
         self.meshes.lock().unwrap().get(mesh).cloned()
     }
 
+    /// Every mesh status held, by mesh name.
+    pub fn meshes(&self) -> Vec<(String, MeshStatus)> {
+        self.meshes.lock().unwrap().iter().map(|(m, h)| (m.clone(), h.clone())).collect()
+    }
+
     /// The fabric status held.
     pub fn fabric(&self) -> Option<FabricStatus> {
         self.fabric.lock().unwrap().clone()
@@ -1972,7 +1977,15 @@ impl View {
                 }
                 Vec::new()
             }
-            Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
+            Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms, forwarded_by } => {
+                let taken = self.statuses.take(f, fabric);
+                // The mesh's status as this node now holds it (gossip.md: "the held status, until the
+                // next change"); a repeat of the change held, or an older one, is not taken.
+                tracing::info_span!("rdm.mesh.membership.update.via-mesh-status", node = %self.node, mesh = %mesh, status = %status, publisher = %publisher, forwarded_by = forwarded_by.as_deref().unwrap_or(""), changed_at_rafka_ms = *changed_at_rafka_ms, channel = via, taken)
+                    .in_scope(|| tracing::debug!("a mesh status was heard"));
+                Vec::new()
+            }
+            Frame::FabricStatus { .. } => {
                 self.statuses.take(f, fabric);
                 Vec::new()
             }
@@ -2515,6 +2528,11 @@ impl Membership {
     /// The status of `mesh` this node holds: the last one published, until the next change.
     pub fn mesh_status(&self, mesh: &str) -> Option<MeshStatus> {
         self.view.statuses.mesh(mesh)
+    }
+
+    /// Every mesh status this node holds, by mesh name: each the last one published for its mesh.
+    pub fn mesh_statuses(&self) -> Vec<(String, MeshStatus)> {
+        self.view.statuses.meshes()
     }
 
     /// The statuses this node holds, as the frames it replays (original publisher and instant

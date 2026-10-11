@@ -298,6 +298,9 @@ pub struct Records {
     /// again, so its projection holds ready while it has a primary, and the primary that takes over
     /// adopts that state and runs its round (R-S3).
     heard_ready: Mutex<BTreeSet<String>>,
+    /// The meshes whose last heard MeshStatus is dead: after mesh.deleted its last admin, still its
+    /// primary, publishes MeshStatus Dead until it is stopped or deleted (R-NS1 item 1).
+    heard_dead: Mutex<BTreeSet<String>>,
     /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
     view_tick: tokio::sync::watch::Sender<u64>,
     /// The fabric-primary's writer of node rows: a birth its view holds for the first time claims
@@ -369,6 +372,17 @@ impl Records {
     /// Whether `mesh` was last heard ready-for-traffic.
     pub fn heard_ready(&self, mesh: &str) -> bool {
         self.heard_ready.lock().unwrap().contains(mesh)
+    }
+
+    /// Hold which meshes were last heard dead.
+    pub fn set_heard_dead(&self, meshes: BTreeSet<String>) {
+        *self.heard_dead.lock().unwrap() = meshes;
+    }
+
+    /// Whether `mesh` is dead as this admin holds it: its mesh row, committed and applied here by
+    /// its primary at mesh.deleted (`id`), says Dead, or its last heard MeshStatus is dead.
+    pub fn mesh_dead(&self, mesh: &str, id: Option<&MeshId>) -> bool {
+        id.is_some_and(|id| self.declared.lock().unwrap().meshes.get(id) == Some(&rafka_node_rpc_contract::status::MeshState::Dead)) || self.heard_dead.lock().unwrap().contains(mesh)
     }
 
     /// The planned births per mesh of the accepted Build held (empty: none held).
@@ -935,8 +949,16 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some());
         let id = mesh_ids.get(&m).cloned();
         // Mesh leaving is known only to the mesh's own primary (R4): a mesh shows no Leaving here;
-        // its members' own Draining and Leaving do.
-        let status = if ready { ScopeStatus::ReadyForTraffic } else { ScopeStatus::Pending };
+        // its members' own Draining and Leaving do. Dead is final (states.md): after mesh.deleted
+        // the mesh row is Dead and its last admin, still its primary, publishes MeshStatus Dead
+        // (R-NS1 item 1); this view states the row its primary committed or the status it heard.
+        let status = if records.mesh_dead(&m, id.as_ref()) {
+            ScopeStatus::Dead
+        } else if ready {
+            ScopeStatus::ReadyForTraffic
+        } else {
+            ScopeStatus::Pending
+        };
         topology.meshes.push(Mesh { id, name: m, status });
     }
     topology
@@ -5165,6 +5187,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     records.set_planned(&b.topology);
                 }
                 records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == "ready-for-traffic")).cloned().collect());
+                records.set_heard_dead(membership.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, _)| m).collect());
                 // Decide on the view as it is now: a cached view can predate the seat record this admin holds
                 // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
                 // The seat records are read once per decision: the projection elects from them and
