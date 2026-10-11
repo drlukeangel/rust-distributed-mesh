@@ -1455,11 +1455,15 @@ pub async fn reconcile_drift(
     // no MeshLeft receipt, and either the view still holds a birth of it live (an incomplete leave
     // leaves at least its final primary running) or the final primary's exact exit is recorded
     // (the attempt failed after the owner's stop, before MeshLeft). Its attempt carries no action;
-    // the planner plans the mesh's shutdown again, which resumes from the receipts.
+    // the planner plans the mesh's shutdown again, which resumes from the receipts. The ladder's
+    // unheard hold does not fence it: a leaving mesh whose every node-admin was lost is unheard by
+    // construction, and its resume carries its own proof (mesh-leave.md, "Resume after the
+    // primary's loss", step 1: the lost final primary's exact Exited is recorded before anything is
+    // created for the mesh, and an unproven one refuses the resume by name).
     surplus.extend(
         t.meshes
             .iter()
-            .filter(|m| !current.topology.meshes.contains_key(&m.name) && hold(&m.name).is_none())
+            .filter(|m| !current.topology.meshes.contains_key(&m.name))
             .filter_map(|m| m.id.as_ref().map(|id| (m, crate::mesh_leave::operation(id))))
             .filter(|(_, op)| !current.steps.iter().any(|st| &st.operation == op && st.step == crate::mesh_leave::STEP_MESH_LEFT && st.outcome == crate::build_state::StepOutcome::Complete))
             .filter(|(m, op)| t.members().any(|n| n.mesh == m.name && n.status.is_live()) || matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::FinalExited(_))))
