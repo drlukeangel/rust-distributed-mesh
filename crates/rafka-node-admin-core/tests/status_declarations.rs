@@ -937,3 +937,43 @@ fn a_stopped_nodes_rename_at_its_mesh_primary_writes_the_row_and_tells_the_node_
     assert_eq!((attrs.get("outcome").map(String::as_str), attrs.get("traffic").map(String::as_str), attrs.get("answered")), (Some("node-updated"), Some("Stopped"), None), "{attrs:?}");
     eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-update-node from=mesh1.rpc.2 to=mesh1.rpc.2.old traffic=Stopped outcome=node-updated (no apply sent)");
 }
+
+/// CONTRACT (R12; node-rpc-envelope.md :434, the ApplyNodeName answers): `ApplyNodeName` naming this
+/// admin, from another node-admin, is answered by the admin itself from what its name decision says:
+/// `Applied` once it holds the name, `AlreadyApplied` for the name it holds, `Busy` naming its
+/// in-flight count while it routes traffic. One naming another incarnation is
+/// `RejectedStaleIncarnation`, one from a member that is not a node-admin `RejectedNotAuthority`, one
+/// whose name is not a path.name `Malformed`; none of the three reaches the decision.
+#[test]
+fn a_node_admin_told_its_name_answers_from_its_own_decision() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+        let asked: Arc<Mutex<Vec<PathName>>> = Arc::default();
+        let a = asked.clone();
+        let decisions = Arc::new(Mutex::new(vec![rafka_node_admin_core::node_name::NameApply::Busy { in_flight: 2 }, rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Applied]));
+        let held: PathName = rig.admin.node.name.clone();
+        let _ = rig.authority.rename.set(Arc::new(move |name: PathName| {
+            let (a, d, held) = (a.clone(), decisions.clone(), held.clone());
+            Box::pin(async move {
+                a.lock().unwrap().push(name);
+                (held, d.lock().unwrap().pop().unwrap())
+            })
+        }));
+        let me = &rig.admin.node;
+        let told = |incarnation: IncarnationId, name: &str| StatusRequest::ApplyNodeName { node_id: me.node_id.clone(), incarnation, name: name.into() };
+        let inc = me.incarnation_id.clone().unwrap();
+        assert_eq!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::Applied);
+        assert_eq!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::AlreadyApplied);
+        assert!(matches!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::Busy { reason } if reason.contains("2 calls in flight")));
+        assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), "mesh1.admin.1.old")).await), StatusReply::RejectedStaleIncarnation { held: inc.clone() });
+        assert!(matches!(reply(&call(&rig, rpc1, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its name");
+        assert!(matches!(reply(&call(&rig, admin2, &told(inc, "not a path name")).await), StatusReply::Malformed { .. }));
+        assert_eq!(asked.lock().unwrap().len(), 3, "only the three admitted applies reached the decision");
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-apply-node-name");
+    let outcomes: Vec<_> = spans.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect();
+    assert_eq!(outcomes.len(), 3, "{spans:?}");
+    eprintln!("trace {}: rdm.node_admin.node.update.via-apply-node-name outcomes={outcomes:?}", spans[0].0);
+}
