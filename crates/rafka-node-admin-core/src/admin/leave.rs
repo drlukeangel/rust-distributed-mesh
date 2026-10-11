@@ -71,7 +71,35 @@ impl AdminRunner {
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
         let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.me.to_string(), || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
         let admitted = Admitted { roster, final_primary: RosterBirth::of(&primary)?, final_runtime: RuntimeProof::of(&final_fact) };
-        let mut handoff = self.leaves.open(key.clone(), admitted.clone());
+        if !admitted.roster.contains(&admitted.final_primary) {
+            return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id));
+        }
+        let handoff = self.leaves.open(key.clone(), admitted.clone());
+        let result = self.lead_leave(build_id, attempt, mesh, mesh_id, outer, node_rpc, &primary, final_record, final_handle, &key, &admitted, handoff).await;
+        if result.is_err() {
+            // This attempt's open leave ends with it; the receipts are the record a resumed attempt reads.
+            self.leaves.close(&key);
+        }
+        result
+    }
+
+    /// Steps 2-7 of the owner's workflow, for the leave `key` opened with `admitted`.
+    #[allow(clippy::too_many_arguments)]
+    async fn lead_leave(
+        &self,
+        build_id: &crate::build::BuildId,
+        attempt: u32,
+        mesh: &str,
+        mesh_id: &MeshId,
+        outer: &str,
+        node_rpc: &crate::node_rpc::ProcessNodeRpc,
+        primary: &Node,
+        final_record: Node,
+        final_handle: crate::deployment::provider::DeploymentHandle,
+        key: &LeaveKey,
+        admitted: &Admitted,
+        mut handoff: tokio::sync::watch::Receiver<Option<ExitManifest>>,
+    ) -> Result<(), String> {
         let event = MeshLeaveEvent { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string(), receipt_manifest: None, final_primary: None };
         // Step 2: the accepted command's hook, then the command.
         self.lifecycle_events.mesh_leaving(&event).await;
@@ -115,7 +143,7 @@ impl AdminRunner {
             .map_err(|e| format!("{outer}: the MeshLeft receipt could not be recorded: {e}"))?;
         tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left-receipt", mesh_id = %mesh_id, build_id = %build_id, attempt, operation = %outer, receipts = all.receipts.len(), roster = all.roster.len(), manifest = %reference)
             .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
-        self.leaves.close(&key);
+        self.leaves.close(key);
         self.lifecycle_events.mesh_left(&MeshLeaveEvent { receipt_manifest: Some(reference), ..event }).await;
         self.forget_mesh_id(mesh);
         self.refresh_view().await;
@@ -189,7 +217,9 @@ impl AdminRunner {
                 }
                 Err(e) => {
                     tracing::Span::current().record("outcome", "incomplete");
-                    // Nothing is kept: a repeated leave-mesh runs the tiers again from the receipts.
+                    // The run ends; its receipts stand. Every member that exited holds its exact
+                    // Exited step receipt, and the roster its LeavingRoster receipt: a repeated
+                    // leave-mesh, or the Build's next attempt, runs only the members without one.
                     self.leave_runs.lock().unwrap().remove(&key);
                     tracing::info!(error = %e, "the member workflows are incomplete: no handoff is sent");
                 }
