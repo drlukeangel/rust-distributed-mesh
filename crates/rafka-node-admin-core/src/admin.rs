@@ -5469,6 +5469,102 @@ mod tests {
         }
     }
 
+    /// A nodes store that counts the contact writes made through it.
+    struct CountingNodes(Arc<dyn crate::storage::NodesStorage>, std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for CountingNodes {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_runtime(row).await
+        }
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            self.0.runtimes().await
+        }
+        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            self.0.runtime(node_id, incarnation).await
+        }
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.0.own().await
+        }
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_own(record).await
+        }
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.0.contacts().await
+        }
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.0.put_contact(record).await
+        }
+        async fn remove_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.0.remove_contact(record).await
+        }
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_node_row(row).await
+        }
+        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.0.node_row_at(name).await
+        }
+        async fn claim_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<crate::storage::Claimed, crate::storage::NameHeld>, crate::record_store::StorageError> {
+            self.0.claim_node_row(row).await
+        }
+        async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.0.release_node_row(name, holder).await
+        }
+    }
+
+    fn contact_names(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count()).unwrap_or(0)
+    }
+
+    /// CONTRACT (R14 item 2, the writer ladder fabric-node-lifecycle.md §4.3; #3070 "the contacts
+    /// family must follow the ladder"): on one shared root, a mesh's contacts and its Mesh row are
+    /// written by that mesh's primary alone, for its own members alone. A seated and an unseated
+    /// admin of mesh1 run over the same held births at once: the unseated one writes nothing, the
+    /// seated one writes mesh1's members (itself included) and mesh1's Mesh row, never mesh2's. The
+    /// seat moves: the new holder writes the replaced member's new contact and drops the old one,
+    /// and the old holder writes nothing more. A launched birth's publication writes no contact.
+    #[tokio::test]
+    async fn a_meshs_contacts_and_mesh_row_are_written_by_its_primary_alone_on_the_shared_root() {
+        let d = crate::record_store::tempdir("contacts-ladder");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let store = |data: &str| -> Arc<CountingNodes> {
+            Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&d.join(data), &root, "mesh1", &IncarnationId::mint()).unwrap()), Default::default()))
+        };
+        let (p_nodes, q_nodes) = (store("mesh1.admin.1"), store("mesh1.admin.2"));
+        let meshes = || -> Arc<dyn crate::storage::MeshStorage> { Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).unwrap()) };
+        let (p, q, rpc, other) = (digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.admin.2", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
+        let held = vec![p.clone(), q.clone(), rpc.clone(), other.clone()];
+        let mut pw = MeshRowsWriter::new("mesh1", mesh_id("mesh1"), p_nodes.clone(), meshes());
+        let mut qw = MeshRowsWriter::new("mesh1", mesh_id("mesh1"), q_nodes.clone(), meshes());
+        tokio::join!(pw.round(&held, true), qw.round(&held, false));
+        let contacts = root.dir().join("nodes").join("mesh1").join("contacts");
+        assert_eq!(contact_names(&contacts), 3, "mesh1's primary writes its three members");
+        assert_eq!(contact_names(&root.dir().join("nodes").join("mesh2").join("contacts")), 0, "mesh1's primary writes no mesh2 contact");
+        assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "an unseated admin writes no contact");
+        let mesh_rows: Vec<String> = std::fs::read_dir(root.dir().join("meshes")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".json")).collect();
+        assert_eq!(mesh_rows, ["mesh1.json"], "mesh1's primary writes mesh1's row alone");
+        // The seat moves to Q; mesh1.rpc.1 is replaced by a new node at its path.name.
+        let reborn = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        let held = vec![p.clone(), q.clone(), reborn.clone(), other.clone()];
+        let before = p_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
+        tokio::join!(pw.round(&held, false), qw.round(&held, true));
+        assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), before, "the old holder writes nothing once the seat moved");
+        let now = q_nodes.contacts().await.unwrap();
+        assert_eq!(now.len(), 3, "{now:?}");
+        assert!(now.iter().any(|c| c.node_id == reborn.node.node_id) && !now.iter().any(|c| c.node_id == rpc.node.node_id), "the new holder replaced the member's contact");
+        // A launched birth's publication writes no contact.
+        let records = Records::default();
+        let _ = records.contacts.set(q_nodes.clone());
+        let writes = q_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
+        records.publish(crate::reenter::MapNode { node_id: NodeId::mint(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: EndpointId("key-x".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), settled: true, ready: false, data_dir: None, admin_api_base: None }.as_node(NodeStatus::Pending, ProviderKind::Process));
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), writes, "a publication wrote a contact");
+    }
+
     fn view(digests: &[MeshDigest]) -> Topology {
         let book = DigestBook::default();
         for d in digests {
