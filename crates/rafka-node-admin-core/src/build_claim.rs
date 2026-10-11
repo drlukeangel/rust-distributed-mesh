@@ -83,10 +83,10 @@ impl AttemptContexts {
     }
 
     /// The context of `(build_id, attempt)`, when one was put.
-    pub fn get(&self, build_id: &BuildId, attempt: u32) -> Result<Option<CallContext>, StorageError> {
+    pub async fn get(&self, build_id: &BuildId, attempt: u32) -> Result<Option<CallContext>, StorageError> {
         let key = Self::key(build_id, attempt);
         match &self.backing {
-            Backing::Files(f) => f.read(&key, CONTEXT_FORMAT),
+            Backing::Files(f) => f.read(&key, CONTEXT_FORMAT).await,
             Backing::Memory(m) => Ok(m.lock().unwrap().get(&key).cloned()),
         }
     }
@@ -95,11 +95,11 @@ impl AttemptContexts {
     /// continues the trace it came from), stored under `attempt` so a repeat claim answers the
     /// same. An attempt nothing here knows (the fabric-primary changed) starts a new trace.
     pub async fn for_claim(&self, build_id: &BuildId, attempt: u32) -> Result<CallContext, StorageError> {
-        if let Some(own) = self.get(build_id, attempt)? {
+        if let Some(own) = self.get(build_id, attempt).await? {
             return Ok(own);
         }
         let inherited = match attempt.checked_sub(1).filter(|p| *p > 0) {
-            Some(previous) => self.get(build_id, previous)?,
+            Some(previous) => self.get(build_id, previous).await?,
             None => None,
         };
         let context = inherited.unwrap_or_else(|| CallContext { caller_system: Some(CALLER_SYSTEM.into()), ..CallContext::default() });

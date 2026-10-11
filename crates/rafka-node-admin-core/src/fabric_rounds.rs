@@ -573,7 +573,7 @@ impl FabricRounds {
                     return;
                 };
                 let build = crate::build::BuildId(round.1.clone());
-                let context = contexts.get(&build, round.2).ok().flatten().unwrap_or_default();
+                let context = contexts.get(&build, round.2).await.ok().flatten().unwrap_or_default();
                 hook(StateSyncRound { fabric_id: round.0.clone(), build_id: round.1.clone(), attempt: round.2, operation: RoundKind::OpenTraffic.operation(&round.0), context }).await;
                 tracing::info!("the application was told the fabric opened traffic");
             }
