@@ -517,6 +517,9 @@ impl HandoverDoor {
                 return refuse("stale-epoch", format!("a later seat record is held: {held}"), Reply::RejectedStaleEpoch { expected: payload.expected_epoch, current: held.epoch });
             }
         }
+        // The view is the resolver's output over the records held: it names this admin before the
+        // command is answered, so the incumbent's caller finds the seat here once it is told it moved.
+        (self.project_view)().await;
         self.handovers.put(payload.clone(), Stage::Committed(committed));
         tracing::info_span!(
             "rdm.node_admin.fabric.update.via-handover-committed",
@@ -660,6 +663,7 @@ impl HandoverDoor {
         // view whether or not the view's seat flags have moved yet).
         let successor = self.topology.read().await.members().find(|n| n.node_id == payload.successor.node_id).map(|n| n.name.to_string());
         (self.fence_builds)(format!("the seat is now {} {}", payload.successor.mesh, payload.successor.node_id), successor).await;
+        (self.project_view)().await;
         if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
             return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
         }
@@ -766,6 +770,7 @@ impl HandoverDoor {
         if committed.iter().any(|c| c.seat.kind() == Seat::FabricPrimary) {
             (self.fence_builds)(format!("the seats moved to {} {} by {}", t.successor.mesh, t.successor.node_id, t.operation), Some(sender.name.to_string())).await;
         }
+        (self.project_view)().await;
         self.committed_span(&t, &committed, false);
         self.backbone.announce_seats_together(op, successor, committed.clone()).await;
         Reply::SeatsCommitted { seats: committed }
@@ -818,6 +823,9 @@ impl HandoverDoor {
                     let op = LifecycleOp { build_id: t.build_id.clone(), attempt, operation: t.operation.clone(), node_id: hb.node_id.clone(), incarnation: hb.incarnation.clone(), name: holder.name.clone(), event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
                     let successor = seats.first().map(|c| c.record()).ok_or_else(|| format!("{} answered SeatsCommitted with no seat", holder.name))?;
                     let taken = book.take_together(&op, &successor, &seats, false);
+                    // The executor's view names it in the committed seats before its next step runs, and before
+                    // the caller resubmits the Build here when the holder was the fabric-primary.
+                    (self.project_view)().await;
                     tracing::info_span!(
                         "rdm.node_admin.seat.update.via-seats-installed",
                         fabric = %t.fabric,
@@ -841,7 +849,7 @@ impl HandoverDoor {
                 Err(uncertain) => {
                     reject_seats("executor", "uncertain", &uncertain, &t);
                     if self.incumbency().lost.contains(&hb.incarnation) {
-                        return Ok(self.held_transfer(&t));
+                        return Ok(self.held_transfer(&t).await);
                     }
                 }
             }
@@ -853,14 +861,15 @@ impl HandoverDoor {
                 return Err(format!("{}: {what} closed while the seat transfer {} to {} was uncertain", self.me, t.operation, holder.name));
             }
             if self.incumbency().lost.contains(&hb.incarnation) {
-                return Ok(self.held_transfer(&t));
+                return Ok(self.held_transfer(&t).await);
             }
         }
     }
 
     /// The transfer a proven-lost holder committed, as the seat records held here say: every seat
     /// the call named held by this birth at a later epoch is the committed result; otherwise none.
-    fn held_transfer(&self, t: &TakeSeatsCall) -> SeatTransferOutcome {
+    async fn held_transfer(&self, t: &TakeSeatsCall) -> SeatTransferOutcome {
+        (self.project_view)().await;
         let book = self.membership.seats();
         let held: Vec<CommittedSeat> = t
             .seats
