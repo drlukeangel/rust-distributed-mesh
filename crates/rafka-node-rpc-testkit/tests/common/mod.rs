@@ -35,11 +35,11 @@ use tracing_subscriber::layer::SubscriberExt;
 pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>, Arc<Mutex<(u64, HashMap<u64, u64>)>>, Arc<tokio::sync::watch::Sender<u64>>);
 
 impl Spans {
-    /// Resolves once a span named `name` holds `field` = `value`.
-    pub async fn recorded(&self, name: &str, field: &str, value: &str) {
+    /// Resolves once a span named `name` holds fields `wanted` says yes to.
+    pub async fn recorded(&self, name: &str, wanted: impl Fn(&BTreeMap<String, String>) -> bool) {
         let mut ticks = self.2.subscribe();
         loop {
-            let held = self.0.lock().unwrap().values().any(|(n, _, f)| n == name && f.get(field).map(String::as_str) == Some(value));
+            let held = self.0.lock().unwrap().values().any(|(n, _, f)| n == name && wanted(f));
             if held {
                 return;
             }

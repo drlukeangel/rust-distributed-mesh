@@ -133,6 +133,15 @@ enum Cycle {
     Stopping(tokio::sync::watch::Receiver<Option<DrainReceipt>>),
     /// Stopped and parked, with the receipt its drain established.
     Parked(DrainReceipt),
+    /// Parked and a start is under way (the natural key `(node_id, incarnation, Pending)`): later
+    /// starts of the birth answer the same outcome. A failed start parks the birth again with
+    /// `receipt`.
+    Starting {
+        /// The outcome of the start under way, once it ends.
+        outcome: tokio::sync::watch::Receiver<Option<StatusReply>>,
+        /// The receipt the birth was parked with.
+        receipt: DrainReceipt,
+    },
 }
 
 /// This birth's drain in its current cycle (live since its birth or its last start). Its natural
@@ -257,8 +266,9 @@ impl NodeSelf {
     }
 
     /// Whether this birth is parked: stopped, its process alive, waiting for a start or a delete.
+    /// A birth whose start is under way is parked until the start ends.
     pub fn is_parked(&self) -> bool {
-        matches!(*self.cycle.lock().unwrap(), Cycle::Parked(_))
+        matches!(*self.cycle.lock().unwrap(), Cycle::Parked(_) | Cycle::Starting { .. })
     }
 
     /// This surface, completing `actions` before it checks in to a round.
@@ -530,7 +540,7 @@ impl NodeSelf {
         let next = {
             let mut cycle = self.cycle.lock().unwrap();
             match &*cycle {
-                Cycle::Parked(r) => Next::Done(*r),
+                Cycle::Parked(r) | Cycle::Starting { receipt: r, .. } => Next::Done(*r),
                 Cycle::Stopping(rx) => Next::Wait(rx.clone()),
                 Cycle::Live => {
                     let (tx, rx) = tokio::sync::watch::channel(None);
@@ -635,31 +645,56 @@ impl NodeSelf {
     }
 
     /// The start: a parked birth rejoins as itself through its session. A birth that is not parked
-    /// refuses it, naming the state it is in.
+    /// refuses it, naming the state it is in. A start that reaches the birth while another start of
+    /// it is under way is the same natural key `(node_id, incarnation, Pending)`: it runs no rejoin
+    /// of its own and answers that start's outcome.
     async fn start(self: &Arc<Self>, commander: NodeId, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
         use tracing::Instrument;
         let span = tracing::info_span!(
             parent: &parent,
             "rdm.node_admin.status.update.via-start-node",
             node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-            commander = %commander, outcome = tracing::field::Empty, failed_step = tracing::field::Empty, "otel.kind" = "internal"
+            commander = %commander, joined = tracing::field::Empty, outcome = tracing::field::Empty, failed_step = tracing::field::Empty, "otel.kind" = "internal"
         );
         let reply = async {
-            let receipt = match &*self.cycle.lock().unwrap() {
-                Cycle::Parked(r) => *r,
-                Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
-                Cycle::Live => {
-                    let current = match (self.status)() {
-                        MemberStatus::Pending => NodeState::Pending,
-                        MemberStatus::ReadyForTraffic => NodeState::ReadyForTraffic,
-                        MemberStatus::Draining => NodeState::Draining,
-                        MemberStatus::Leaving => NodeState::Leaving,
-                    };
-                    return StatusReply::RejectedInvalidNodeTransition { current };
+            enum Next {
+                Run(tokio::sync::watch::Sender<Option<StatusReply>>, DrainReceipt, Arc<dyn Session>),
+                Join(tokio::sync::watch::Receiver<Option<StatusReply>>),
+            }
+            let next = {
+                let mut cycle = self.cycle.lock().unwrap();
+                match &*cycle {
+                    Cycle::Parked(r) => {
+                        let receipt = *r;
+                        let Some(session) = self.session.lock().unwrap().clone() else {
+                            return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.held_name()) };
+                        };
+                        let (tx, rx) = tokio::sync::watch::channel(None);
+                        *cycle = Cycle::Starting { outcome: rx, receipt };
+                        Next::Run(tx, receipt, session)
+                    }
+                    Cycle::Starting { outcome, .. } => Next::Join(outcome.clone()),
+                    Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
+                    Cycle::Live => {
+                        let current = match (self.status)() {
+                            MemberStatus::Pending => NodeState::Pending,
+                            MemberStatus::ReadyForTraffic => NodeState::ReadyForTraffic,
+                            MemberStatus::Draining => NodeState::Draining,
+                            MemberStatus::Leaving => NodeState::Leaving,
+                        };
+                        return StatusReply::RejectedInvalidNodeTransition { current };
+                    }
                 }
             };
-            let Some(session) = self.session.lock().unwrap().clone() else {
-                return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.held_name()) };
+            let (outcome, receipt, session) = match next {
+                Next::Join(mut rx) => {
+                    tracing::Span::current().record("joined", true);
+                    return match rx.wait_for(|r| r.is_some()).await {
+                        Ok(r) => r.clone().expect("waited for an outcome"),
+                        Err(_) => StatusReply::NotReady { reason: format!("{}: the start that was under way ended without an outcome", self.held_name()) },
+                    };
+                }
+                Next::Run(tx, receipt, session) => (tx, receipt, session),
             };
             let retire = match &self.retire {
                 Some(r) => r.renew(),
@@ -667,7 +702,7 @@ impl NodeSelf {
             };
             let _ = (self.set_status)(MemberStatus::Pending);
             self.server.resume();
-            match session.rejoin(retire, &commander).await {
+            let reply = match session.rejoin(retire, &commander).await {
                 Ok(()) => {
                     // A new cycle: its next drain is a new drain.
                     let mut cycle = self.cycle.lock().unwrap();
@@ -682,11 +717,13 @@ impl NodeSelf {
                     let _ = (self.set_status)(MemberStatus::Leaving);
                     self.server.drain();
                     let _ = session.cut(spare).await;
+                    *self.cycle.lock().unwrap() = Cycle::Parked(receipt);
                     tracing::Span::current().record("failed_step", failed.step);
-                    let _ = receipt;
                     StatusReply::StartFailed { step: failed.step.to_string(), reason: failed.reason }
                 }
-            }
+            };
+            outcome.send_replace(Some(reply.clone()));
+            reply
         }
         .instrument(span.clone())
         .await;

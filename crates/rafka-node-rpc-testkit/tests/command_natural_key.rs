@@ -203,9 +203,12 @@ fn a_drain_from_a_later_attempt_joins_the_drain_under_way_and_each_commander_get
         assert_eq!(birth.call(&birth.drain(3)).await, StatusReply::AlreadyApplied, "a drained birth answers a later attempt's DrainNode AlreadyApplied");
         node_drained(&mut third, 3).await;
         assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 1, "one drain task for the birth's one drain, whichever attempts asked");
-        let accepted: Vec<_> = spans_named(&spans, "rdm.node_admin.status.update.via-completion-accepted").into_iter().filter(|f| f.get("op").map(String::as_str) == Some("node-drained")).collect();
+        // The commander's book resolves before its decision span is made: the span is awaited.
         for attempt in ["1", "2", "3"] {
-            assert!(accepted.iter().any(|f| f.get("attempt").map(String::as_str) == Some(attempt) && f.get("outcome").map(String::as_str) == Some("applied")), "the commander accepted attempt {attempt}'s node-drained as its first: {accepted:?}");
+            let first = |f: &std::collections::BTreeMap<String, String>| f.get("op").map(String::as_str) == Some("node-drained") && f.get("attempt").map(String::as_str) == Some(attempt) && f.get("outcome").map(String::as_str) == Some("applied");
+            tokio::time::timeout(Duration::from_secs(20), spans.recorded("rdm.node_admin.status.update.via-completion-accepted", first))
+                .await
+                .unwrap_or_else(|_| panic!("the commander accepted attempt {attempt}'s node-drained as its first"));
         }
 
         // StopNode is a different state: admitted, the drain established with nothing in flight.
@@ -353,7 +356,7 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
             let birth = birth.clone();
             tokio::spawn(async move { birth.call(&birth.start(3)).await })
         };
-        tokio::time::timeout(Duration::from_secs(20), spans.recorded("rdm.node_admin.status.update.via-start-node", "joined", "true"))
+        tokio::time::timeout(Duration::from_secs(20), spans.recorded("rdm.node_admin.status.update.via-start-node", |f| f.get("joined").map(String::as_str) == Some("true")))
             .await
             .expect("attempt 3's StartNode joins the start under way instead of running one of its own");
         hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
