@@ -210,7 +210,7 @@ fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
 
         let birth_build = publish_build(&rig.builds, persistent(true)).await;
         let first = pipeline
-            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -325,7 +325,7 @@ fn a_predecessor_that_never_admits_its_stop_is_renamed_only_after_its_exit_proof
 
         let birth_build = publish_build(&rig.builds, persistent(true)).await;
         let first = pipeline
-            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         rig.log.lock().unwrap().clear();
@@ -380,7 +380,7 @@ fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephem
 
         let birth_build = publish_build(&rig.builds, add_node()).await;
         let first = pipeline
-            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().unwrap());

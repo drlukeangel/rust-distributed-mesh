@@ -52,7 +52,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let door = Door::open(&root, primary["name"].as_str().unwrap(), &api).await;
 
     let cut = "restart:NodeRestarting";
-    door.arm(cut, json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "retire-node", "node": node})).await;
+    door.arm(cut, json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "restart-node", "node": node})).await;
     let (status, r) = estate.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
     assert_eq!(status, 202, "{r}");
     assert_eq!(r["build_id"], build_id.as_str(), "a restart opens an attempt of the accepted Build: {r}");

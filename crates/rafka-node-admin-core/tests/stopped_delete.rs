@@ -8,7 +8,7 @@ use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::pipeline::{
-    CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink,
+    CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RetireRequest, RetireStep, Timeouts, TopologySink,
 };
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
@@ -140,7 +140,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), kind: RetireKind::Removal };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone() };
     let out = pipeline.retire(&req).await;
 
     let view = builds.read_build(&build_id).await.unwrap();

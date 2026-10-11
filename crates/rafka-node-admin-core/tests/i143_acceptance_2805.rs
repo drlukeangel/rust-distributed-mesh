@@ -369,7 +369,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
 async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completion {
     use rafka_node_admin_core::build::BuildId;
     use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
-    use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink};
+    use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, RetireRequest, RetireStep, Timeouts, TopologySink};
     use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 
     struct Running;
@@ -466,7 +466,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle };
     let _ = pipeline.retire(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
     // command (DrainNode), its completion wait (AwaitNodeDrained: the deadline arm); and never

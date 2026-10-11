@@ -347,7 +347,7 @@ impl Rig {
             template: &self.template,
             timeouts: Timeouts { join, ..Timeouts::default() },
         };
-        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, held_runtimes: Vec::new() };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -908,11 +908,10 @@ fn every_pipeline_step_is_named_by_the_client() {
             Frame::Complete
         ]
     );
-    // The stop half of the restart is not done under the delete's operation: such a receipt is refused by name.
-    assert_eq!(
-        rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap_err(),
-        CallEnd::UnrecognisedReceipt { operation: "retire-node:mesh1.rpc.3".into(), step: "NodeRestarting".into() }
-    );
+    // A `retire-node` receipt is the delete's, never a step of the restart: the restart folds nothing
+    // from it and stands at its own pre-event.
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap();
+    assert_eq!((f.frames.len(), f.next), (0, Some(("restart-node".to_string(), "NodeRestarting".to_string()))));
     // Its stop half done, the restart is not over: the fold stands at the start.
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..5].to_vec()), 1).unwrap();
     assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
@@ -990,14 +989,13 @@ impl Dispatcher for LostAfterDrainNode {
         };
         let items = if run == 1 {
             self.proofs.exited.lock().unwrap().insert(executor.to_string());
-            vec![step("retire-node", "NodeRestarting"), step("retire-node", "DrainNode"), InnerItem::Broke(format!("{executor} was lost after its DrainNode receipt"))]
+            vec![step("restart-node", "NodeRestarting"), step("restart-node", "DrainNode"), InnerItem::Broke(format!("{executor} was lost after its DrainNode receipt"))]
         } else {
             vec![
-                step("retire-node", "DrainNode"),
-                step("retire-node", "AwaitNodeDrained"),
-                step("retire-node", "StopNode"),
-                step("retire-node", "AwaitNodeLeft"),
-                step("retire-node", "Complete"),
+                step("restart-node", "DrainNode"),
+                step("restart-node", "AwaitNodeDrained"),
+                step("restart-node", "StopNode"),
+                step("restart-node", "AwaitNodeLeft"),
                 step("restart-node", "StartNode"),
                 step("restart-node", "WaitForNodeReady"),
                 step("restart-node", "Complete"),
