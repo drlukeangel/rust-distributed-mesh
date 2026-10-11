@@ -3319,22 +3319,15 @@ pub fn rpc_server(
 /// The unreadable pre-event steps already named: each is named once, not on every fact.
 type NamedSteps = HashSet<(String, u32, String, String)>;
 
-/// Apply the lifecycle overlays the facts of `log` name open to `book`: the restarts as the facts'
-/// truth (`DigestBook::restarts_from_facts`: open while named open, closed only by its own `Complete`
-/// receipt or its Build's forgetting), every other open operation as a hold, and every
-/// pre-event step this build cannot read refused by name, once.
-async fn overlays_from_facts(log: &dyn crate::build_state::LocalBuildLog, book: &DigestBook, named: &mut NamedSteps) {
-    let facts = match log.facts().await {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::info_span!("rdm.node_admin.build.reject.via-facts-unread", error = %e)
-                .in_scope(|| tracing::warn!("this admin's Build log could not be read: its lifecycle overlays wait on its next fact"));
-            return;
-        }
-    };
-    let builds = crate::build_state::fold(&facts);
-    let in_flight = crate::build_state::in_flight_ops(&builds);
-    book.restarts_from_facts(&in_flight.ops, &in_flight.restarts_completed, &crate::build_state::forgotten_builds(&facts, &builds));
+/// Apply the lifecycle overlays `facts` name open to `book`: the restarts as the facts' truth
+/// (`DigestBook::restarts_from_facts`: open while named open, closed only by its own `Complete`
+/// receipt, its attempt's `Converged` verdict or its Build's forgetting), every other open operation
+/// as a hold, and every pre-event step this build cannot read refused by name, once. Run inside the
+/// log's append as each fact enters it ([`crate::build_state::LocalBuildLog::derive_on_every_fact`]).
+fn overlays_from_facts(facts: &[crate::build_state::BuildFact], book: &DigestBook, named: &mut NamedSteps) {
+    let builds = crate::build_state::fold(facts);
+    let in_flight = crate::build_state::in_flight_ops(facts, &builds);
+    book.restarts_from_facts(&in_flight.ops, &in_flight.restarts_completed, &in_flight.attempts_converged, &crate::build_state::forgotten_builds(facts, &builds));
     for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
         book.deleting(op);
     }
@@ -3343,15 +3336,6 @@ async fn overlays_from_facts(log: &dyn crate::build_state::LocalBuildLog, book: 
             tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
                 .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
         }
-    }
-}
-
-/// [`overlays_from_facts`] each time a fact enters `log` (`facts_moved`, the log's fact watch):
-/// one coalesced recomputation per wake, no timer.
-async fn follow_overlays_from_facts(log: Arc<crate::build_state::FileJournal>, book: DigestBook, mut facts_moved: tokio::sync::watch::Receiver<u64>, mut named: NamedSteps) {
-    while facts_moved.changed().await.is_ok() {
-        facts_moved.borrow_and_update();
-        overlays_from_facts(&*log, &book, &mut named).await;
     }
 }
 
@@ -4983,16 +4967,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         tasks.push(park_gate.spawn(crate::seat_watch::run(watch)));
     }
 
-    // The open lifecycle overlays, derived from the Build facts as each fact enters this admin's
-    // log (its own appends and the facts it absorbs from the fabric alike): a hold opens with its
-    // pre-event's receipt and closes with its operation's `Complete`, never at the next round. A
-    // successor primary publishes the same overlays from the same facts. Derived once before the
-    // hierarchy's first round, then on every fact.
+    // The open lifecycle overlays, derived from the Build facts inside each append to this admin's
+    // log (its own appends and the facts it absorbs from the fabric alike), before the append
+    // returns: a hold opens with its pre-event's receipt and closes with its operation's `Complete`
+    // or its attempt's `Converged`, and no reader of the log sees that fact while the book still
+    // holds the hold. A successor primary publishes the same overlays from the same facts. Derived
+    // once over the facts held before the hierarchy's first round, then on every fact.
     {
-        let facts_moved = journal.fact_changes();
-        let mut named = HashSet::new();
-        overlays_from_facts(&*journal, &membership.book, &mut named).await;
-        tasks.push(park_gate.spawn(follow_overlays_from_facts(journal.clone(), membership.book.clone(), facts_moved, named)));
+        let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));
+        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap())));
     }
 
     let hierarchy;
