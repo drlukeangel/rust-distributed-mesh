@@ -317,23 +317,55 @@ impl ControlPlane {
     /// `(node_id, incarnation)` (node-recovery.md "Execution"): one topology Build in flight, so a
     /// Build still Pending or Running answers `BuildInProgress`. No live-status check: the node is
     /// silent or absent by definition.
-    pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Opened, Refusal> {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery-admitted", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.0);
+    ///
+    /// Keyed on the exited birth: once the accepted Build's `recover-node:<path>` operation completed
+    /// for that exact birth, a repeat answers [`Recovery::AlreadyApplied`] naming the attempt that
+    /// recovered it, and nothing is opened. A node-admin is never node-recovered (mesh-recovery.md).
+    pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.0, outcome = tracing::field::Empty);
         let outer = tracing::Span::current();
-        async {
+        let r = async {
             self.authority(route).await?;
-            let current = self.current_settled().await?;
+            let current = match self.current_settled().await {
+                Err(Refusal::BuildInProgress(held)) => {
+                    outer.in_scope(|| {
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, node = %path, node_id = %node_id, incarnation_id = %incarnation.0, current_build_id = %held)
+                            .in_scope(|| tracing::info!("recovery refused: one Build in flight, and {held} is still reconciling"))
+                    });
+                    return Err(Refusal::BuildInProgress(held));
+                }
+                other => other?,
+            };
             if !current.topology.contains(&path) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
+            if path.kind == crate::model::NodeKind::NodeAdmin {
+                let reject = BuildReject::NodeAdminNotNodeRecovered { node: path.to_string() };
+                outer.in_scope(|| reject_span(route, &reject));
+                return Err(Refusal::Reject(reject));
+            }
+            if let Some(attempt) = crate::accepted::recovered_at(&current, &path, &node_id, &incarnation) {
+                outer.in_scope(|| {
+                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %current.build_id, attempt, node = %path, node_id = %node_id, incarnation_id = %incarnation.0)
+                        .in_scope(|| tracing::info!("the exited birth was recovered by this attempt: nothing is opened"))
+                });
+                return Ok(Recovery::AlreadyApplied(Opened { build_id: current.build_id.clone(), attempt }));
+            }
             let node_name = path.to_string();
-            let action = AttemptAction::Recover { path, node_id, from_incarnation: incarnation };
-            self.open_with(&current, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await
+            let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() };
+            self.open_with(&current, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await.map(Recovery::Opened)
         }
         .instrument(span.clone())
-        .await
+        .await;
+        span.record("outcome", match &r {
+            Ok(Recovery::Opened(_)) => "admitted",
+            Ok(Recovery::AlreadyApplied(_)) => "already-applied",
+            Err(Refusal::BuildInProgress(_)) => "build-in-progress",
+            Err(_) => "refused",
+        });
+        r
     }
 
     /// A finished Build leaves history. The Build the pointer names, and a Build still reconciling,
@@ -405,7 +437,8 @@ fn reject_span(route: &'static str, reject: &BuildReject) {
         "fabric-mismatch",
         "empty-fabric",
         "provider-mismatch",
-        "unheard-mesh"
+        "unheard-mesh",
+        "node-admin-not-node-recovered"
     );
 }
 
@@ -469,6 +502,15 @@ pub struct Opened {
     pub build_id: BuildId,
     /// The attempt.
     pub attempt: u32,
+}
+
+/// What a recovery submit answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recovery {
+    /// The recovery is the attempt opened.
+    Opened(Opened),
+    /// The exited birth was already recovered, by this attempt of the Build: nothing was opened.
+    AlreadyApplied(Opened),
 }
 
 fn accepted(o: Opened) -> Response {

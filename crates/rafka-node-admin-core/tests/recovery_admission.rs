@@ -7,7 +7,7 @@
 use opentelemetry::trace::TracerProvider as _;
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::http::ControlPlane;
+use rafka_node_admin_core::http::{ControlPlane, Recovery, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use std::sync::Arc;
@@ -95,7 +95,10 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     settle(1).await;
 
     // The first submit: the next attempt of the accepted Build, fenced to the exited birth.
-    let first = cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await.expect("the first recovery is admitted");
+    let first = match cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("the first recovery is admitted: {other:?}"),
+    };
     assert_eq!((first.build_id.clone(), first.attempt), (b0.clone(), 2), "the recovery is the accepted Build's next attempt");
     let p = builds.read_build(&b0).await.unwrap();
     assert_eq!(p.reason.as_str(), "recovery");
@@ -104,7 +107,7 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
 
     // A repeat while the recovery attempt is open.
     let repeat = cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await;
-    assert!(matches!(&repeat, Err(rafka_node_admin_core::http::Refusal::BuildInProgress(id)) if *id == b0), "{repeat:?}");
+    assert!(matches!(&repeat, Err(Refusal::BuildInProgress(id)) if *id == b0), "{repeat:?}");
 
     // The executor completes `recover-node:mesh1.rpc.2` for the exited birth.
     builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
@@ -124,19 +127,22 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
 
     // A repeat once the birth was recovered.
     let again = cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await;
-    assert!(again.is_err(), "a second recovery was opened for a birth already recovered: {again:?}");
+    assert!(matches!(&again, Ok(Recovery::AlreadyApplied(o)) if *o == first), "a repeat once the birth was recovered names the attempt that recovered it, and opens nothing: {again:?}");
     assert_eq!(opened(&builds.facts().await.unwrap()), after_first, "exactly one recovery attempt was opened for the exited birth");
 
     // A node-admin is never node-recovered.
     let admin = cp.topology.read().await.node(&"mesh1.admin.2".parse().unwrap()).unwrap().clone();
     let refused = cp.open_recovery("build.create", admin.name.clone(), admin.node_id.clone(), admin.incarnation_id.clone().unwrap()).await;
-    assert!(refused.is_err(), "a node-admin's node recovery was admitted: {refused:?}");
+    assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-admin-not-node-recovered"), "a node-admin's node recovery is refused by name: {refused:?}");
 
     // Another Build in flight: the recovery waits for it.
     let other = cp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("a topology change is accepted");
     let later = cp.open_recovery("build.create", path.clone(), NodeId::mint(), IncarnationId::mint()).await;
-    assert!(matches!(&later, Err(rafka_node_admin_core::http::Refusal::BuildInProgress(id)) if *id == other.build_id), "{later:?}");
+    assert!(matches!(&later, Err(Refusal::BuildInProgress(id)) if *id == other.build_id), "{later:?}");
 
+    let admitted = capture.spans("rdm.node_admin.build.update.via-recovery");
+    assert_eq!(admitted.iter().map(|(_, a)| a["outcome"].as_str()).collect::<Vec<_>>(), vec!["admitted", "build-in-progress", "already-applied", "refused", "build-in-progress"], "one admission span per submit, its outcome named");
+    assert_eq!(capture.spans("rdm.node_admin.build.reject.via-recovery-already-applied").len(), 1, "the duplicate is answered from the receipt that recovered the birth");
     for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-recovery-already-applied", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.reject.via-node-admin-not-node-recovered"] {
         for (trace_id, attrs) in capture.spans(name) {
             eprintln!("span {name} trace_id={trace_id} {attrs:?}");

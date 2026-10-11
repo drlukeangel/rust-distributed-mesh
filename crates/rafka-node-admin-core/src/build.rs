@@ -366,6 +366,12 @@ pub enum BuildReject {
         /// How long the mesh has gone unheard, in milliseconds.
         unheard_ms: u64,
     },
+    /// A node recovery submitted for a node-admin: a mesh whose node-admins are lost is the
+    /// fabric-primary's mesh recovery (mesh-recovery.md), never a node recovery.
+    NodeAdminNotNodeRecovered {
+        /// The node-admin named.
+        node: String,
+    },
 }
 
 impl BuildReject {
@@ -386,6 +392,7 @@ impl BuildReject {
             Self::ProviderInBuild { .. } => "provider-mismatch",
             Self::NodeMetaMismatch { .. } => "node-meta-mismatch",
             Self::UnheardMesh { .. } => "unheard-mesh",
+            Self::NodeAdminNotNodeRecovered { .. } => "node-admin-not-node-recovered",
         }
     }
 }
@@ -408,6 +415,7 @@ impl fmt::Display for BuildReject {
                 f,
                 "a Build may not choose a deployment provider; this fabric's policy is {fabric_provider:?}, fixed at bootstrap"
             ),
+            Self::NodeAdminNotNodeRecovered { node } => write!(f, "node `{node}` is a node-admin: a node-admin is never node-recovered; a mesh whose node-admins are lost is the fabric-primary's mesh recovery"),
             Self::UnheardMesh { node, mesh, unheard_ms } => write!(
                 f,
                 "node `{node}` is in mesh `{mesh}`, which this fabric-primary has not heard for {unheard_ms} ms: a peer mesh held unheard is held as a mesh, and its nodes are not restarted, replaced or deleted from here until it is heard again"
