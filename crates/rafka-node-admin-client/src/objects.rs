@@ -336,20 +336,26 @@ impl Nodes {
         })
     }
 
-    /// `node.update`: put the full meta entity `body` over what RDM `held`. A body that differs in
-    /// a field RDM owns is refused `MetaFieldIsRdmOwned`; no op carries the put yet.
-    pub fn update(&self, held: &NodeMeta, body: &NodeMeta, stopped: bool) -> Result<CallEnd, MetaFieldIsRdmOwned> {
-        let span = NodeOp::Update.span();
-        let checked = body.check_put(held, stopped);
-        span.record("outcome", match &checked {
-            Ok(()) => "not-backed-today",
-            Err(_) => "meta-field-is-rdm-owned",
-        });
-        span.in_scope(|| match &checked {
-            Ok(()) => tracing::info!(op = NodeOp::Update.name(), "the put is valid and no op carries it"),
-            Err(e) => tracing::info!(op = NodeOp::Update.name(), field = e.field.name(), "the put changes a field RDM owns"),
-        });
-        checked.map(|()| CallEnd::NotBackedToday { op: NodeOp::Update, why: "the meta put" })
+    /// `node.update`: put the full meta entity `body` over what RDM `held`, a single call to the
+    /// node's mesh-primary `mesh_primary` over `route` (R13; [`crate::NodeRpc::node_update`]). The
+    /// mesh-primary decides from its own held record whether the node carries traffic; the request
+    /// carries the exact birth and the name, so a body that differs from `held` in a field RDM owns
+    /// is refused here, `RejectedMetaFieldIsRdmOwned { field }`, and nothing is sent. A body that
+    /// changes `otel_debug` ends `NotBackedToday`: the node row has no field that carries it.
+    pub async fn update(&self, held: &NodeMeta, body: &NodeMeta, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice) -> Result<rafka_node_rpc_contract::status::StatusReply, CallEnd> {
+        // The name's traffic rule is the mesh-primary's: only the fields the request cannot carry are checked here.
+        if let Err(e) = body.check_update(held, crate::Traffic::Stopped) {
+            let span = NodeOp::Update.span();
+            span.record("outcome", "meta-field-is-rdm-owned");
+            span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), field = e.field.name(), "the put changes a field RDM owns; nothing is sent"));
+            return Ok(rafka_node_rpc_contract::status::StatusReply::RejectedMetaFieldIsRdmOwned { field: e.field.name().into() });
+        }
+        if body.otel_debug != held.otel_debug {
+            return Err(CallEnd::NotBackedToday { op: NodeOp::Update, why: "otel_debug: the node row has no field that carries it" });
+        }
+        let incarnation = held.incarnation.clone().ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} ({}) has no known birth; node.update names an exact birth", held.name, held.node_id) })?;
+        let birth = crate::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation };
+        crate::NodeRpc::new(self.carrier.client()).node_update(mesh_primary, route, &birth, &body.name, &rafka_node_rpc::CallOptions::default()).await
     }
 
     /// `node.connections.get`: the connection facts the answering admin holds.

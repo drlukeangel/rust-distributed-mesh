@@ -228,6 +228,11 @@ impl BuildCarrier {
         Self { client, fabric_primary }
     }
 
+    /// The node-RPC client the carrier calls with.
+    pub(crate) fn client(&self) -> &NodeRpcClient {
+        &self.client
+    }
+
     /// The fabric-primary calls start at.
     pub fn fabric_primary(&self) -> &PathName {
         &self.fabric_primary

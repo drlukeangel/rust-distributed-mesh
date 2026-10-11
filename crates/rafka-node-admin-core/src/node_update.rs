@@ -17,7 +17,7 @@ use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use tokio::sync::RwLock;
 
 /// Serve an `UpdateNode` at the admin `me` (born `me_id`): one span holds the whole put.
-pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: &NodeRpcClient, moved: &crate::status_rpc::RowMoved, req: &StatusRequest) -> StatusReply {
+pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: Option<&NodeRpcClient>, moved: &crate::status_rpc::RowMoved, req: &StatusRequest) -> StatusReply {
     let StatusRequest::UpdateNode { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateNode only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
@@ -35,7 +35,7 @@ fn meta(n: &Node, name: PathName) -> NodeMeta {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: &NodeRpcClient, moved: &crate::status_rpc::RowMoved, node_id: &rafka_mesh_entity::NodeId, incarnation: &rafka_mesh_entity::IncarnationId, name: &str, span: &tracing::Span) -> StatusReply {
+async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: Option<&NodeRpcClient>, moved: &crate::status_rpc::RowMoved, node_id: &rafka_mesh_entity::NodeId, incarnation: &rafka_mesh_entity::IncarnationId, name: &str, span: &tracing::Span) -> StatusReply {
     let now = view.read().await.clone();
     let Some(held) = now.nodes.iter().find(|n| n.node_id == *node_id).cloned() else {
         return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} is not in the mesh-primary's view; its record cannot be put") };
@@ -58,6 +58,11 @@ async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Top
     if let Err(e) = meta(&held, to.clone()).check_update(&meta(&held, held.name.clone()), traffic) {
         return StatusReply::RejectedMetaFieldIsRdmOwned { field: e.field.name().into() };
     }
+    // A live birth is told the name: without a node-RPC client nothing is written.
+    let client = match (held.parked, client) {
+        (false, None) => return StatusReply::NotReady { reason: format!("{me} has no node-RPC client yet to tell the live {} its name; the rename to {to} is refused and nothing is written", held.name) },
+        (_, c) => c,
+    };
     if to != held.name {
         let Some(moved) = moved.get() else {
             return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
@@ -77,6 +82,7 @@ async fn put(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Top
     if held.parked {
         return StatusReply::NodeUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
     }
+    let Some(client) = client else { unreachable!("a live birth's rename was refused above without a client") };
     let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
     let (answered, detail) = match NodeRpc::new(client).name_apply(&birth, &RouteChoice::Direct, &to, &CallOptions::default()).await {
         Ok(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => {
