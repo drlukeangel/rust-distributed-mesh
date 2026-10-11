@@ -498,8 +498,16 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
     let mut decided: std::collections::BTreeSet<(&BuildId, u32)> = std::collections::BTreeSet::new();
     for f in facts {
         if let BuildFact::Attempt(a) = f {
-            if decided.insert((&a.build_id, a.attempt)) && a.outcome == AttemptOutcome::Converged && builds.contains_key(&a.build_id) {
-                out.attempts_converged.insert((a.build_id.0.clone(), a.attempt));
+            if decided.insert((&a.build_id, a.attempt)) && builds.contains_key(&a.build_id) {
+                match a.outcome {
+                    AttemptOutcome::Converged => {
+                        out.attempts_converged.insert((a.build_id.0.clone(), a.attempt));
+                    }
+                    AttemptOutcome::Failed { .. } => {
+                        out.attempts_failed.insert((a.build_id.0.clone(), a.attempt));
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -527,8 +535,13 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
                     }
                 },
             };
+            // A removal's overlay is keyed by its attempt (gossip.md `NodeDeleting`): it ends with the
+            // departure, or when that attempt's verdict is terminal (Converged or Failed: the attempt
+            // no longer claims the operation).
             let closed = if s.step == "NodeDeleting" {
                 p.steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete)
+                    || out.attempts_converged.contains(&(op.build_id.clone(), op.attempt))
+                    || out.attempts_failed.contains(&(op.build_id.clone(), op.attempt))
             } else {
                 out.attempts_converged.contains(&(op.build_id.clone(), op.attempt))
                     || p.steps.iter().any(|t| t.step == "Complete" && t.operation == op.operation && t.outcome == StepOutcome::Complete)
@@ -555,6 +568,9 @@ pub struct InFlight {
     /// The attempts whose verdict is `Converged`, by (Build, attempt): the facts end every restart
     /// hold of that attempt in that Build.
     pub attempts_converged: std::collections::BTreeSet<(String, u32)>,
+    /// The attempts whose verdict is `Failed`, by (Build, attempt): the facts end every removal
+    /// (`NodeDeleting`) hold of that attempt in that Build; a restart's hold stays open.
+    pub attempts_failed: std::collections::BTreeSet<(String, u32)>,
 }
 
 /// The Builds the facts forgot: each a `Forget` fact names whose Build the fold no longer holds

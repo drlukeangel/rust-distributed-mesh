@@ -3604,7 +3604,9 @@ type NamedSteps = HashSet<(String, u32, String, String)>;
 /// Apply the lifecycle overlays `facts` name open to `book`: the restarts as the facts' truth
 /// (`DigestBook::restarts_from_facts`: open while named open, closed only by its own `Complete`
 /// receipt, its attempt's `Converged` verdict or its Build's forgetting), every other open operation
-/// as a hold, and every pre-event step this build cannot read refused by name, once. Run inside the
+/// as a hold that its attempt's terminal verdict or its Build's forgetting closes
+/// (`DigestBook::deletions_from_facts`), and every pre-event step this build cannot read refused by
+/// name, once. Run inside the
 /// log's append as each fact enters it ([`crate::build_state::LocalBuildLog::derive_on_every_fact`]).
 fn overlays_from_facts(facts: &[crate::build_state::BuildFact], book: &DigestBook, named: &mut NamedSteps) {
     let builds = crate::build_state::fold(facts);
@@ -3613,6 +3615,7 @@ fn overlays_from_facts(facts: &[crate::build_state::BuildFact], book: &DigestBoo
     for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
         book.deleting(op);
     }
+    book.deletions_from_facts(&in_flight.attempts_converged, &in_flight.attempts_failed, &crate::build_state::forgotten_builds(facts, &builds));
     for u in in_flight.unrecognised {
         if named.insert((u.build_id.0.clone(), u.attempt, u.operation.clone(), u.step.clone())) {
             tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)

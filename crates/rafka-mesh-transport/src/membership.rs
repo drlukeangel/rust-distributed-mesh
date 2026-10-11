@@ -3692,6 +3692,55 @@ impl DigestBook {
         }
     }
 
+    /// The removal overlays (`NodeDeleting`) the Build facts ended, closed: an overlay is keyed by its
+    /// attempt (gossip.md: `(kind, build_id, attempt, operation)`, riding `Members.in_flight` while
+    /// the operation is claimed and has no completed receipt), so it closes when its attempt's verdict
+    /// is terminal (`ended`, by Build and attempt, each named `attempt-converged` or `attempt-failed`
+    /// by `failed`) or its Build is forgotten (`forgotten`). A copy of a closed overlay opens nothing
+    /// again. Restarts and stops are not removals: their own facts end them.
+    pub fn deletions_from_facts(&self, converged: &BTreeSet<(String, u32)>, failed: &BTreeSet<(String, u32)>, forgotten: &BTreeSet<String>) {
+        let mut cleared = Vec::new();
+        {
+            let mut in_flight = self.in_flight.lock().unwrap();
+            let mut ended = self.ended_overlays.lock().unwrap();
+            in_flight.retain(|k, o| {
+                if o.is_restart() || o.is_stop() {
+                    return true;
+                }
+                let attempt = (o.build_id.clone(), o.attempt);
+                let by = if failed.contains(&attempt) {
+                    "attempt-failed"
+                } else if converged.contains(&attempt) {
+                    "attempt-converged"
+                } else if forgotten.contains(&o.build_id) {
+                    "build-forgotten"
+                } else {
+                    return true;
+                };
+                ended.insert(k.clone());
+                cleared.push((o.clone(), by));
+                false
+            });
+        }
+        if !cleared.is_empty() {
+            self.overlays_moved();
+            self.births.send_modify(|v| *v += 1);
+        }
+        for (op, by) in cleared {
+            tracing::info_span!(
+                "rdm.mesh.membership.update.via-deleting-closed-by-facts",
+                node = %op.name,
+                node_id = %op.node_id,
+                incarnation_id = %op.incarnation.0,
+                build_id = %op.build_id,
+                attempt = op.attempt,
+                operation = %op.operation,
+                by,
+            )
+            .in_scope(|| tracing::info!("the Build facts end the removal's attempt: its overlay closes and the node is held as its digests say"));
+        }
+    }
+
     /// The open restart of `node_id`'s birth `incarnation`, if any.
     pub fn restart_of(&self, node_id: &str, incarnation: &rafka_mesh_entity::IncarnationId) -> Option<LifecycleOp> {
         self.in_flight.lock().unwrap().values().find(|op| op.is_restart() && op.node_id.as_str() == node_id && &op.incarnation == incarnation).cloned()
@@ -3848,6 +3897,11 @@ impl DigestBook {
     /// already departed.
     pub fn deleting(&self, op: LifecycleOp) -> bool {
         if self.is_departed(op.node_id.as_str()) {
+            return false;
+        }
+        // Applied once however many copies arrive (gossip.md `NodeDeleting`): a copy of an overlay
+        // the Build facts ended opens nothing again.
+        if self.ended_overlays.lock().unwrap().contains(&op.key()) {
             return false;
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
