@@ -4,6 +4,11 @@
 //! it in `RDM_EVIDENCE_DIR`). A red gate keeps every node directory's log files, so both ends of
 //! a failed handshake are kept together.
 //!
+//! It exists only in an evidence run: a process given `RDM_EVIDENCE_DIR` (the test estate sets it
+//! on the bootstrap admin, the admins it restarts and the probe; an admin passes its own on to every
+//! node it launches). A process without it, every production node, installs no layer: no noq or
+//! iroh callsite is enabled for it and no file is written.
+//!
 //! It is a separate sink: nothing here reaches span export or the OTLP log bridge (R-TL1), and
 //! nothing here reaches the stderr log. Lines are formatted by the thread that emitted them and
 //! written by a thread of their own ([`LogSink`]), so a held disk never holds a runtime worker.
@@ -53,10 +58,13 @@ pub(crate) const DIRECTIVES: &[&str] = &[
     "noq_udp=debug",
 ];
 
-/// The directory the diagnostic file goes in: the node's own log directory, else the evidence
-/// directory; with neither there is no file.
+/// The directory the diagnostic file goes in, in an evidence run (`RDM_EVIDENCE_DIR` set): the
+/// node's own log directory, else the evidence directory. Outside an evidence run there is none,
+/// and the sink is not installed.
 pub(crate) fn dir() -> Option<std::path::PathBuf> {
-    ["RDM_DATA_DIR", "RDM_EVIDENCE_DIR"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty())).map(std::path::PathBuf::from)
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let evidence = env("RDM_EVIDENCE_DIR")?;
+    Some(std::path::PathBuf::from(env("RDM_DATA_DIR").unwrap_or(evidence)))
 }
 
 /// The filter of the formatted lines: [`DIRECTIVES`] and nothing else, whatever RUST_LOG says.
@@ -66,17 +74,24 @@ pub(crate) fn filter() -> EnvFilter {
 
 /// The run and the process every line of the file belongs to, as the file's first line: the
 /// run (`RDM_EVIDENCE_DIR`, one directory per test, shared by the bootstrap admin and every node it
-/// launched), the fabric, the node, its birth and what that birth supersedes, the transport address
-/// it was given, its data directory, pid and the wall clock.
+/// launched), the fabric, the mesh, the node, its birth and what that birth supersedes, the
+/// transport address it was given, its data directory, pid and the wall clock.
+///
+/// The node is the one the launch names (`RDM_NODE_NAME`). A process launched with no node name,
+/// the bootstrap admin, is named by its node log directory, which the estate names after the node
+/// (`<mesh>.admin.1`); its mesh is the one it is given (`RDM_MESH`).
 fn header(service: &str) -> String {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let node = std::env::var("RDM_NODE_NAME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| {
+        std::env::var_os("RDM_DATA_DIR").and_then(|d| std::path::PathBuf::from(d).file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default()
+    });
+    let mesh = std::env::var("RDM_MESH").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| node.split('.').next().filter(|_| node.contains('.')).unwrap_or_default().to_string());
     let unix_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     format!(
-        "transport-diag run={:?} fabric={:?} fabric_id={:?} node={:?} node_id={:?} incarnation={:?} supersedes={:?} transport_addr={:?} data_dir={:?} service={service:?} pid={} started_unix_ms={unix_ms}\n",
+        "transport-diag run={:?} fabric={:?} fabric_id={:?} mesh={mesh:?} node={node:?} node_id={:?} incarnation={:?} supersedes={:?} transport_addr={:?} data_dir={:?} service={service:?} pid={} started_unix_ms={unix_ms}\n",
         env("RDM_EVIDENCE_DIR"),
         env("RDM_FABRIC"),
         env("RDM_FABRIC_ID"),
-        env("RDM_NODE_NAME"),
         env("RDM_NODE_ID"),
         env("RDM_INCARNATION_ID"),
         env("RDM_SUPERSEDES"),

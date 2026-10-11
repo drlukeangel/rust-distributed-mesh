@@ -430,26 +430,44 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     }
     let stderr_sink = log_sink::LogSink::start(std::io::stderr());
     let _ = STDERR_SINK.set(stderr_sink.clone());
-    let fmt_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()).and(filter_fn(export::admits_source)).and(filter_fn(not_transport_diag));
-    // The transport diagnostic file (R-QH1), beside and apart from every other output.
-    let diag = transport_diag::start(&service).map(|(layer, sink)| {
+    // The stderr log: INFO, RUST_LOG raises it; never the transport diagnostic target.
+    macro_rules! stderr_layer {
+        () => {
+            tracing_subscriber::fmt::layer()
+                .with_writer(stderr_sink.clone())
+                .with_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()).and(filter_fn(export::admits_source)).and(filter_fn(not_transport_diag)))
+        };
+    }
+    // The transport diagnostic file (R-QH1), beside and apart from every other output, in an
+    // evidence run only. Outside one the layer is not in the stack at all: added as `None`, a layer
+    // that carries per-layer filters makes tracing-subscriber enable every callsite of the process.
+    let diag = transport_diag::start::<tracing_subscriber::Registry>(&service).map(|(layer, sink)| {
         let _ = DIAG_SINK.set(sink);
         layer
     });
     if !any {
-        let _ = tracing_subscriber::registry().with(diag).with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter)).try_init();
+        let _ = match diag {
+            Some(diag) => tracing_subscriber::registry().with(diag).with(stderr_layer!()).try_init(),
+            None => tracing_subscriber::registry().with(stderr_layer!()).try_init(),
+        };
         return None;
     }
     let provider = builder.build();
-    let log_filter = tracing_subscriber::filter::LevelFilter::from_level(otlp_log_export_level()).and(filter_fn(export::admits_source)).and(filter_fn(not_transport_diag));
     use opentelemetry::logs::LoggerProvider as _;
-    let log_layer = logs.as_ref().map(|p| logs::LogAdapter::new(p.logger("rafka-mesh")).with_filter(log_filter));
-    let _ = tracing_subscriber::registry()
-        .with(diag)
-        .with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter))
-        .with(span_export_layer(&provider, &service))
-        .with(log_layer)
-        .try_init();
+    // The OTLP log bridge, when a collector is configured: from `otlp_log_export_level`, never the
+    // transport diagnostic target.
+    macro_rules! log_layer {
+        () => {
+            logs.as_ref().map(|p| {
+                logs::LogAdapter::new(p.logger("rafka-mesh"))
+                    .with_filter(tracing_subscriber::filter::LevelFilter::from_level(otlp_log_export_level()).and(filter_fn(export::admits_source)).and(filter_fn(not_transport_diag)))
+            })
+        };
+    }
+    let _ = match diag {
+        Some(diag) => tracing_subscriber::registry().with(diag).with(stderr_layer!()).with(span_export_layer(&provider, &service)).with(log_layer!()).try_init(),
+        None => tracing_subscriber::registry().with(stderr_layer!()).with(span_export_layer(&provider, &service)).with(log_layer!()).try_init(),
+    };
     let _ = watchdog::spawn();
     Some(guard(provider, logs))
 }
