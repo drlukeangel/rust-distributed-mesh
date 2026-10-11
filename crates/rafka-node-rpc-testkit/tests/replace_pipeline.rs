@@ -5,8 +5,8 @@
 //! freed name with a new node.id, incarnation and directory. The predecessor stays parked with its
 //! data: the data transfer is Rafka's own step after create, and the predecessor's delete is a later
 //! step of the recipe. A birth the provider already proves terminal is the recovery of an exited
-//! node: it is sent nothing, ended with the provider's proof, and its departure follows the
-//! successor's readiness.
+//! node: it is sent nothing, ended with the provider's proof, and deleted (its Deleted row and
+//! NodeDeleted) before the successor is created (node-recovery.md: node.delete, then node.create).
 //!
 //! The span-asserting cell runs in its own process (`own_process`), and its capture enables every
 //! callsite before installing its dispatcher (`crate::enable_callsites`).
@@ -122,10 +122,11 @@ const REPLACE_ORDER: [&str; 18] = [
 const RECOVERY_ORDER: [&str; 19] = [
     "NodeDeleting",
     "RenamePredecessor",
+    "TerminateRuntime",
+    "NodeDeleted",
     "AllocateIdentity",
     "PrepareStorage",
     "PrepareNetwork",
-    "TerminateRuntime",
     "HandoffStorage",
     "DeployRuntime",
     "RegisterExactRuntimeHandle",
@@ -136,7 +137,6 @@ const RECOVERY_ORDER: [&str; 19] = [
     "ApplyMeshPending",
     "WaitForMeshJoin",
     "WaitForNodeReady",
-    "NodeDeleted",
     "ReleaseStorage",
     "Complete",
 ];
@@ -321,9 +321,13 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
 }
 
 /// CONTRACT: a replace of a birth the provider already proves terminal sends it nothing: no drain, no
-/// Leaving, no admission wait (node-recovery.md). The sequence is NodeDeleting, rename, the successor's
-/// identity, the terminal proof and handoff, the successor's start and readiness, NodeDeleted. With
-/// ephemeral storage nothing is handed over and the predecessor's directory is released after the departure.
+/// Leaving, no admission wait (node-recovery.md). It is node.delete of the exited instance, then
+/// node.create (node-recovery.md "Steps"; step 3 then step 4): NodeDeleting, rename, the terminal
+/// proof, NodeDeleted (the predecessor's Deleted row, written while the executor is still the writer
+/// of the mesh's rows: a mesh's only admin replaced by the fabric-primary as acting primary hands the
+/// seat to its successor at readiness, R13), then the successor's identity, handoff, start and
+/// readiness. With ephemeral storage nothing is handed over and the predecessor's directory is
+/// released after the successor's readiness.
 #[test]
 fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage() {
     let cap = crate::common::capture("recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage");
@@ -359,7 +363,7 @@ fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephem
         assert!(!log.iter().any(|l| l.starts_with("drain-node:") || l.starts_with("stop-node:")), "nothing is sent to a proven-terminal birth: {log:?}");
         let (old, new) = (first.node.node_id.to_string(), second.node.node_id.to_string());
         let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
-        assert!(at(&format!("NodeDeleting:{old}")) < at(&format!("ready:{new}")) && at(&format!("ready:{new}")) < at(&format!("NodeDeleted:{old}")), "{log:?}");
+        assert!(at(&format!("NodeDeleting:{old}")) < at(&format!("NodeDeleted:{old}")) && at(&format!("NodeDeleted:{old}")) < at(&format!("ready:{new}")), "node.delete of the exited instance, then node.create: {log:?}");
 
         // Ephemeral: nothing moved, and the renamed directory is gone after the departure.
         let new_dir = std::path::PathBuf::from(second.node.data_dir.clone().unwrap());
