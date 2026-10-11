@@ -264,6 +264,10 @@ pub struct BuildProjection {
     /// operation's `Complete` needs no output of its own to say which birth it completed for.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attempt_actions: BTreeMap<u32, AttemptAction>,
+    /// The executor each claimed attempt was won for, by attempt (from its `Claim` fact): the
+    /// admin a later attempt follows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attempt_executors: BTreeMap<u32, String>,
 }
 
 impl BuildProjection {
@@ -390,6 +394,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     reason: AttemptReason::Requested,
                     action: None,
                     attempt_actions: BTreeMap::new(),
+                    attempt_executors: BTreeMap::new(),
                 });
             }
             BuildFact::Opened(o) => {
@@ -421,6 +426,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     if c.attempt == p.attempt + 1 && !matches!(p.state, BuildState::Complete) {
                         p.attempt = c.attempt;
                         p.executor = Some(c.executor.clone());
+                        p.attempt_executors.insert(c.attempt, c.executor.clone());
                         p.state = BuildState::Running;
                         if let Some(a) = &p.action {
                             p.attempt_actions.insert(c.attempt, a.clone());
