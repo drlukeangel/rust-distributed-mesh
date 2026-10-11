@@ -2096,11 +2096,17 @@ impl DeploymentPipeline<'_> {
         // The exited instance leaves the path, and is fenced before the new birth (same endpoint key)
         // exists: no late old digest or dial returns the key to the old port.
         self.sink.remove(name);
-        after_deleted(old.clone()).await;
+        // The key the fence names is the one in the inherited data dir (a record resolved from the
+        // durable runtime rows carries none): the new birth will load exactly it.
+        let inherited = self.birth_dir(&old);
+        let mut fenced = old.clone();
+        if fenced.endpoint_id.is_none() {
+            fenced.endpoint_id = Some(ensure_transport_key(&inherited).map_err(|reason| PipelineError { step: RetireStep::NodeDeleted.name(), reason })?);
+        }
+        after_deleted(fenced).await;
         // node.create at the same path.name over the inherited data dir: a new node.id and incarnation,
         // the same endpoint key, no supersedes.
         let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, held_runtimes: Vec::new() };
-        let inherited = self.birth_dir(&old);
         let mut created = self.create_to_ready(&mut run, &creq, None, None, Some(inherited)).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
