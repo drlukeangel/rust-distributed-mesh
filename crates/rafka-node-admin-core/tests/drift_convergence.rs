@@ -715,12 +715,18 @@ mod one_attempt_number {
         let k = lose_a_node(&e).await;
         let g = gate(&e, AttemptReason::ProvenDrift);
         let cp = door(&e, e.builds.clone()).await;
-        let (drift, rest) = tokio::join!(drift_pass(&e, &*g), async {
-            g.arrived.notified().await;
-            let r = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None).await;
-            g.release.notify_one();
-            r
-        });
+        // The drift pass either stops at the log's door with its number computed, or it ended
+        // without opening anything: that is the cell's failure, named, never a wait.
+        let drift = drift_pass(&e, &*g);
+        tokio::pin!(drift);
+        tokio::select! {
+            biased;
+            _ = g.arrived.notified() => {}
+            ended = &mut drift => panic!("the drift pass ended without reaching the Build log's door to open attempt {}: it proved no loss ({ended:?})", k + 1),
+        }
+        let rest = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None).await;
+        g.release.notify_one();
+        let drift = drift.await;
         let rest = rest.expect("the restart took the free number");
         assert_eq!(rest.attempt, k + 1);
         let held = opened_facts(&e, k + 1).await;
