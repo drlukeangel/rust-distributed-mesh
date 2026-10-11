@@ -713,7 +713,7 @@ impl DriveEnv {
 
     /// The frame of every `Complete` receipt of `steps` from attempt `from` to before attempt `to`,
     /// each through [`Self::step`]: a read of receipts, never a run.
-    pub async fn replay(&self, drive: &Drive, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) {
+    async fn replay(&self, drive: &Drive, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) {
         for (frame, subject) in drive.receipt_frames(steps, from, to) {
             self.step(drive, frame, subject).await;
         }
