@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub use rafka_mesh_entity::cadence::{backbone_gossip_interval, gossip_interval, staleness_floor};
+pub use rafka_mesh_entity::cadence::{backbone_gossip_interval, forwarded_staleness_floor, gossip_interval, staleness_floor};
 
 /// How often a node's publish loop marks its heartbeat in the trace (the digest itself goes out
 /// every gossip interval).
@@ -3400,7 +3400,7 @@ impl DigestBook {
     /// plus one backbone gossip interval, plus the time its mesh's next primary takes to forward it
     /// (the staleness floor and one backbone gossip interval), gossip.md §3.2.
     pub(crate) fn forwarded_staleness_floor(&self) -> Duration {
-        self.staleness_floor + self.backbone_gossip_interval + self.staleness_floor + self.backbone_gossip_interval
+        rafka_mesh_entity::cadence::forwarded_staleness_floor_at(self.staleness_floor, self.backbone_gossip_interval)
     }
 
     fn expire_departed(&self) {
