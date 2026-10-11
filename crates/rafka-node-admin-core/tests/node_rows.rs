@@ -677,22 +677,23 @@ fn a_rename_handled_again_after_the_successor_took_the_name_leaves_its_row() {
     assert_eq!(outcomes, vec!["already-moved"], "the rename is the predecessor's, read by its node id from the NodeDeleting receipt, and it was made: {renames:#?}");
 }
 
-/// The recovery of `mesh1.rpc.1` (node-recovery.md steps 3-4): the exited birth's `NodeDeleting`,
-/// its departure, its `NodeDeleted`, and the new node at the same `path.name` heard `before` or
-/// after the `NodeDeleted` frame reaches the fabric-primary. Returns the row at `mesh1.rpc.1`, the
-/// exited node and the new one.
+/// The recovery of `mesh1.rpc.1` (node-recovery.md steps 3-4): its node.delete of the exited birth
+/// (`retire-node:<path>`: `NodeDeleting`, the departure, `NodeDeleted`, `Complete`), then its
+/// node.create at the same `path.name` (`create-node:<path>`), the new node heard `before` or after
+/// the `NodeDeleted` frame reaches the fabric-primary. Returns the row at `mesh1.rpc.1`, the exited
+/// node and the new one.
 async fn recovered(new_heard_first: bool) -> (Option<NodeRow>, NodeId, NodeId) {
-    let op = "recover-node:mesh1.rpc.1";
+    let (delete, create) = ("retire-node:mesh1.rpc.1", "create-node:mesh1.rpc.1");
     let birth = node("mesh1.rpc.1", false, false);
     let born = birth.node_id.clone();
     let heard = Act::View(Box::new(move |v: &mut Topology| v.nodes.push(birth)));
-    let mut acts = vec![Act::Frame(op, "NodeDeleting"), gone("mesh1.rpc.1")];
+    let mut acts = vec![Act::Frame(delete, "NodeDeleting"), gone("mesh1.rpc.1")];
     if new_heard_first {
-        acts.extend([heard, Act::Frame(op, "NodeDeleted")]);
+        acts.extend([heard, Act::Frame(delete, "NodeDeleted"), Act::Frame(delete, "Complete")]);
     } else {
-        acts.extend([Act::Frame(op, "NodeDeleted"), heard]);
+        acts.extend([Act::Frame(delete, "NodeDeleted"), Act::Frame(delete, "Complete"), heard]);
     }
-    acts.extend([Act::Frame(op, "WaitForNodeReady"), Act::Frame(op, "Complete")]);
+    acts.extend([Act::Frame(create, "WaitForNodeReady"), Act::Frame(create, "Complete")]);
     let storage = Arc::new(MemoryNodesStorage::default());
     let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
     let exited = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap().node_id.clone();

@@ -112,7 +112,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
         template: &template,
         timeouts: Timeouts::default(),
     };
-    let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+    let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, data_dir: None, held_runtimes: Vec::new() };
     let result = pipeline.create(&req).await;
     let view = builds.read_build(&build_id).await.unwrap();
     let complete = |s: CreateStep| view.steps.iter().any(|r| r.step == s.name() && r.outcome == StepOutcome::Complete);
@@ -223,7 +223,7 @@ fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
             template: &template,
             timeouts: Timeouts { ready: Duration::from_secs(120), ..Timeouts::default() },
         };
-        let req = CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, data_dir: None, held_runtimes: Vec::new() };
         let asked = std::time::Instant::now();
         let err = pipeline.create(&req).await.err().expect("a create over an exited runtime");
         assert!(asked.elapsed() < Duration::from_secs(60), "the create waited {:?} on a runtime already proven exited", asked.elapsed());

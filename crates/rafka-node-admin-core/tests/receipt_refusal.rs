@@ -168,7 +168,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Drains, sink: &Discard, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rafka_node_admin_core::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal, exit: None };
 
     let err = match pipeline.drain(&req).await {
         Err(e) => e,
@@ -314,7 +314,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rafka_node_admin_core::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal, exit: None };
     if stop {
         pipeline.stop(&req).await
     } else {

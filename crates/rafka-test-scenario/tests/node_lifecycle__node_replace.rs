@@ -136,14 +136,15 @@ async fn attempt_at(estate: &Estate, api: &str, build: &str) -> u64 {
 }
 
 /// The fabric-primary's own Build log holds the recovery of `node` at `attempt`, heard on the Build
-/// topic: the `recover-node:<node>` NodeDeleted receipt and the operation's Complete.
+/// topic: its node.delete's `retire-node:<node>` NodeDeleted receipt, and the Complete of its last
+/// operation, node.update (`update-node:<node>`).
 async fn fp_recovery_receipts(estate: &Estate, fp_api: &str, build: &str, node: &str, attempt: &str) -> (Value, Value) {
-    let operation = format!("recover-node:{node}");
+    let (delete, update) = (format!("retire-node:{node}"), format!("update-node:{node}"));
     wait_for("the fabric-primary holds the recovery's receipts", Duration::from_secs(30), || async {
         let (_, b) = estate.http_get(fp_api, &format!("/api/builds?id={build}")).await;
         let steps = b["steps"].as_array().cloned().unwrap_or_default();
-        let at = |step: &str| steps.iter().find(|r| r["operation"] == operation.as_str() && r["step"] == step && r["attempt"].to_string() == attempt && r["outcome"] == "complete").cloned();
-        Some((at("NodeDeleted")?, at("Complete")?))
+        let at = |operation: &str, step: &str| steps.iter().find(|r| r["operation"] == operation && r["step"] == step && r["attempt"].to_string() == attempt && r["outcome"] == "complete").cloned();
+        Some((at(&delete, "NodeDeleted")?, at(&update, "Complete")?))
     })
     .await
 }
@@ -154,9 +155,9 @@ async fn fp_recovery_receipts(estate: &Estate, fp_api: &str, build: &str, node: 
 /// submits one recovery to the fabric-primary keyed on the exited birth; the recovery is the next
 /// attempt of the accepted Build (no Build minted), run by that mesh-primary: node.delete of the
 /// exited instance (node.deleted from the exit proof, once, named by the exact birth), then
-/// node.create at the same path.name over the inherited data dir. The path comes back with the
-/// SAME transport key and data dir and a NEW node.id and incarnation. No other node changes, and
-/// the fabric-primary's drift check opens nothing for it.
+/// node.create at the same path.name over the inherited data dir, then node.update. The path comes
+/// back with the SAME transport key and data dir and a NEW node.id and incarnation. No other node
+/// changes, and the fabric-primary's drift check opens nothing for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let (estate, birth_build) = two_mesh_estate("a_transport_stopped_exit_is_restarted_as_the_same_node").await;
@@ -203,16 +204,16 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let build = estate.await_build(&birth_build, SETTLE).await;
     assert_eq!(build["build_id"], birth_build.as_str(), "no Build was minted: {build}");
     // The fabric-primary heard the recovery's receipts on the Build topic (its recovery dedup reads
-    // them): NodeDeleted naming the exited birth, and the operation's Complete.
+    // them): the delete's NodeDeleted naming the exited birth, and the update's Complete.
     let heard = fp_recovery_receipts(&estate, &s(&primary["admin_api_base"]), &birth_build, node_path, &attempt).await;
     assert_eq!(heard.0["output"]["node_id"], before["node_id"], "the fabric-primary's NodeDeleted names the exited node: {:?}", heard.0);
     assert_eq!(heard.0["output"]["incarnation"], before["incarnation_id"], "and its exact birth: {:?}", heard.0);
     assert!(heard.1["output"].is_null(), "Complete commits no output: {:?}", heard.1);
 
     // Each process exports its own spans: the new node's boot span is read once the new node exported it.
-    let spans = wait_for("the recovery operation's last step and the new node's boot span are exported", SETTLE, || async {
+    let spans = wait_for("the recovery's last operation and the new node's boot span are exported", SETTLE, || async {
         let spans = estate.spans();
-        (step_span(&spans, &birth_build, &attempt, node_path, "Complete").is_some() && booted(&spans, &after)).then_some(spans)
+        (step_span(&spans, &birth_build, &attempt, node_path, "UpdateNode").is_some() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     // Delete, then create: the exited birth departs once, named by its exact birth, before the new node boots.
@@ -243,9 +244,11 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 /// fabric is also the fabric-primary (the in-process arm: its own Build door, no op 0x20 call),
 /// marks it TRUE OFFLINE, proves the exit from the provider alone (no exit code) and submits one
 /// recovery keyed on the exited birth; the recovery is the next attempt of the accepted Build (no
-/// Build minted), one `recover-node:<path>` operation run by that mesh-primary: node.delete of the
-/// exited instance (no RPC to it, no stop frames), node.deleted once named by its exact birth and
-/// before the new node boots, then node.create at the same path.name over the inherited data dir.
+/// Build minted), three operations run by that mesh-primary in order (node-recovery.md "Steps"):
+/// node.delete of the exited instance (`retire-node:<path>`: no RPC to it, no stop frames,
+/// node.deleted once named by its exact birth and before the new node boots), node.create at the
+/// same path.name over the inherited data dir (`create-node:<path>`), node.update
+/// (`update-node:<path>`), each as its own workflow's pipeline and node operation span.
 /// The path comes back with the SAME transport key and data dir and a NEW node.id and incarnation;
 /// no `<path>.old` rename, no storage hand-over, and the fabric-primary's drift opens nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -282,15 +285,15 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "the recovery's terminal: {recovery}");
 
     // Each process exports its own spans: the successor's boot span is read once the successor exported it.
-    let spans = wait_for("the recovery operation's last step, its reconcile span and the successor's boot span are exported", Duration::from_secs(60), || async {
+    let spans = wait_for("the recovery's last operation, its reconcile span and the successor's boot span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        (step_span(&spans, &birth_build, &attempt, NODE, "Complete").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some() && booted(&spans, &after)).then_some(spans)
+        (step_span(&spans, &birth_build, &attempt, NODE, "UpdateNode").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     let reconcile = reconcile_span(&spans, &birth_build, &attempt).expect("the attempt's reconcile span");
-    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("recover-node:{NODE}"), "one recovery operation: {reconcile}");
+    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("retire-node:{NODE},create-node:{NODE},update-node:{NODE}"), "the recovery's three operations, in order: {reconcile}");
     let mut last = 0u64;
-    for step in ["NodeDeleting", "NodeDeleted", "DeployRuntime", "WaitForNodeReady", "Complete"] {
+    for step in ["NodeDeleting", "NodeDeleted", "RemoveTopologyMembership", "DeployRuntime", "WaitForNodeReady", "UpdateNode"] {
         let sp = step_span(&spans, &birth_build, &attempt, NODE, step).unwrap_or_else(|| panic!("the recovery's {step} step span"));
         assert!(start(sp) >= last, "{step} runs after the step before it");
         last = start(sp);
@@ -303,10 +306,18 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
     assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (fenced) before the new node joins");
-    assert!(
-        named(&spans, "rdm.node_admin.node.create.via-build").into_iter().any(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE),
-        "the recovery's node operation span is node.create.via-build"
-    );
+    // Each operation is its workflow: its node operation span and its own pipeline, never a recovery
+    // pipeline of its own.
+    for (op, pipeline) in [("delete", "retire"), ("create", "create"), ("update", "update")] {
+        let name = format!("rdm.node_admin.node.{op}.via-build");
+        let at = named(&spans, &name).into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE).unwrap_or_else(|| panic!("the recovery's {name} span"));
+        assert_eq!(at["attributes"]["node_id"], before["node_id"], "{name} names the exited birth it acts for: {at}");
+        assert!(
+            named(&spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE && sp["attributes"]["pipeline"] == pipeline),
+            "the {pipeline} workflow's pipeline span"
+        );
+    }
+    assert!(!named(&spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| sp["attributes"]["pipeline"] == "recover"), "no recovery pipeline of its own");
     let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(&format!("exited: {NODE}"))).collect();
     assert!(drift.is_empty(), "the fabric-primary opened a drift attempt for a member: {drift:?}");
     assert!(nodes_named_old(&estate.nodes().await).is_empty(), "no <path>.old identity");

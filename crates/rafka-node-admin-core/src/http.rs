@@ -185,7 +185,7 @@ impl ControlPlane {
             // its seats is refused before it exists (node-rpc-envelope.md, "TakeSeats", Boundary).
             if let Some(reject) = crate::accepted::plan(&topology, &observed, None).operations.iter().find_map(|op| {
                 let (node, action) = match op {
-                    crate::build::BuildOperation::RetireNode { node } => (node, "retire"),
+                    crate::build::BuildOperation::RetireNode { node, .. } => (node, "retire"),
                     crate::build::BuildOperation::RestartNode { node } => (node, "restart"),
                     crate::build::BuildOperation::ReplaceNode { node, .. } => (node, "replace"),
                     crate::build::BuildOperation::DrainNode { node, .. } => (node, "drain"),
@@ -363,10 +363,10 @@ impl ControlPlane {
     /// Build still Pending or Running answers `BuildInProgress`. No live-status check: the node is
     /// silent or absent by definition.
     ///
-    /// Keyed on the exited birth: once a node workflow that deletes a birth (`recover-node:<path>`,
-    /// or a `replace-node:<path>` / `retire-node:<path>` the birth exited inside) completed for that
-    /// exact birth, a submit answers [`Recovery::AlreadyApplied`] naming that workflow's attempt,
-    /// and nothing is opened. A node-admin is node-recovered only while its mesh holds
+    /// Keyed on the exited birth: once a node workflow that deletes a birth completed for that exact
+    /// birth (its recovery, whose last operation `update-node:<path>` completed, or a
+    /// `replace-node:<path>` / `retire-node:<path>` the birth exited inside), a submit answers
+    /// [`Recovery::AlreadyApplied`] naming that workflow's attempt, and nothing is opened. A node-admin is node-recovered only while its mesh holds
     /// another live admin to recover it (mesh-recovery.md:8-9); otherwise it is mesh recovery.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.0, outcome = tracing::field::Empty);
@@ -381,7 +381,7 @@ impl ControlPlane {
             if let Some((build_id, attempt, operation)) = self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)? {
                 outer.in_scope(|| {
                     tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id, attempt, operation = %operation, node = %path, node_id = %node_id, incarnation_id = %incarnation.0)
-                        .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by this attempt's {operation}: its exit belongs to that workflow, nothing is opened"))
+                        .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by {operation} and its workflow completed at this attempt: its exit belongs to that workflow, nothing is opened"))
                 });
                 return Ok(Recovery::AlreadyApplied(Opened { build_id, attempt }));
             }

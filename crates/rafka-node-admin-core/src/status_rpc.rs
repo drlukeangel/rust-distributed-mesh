@@ -1289,7 +1289,7 @@ mod tests {
         book.depart(rafka_mesh_entity::LifecycleOp {
             build_id: "build1".into(),
             attempt: 1,
-            operation: "recover-node:mesh1.rpc.2".into(),
+            operation: "retire-node:mesh1.rpc.2".into(),
             node_id: deleted.node_id.clone(),
             incarnation: deleted.incarnation_id.clone().unwrap(),
             name: deleted.name.clone(),

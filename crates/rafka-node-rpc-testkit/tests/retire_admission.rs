@@ -133,6 +133,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 node: "mesh1.rpc.1".parse().unwrap(),
                 spec: &RPC_NODE,
                 restart_of: None,
+                data_dir: None,
                 held_runtimes: Vec::new(),
             })
             .await
@@ -150,6 +151,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 node: created.node.clone(),
                 handle: created.handle.clone(),
                 kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
+                exit: None,
             })
             .await;
         assert_eq!(
@@ -197,6 +199,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             node: "mesh1.rpc.1".parse().unwrap(),
             spec: &RPC_NODE,
             restart_of,
+            data_dir: None,
             held_runtimes: Vec::new(),
         };
 
@@ -232,6 +235,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
                 node: b.node.clone(),
                 handle: b.handle.clone(),
                 kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
+                exit: None,
             })
             .await;
         // B is live and admits its node-admin: its drain-node was admitted and its stop-node answered

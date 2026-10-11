@@ -1,7 +1,7 @@
 //! i143.e2.s5 functional: the retire pipeline runs its steps in order —
 //! DrainNode, AwaitNodeDrained, StopNode, AwaitNodeLeft,
-//! TerminateRuntime, NodeDeleted, RemoveTopologyMembership, Complete — each
-//! with a receipt and a step span, and a retire then create on the same node
+//! TerminateRuntime, NodeDeleted, RemoveTopologyMembership (exactly the deleted birth), Complete —
+//! each with a receipt and a step span, and a retire then create on the same node
 //! succeeds. A node.delete releases identity, never storage (node-delete.md
 //! "Storage": "Retain data dir and endpoint key; a later spec can inherit
 //! them"): the birth's data dir and its endpoint key stay whatever the Build's
@@ -52,14 +52,14 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             timeouts: Timeouts::default(),
         };
         let node: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
-        let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+        let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, data_dir: None, held_runtimes: Vec::new() };
 
         let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
         let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
         let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral
         pipeline
-            .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
+            .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, exit: None })
             .await
             .unwrap_or_else(|e| panic!("retire: {e}"));
 
@@ -96,7 +96,10 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         assert!(first_dir.is_dir(), "the delete keeps the birth's data dir: {first_dir:?}");
         assert!(first_dir.join("node-key").is_file(), "the delete keeps the endpoint key in the data dir: {first_dir:?}");
         assert!(view.steps.iter().all(|r| r.step != "ReleaseStorage"), "no step of a delete releases storage: {:?}", view.steps.iter().map(|r| r.step.as_str()).collect::<Vec<_>>());
-        assert_eq!(*sink.removed.lock().unwrap(), vec![node.clone()]);
+        // RemoveTopologyMembership removes exactly the deleted birth (node-delete.md step 5: the old
+        // `(node.id, incarnation)` is what is fenced), never whatever the path holds.
+        assert!(sink.removed.lock().unwrap().is_empty(), "no path-keyed removal");
+        assert_eq!(*sink.removed_births.lock().unwrap(), vec![(node.clone(), first.node.node_id.clone(), first.node.incarnation_id.clone().unwrap())]);
 
         // Each retire step ran as a child of the retire pipeline span.
         let all = spans.0.lock().unwrap().clone();
@@ -142,7 +145,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         release.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, released).unwrap();
         let again_build = publish_build(&builds, release).await;
         pipeline
-            .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
+            .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, exit: None })
             .await
             .unwrap();
         assert!(matches!(provider.inspect(&again.handle).await, DeploymentStatus::Exited { .. }), "the delete ended the runtime");

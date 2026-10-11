@@ -466,7 +466,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal, exit: None };
     let _ = pipeline.retire(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
     // command (DrainNode), its completion wait (AwaitNodeDrained: the deadline arm); and never
