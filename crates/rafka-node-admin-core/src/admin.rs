@@ -966,11 +966,26 @@ impl RecoverySubmitter {
         let client = self.client.clone().ok_or_else(|| format!("{} has no Node RPC client to submit the recovery of {} with", self.me, node.name))?;
         let carrier = rafka_node_admin_client::BuildCarrier::new(client, fp);
         let change = rafka_node_rpc_contract::build::BuildChange::Recover { node: node.name.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-        let mut stream = carrier.create(change).await.map_err(|e| format!("build.create(recover {}) refused: {e}", node.name))?;
+        let stream = carrier.create(change).await.map_err(|e| format!("build.create(recover {}) refused: {e}", node.name))?;
         span.record("build_id", stream.build_id().0.as_str());
         span.record("attempt", stream.attempt());
-        span.record("disposition", format!("{:?}", stream.disposition()).as_str());
+        span.record("disposition", disposition_name(stream.disposition()));
         follow(&mut (node.name.clone(), stream)).await
+    }
+}
+
+/// A recovery submit's disposition as both doors record it on the submit span: the in-process
+/// door's "created" / "already-applied" and the `build.create` stream's `Started` disposition are
+/// one vocabulary.
+fn disposition_name(d: rafka_node_rpc_contract::build::Disposition) -> &'static str {
+    use rafka_node_rpc_contract::build::Disposition;
+    match d {
+        Disposition::Created => "created",
+        Disposition::Attached => "attached",
+        Disposition::NextAttempt => "next-attempt",
+        Disposition::AlreadyApplied => "already-applied",
+        Disposition::Started => "started",
+        Disposition::Reattached => "reattached",
     }
 }
 
