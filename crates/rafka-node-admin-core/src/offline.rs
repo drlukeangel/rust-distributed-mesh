@@ -34,18 +34,21 @@ pub(crate) enum ViaPeerVerdict {
     CandidatesUnreadable(String),
 }
 
-/// The tickle's via-peer step over one exact birth (node-recovery.md step 2): the kick through each
-/// carrier in `peers`, every probe naming the same `(node_id, incarnation)`. The birth's own answer
-/// (`seat_watch::birth_answered`) through a carrier is `Answered` by that carrier; no answer through
-/// any of them is `NoPath`, naming every carrier asked.
+/// The via-peer rung over one exact birth (node-recovery.md step 2, ruling R-SW1), run by the
+/// mesh-primary's tickle and by the seat watch's ladder alike: the kick through every carrier in
+/// `peers` at once, each probe naming the same `(node_id, incarnation)`. The first answer from the
+/// exact birth (`seat_watch::birth_answered`) is `Answered` by its carrier and drops the probes still
+/// running; a failed probe cancels none of the others; with every probe ended unanswered it is
+/// `NoPath`, naming every carrier asked. A failure, a deadline included, proves nothing.
 pub(crate) async fn via_peer_verdict<P>(node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId, peers: Vec<(String, P)>) -> ViaPeerVerdict
 where
     P: std::future::Future<Output = Option<rafka_node_rpc_contract::status::StatusReply>>,
 {
-    let mut asked = Vec::new();
-    for (carrier, probe) in peers {
-        asked.push(carrier.clone());
-        if crate::seat_watch::birth_answered(probe.await.as_ref(), node_id, incarnation) {
+    use futures_util::StreamExt as _;
+    let asked = peers.iter().map(|(carrier, _)| carrier.clone()).collect();
+    let mut running: futures_util::stream::FuturesUnordered<_> = peers.into_iter().map(|(carrier, probe)| async move { (carrier, probe.await) }).collect();
+    while let Some((carrier, reply)) = running.next().await {
+        if crate::seat_watch::birth_answered(reply.as_ref(), node_id, incarnation) {
             return ViaPeerVerdict::Answered { via: carrier };
         }
     }
@@ -195,7 +198,17 @@ impl OfflineTickle {
                         .in_scope(|| tracing::info!(node_id = %id, "offline tickle answered — reachable-silent, recorded, no action"));
                     report.reachable_silent.push(id);
                 }
-                Err(e) => match via_peer(id.clone()).await {
+                Err(e) => match {
+                    // The via-peer rung's probes run under one span of this round.
+                    let step = tracing::info_span!("rdm.node_admin.node.resolve.via-peer-tickle", node_id = %id, path = %path, observer = %self.observer, verdict = tracing::field::Empty, "otel.kind" = "internal");
+                    let verdict = tracing::Instrument::instrument(via_peer(id.clone()), step.clone()).await;
+                    step.record("verdict", match &verdict {
+                        ViaPeerVerdict::Answered { .. } => "answered",
+                        ViaPeerVerdict::NoPath { .. } => "no-path",
+                        ViaPeerVerdict::CandidatesUnreadable(_) => "candidates-unreadable",
+                    });
+                    verdict
+                } {
                     ViaPeerVerdict::Answered { via } => {
                         self.hold_down.remove(&id);
                         self.settled.insert(id.clone());
