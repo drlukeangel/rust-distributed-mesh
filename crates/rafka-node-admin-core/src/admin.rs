@@ -4227,6 +4227,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     crate::fabric_handover::WriteCutOff::Set { reason, fabric_seat } => {
                         if fabric_seat {
                             seat.extend(fabric.fabric_primary_records());
+                            // The fabric-primary seat authorizes other meshes' rows on the shared root too.
+                            nodes.cut_off_other_meshes(&reason).await;
                         }
                         crate::record_store::cut_off_and_drain(&seat, &reason).await;
                     }
@@ -4234,6 +4236,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         for s in seat.into_iter().chain(fabric.fabric_primary_records()) {
                             s.lift_cut_off();
                         }
+                        nodes.lift_other_meshes();
                     }
                 }
             })

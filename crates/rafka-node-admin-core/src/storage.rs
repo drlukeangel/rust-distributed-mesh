@@ -318,6 +318,9 @@ pub struct FileNodesStorage {
     mine: (String, std::sync::Arc<MeshNodes>),
     /// Every other mesh's rows this admin has read or written, opened on first use.
     others: Mutex<BTreeMap<String, std::sync::Arc<MeshNodes>>>,
+    /// Set when the fabric-primary seat this admin held moved (a seat transfer's cut-off): every
+    /// other mesh's rows, those opened later included, refuse writes naming it.
+    others_cut_off: Mutex<Option<String>>,
     /// Every write of a row is one at a time, so a claim's look at the key and its write are one
     /// step against every other write of this store (the store has one writer per key).
     row_writes: tokio::sync::Mutex<()>,
@@ -335,6 +338,7 @@ impl FileNodesStorage {
             writer: writer.clone(),
             mine: (own_mesh.to_string(), std::sync::Arc::new(MeshNodes::open(root, own_mesh, writer)?)),
             others: Mutex::new(BTreeMap::new()),
+            others_cut_off: Mutex::new(None),
             row_writes: tokio::sync::Mutex::new(()),
         })
     }
@@ -367,8 +371,34 @@ impl FileNodesStorage {
             return Ok(m.clone());
         }
         let m = std::sync::Arc::new(MeshNodes::open(&self.root, mesh, &self.writer)?);
+        if let Some(reason) = self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            m.rows.cut_off(reason.clone());
+            m.contacts.cut_off(reason);
+        }
         others.insert(mesh.to_string(), m.clone());
         Ok(m)
+    }
+
+    /// The fabric-primary seat moves (R14 item 4): cut off this store's writes to every mesh's rows
+    /// but its own, those it opens later included, and wait for every write already issued to them.
+    pub async fn cut_off_other_meshes(&self, reason: &str) {
+        let opened: Vec<std::sync::Arc<MeshNodes>> = {
+            let others = self.others.lock().unwrap_or_else(|e| e.into_inner());
+            *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason.to_string());
+            others.values().cloned().collect()
+        };
+        let stores: Vec<&FileRecords> = opened.iter().flat_map(|m| [&m.rows, &m.contacts]).collect();
+        crate::record_store::cut_off_and_drain(&stores, reason).await;
+    }
+
+    /// Lift [`Self::cut_off_other_meshes`]: the transfer it was set for committed nothing.
+    pub fn lift_other_meshes(&self) {
+        let others = self.others.lock().unwrap_or_else(|e| e.into_inner());
+        *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        for m in others.values() {
+            m.rows.lift_cut_off();
+            m.contacts.lift_cut_off();
+        }
     }
 
     /// Every mesh that holds rows on the shared root, by name.
