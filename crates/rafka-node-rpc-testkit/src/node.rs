@@ -218,6 +218,18 @@ impl RunningNode {
     }
 }
 
+/// Hold the row's name and config a join answer handed (R-JN1, node-start.md step 2): every digest
+/// `membership` publishes from now on carries them.
+fn install_handed(membership: &Membership, control: &rafka_node_admin_core::wire::JoinControl) {
+    if let Some(name) = &control.name {
+        membership.set_name(name.clone());
+    }
+    if let Some(config) = &control.config {
+        membership.set_config(config.clone());
+    }
+    tracing::info!(name = ?control.name.as_ref().map(|n| n.to_string()), config_keys = control.config.as_ref().map_or(0, |c| c.len()), "the row's name and config the join handed are held");
+}
+
 /// [`start_with_seams`] for an app that hydrates before Ready: `hydration` carries its
 /// `hydrate_before_ready` hook (and the gate its own server-side ops sit behind).
 pub async fn start_hydrating(launch: &Launch, hydration: rafka_node_admin_core::app_hydration::Hydration, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
@@ -428,6 +440,9 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     drop(join_step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-membership-joined", node = %launch.name, mesh_id = %mesh_id, seeds = seeds.len());
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds).await?;
+    // The row's name and config the join answer handed are held before this node publishes
+    // anything or declares readiness: every digest from its first carries them (R-JN1).
+    install_handed(&membership, &joined.control);
     drop(step);
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &name);
     // This node serves the topology it holds from here on (until now a read is `NotReady`).
@@ -718,6 +733,9 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         rafka_node_admin_core::rafka_time::adopt_join_answer(&join_step, &self.rafka_time, &name, &joined);
         let member_cert = joined.control.member_cert.clone();
         drop(join_step);
+        // The row's name and config the join answer handed are held before the node re-enters its
+        // topic or says anything: a node renamed while stopped publishes its row's name (R-JN1).
+        install_handed(&self.membership, &joined.control);
         // 2. The mesh channel and the topology: rafka-time again last, so both are current the moment the node re-enters.
         let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %self.name, launcher = %authority);
         self.membership.unpark().await;
