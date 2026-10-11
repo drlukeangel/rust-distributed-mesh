@@ -298,9 +298,14 @@ pub struct Records {
     /// again, so its projection holds ready while it has a primary, and the primary that takes over
     /// adopts that state and runs its round (R-S3).
     heard_ready: Mutex<BTreeSet<String>>,
-    /// The meshes whose last heard MeshStatus is dead: after mesh.deleted its last admin, still its
-    /// primary, publishes MeshStatus Dead until it is stopped or deleted (R-NS1 item 1).
-    heard_dead: Mutex<BTreeSet<String>>,
+    /// Each MeshStatus Dead held, by its fact (mesh name, publisher, changed_at), bound to the mesh id
+    /// it is about: the id the publisher's own digest names when the fact is first held. Dead is a
+    /// mesh id's, never a name's (states.md: an id is never reissued; a name is, R-MN1). After
+    /// mesh.deleted the last admin, still its primary, publishes MeshStatus Dead (R-NS1 item 1).
+    heard_dead: Mutex<BTreeMap<(String, String, u64), Option<MeshId>>>,
+    /// This admin's own logical node, set once at start: the projection knows the mesh it authors
+    /// the status of (a mesh primary restates no heard status as its own, gossip.md MeshStatus).
+    me: std::sync::OnceLock<NodeId>,
     /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
     view_tick: tokio::sync::watch::Sender<u64>,
     /// The fabric-primary's writer of node rows: a birth its view holds for the first time claims
@@ -374,15 +379,32 @@ impl Records {
         self.heard_ready.lock().unwrap().contains(mesh)
     }
 
-    /// Hold which meshes were last heard dead.
-    pub fn set_heard_dead(&self, meshes: BTreeSet<String>) {
-        *self.heard_dead.lock().unwrap() = meshes;
+    /// This admin's own logical node, set once at start.
+    pub fn set_me(&self, me: NodeId) {
+        let _ = self.me.set(me);
     }
 
-    /// Whether `mesh` is dead as this admin holds it: its mesh row, committed and applied here by
-    /// its primary at mesh.deleted (`id`), says Dead, or its last heard MeshStatus is dead.
-    pub fn mesh_dead(&self, mesh: &str, id: Option<&MeshId>) -> bool {
-        id.is_some_and(|id| self.declared.lock().unwrap().meshes.get(id) == Some(&rafka_node_rpc_contract::status::MeshState::Dead)) || self.heard_dead.lock().unwrap().contains(mesh)
+    /// Hold the MeshStatus Dead facts heard now, each `(mesh, publisher, changed_at)`. A fact held for
+    /// the first time is bound to the mesh id `id_of(mesh, publisher)` answers (the publisher's live
+    /// digest); a fact bound before keeps its id; a fact no longer held is dropped (a newer status of
+    /// the mesh, or its MeshLeft).
+    pub fn set_heard_dead(&self, facts: Vec<(String, String, u64)>, id_of: impl Fn(&str, &str) -> Option<MeshId>) {
+        let mut held = self.heard_dead.lock().unwrap();
+        held.retain(|k, _| facts.contains(k));
+        for f in facts {
+            let bound = held.entry(f.clone()).or_insert(None);
+            if bound.is_none() {
+                *bound = id_of(&f.0, &f.1);
+            }
+        }
+    }
+
+    /// Whether the mesh `id` is dead as this admin holds it: its mesh row, committed and applied here
+    /// by its primary at mesh.deleted, says Dead; or, unless this admin authors that mesh's status
+    /// (`authored_here`: it is the mesh's primary), a MeshStatus Dead bound to `id` is held.
+    pub fn mesh_dead(&self, id: Option<&MeshId>, authored_here: bool) -> bool {
+        let Some(id) = id else { return false };
+        self.declared.lock().unwrap().meshes.get(id) == Some(&rafka_node_rpc_contract::status::MeshState::Dead) || (!authored_here && self.heard_dead.lock().unwrap().values().any(|bound| bound.as_ref() == Some(id)))
     }
 
     /// The planned births per mesh of the accepted Build held (empty: none held).
@@ -952,7 +974,8 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         // its members' own Draining and Leaving do. Dead is final (states.md): after mesh.deleted
         // the mesh row is Dead and its last admin, still its primary, publishes MeshStatus Dead
         // (R-NS1 item 1); this view states the row its primary committed or the status it heard.
-        let status = if records.mesh_dead(&m, id.as_ref()) {
+        let authored_here = records.me.get().is_some_and(|me| topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
+        let status = if records.mesh_dead(id.as_ref(), authored_here) {
             ScopeStatus::Dead
         } else if ready {
             ScopeStatus::ReadyForTraffic
@@ -3990,6 +4013,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // its entry pull or the fabric control topic.
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
     let records = Arc::new(Records::default());
+    records.set_me(node_id.clone());
     // Only the fabric seat holder puts a pointer on the store root: the file store reads the
     // committed fabric seat record, as the Build gate does, before any pointer can be put.
     fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
@@ -5187,7 +5211,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     records.set_planned(&b.topology);
                 }
                 records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == "ready-for-traffic")).cloned().collect());
-                records.set_heard_dead(membership.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, _)| m).collect());
+                // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
+                records.set_heard_dead(membership.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
+                    membership.book.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
+                });
                 // Decide on the view as it is now: a cached view can predate the seat record this admin holds
                 // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
                 // The seat records are read once per decision: the projection elects from them and
@@ -5248,7 +5275,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 backbone.publish(&membership, mine.clone()).await;
                 // R-NS1: as fabric primary, the publisher of record of every mesh with no primary
                 // whose births it stopped or deleted.
-                backbone.publish_for_primaryless(&membership, |m| t.cohort_primary(m, NodeKind::NodeAdmin).is_none()).await;
+                backbone.publish_for_primaryless(&membership, |m| t.cohort_primary(m, NodeKind::NodeAdmin).map(|p| p.name.to_string())).await;
                 // A status is sent when it changed, never per round (gossip.md §3.2).
                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                 // The fabric's status as the live records state it: a round that just cleared the adopted

@@ -919,6 +919,12 @@ impl StatusBook {
         self.meshes.lock().unwrap().get(mesh).cloned()
     }
 
+    /// Forget the status held for `mesh`: the mesh left, and nothing of it is kept or replayed.
+    /// Answers the status that was held.
+    pub fn forget_mesh(&self, mesh: &str) -> Option<String> {
+        self.meshes.lock().unwrap().remove(mesh).map(|h| h.status)
+    }
+
     /// Every mesh status held, by mesh name.
     pub fn meshes(&self) -> Vec<(String, MeshStatus)> {
         self.meshes.lock().unwrap().iter().map(|(m, h)| (m.clone(), h.clone())).collect()
@@ -1924,10 +1930,15 @@ impl View {
                 let applied = self.book.mesh_left(mesh_id, source.as_deref(), build_id, *attempt, *event_at_rafka_ms);
                 // The mesh is no longer part of the topology this node holds: the source projections
                 // of it, held or published, go with it, so no replay or top-up carries it again.
+                // Its held status goes too (a dead mesh's MeshStatus Dead included): no replay to a
+                // joiner carries it after the mesh left, and a mesh created later under the name is
+                // a new mesh with a new id (states.md).
+                let mut status_dropped = None;
                 if let Some(name) = &applied.name {
                     self.forwarder.lock().unwrap().remove(name);
                     self.mesh_rx.lock().unwrap().remove(name);
                     self.backbone_rx.lock().unwrap().remove(name);
+                    status_dropped = self.statuses.forget_mesh(name);
                 }
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-mesh-left",
@@ -1941,9 +1952,10 @@ impl View {
                     forwarded_by = forwarded_by.as_deref().unwrap_or(""),
                     births_departed = applied.departed,
                     mesh_name = applied.name.as_deref().unwrap_or(""),
+                    status_dropped = status_dropped.as_deref().unwrap_or(""),
                     via,
                 )
-                .in_scope(|| tracing::info!("the mesh left: its births departed, its source projections are removed, nothing of it is kept"));
+                .in_scope(|| tracing::info!("the mesh left: its births departed, its source projections and held status are removed, nothing of it is kept"));
                 Vec::new()
             }
             Frame::StateCommitting { hook, forwarded_by } | Frame::StateCommitted { hook, forwarded_by } | Frame::TrafficOpening { hook, forwarded_by } | Frame::TrafficOpened { hook, forwarded_by } => {
@@ -1978,6 +1990,15 @@ impl View {
                 Vec::new()
             }
             Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms, forwarded_by } => {
+                // The departed fence: a status whose publisher's birth is held departed (its mesh's
+                // MeshLeft, or its own NodeDeleted) and no live birth holds that name arrived after it
+                // left, and is refused by name: nothing of a mesh that left is held again or replayed.
+                if let Some(op) = self.book.departed().into_iter().find(|op| op.name.to_string() == *publisher) {
+                    if !self.book.all().iter().any(|d| d.node.name.to_string() == *publisher) {
+                        reject_departed_overlay(&self.node, &op, "mesh-status");
+                        return Vec::new();
+                    }
+                }
                 let taken = self.statuses.take(f, fabric);
                 // The mesh's status as this node now holds it (gossip.md: "the held status, until the
                 // next change"); a repeat of the change held, or an older one, is not taken.
@@ -3213,12 +3234,18 @@ impl Backbone {
     /// holds), and puts the same source into its own Mesh. A birth it did not stop or delete is never
     /// listed; the aggregate carries no liveness. A start ends the stop and a departure past
     /// retention lists nothing: then nothing is published for the mesh. Returns the meshes published.
-    pub async fn publish_for_primaryless(&self, membership: &Membership, primaryless: impl Fn(&str) -> bool) -> Vec<String> {
+    pub async fn publish_for_primaryless(&self, membership: &Membership, primary_of: impl Fn(&str) -> Option<String>) -> Vec<String> {
         let executed = if self.status_publishing.load(Ordering::Relaxed) { membership.book.executed_overlays_beyond(&self.mesh) } else { BTreeMap::new() };
-        *self.acting_seen.lock().unwrap() = executed.clone();
+        let seen = std::mem::replace(&mut *self.acting_seen.lock().unwrap(), executed.clone());
         let mut published = Vec::new();
         for (mesh, (in_flight, departed)) in executed {
-            if !primaryless(&mesh) {
+            if let Some(primary) = primary_of(&mesh) {
+                // The round ran at once on the move (round_wake); a mesh whose seat a primary still
+                // holds is not primaryless, so nothing is published for it. Said once per move.
+                if seen.get(&mesh) != Some(&(in_flight.clone(), departed.clone())) {
+                    tracing::info_span!("rdm.mesh.backbone.reject.via-mesh-has-primary", node = %self.node, mesh = %mesh, primary = %primary, in_flight = in_flight.len(), departed = departed.len())
+                        .in_scope(|| tracing::info!("a stop or delete this fabric primary executed moved, and the mesh's seat is held: it is not a mesh with no primary"));
+                }
                 continue;
             }
             let sent = membership.clock.now_rafka_ms();
