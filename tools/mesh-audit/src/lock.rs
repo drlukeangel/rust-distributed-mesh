@@ -12,7 +12,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The seventeen #2927 ratchets, the telemetry ownership ratchet, R-W1's wire ratchet and the span-guard ratchet.
+/// The #2927 ratchets, the telemetry ownership ratchet, R-W1's wire ratchet and the span-guard ratchet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ratchet {
     TagIsDescriptiveOnly,
@@ -260,8 +260,8 @@ pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_
 pub const DRAIN_ARMS: [&str; 8] = ["Admitted", "AlreadyAdmitted", "Stopped", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
-pub const STATUS_REQUESTS: u32 = 17;
-pub const STATUS_REPLIES: u32 = 21;
+pub const STATUS_REQUESTS: u32 = 19;
+pub const STATUS_REPLIES: u32 = 25;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -581,8 +581,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 STATUS_WIRE,
                 &[
-                    "fn requests_match_the_frozen_seventeen_variant_wire_schema",
-                    "fn replies_match_the_frozen_twenty_one_variant_wire_schema",
+                    "fn requests_match_the_frozen_nineteen_variant_wire_schema",
+                    "fn replies_match_the_frozen_twenty_five_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
                     "Status::REPLY_VARIANTS",
