@@ -16,6 +16,12 @@
 //!   fabric-primary's view through the forwarded aggregate, after its create's last frame, so the
 //!   row follows the view, never the create's frames. An admin that takes the seat claims every
 //!   member's row; a row a node already holds is never overwritten.
+//!
+//! A replace's successor takes the `path.name` over only after its predecessor lets go of it
+//! (ops-naming "The name is claimed by insert-and-fail"): the predecessor's row moves to
+//! `<path>.old` at the executor's `RenamePredecessor`, and the successor's claim follows that move
+//! whichever reaches this admin first. A successor the view holds before the move waits on it
+//! (`awaits-rename`), and the move, once made, claims the path.name for the node the view holds there.
 
 use crate::model::{Node, NodeStatus, PathName};
 use crate::storage::{Claimed, NodeRow, NodesStorage};
@@ -79,9 +85,14 @@ impl NodeRows {
     async fn moved_to_old(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName) {
         let to = name.renamed();
         let announced = self.announced.lock().unwrap().get(operation).cloned();
+        // A fabric-primary that took the seat since `NodeDeleting` reads its view now: the
+        // executor's own view names the predecessor `<path>.old` already, a peer's still `<path>`.
         let record = match announced {
             Some(n) => Some(n),
-            None => held_at(view, name).await,
+            None => match held_at(view, &to).await {
+                Some(n) => Some(n),
+                None => held_at(view, name).await,
+            },
         };
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-rename",
@@ -113,6 +124,18 @@ impl NodeRows {
             span.record("detail", d.as_str());
         }
         span.in_scope(|| tracing::info!("node.replace: the predecessor's row moved"));
+        if r.is_ok() {
+            tracing::Instrument::instrument(self.successor_at(view, name, &record), span).await;
+        }
+    }
+
+    /// The predecessor let go of `name`: a successor the view already holds there (it entered the
+    /// view before this move, and its claim waited on it) takes the name over now, seeded from the
+    /// `.old` row, through the one claim every birth takes.
+    async fn successor_at(&self, view: &RwLock<Topology>, name: &PathName, predecessor: &Node) {
+        let now = view.read().await.clone();
+        let Some(successor) = now.nodes.iter().find(|n| &n.name == name && n.node_id != predecessor.node_id && n.incarnation_id.is_some()).cloned() else { return };
+        self.claim_arrivals(&now, vec![successor]).await;
     }
 
     /// `NodeDeleted`: the row with status `Deleted`, the record and config kept, a blind put.
@@ -266,6 +289,17 @@ impl NodeRows {
                 None
             }
             Ok(Err(held)) => {
+                // The name's holder is the predecessor of the replace at this path.name that this
+                // admin drives: the birth is its successor, and it takes the name at the
+                // predecessor's `RenamePredecessor` move (`moved_to_old`), never before.
+                let operation = format!("replace-node:{name}");
+                let replacing = self.announced.lock().unwrap().get(&operation).is_some_and(|p| p.node_id == held.by);
+                if replacing {
+                    let detail = format!("{me}: the birth {} at {name} waits for {}, the predecessor of {operation}, to let go of the name: the RenamePredecessor move claims it", birth.node_id, held.by);
+                    span.record("outcome", "awaits-rename").record("detail", detail.as_str());
+                    span.in_scope(|| tracing::info!("node.create: the replace's predecessor holds the name until its rename"));
+                    return None;
+                }
                 let detail = format!("{me}: the birth {} at {name} claimed a held name: {held}", birth.node_id);
                 span.record("outcome", "name-held").record("detail", detail.as_str());
                 span.in_scope(|| tracing::info!("node.create: the name is held"));
