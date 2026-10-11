@@ -1918,6 +1918,8 @@ impl AdminRunner {
                 // The member is alive (it answers) or held (its exact runtime still runs):
                 // nothing to create. Silence never authorizes a replacement.
                 FenceOutcome::Alive | FenceOutcome::Held => return Ok(()),
+                // Nothing proves the path free: the create fails, naming what could not be read.
+                FenceOutcome::RecordsUnreadable { reason } => return Err(format!("{node}: the runtimes recorded at this path cannot be read, so no birth is created over them: {reason}")),
                 // A birth the provider proves terminal is replaced, not deleted before a spawn: the
                 // old identity's departure is published after its successor is ready.
                 FenceOutcome::Clear { gone: Some(prev) } => match prev.incarnation_id {
@@ -2160,19 +2162,16 @@ impl AdminRunner {
         let (dir, node_id) = match named {
             Some(id) => {
                 let dir = self.template.data_root.join(format!("{path}-{id}"));
-                if !dir.exists() {
+                let look = dir.clone();
+                let exists = look.try_exists().map_err(|e| refuse(format!("{}: {e}", dir.display())))?;
+                if !exists {
                     return Err(refuse(format!("{} does not exist", dir.display())));
                 }
                 (dir, id)
             }
             None => {
                 let prefix = format!("{path}-");
-                let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&self.template.data_root)
-                    .map_err(|e| refuse(format!("{}: {e}", self.template.data_root.display())))?
-                    .flatten()
-                    .filter(|d| d.file_name().to_string_lossy().starts_with(&prefix))
-                    .map(|d| d.path())
-                    .collect();
+                let dirs = crate::fence::recorded_dirs(&self.template.data_root, path).await.map_err(refuse)?;
                 let dir = match dirs.as_slice() {
                     [one] => one.clone(),
                     [] => return Err(refuse(format!("no data dir {prefix}* under {}", self.template.data_root.display()))),
@@ -2187,9 +2186,8 @@ impl AdminRunner {
                 (dir, node_id)
             }
         };
-        let fact = match rafka_mesh_entity::RuntimeFact::read_record(&dir) {
-            Some(Ok(f)) => f,
-            Some(Err(e)) => return Err(refuse(format!("{}: {e}", dir.display()))),
+        let fact = match crate::fence::runtime_record(&dir).await.map_err(refuse)? {
+            Some(f) => f,
             None => return Err(refuse(format!("{} holds no runtime record", dir.display()))),
         };
         if let Some(store) = self.records.contacts.get() {
@@ -2275,16 +2273,16 @@ impl crate::fence::PathProbe for AdminRunner {
         let (_, h) = self.handle_for(node).await?;
         Ok(self.provider.inspect(&h).await)
     }
-    async fn recorded(&self, path: &PathName) -> Vec<(String, crate::deployment::provider::DeploymentStatus)> {
+    async fn recorded(&self, path: &PathName) -> Result<Vec<(String, crate::deployment::provider::DeploymentStatus)>, String> {
         let mut out = Vec::new();
-        let Ok(dirs) = std::fs::read_dir(&self.template.data_root) else { return out };
-        let prefix = format!("{path}-");
-        for d in dirs.flatten().filter(|d| d.file_name().to_string_lossy().starts_with(&prefix)) {
-            let Some(Ok(fact)) = rafka_mesh_entity::RuntimeFact::read_record(&d.path()) else { continue };
+        for dir in crate::fence::recorded_dirs(&self.template.data_root, path).await? {
+            // A data dir that holds no runtime record holds no runtime.
+            let Some(fact) = crate::fence::runtime_record(&dir).await? else { continue };
+            // A record of another provider or control domain names no runtime this provider runs.
             let Ok(h) = crate::deployment::provider::adopt(&*self.provider, &fact) else { continue };
-            out.push((d.path().display().to_string(), self.provider.inspect(&h).await));
+            out.push((dir.display().to_string(), self.provider.inspect(&h).await));
         }
-        out
+        Ok(out)
     }
 }
 

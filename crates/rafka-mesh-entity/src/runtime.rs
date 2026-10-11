@@ -356,6 +356,16 @@ mod tests {
         assert_eq!(f.domain_fingerprint().len(), 12);
         assert_ne!(f.locator_fingerprint(), container(&"c".repeat(64)).locator_fingerprint());
     }
+
+    /// CONTRACT: a record that cannot be read is an error naming the file, never "no record".
+    #[test]
+    fn an_unreadable_record_is_an_error_naming_the_file() {
+        let dir = std::env::temp_dir().join(format!("rafka-runtime-unreadable-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(RUNTIME_FILE)).unwrap();
+        let read = RuntimeFact::read_record(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(&read, Some(Err(e)) if e.contains(&dir.join(RUNTIME_FILE).display().to_string())), "{read:?}");
+    }
 }
 
 /// The immutable id of the container this process runs in: the container runtime mounts the

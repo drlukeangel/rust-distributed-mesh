@@ -26,6 +26,12 @@ pub enum FenceOutcome {
     /// never death proof, so it is held and keeps the path. Only an explicit retire or replace
     /// may terminate a running runtime.
     Held,
+    /// The runtimes recorded at the path could not be read (`reason` names the directory or
+    /// record that failed): nothing proves the path is free, so no birth is created over it.
+    RecordsUnreadable {
+        /// What could not be read, and why.
+        reason: String,
+    },
 }
 
 /// The questions the fence asks of the world.
@@ -35,15 +41,23 @@ pub trait PathProbe: Send + Sync {
     async fn answers(&self, node: &Node) -> bool;
     /// The provider's inspection of this birth's exact runtime; `Err` names why it has none.
     async fn inspect(&self, node: &Node) -> Result<DeploymentStatus, String>;
-    /// Every runtime recorded at `path` in this provider's domain, as `(where, inspection)`.
-    async fn recorded(&self, path: &PathName) -> Vec<(String, DeploymentStatus)>;
+    /// Every runtime recorded at `path` in this provider's domain, as `(where, inspection)`;
+    /// `Err` names the directory or record that could not be read.
+    async fn recorded(&self, path: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String>;
 }
 
 /// Fence `path` before a new birth, given the birth this view holds there (`prev`).
 pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -> FenceOutcome {
     let Some(prev) = prev else {
         // The view holds no birth at the path: the world is asked, not assumed.
-        let recorded = probe.recorded(path).await;
+        let recorded = match probe.recorded(path).await {
+            Ok(r) => r,
+            Err(reason) => {
+                tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "records-unreadable", reason = %reason)
+                    .in_scope(|| tracing::info!("the view holds no birth at this path and the runtimes recorded there cannot be read: nothing proves it free"));
+                return FenceOutcome::RecordsUnreadable { reason };
+            }
+        };
         if let Some((at, _)) = recorded.iter().find(|(_, s)| matches!(s, DeploymentStatus::Running)) {
             tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "held-running-unheard", data_dir = %at)
                 .in_scope(|| tracing::info!("the view holds no birth at this path, but a runtime recorded there still runs: held, never replaced on silence"));
@@ -87,4 +101,100 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
     tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome, proven_gone = proven)
         .in_scope(|| tracing::info!("the previous birth at this path is fenced before a new one"));
     FenceOutcome::Clear { gone: proven.then_some(prev) }
+}
+
+/// The data dirs under `data_root` recorded for `path` (`<path>-<node id>`). Read on the blocking
+/// pool (`record_store::blocking_io`); a root or entry that cannot be read is an error naming it,
+/// never an empty answer.
+pub(crate) async fn recorded_dirs(data_root: &std::path::Path, path: &PathName) -> Result<Vec<std::path::PathBuf>, String> {
+    let prefix = format!("{path}-");
+    let Ok(dirs) = std::fs::read_dir(data_root) else { return Ok(Vec::new()) };
+    Ok(dirs.flatten().filter(|d| d.file_name().to_string_lossy().starts_with(&prefix)).map(|d| d.path()).collect())
+}
+
+/// The runtime record `dir` holds (`None`: it holds none), read on the blocking pool; a record
+/// that cannot be read is an error naming the file.
+pub(crate) async fn runtime_record(dir: &std::path::Path) -> Result<Option<rafka_mesh_entity::RuntimeFact>, String> {
+    match rafka_mesh_entity::RuntimeFact::read_record(dir) {
+        Some(Ok(f)) => Ok(Some(f)),
+        Some(Err(e)) => Err(format!("{}: {e}", dir.display())),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record_store::{op_waits_on_the_blocking_pool, runtime_runs_while_a_fifo_is_read, tempdir};
+
+    /// CONTRACT: the scan of a path's recorded data dirs waits on the blocking pool, never on a
+    /// runtime worker.
+    #[test]
+    fn the_recorded_dirs_scan_waits_on_the_blocking_pool() {
+        let root = tempdir("fence-scan");
+        std::fs::create_dir_all(root.join("mesh1.rpc.1-n1")).unwrap();
+        let path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let (waited, found) = op_waits_on_the_blocking_pool(Box::pin(async move { (root, path) }), |(root, path)| Box::pin(async move { recorded_dirs(&root, &path).await }));
+        assert!(waited, "the scan finished on the runtime's thread while the blocking pool was held");
+        assert_eq!(found.unwrap().len(), 1);
+    }
+
+    /// CONTRACT: a data root that cannot be read is an error naming it, never "nothing recorded".
+    #[tokio::test]
+    async fn an_unreadable_data_root_is_an_error_naming_it() {
+        let root = tempdir("fence-root").join("not-a-dir");
+        std::fs::write(&root, b"a file where the data root should be").unwrap();
+        let err = recorded_dirs(&root, &"mesh1.rpc.1".parse().unwrap()).await.expect_err("an unreadable root is not an empty answer");
+        assert!(err.contains(&root.display().to_string()), "{err}");
+    }
+
+    /// CONTRACT: the runtime record is read on the blocking pool: a runtime worker never waits on
+    /// its file.
+    #[test]
+    fn the_runtime_record_is_read_on_the_blocking_pool() {
+        let dir = tempdir("fence-record");
+        let fact = rafka_mesh_entity::RuntimeFact {
+            deployment_id: "dep-1".into(),
+            provider: rafka_mesh_entity::runtime::RuntimeProvider::Process,
+            control_domain: "process:test".into(),
+            locator: rafka_mesh_entity::runtime::RuntimeLocator::Process { pid: 1, start: 1 },
+        };
+        let bytes = serde_json::to_vec(&fact).unwrap();
+        let fifo = dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE);
+        let (heard, read) = runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { runtime_record(&dir).await }));
+        assert!(heard, "the runtime stopped while the record was read");
+        assert_eq!(read.unwrap(), Some(fact));
+    }
+
+    /// CONTRACT: a runtime record that cannot be read is an error naming the file, never "no
+    /// runtime recorded here".
+    #[tokio::test]
+    async fn an_unreadable_runtime_record_is_an_error_naming_the_file() {
+        let dir = tempdir("fence-unreadable");
+        std::fs::create_dir_all(dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE)).unwrap();
+        let err = runtime_record(&dir).await.expect_err("an unreadable record is not an absent one");
+        assert!(err.contains(rafka_mesh_entity::runtime::RUNTIME_FILE), "{err}");
+    }
+
+    struct Unreadable;
+    #[async_trait::async_trait]
+    impl PathProbe for Unreadable {
+        async fn answers(&self, _: &Node) -> bool {
+            false
+        }
+        async fn inspect(&self, _: &Node) -> Result<DeploymentStatus, String> {
+            Err("none".into())
+        }
+        async fn recorded(&self, _: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String> {
+            Err("/data/mesh1.rpc.1-n1/runtime.json: Is a directory".into())
+        }
+    }
+
+    /// CONTRACT: a path whose recorded runtimes cannot be read is never cleared for a new birth:
+    /// the fence answers why.
+    #[tokio::test]
+    async fn a_path_whose_records_cannot_be_read_is_never_cleared() {
+        let out = fence(&"mesh1.rpc.1".parse().unwrap(), None, &Unreadable).await;
+        assert!(matches!(&out, FenceOutcome::RecordsUnreadable { reason } if reason.contains("runtime.json")), "{out:?}");
+    }
 }
