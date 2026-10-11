@@ -1267,15 +1267,15 @@ pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], p
 }
 
 /// What the mesh primary's tick watches, by node id: every silent (`PendingReconnect` or `Dead`)
-/// member of its view other than itself (the birth `me_id`: never by path.name, which a recovery
-/// keeps under a new node id), of its own mesh or a node-admin of any mesh; and every birth of its
-/// own mesh only a durable runtime row names (`durable_births`: never heard, never launched by this
-/// admin), which is node recovery driven by this mesh-primary like any other member's
-/// (mesh-recovery.md:8-9).
+/// member of its own mesh in its view other than itself (the birth `me_id`: never by path.name,
+/// which a recovery keeps under a new node id); and every birth of its own mesh only a durable
+/// runtime row names (`durable_births`: never heard, never launched by this admin), which is node
+/// recovery driven by this mesh-primary like any other member's (mesh-recovery.md:8-9). The tickle
+/// ladder is the mesh-primary's for its own members (node-recovery.md); a peer mesh's node-admins
+/// are reached by the fabric-primary's investigation alone (`crate::investigate`).
 pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[Node]) -> BTreeMap<String, Node> {
     view.members()
-        .filter(|n| n.node_id != *me_id && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))
-        .filter(|n| n.mesh == mesh || n.kind == NodeKind::NodeAdmin)
+        .filter(|n| n.node_id != *me_id && n.mesh == mesh && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))
         .chain(durable.iter().filter(|n| n.mesh == mesh && n.node_id != *me_id))
         .map(|n| (n.node_id.to_string(), n.clone()))
         .collect()
@@ -4923,12 +4923,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         }));
     }
 
-    // The offline tickle (fabric-node-lifecycle.md §7.3, i77 PRD row 18): every admin keeps the
-    // silence bookkeeping; the one holding its mesh's primary seat tickles each node the topology
-    // shows PendingReconnect (its own mesh's nodes and every peer mesh's node-admins), half a floor
-    // after the mark: a ping (op 1), and when it answers the status kick (op 27); when it does not,
-    // the same kick through a live node of the target's mesh on the ViaPeer route. The node's
-    // status lands on its row in nodes.storage and in the view.
+    // The offline tickle (node-recovery.md "Detection and proof"): every admin keeps the silence
+    // bookkeeping; the one holding its mesh's primary seat tickles each node of its own mesh the
+    // topology shows PendingReconnect, half a floor after the mark: a ping (op 1), and when it
+    // answers the status kick (op 27); when it does not, the same kick through a live node of its
+    // mesh on the ViaPeer route. The node's status lands on its row in nodes.storage and in the view.
     {
         let (topology, records, status_storage, runner, me, me_id, mesh) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone());
         // The recovery of a TRUE OFFLINE member of this mesh (node-recovery.md): the provider's

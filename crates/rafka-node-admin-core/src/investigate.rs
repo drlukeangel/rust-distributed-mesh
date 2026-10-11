@@ -465,17 +465,37 @@ struct Found {
     detail: String,
 }
 
-/// The node-admins of `mesh` a probe carries `ProbeNodeState` to, in the order it asks them.
+/// The node-admins of `mesh` a probe carries `ProbeNodeState` to, in the order it asks them: the
+/// mesh's primary node-admin first, then its other node-admins in path order (Luke 2026-10-11: the
+/// investigation's first step is the fabric-primary's tickle of the peer mesh's primary, then of its
+/// other node-admins). Only exact births are asked: a probe names `(node.id, incarnation)`.
 pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str) -> Vec<Node> {
-    view.cohort(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).min_by_key(|a| (!a.is_primary, a.name.to_string())).cloned().into_iter().collect()
+    let mut admins: Vec<Node> = view.cohort(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).cloned().collect();
+    admins.sort_by_key(|a| (!a.is_primary, a.name.to_string()));
+    admins
 }
 
-/// Probe `mesh`'s node-admin: Ping its members, then Forward `ProbeNodeState` through one that
-/// answered. Active connections are asked first, then path order; probe 2 prefers a member probe 1
+/// What one probe found over every node-admin it asked, in the order asked: any node-admin
+/// answering is `admin-alive` (the mesh has a node-admin; mesh-investigation.md step 4); with none
+/// answering it is `carrier-edge-lost` only when the carrier reported its edge lost to every one of
+/// them (step 5: the rebirth reborns every node-admin of the mesh, so each must be reported
+/// unreachable from inside it); any other end says nothing of that node-admin, so `unreachable`.
+pub(crate) fn fold_admin_outcomes(outcomes: &[ProbeOutcome]) -> ProbeOutcome {
+    if outcomes.contains(&ProbeOutcome::AdminAlive) {
+        ProbeOutcome::AdminAlive
+    } else if !outcomes.is_empty() && outcomes.iter().all(|o| *o == ProbeOutcome::CarrierEdgeLost) {
+        ProbeOutcome::CarrierEdgeLost
+    } else {
+        ProbeOutcome::Unreachable
+    }
+}
+
+/// Probe `mesh`'s node-admins: Ping its members, then Forward `ProbeNodeState` through one that
+/// answered, to the mesh's primary node-admin and then to each other one (`admins_in_probe_order`). Active connections are asked first, then path order; probe 2 prefers a member probe 1
 /// did not use.
 async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
-    let admin = admins_in_probe_order(view, mesh).into_iter().next();
-    let Some(admin) = admin else {
+    let admins = admins_in_probe_order(view, mesh);
+    let Some(primary) = admins.first() else {
         return Found { outcome: ProbeOutcome::Unreachable, target: String::new(), members: String::new(), carrier: String::new(), detail: format!("the view holds no node-admin of {mesh}") };
     };
     let mut members: Vec<Node> = view.members().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving && m.status != NodeStatus::Restarting).cloned().collect();
@@ -496,14 +516,25 @@ async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
     let members_asked = asked.iter().map(|m| m.name.to_string()).collect::<Vec<_>>().join(",");
     let Some((carrier, _, _)) = pings.iter().find(|(_, ponged, _)| *ponged) else {
         let why = pings.iter().map(|(m, _, o)| format!("{}: {o}", m.name)).collect::<Vec<_>>().join("; ");
-        return Found { outcome: ProbeOutcome::Unreachable, target: admin.name.to_string(), members: members_asked, carrier: String::new(), detail: format!("no member answered the Ping ({why})") };
+        return Found { outcome: ProbeOutcome::Unreachable, target: primary.name.to_string(), members: members_asked, carrier: String::new(), detail: format!("no member answered the Ping ({why})") };
     };
     w.note_carrier(mesh, carrier.name.clone());
-    let req = StatusRequest::ProbeNodeState { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().expect("filtered on it") };
+    // The mesh's primary node-admin first, then each other node-admin, through the one carrier; the
+    // first node-admin that answers ends the probe.
     let opts = CallOptions { budget: carried_budget(w.round), ..CallOptions::default() };
-    let (out, _) = w.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, &req, &opts).await;
-    let (outcome, detail) = classify(&out, &admin.name);
-    Found { outcome, target: admin.name.to_string(), members: members_asked, carrier: carrier.name.to_string(), detail }
+    let (mut outcomes, mut asked_admins, mut details) = (Vec::new(), Vec::new(), Vec::new());
+    for admin in &admins {
+        let req = StatusRequest::ProbeNodeState { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().expect("filtered on it") };
+        let (out, _) = w.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, &req, &opts).await;
+        let (outcome, detail) = classify(&out, &admin.name);
+        outcomes.push(outcome);
+        asked_admins.push(format!("{}={}", admin.name, outcome.as_str()));
+        details.push(detail);
+        if outcome == ProbeOutcome::AdminAlive {
+            break;
+        }
+    }
+    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier: carrier.name.to_string(), detail: details.join("; ") }
 }
 
 impl Watch {
@@ -633,6 +664,17 @@ mod tests {
         let v = view_of(vec![admin("mesh2.admin.1", false), admin("mesh2.admin.3", false), admin("mesh2.admin.2", true), admin("mesh1.admin.1", true)]);
         let order: Vec<String> = admins_in_probe_order(&v, "mesh2").iter().map(|a| a.name.to_string()).collect();
         assert_eq!(order, vec!["mesh2.admin.2", "mesh2.admin.1", "mesh2.admin.3"], "the primary first, then the others in path order, and nothing of another mesh");
+    }
+
+    /// CONTRACT (mesh-investigation.md steps 4-5): over the node-admins one probe asked, any answer is
+    /// `admin-alive`; `carrier-edge-lost` only when every one of them was reported lost from inside
+    /// the mesh; anything else, a timeout or an unreachable carrier included, is `unreachable`.
+    #[test]
+    fn a_probe_over_several_admins_is_edge_lost_only_when_every_admin_is() {
+        assert_eq!(fold_admin_outcomes(&[CarrierEdgeLost, AdminAlive]), AdminAlive);
+        assert_eq!(fold_admin_outcomes(&[CarrierEdgeLost, CarrierEdgeLost]), CarrierEdgeLost);
+        assert_eq!(fold_admin_outcomes(&[CarrierEdgeLost, Unreachable]), Unreachable);
+        assert_eq!(fold_admin_outcomes(&[]), Unreachable);
     }
 
     /// CONTRACT: the node-admin answering either probe stops the investigation: no second probe
