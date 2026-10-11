@@ -6,7 +6,8 @@
 //! to another has one writer, [`move_row`]: a replace's `RenamePredecessor` here and `node.update`
 //! at the node's mesh-primary (`crate::node_update`, R13). A row is written here at two moments:
 //!
-//! - `node.delete` (`retire-node:<path>`), read off the step's `Step` frame (the one the executor
+//! - `node.delete` (`retire-node:<path>`, and the delete inside `recover-node:<path>`,
+//!   lifecycles/node-recovery.md step 3), read off the step's `Step` frame (the one the executor
 //!   streams, or its receipt read back by a fabric-primary that took the seat since): at
 //!   `NodeDeleted` the row is written with status `Deleted`, the record and its config kept. The
 //!   record is the one held when the executor announced the removal (`NodeDeleting`): the node is
@@ -24,6 +25,9 @@
 //! `<path>.old` at the executor's `RenamePredecessor`, and the successor's claim follows that move
 //! whichever reaches this admin first. A successor the view holds before the move waits on it
 //! (`awaits-rename`), and the move, once made, claims the path.name for the node the view holds there.
+//! A recovery's new node takes the `path.name` over from the exited node's `Deleted` row
+//! (node-recovery.md step 4); one the view holds before that `NodeDeleted` reaches this admin is
+//! refused (`name-held`) until it does, and the `NodeDeleted` claims the name for it.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeStatus, PathName};
 use crate::storage::{Claimed, NodeRow, NodesStorage};
@@ -78,7 +82,7 @@ impl NodeRows {
         let Some((verb, path)) = operation.split_once(':') else { return };
         let Ok(name) = path.parse::<PathName>() else { return };
         match (verb, step) {
-            ("retire-node" | "replace-node", "NodeDeleting") => {
+            ("retire-node" | "replace-node" | "recover-node", "NodeDeleting") => {
                 // A receipt read after the step names its node by id: by then the view may hold a
                 // replace's successor at the path.name.
                 let held = match subject {
@@ -89,11 +93,24 @@ impl NodeRows {
                     self.announced.lock().unwrap().insert(operation.to_string(), n);
                 }
             }
-            ("retire-node", "NodeDeleted") => self.deleted(me, view, operation, &name, subject).await,
+            ("retire-node", "NodeDeleted") => {
+                self.deleted(me, view, operation, &name, subject).await;
+            }
+            // A recovery (node-recovery.md steps 3-4): the exited node's row says `Deleted` at its
+            // path.name, and the new node created there takes the name over, seeded from it: a
+            // new node the view already holds (its claim met the exited node's live row) claims
+            // it now, through the one claim every birth takes.
+            ("recover-node", "NodeDeleted") => {
+                if let Some(exited) = self.deleted(me, view, operation, &name, subject).await {
+                    self.successor_at(view, &name, &exited).await;
+                }
+            }
             // A replace: the predecessor gives up its path.name (its row moves to `<path>.old`), and
             // its departure is written there.
             ("replace-node", "RenamePredecessor") => self.moved_to_old(me, view, operation, &name).await,
-            ("replace-node", "NodeDeleted") => self.deleted(me, view, operation, &name.renamed(), subject).await,
+            ("replace-node", "NodeDeleted") => {
+                self.deleted(me, view, operation, &name.renamed(), subject).await;
+            }
             _ => {}
         }
     }
@@ -158,7 +175,8 @@ impl NodeRows {
     }
 
     /// `NodeDeleted`: the row with status `Deleted`, the record and config kept, a blind put.
-    async fn deleted(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName, subject: Option<&NodeId>) {
+    /// Returns the deleted node's record once its `Deleted` row is written.
+    async fn deleted(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName, subject: Option<&NodeId>) -> Option<Node> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
             node = %me,
@@ -185,7 +203,7 @@ impl NodeRows {
             let detail = format!("{me}: the removal of {name} reached NodeDeleted and this fabric-primary holds no record of the node, neither from its NodeDeleting nor in its view now; no row is written");
             span.record("outcome", "no-held-record").record("detail", detail.as_str());
             span.in_scope(|| tracing::info!("node.delete: no row written"));
-            return;
+            return None;
         };
         span.record("node_id", n.node_id.as_str()).record("keys", n.config.len() as u64).record("held_from", from);
         let row = NodeRow { name: name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Deleted, config: n.config.clone() };
@@ -193,11 +211,13 @@ impl NodeRows {
             Ok(()) => {
                 span.record("outcome", "row-deleted");
                 span.in_scope(|| tracing::info!("node.delete: the row says Deleted; the record and its config stay"));
+                Some(n)
             }
             Err(e) => {
                 let detail = format!("{me}: nodes.storage refused the Deleted row of {name} ({}): {e}", n.node_id);
                 span.record("outcome", "row-refused").record("detail", detail.as_str());
                 span.in_scope(|| tracing::info!("node.delete: the Deleted row was refused"));
+                None
             }
         }
     }
