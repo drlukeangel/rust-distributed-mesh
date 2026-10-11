@@ -68,6 +68,9 @@ impl LifecycleEvents for Recorder {
     async fn restarting(&self, op: &LifecycleOp) {
         self.0.lock().unwrap().push(format!("NodeRestarting:{}", op.node_id));
     }
+    async fn stopped(&self, op: &LifecycleOp) {
+        self.0.lock().unwrap().push(format!("NodeStopped:{}:{}", op.node_id, op.operation));
+    }
     fn now_rafka_ms(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
     }
@@ -148,7 +151,8 @@ fn receipts(steps: &[rafka_node_admin_core::build_state::BuildStepReceipt], oper
 }
 
 /// CONTRACT: a replace of a live, persistent-storage birth is one operation `replace-node:<path>`. The
-/// old birth is drained, is renamed `<path>.old` (spanned), is stopped with the provider's exact
+/// old birth is drained, is renamed `<path>.old` (spanned), is stopped (its mesh primary publishes `NodeStopped`
+/// once, from the matching `stopped` reply) with the provider's exact
 /// terminal proof, and its storage directories move into the successor's empty directory before the
 /// successor starts; the successor is ready, and only then is the old identity's `NodeDeleted`
 /// published, once, naming the exact old birth. The predecessor's directory keeps its files.
@@ -199,9 +203,13 @@ async fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
     let drained = at(&format!("awaited:drain-node:{old}"));
     let stop = at(&format!("stop-node:{old}"));
     let left = at(&format!("awaited:stop-node:{old}"));
+    // The predecessor's stop is the whole node.stop: its mesh primary publishes NodeStopped from the
+    // matching stopped reply (node-replace.md, "Stop publishes its mesh-primary NodeStopped overlay").
+    let parked = at(&format!("NodeStopped:{old}:stop-node:{}", path()));
     let ready = at(&format!("ready:{new}"));
     let deleted = at(&format!("NodeDeleted:{old}:{operation}"));
-    assert!(deleting < drain && drain < drained && drained < stop && stop < left && left < ready && ready < deleted, "drain, node-drained, stop-node, node-left, then the successor's readiness, then NodeDeleted last: {log:?}");
+    assert!(deleting < drain && drain < drained && drained < stop && stop < left && left < parked && parked < ready && ready < deleted, "drain, node-drained, stop-node, node-left, NodeStopped, then the successor's readiness, then NodeDeleted last: {log:?}");
+    assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 1, "{log:?}");
     assert_eq!(log.iter().filter(|l| l.starts_with("NodeDeleted")).count(), 1, "{log:?}");
     let deleted_receipt = view.steps.iter().find(|r| r.step == "NodeDeleted").and_then(|r| r.output.clone()).unwrap();
     assert_eq!(deleted_receipt["incarnation"], serde_json::to_value(first.node.incarnation_id.clone().unwrap()).unwrap(), "NodeDeleted names the exact old birth");

@@ -1707,7 +1707,7 @@ impl DeploymentPipeline<'_> {
     /// run, whose operation is the outer `shutdown-mesh:<mesh_id>` correlated with the member's path.
     /// The children keep their `drain-node:<path>` and `stop-node:<path>` identities. The result is
     /// the provider's terminal receipt of the exact runtime.
-    pub(crate) async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
+    pub async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let path = node.name.clone();
         let span = self.pipeline_span("shutdown-member", build_id, &path, attempt, false);
