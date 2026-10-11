@@ -3948,6 +3948,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // its entry pull or the fabric control topic.
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
     let records = Arc::new(Records::default());
+    // Only the fabric seat holder puts a pointer on the store root: the file store reads the
+    // committed fabric seat record, as the Build gate does, before any pointer can be put.
+    fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone())));
     // The status rows of this admin's mesh on the fabric's store root (`status/<mesh>/`): written by
     // the mesh's seat holder, folded into what this admin applied when it takes the seat.
     let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).map_err(storage_err)?);

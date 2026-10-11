@@ -117,10 +117,14 @@ async fn only_the_fabric_seat_holder_puts_a_pointer_on_the_store_root() {
     let (n, unset, p) = (file_writer(&root, Some(moved)), file_writer(&root, None), file_writer(&root, Some(SeatRecord::Open)));
     p.put_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap();
     let pointer = |b: &str, at: u64| FabricPointer { build_id: BuildId(b.into()), submitted_at_ms: at };
-    let refused = n.put_pointer(&pointer("bld-n", 10)).await.expect_err("a writer that does not hold the fabric seat puts no pointer");
-    assert!(refused.to_string().contains("mesh1.admin.1") && refused.to_string().contains("epoch 3"), "the refusal names the holder and its record: {refused}");
-    let unread = unset.put_pointer(&pointer("bld-u", 11)).await.expect_err("a writer with no seat source puts no pointer");
-    assert!(unread.to_string().contains("seat"), "the refusal names the missing seat source: {unread}");
+    match n.put_pointer(&pointer("bld-n", 10)).await {
+        Err(FabricStorageError::NotSeatHolder { reason, .. }) => assert!(reason.contains("mesh1.admin.1") && reason.contains("epoch 3"), "the refusal names the holder and its record: {reason}"),
+        other => panic!("a writer that does not hold the fabric seat puts no pointer: {other:?}"),
+    }
+    match unset.put_pointer(&pointer("bld-u", 11)).await {
+        Err(FabricStorageError::NotSeatHolder { reason, .. }) => assert!(reason.contains("no fabric seat record to read"), "the refusal names the missing seat source: {reason}"),
+        other => panic!("a writer with no seat source puts no pointer: {other:?}"),
+    }
     assert_eq!(p.fabric().await.unwrap().and_then(|r| r.build_id), None, "no refused pointer left a row");
     p.put_pointer(&pointer("bld-p", 12)).await.expect("the seat holder puts the pointer");
     assert_eq!(n.fabric().await.unwrap().and_then(|r| r.build_id), Some(BuildId("bld-p".into())), "every reader of the root folds the holder's pointer");

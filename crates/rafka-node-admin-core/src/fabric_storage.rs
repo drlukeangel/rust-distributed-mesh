@@ -477,6 +477,19 @@ impl FabricStorage for FileFabricStorage {
         self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the identity row vanished after its insert".into() })
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
+        // The fabric-primary alone writes `fabric/` (R14 item 2): the committed fabric seat record
+        // is read before the put. It is open to this birth when it names it, names none (Day 0,
+        // before any record) or names a birth proven gone.
+        let file = || format!("{}/{}.json", POINTERS_DIR, pointer.key());
+        match self.seat.0.get().map(|s| (s.read)()) {
+            None => {
+                return Err(FabricStorageError::NotSeatHolder { file: file(), reason: format!("fabric-primary seat: this writer ({}) has no fabric seat record to read, so it cannot show it holds the seat", self.writer.0) });
+            }
+            Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => {
+                return Err(FabricStorageError::NotSeatHolder { file: file(), reason: format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here")) });
+            }
+            Some(crate::fabric_builds::SeatRecord::Open) => {}
+        }
         self.pointers.write(&pointer.key(), POINTER_FORMAT, pointer).await
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
@@ -658,6 +671,8 @@ mod tests {
     async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
         let d = tempdir();
         let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).unwrap();
+        // The fabric seat holder: no seat record governs this fixture's writer.
+        s.set_seat_source(crate::fabric_builds::SeatSource::unrecorded());
         let fabric = FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: Some(crate::build::BuildId("bld-2".into())) };
         s.put_identity(&FabricIdentity { fabric_id: fabric.fabric_id.clone(), name: fabric.name.clone() }).await.unwrap();
         s.put_pointer(&FabricPointer { build_id: crate::build::BuildId("bld-2".into()), submitted_at_ms: 20 }).await.unwrap();
