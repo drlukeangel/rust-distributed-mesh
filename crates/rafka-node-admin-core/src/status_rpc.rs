@@ -1011,6 +1011,50 @@ mod tests {
         }
     }
 
+    /// CONTRACT (fabric-node-lifecycle.md 4.3: "Once a node-admin is created in a mesh it is that
+    /// mesh's primary ... and writes every status from then on"): the fabric-primary's
+    /// ApplyMeshState is applied by the mesh's primary. A receiver whose view names ANOTHER admin
+    /// its mesh's primary refuses it naming that holder, and applies nothing; the admin the view
+    /// names applies it, and so does an admin of the mesh whose view names no primary of it yet
+    /// (the bootstrap admin at the hand-off, before its own seat shows in its view).
+    #[test]
+    fn an_apply_mesh_state_at_an_admin_whose_view_names_another_primary_is_refused_naming_it() {
+        let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {
+            let mut n = node(name);
+            n.kind = NodeKind::NodeAdmin;
+            n.mesh = mesh.into();
+            n.status = crate::model::NodeStatus::ReadyForTraffic;
+            n.is_primary = primary;
+            n.is_fabric_primary = fabric_primary;
+            n
+        };
+        let fp = admin("mesh1.admin.1", "mesh1", true, true);
+        let first = admin("mesh2.admin.1", "mesh2", true, false);
+        let second = admin("mesh2.admin.2", "mesh2", false, false);
+        let view = |nodes: Vec<crate::model::Node>| Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes,
+        };
+        let seated = view(vec![fp.clone(), first.clone(), second.clone()]);
+        let pending = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending };
+
+        let (reply, effect) = decide(&authority_of(&second, seated.clone()), &seated, &Declared::default(), Some(&fp), &pending);
+        assert!(
+            matches!(&reply, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed.contains("mesh2.admin.1")) && effect.is_none(),
+            "an admin whose view names mesh2.admin.1 mesh2's primary applies no Mesh status of mesh2: {reply:?}"
+        );
+
+        let (reply, effect) = decide(&authority_of(&first, seated.clone()), &seated, &Declared::default(), Some(&fp), &pending);
+        assert!(matches!(reply, R::Applied) && effect.is_some(), "the primary its view names applies it: {reply:?}");
+
+        let mut unseated_first = first.clone();
+        unseated_first.is_primary = false;
+        let unseated = view(vec![fp.clone(), unseated_first.clone(), second.clone()]);
+        let (reply, effect) = decide(&authority_of(&unseated_first, unseated.clone()), &unseated, &Declared::default(), Some(&fp), &pending);
+        assert!(matches!(reply, R::Applied) && effect.is_some(), "an admin of the mesh whose view names no primary of it applies it: {reply:?}");
+    }
+
     /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): a replace or a recovery keeps the
     /// path.name and mints a new node id. The view holds one row per path.name (`admin::project_at`
     /// keys it by `PathName`), so until the retired birth's digest goes non-live or departs, the row
