@@ -98,7 +98,8 @@ impl Incumbency {
 enum Holding {
     /// The exact birth is in the view and keeps the seat.
     Living(usize),
-    /// The birth yields, was replaced by a later one, or is proven gone.
+    /// The birth was replaced by a later one or is proven gone. A holder's status never yields
+    /// it: a seat moves by an explicit transfer (a new holder record) or a proven loss.
     Yielded,
     /// The view has not heard the birth the record names.
     Unseen,
@@ -113,10 +114,7 @@ fn holding(nodes: &[Node], h: &SeatHolder, inc: &Incumbency) -> Holding {
     if n.incarnation_id.as_ref().is_some_and(|inc| *inc != h.incarnation) {
         return Holding::Yielded;
     }
-    match n.status {
-        NodeStatus::Draining | NodeStatus::Leaving | NodeStatus::Restarting => Holding::Yielded,
-        _ => Holding::Living(i),
-    }
+    Holding::Living(i)
 }
 
 /// The lowest Ready node among `members` that is not proven gone.
@@ -196,18 +194,16 @@ fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String,
     lowest_primary(Some(h.mesh.as_str()))
 }
 
-/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it: every node
-/// of `mesh` stands as Leaving, so the incumbent's mesh holds no candidate, and the lowest Ready
-/// mesh primary of another mesh wins (the explicit committed handover of
-/// fabric-node-lifecycle-elections.md section 4.4). `None` when no other mesh has an eligible Ready
-/// mesh primary: the handover is blocked.
+/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it (the
+/// explicit committed handover of fabric-node-lifecycle-elections.md section 4.4): the departing
+/// mesh holds no candidate, and the fabric record is the one the hand-over vacates, so the lowest
+/// Ready mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh
+/// primary: the handover is blocked.
 pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) -> Option<Node> {
-    let mut hypothetical: Vec<Node> = nodes.to_vec();
-    for n in hypothetical.iter_mut().filter(|n| n.mesh == mesh) {
-        n.status = NodeStatus::Leaving;
-    }
-    resolve_with(&mut hypothetical, inc);
-    hypothetical.into_iter().find(|n| n.is_fabric_primary && n.mesh != mesh)
+    let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| n.mesh != mesh).cloned().collect();
+    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), lost: inc.lost.clone() };
+    resolve_with(&mut hypothetical, &vacated);
+    hypothetical.into_iter().find(|n| n.is_fabric_primary)
 }
 
 /// A seat's holder as a span names it.
