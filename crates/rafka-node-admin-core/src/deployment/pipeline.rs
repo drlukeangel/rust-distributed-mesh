@@ -406,6 +406,12 @@ pub trait NodeObserver: Send + Sync {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
     /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
+    /// The named blocker the node reports for its Ready (its `hydrate_before_ready` hook's
+    /// `Blocked` outcome, with the event it retries on), or `None`. A node that is only still
+    /// Pending, with no hook blocker, has none: `ready` fails for it and nothing is framed `Blocked`.
+    async fn ready_blocker(&self, _node: &Node) -> Option<String> {
+        None
+    }
     /// Send `cmd` (`drain-node` or `stop-node`) to the exact birth over Node RPC, opening the
     /// command before the send so its completion finds it. Answers what the call established,
     /// never a guess: the birth admitted it, or by name why nothing was established. The reply is
@@ -1434,13 +1440,15 @@ impl DeploymentPipeline<'_> {
                 match self.observer.ready(&node).await {
                     Ok(()) => return Ok(()),
                     Err(e) if Instant::now() >= until => return Err(e),
-                    Err(blocker) => {
+                    Err(not_ready) => {
                         // A runtime that exited will never be Ready: its own last words, now, not a timeout.
                         if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
                             let detail = self.provider.failure_detail(&handle, &data_dir).await;
-                            return Err(format!("runtime exited (code {code:?}) before it was Ready ({blocker}): {detail}"));
+                            return Err(format!("runtime exited (code {code:?}) before it was Ready ({not_ready}): {detail}"));
                         }
-                        self.builds.note_blocked(run_build, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
+                        if let Some(blocker) = self.observer.ready_blocker(&node).await {
+                            self.builds.note_blocked(run_build, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
+                        }
                         tokio::time::sleep(Duration::from_millis(100)).await
                     }
                 }
