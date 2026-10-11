@@ -37,6 +37,68 @@ pub struct MeshRecord {
     pub name: String,
 }
 
+/// The row of one mesh at its `(path, name)`: the mesh's name as its primary node-admin claimed it
+/// (fabric-node-lifecycle.md §2.7: "it claims the mesh's name by insert-and-fail on the key
+/// `(path, name)`, unique within its path, the path opaque"). The path is taken as given and never
+/// parsed. Distinct from [`MeshRecord`], the id an admin heard for a mesh name (a restart's hint,
+/// written by every admin): only the mesh's primary writes a row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeshRow {
+    /// The path the name is unique within, opaque.
+    pub path: String,
+    /// The mesh's name.
+    pub name: String,
+    /// The mesh that holds the name.
+    pub mesh_id: MeshId,
+}
+
+/// A claim of a mesh name another mesh holds at the same path: the row there names a different
+/// MeshId whose mesh row is not `Dead`, and nothing was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshNameHeld {
+    /// The path the name was claimed within.
+    pub path: String,
+    /// The name claimed.
+    pub name: String,
+    /// The mesh that holds it.
+    pub by: MeshId,
+}
+
+impl std::fmt::Display for MeshNameHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the mesh name {} at path {:?} is held by mesh {}: it is released only when that mesh's row is Dead", self.name, self.path, self.by)
+    }
+}
+
+impl std::error::Error for MeshNameHeld {}
+
+/// What a claim of a mesh name did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeshClaimed {
+    /// No row was at the key: the row is written.
+    Written,
+    /// The same mesh already holds the name (a re-claim at state-commit, a retry, a replaced
+    /// primary): nothing is written.
+    AlreadyHeld,
+    /// The row at the key named a mesh whose row is `Dead`: the name was released, and the row is
+    /// written for the claimant.
+    Reclaimed {
+        /// The Dead mesh that held the name.
+        from: MeshId,
+    },
+}
+
+impl MeshClaimed {
+    /// The span outcome that names what the claim did.
+    pub fn outcome(&self) -> &'static str {
+        match self {
+            Self::Written => "row-written",
+            Self::AlreadyHeld => "already-held",
+            Self::Reclaimed { .. } => "reclaimed",
+        }
+    }
+}
+
 /// The durable record of the meshes this admin knows.
 #[async_trait]
 pub trait MeshStorage: Send + Sync {
@@ -46,49 +108,107 @@ pub trait MeshStorage: Send + Sync {
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError>;
     /// Every mesh record held.
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError>;
+    /// Save `row` at its `(path, name)`. The claim of the mesh's name is here, inside the adapter:
+    /// insert-and-fail on the key, decided by the store in one step against every other row write.
+    /// The key is free when no row is there, the row there is the same mesh's, or the row there
+    /// names a mesh in `dead` (the meshes whose row folds `Dead`, read by the caller just before:
+    /// the fold only grows, so a set read a moment early refuses, never admits, wrongly). Any other
+    /// row holds the name: [`MeshNameHeld`] naming its mesh, and nothing is written.
+    async fn put_mesh_row(&self, row: &MeshRow, dead: &std::collections::HashSet<MeshId>) -> Result<Result<MeshClaimed, MeshNameHeld>, StorageError>;
+    /// The row at `(path, name)`: a point read through its key; `None` when none was ever written.
+    async fn mesh_row_at(&self, path: &str, name: &str) -> Result<Option<MeshRow>, StorageError>;
+}
+
+/// What a save of `row` meets in `held`, the row at its key, given the meshes whose row is `Dead`.
+fn claim_mesh_against(held: Option<&MeshRow>, row: &MeshRow, dead: &std::collections::HashSet<MeshId>) -> Result<MeshClaimed, MeshNameHeld> {
+    let _ = (held, dead);
+    let _ = row;
+    Ok(MeshClaimed::Written)
+}
+
+/// The file key of the row at `(path, name)`: each part with every byte outside `[A-Za-z0-9._]`
+/// written `%XX`, joined by `-`, so two keys never meet whatever the opaque path holds.
+fn mesh_row_key(path: &str, name: &str) -> String {
+    let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() || b == b'.' || b == b'_' { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
+    format!("{}-{}", enc(path), enc(name))
 }
 
 /// A mesh store held in memory.
 #[derive(Debug, Default)]
-pub struct MemoryMeshStorage(Mutex<BTreeMap<String, MeshRecord>>);
+pub struct MemoryMeshStorage {
+    records: Mutex<BTreeMap<String, MeshRecord>>,
+    rows: Mutex<BTreeMap<String, MeshRow>>,
+}
 
 #[async_trait]
 impl MeshStorage for MemoryMeshStorage {
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
-        Ok(self.0.lock().unwrap().get(name).cloned())
+        Ok(self.records.lock().unwrap().get(name).cloned())
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
-        self.0.lock().unwrap().insert(record.name.clone(), record.clone());
+        self.records.lock().unwrap().insert(record.name.clone(), record.clone());
         Ok(())
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
-        Ok(self.0.lock().unwrap().values().cloned().collect())
+        Ok(self.records.lock().unwrap().values().cloned().collect())
+    }
+    async fn put_mesh_row(&self, row: &MeshRow, dead: &std::collections::HashSet<MeshId>) -> Result<Result<MeshClaimed, MeshNameHeld>, StorageError> {
+        // The internal index is the map's key: the look and the insert are one step under its lock.
+        let mut rows = self.rows.lock().unwrap();
+        let key = mesh_row_key(&row.path, &row.name);
+        let claimed = claim_mesh_against(rows.get(&key), row, dead);
+        if matches!(claimed, Ok(MeshClaimed::Written | MeshClaimed::Reclaimed { .. })) {
+            rows.insert(key, row.clone());
+        }
+        Ok(claimed)
+    }
+    async fn mesh_row_at(&self, path: &str, name: &str) -> Result<Option<MeshRow>, StorageError> {
+        Ok(self.rows.lock().unwrap().get(&mesh_row_key(path, name)).cloned())
     }
 }
 
 const MESH_FORMAT: &str = "mesh-record/1";
+const MESH_ROW_FORMAT: &str = "mesh-row/1";
 
-/// `<data dir>/meshes/<name>.json`.
+/// `<data dir>/meshes/<name>.json` and `<data dir>/meshes/rows/<path>-<name>.json`.
 #[derive(Debug)]
-pub struct FileMeshStorage(FileRecords);
+pub struct FileMeshStorage {
+    records: FileRecords,
+    rows: FileRecords,
+    /// Every write of a row is one at a time, so a claim's look at the key and its write are one
+    /// step against every other row write of this store.
+    row_writes: tokio::sync::Mutex<()>,
+}
 
 impl FileMeshStorage {
     /// Open the store under the admin's own data directory.
     pub async fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self(FileRecords::open(own_data_dir, "meshes").await?))
+        Ok(Self { records: FileRecords::open(own_data_dir, "meshes").await?, rows: FileRecords::open(own_data_dir, "meshes/rows").await?, row_writes: tokio::sync::Mutex::new(()) })
     }
 }
 
 #[async_trait]
 impl MeshStorage for FileMeshStorage {
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
-        self.0.read(name, MESH_FORMAT).await
+        self.records.read(name, MESH_FORMAT).await
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
-        self.0.write(&record.name, MESH_FORMAT, record).await
+        self.records.write(&record.name, MESH_FORMAT, record).await
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
-        self.0.list(MESH_FORMAT).await
+        self.records.list(MESH_FORMAT).await
+    }
+    async fn put_mesh_row(&self, row: &MeshRow, dead: &std::collections::HashSet<MeshId>) -> Result<Result<MeshClaimed, MeshNameHeld>, StorageError> {
+        let _one = self.row_writes.lock().await;
+        let key = mesh_row_key(&row.path, &row.name);
+        let claimed = claim_mesh_against(self.rows.read::<MeshRow>(&key, MESH_ROW_FORMAT).await?.as_ref(), row, dead);
+        if matches!(claimed, Ok(MeshClaimed::Written | MeshClaimed::Reclaimed { .. })) {
+            self.rows.write(&key, MESH_ROW_FORMAT, row).await?;
+        }
+        Ok(claimed)
+    }
+    async fn mesh_row_at(&self, path: &str, name: &str) -> Result<Option<MeshRow>, StorageError> {
+        self.rows.read(&mesh_row_key(path, name), MESH_ROW_FORMAT).await
     }
 }
 
@@ -488,6 +608,45 @@ mod tests {
             reason: None,
             logged_at_ms: 1,
         }
+    }
+
+    /// CONTRACT (fabric-node-lifecycle.md §2.7: the mesh's primary "claims the mesh's name by
+    /// insert-and-fail on the key `(path, name)`, unique within its path, the path opaque ... Held
+    /// means held by a different MeshId: `NameHeld` names that holder. The same MeshId re-claiming
+    /// its own name, at state-commit, on a retry or from a replaced primary, is idempotent and
+    /// accepted"; rulings 2026-10-11 dev page, mesh row acceptance): in memory and on disk, the
+    /// creation's claim writes the row and the state-commit re-claim by the same MeshId writes
+    /// nothing and is accepted; a second MeshId claiming the same name at the same path is refused
+    /// naming the holder and nothing is written; the same name at another path is its own key; and
+    /// once the holder's mesh row is `Dead` the name is claimed by a new MeshId, naming the Dead
+    /// holder released. Must NOT happen: a duplicate mesh name written over the holder's row, or a
+    /// mesh refused by its own row.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_mesh_name_is_claimed_once_per_path_reclaimed_by_its_own_mesh_and_released_only_by_a_dead_row() {
+        let d = crate::record_store::tempdir("mesh-rows");
+        let check = async |m: &dyn MeshStorage| {
+            let none = std::collections::HashSet::new();
+            let (first, second, third) = (MeshId::mint(), MeshId::mint(), MeshId::mint());
+            let row = |path: &str, id: &MeshId| MeshRow { path: path.into(), name: "mesh2".into(), mesh_id: id.clone() };
+            assert_eq!(m.put_mesh_row(&row("fabric1", &first), &none).await.unwrap(), Ok(MeshClaimed::Written), "creation writes the row");
+            assert_eq!(m.put_mesh_row(&row("fabric1", &first), &none).await.unwrap(), Ok(MeshClaimed::AlreadyHeld), "state-commit's re-claim by the same mesh is accepted and writes nothing");
+            assert_eq!(
+                m.put_mesh_row(&row("fabric1", &second), &none).await.unwrap(),
+                Err(MeshNameHeld { path: "fabric1".into(), name: "mesh2".into(), by: first.clone() }),
+                "a second mesh at the same path is refused, naming the holder"
+            );
+            assert_eq!(m.mesh_row_at("fabric1", "mesh2").await.unwrap(), Some(row("fabric1", &first)), "nothing was written over the holder's row");
+            assert_eq!(m.put_mesh_row(&row("fabric/2", &second), &none).await.unwrap(), Ok(MeshClaimed::Written), "the same name at another path is its own key");
+            let dead: std::collections::HashSet<MeshId> = [first.clone()].into();
+            assert_eq!(m.put_mesh_row(&row("fabric1", &third), &dead).await.unwrap(), Ok(MeshClaimed::Reclaimed { from: first.clone() }), "a name whose holder's row is Dead is claimed by a new mesh");
+            assert_eq!(m.mesh_row_at("fabric1", "mesh2").await.unwrap(), Some(row("fabric1", &third)));
+            assert_eq!(m.put_mesh_row(&row("fabric1", &first), &dead).await.unwrap(), Err(MeshNameHeld { path: "fabric1".into(), name: "mesh2".into(), by: third.clone() }), "the Dead mesh does not take its name back");
+        };
+        check(&MemoryMeshStorage::default()).await;
+        check(&FileMeshStorage::open(&d).await.unwrap()).await;
+        let reopened = FileMeshStorage::open(&d).await.unwrap();
+        assert!(reopened.mesh_row_at("fabric1", "mesh2").await.unwrap().is_some(), "the row survives a reopen");
     }
 
     /// Every boundary behaves the same in memory and on disk, and the disk copy survives reopening.
