@@ -214,11 +214,20 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
     let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
     // The final primary's Leaving and parked state reach every node from its stopped reply (node-stop.md
-    // steps 4-5): the owner publishes NodeStopped for it, and a mesh2 admin and a mesh2 ordinary node hold it Leaving and
-    // parked, not routable.
-    let final_parked: Vec<&Value> = leaving_states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == final_name && parked(sp)).collect();
-    assert!(final_parked.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.admin.")), "a mesh2 admin held the final primary {final_name} parked: {final_parked:?}");
-    assert!(final_parked.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.")), "a mesh2 ordinary node held the final primary {final_name} parked: {final_parked:?}");
+    // steps 4-5, gossip.md:157 "owning mesh channel; backbone Members.in_flight; peer mesh channels"):
+    // the owner, the fabric-primary, publishes NodeStopped for it, and an admin and an ordinary node of
+    // EVERY surviving mesh hold it Leaving and parked, not routable. The fabric seat sits in one of
+    // mesh2 and mesh3 (R-A2: the lowest NodeId); the other hears the owner's overlay only through the
+    // backbone, so whichever drew the seat, one surviving mesh is reached only by that path.
+    let fabric_primary = s(&fabric_now["fabric_primary"]);
+    let final_parked: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && parked(sp)).collect();
+    for m in ["mesh2", "mesh3"] {
+        let held_in = |kind: &str| final_parked.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.{kind}.")));
+        let seat = if fabric_primary.starts_with(&format!("{m}.")) { "holds the fabric seat" } else { "hears the owner only over the backbone" };
+        assert!(held_in("admin"), "a {m} admin held the final primary {final_name} parked ({m} {seat}, fabric-primary {fabric_primary}): {final_parked:?}");
+        assert!(held_in("rpc"), "a {m} ordinary node held the final primary {final_name} parked ({m} {seat}, fabric-primary {fabric_primary}): {final_parked:?}");
+    }
+    assert!(final_parked.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "the parked final primary is not routable anywhere: {final_parked:?}");
     // A stopped birth gossips nothing (node-stop.md step 4): once its connections are cut, the parked
     // final primary announces no Leaving on any channel when its process is ended.
     let cut_at = named(&spans, "rdm.node_admin.node.connections.delete.via-stop-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's connections were cut by its stop");
