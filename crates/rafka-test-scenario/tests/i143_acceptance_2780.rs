@@ -680,11 +680,13 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     assert_eq!(run.runtimes(node), 1, "exactly one runtime serves {node} after the restart");
     assert_eq!(run.fabric_build_id().await, pointer_before, "Fabric.build_id is unchanged by a restart");
     run.note_build(&build_id, attempt);
+    // One restart pipeline span holds both halves, in order (DeploymentPipeline::restart).
+    let restart_steps: Vec<String> = rr.iter().chain(start_order.iter()).cloned().collect();
     if spec["kind"] == "event" {
         run.span_check(json!({"kind": "event", "cut": id, "span": event_span("restarting"), "build_id": build_id, "attempt": attempt}));
-        run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": attempt, "steps": rr, "held_step": RetireStep::NodeRestarting.name()}));
+        run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "restart", "attempt": attempt, "steps": restart_steps, "held_step": RetireStep::NodeRestarting.name()}));
     } else {
-        run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": attempt, "steps": rr, "held_step": RetireStep::NodeRestarting.name()}));
+        run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "restart", "attempt": attempt, "steps": restart_steps, "held_step": RetireStep::NodeRestarting.name()}));
     }
     let after = json!({"build_state": b["state"], "attempt": attempt, "retire_half": rr, "start_half": start_order, "node": {"node_id": after_node["node_id"], "incarnation_id": after_node["incarnation_id"]}, "processes": process_before, "runtimes": 1, "fabric_build_id": pointer_before});
     run.push(row(h, group, id, &spec, rel, after));
