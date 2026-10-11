@@ -886,6 +886,9 @@ pub struct RecoverRequest {
     pub exit: crate::status_storage::NodeExitRow,
     /// The endpoint plan of the node's kind.
     pub spec: &'static KindSpec,
+    /// The durable runtime rows a recovered node-admin is handed before it runs (empty for every
+    /// other kind), as every node-admin birth is.
+    pub held_runtimes: Vec<crate::storage::RuntimeRow>,
 }
 
 /// The predecessor a successor's create stops and takes the storage of, between its prepared
@@ -2153,7 +2156,7 @@ impl DeploymentPipeline<'_> {
         after_deleted(fenced).await;
         // node.create at the same path.name over the inherited data dir: a new node.id and incarnation,
         // the same endpoint key, no supersedes.
-        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, held_runtimes: Vec::new() };
+        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, held_runtimes: req.held_runtimes.clone() };
         let mut created = self.create_to_ready(&mut run, &creq, None, None, Some(inherited)).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;

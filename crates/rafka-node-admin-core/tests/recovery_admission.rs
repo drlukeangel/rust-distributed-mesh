@@ -69,7 +69,8 @@ fn opened(facts: &[BuildFact]) -> usize {
 /// Build. A repeat while that attempt is open answers `BuildInProgress`; a repeat once its
 /// `recover-node` operation completed for that exact birth answers `AlreadyApplied` naming the
 /// attempt that recovered it; a recovery submitted while another Build runs answers that Build's
-/// `BuildInProgress`. A node-admin is never node-recovered: refused by name. A repeat after a later
+/// `BuildInProgress`. A node-admin whose mesh holds no other live node-admin is mesh recovery, never
+/// node recovery: refused by name. A repeat after a later
 /// topology Build was accepted is still `AlreadyApplied`: the recovery is keyed on the exited birth
 /// across the Build log, not on the accepted Build's receipts. Must NOT happen: a second attempt
 /// opened for a birth already recovered.
@@ -130,10 +131,12 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     assert!(matches!(&again, Ok(Recovery::AlreadyApplied(o)) if *o == first), "a repeat once the birth was recovered names the attempt that recovered it, and opens nothing: {again:?}");
     assert_eq!(opened(&builds.facts().await.unwrap()), after_first, "exactly one recovery attempt was opened for the exited birth");
 
-    // A node-admin is never node-recovered.
-    let admin = cp.topology.read().await.node(&"mesh1.admin.2".parse().unwrap()).unwrap().clone();
+    // A node-admin whose mesh holds no other live node-admin is its mesh's lost mesh-primary: mesh
+    // recovery, never node recovery (mesh-recovery.md:5-9).
+    cp.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh1.admin.2").for_each(|n| n.status = NodeStatus::Dead);
+    let admin = cp.topology.read().await.node(&"mesh1.admin.1".parse().unwrap()).unwrap().clone();
     let refused = cp.open_recovery("build.create", admin.name.clone(), admin.node_id.clone(), admin.incarnation_id.clone().unwrap()).await;
-    assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-admin-not-node-recovered"), "a node-admin's node recovery is refused by name: {refused:?}");
+    assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-admin-not-node-recovered"), "the node recovery of a mesh's last node-admin is refused by name: {refused:?}");
 
     // Another Build in flight: the recovery waits for it.
     let other = cp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("a topology change is accepted");

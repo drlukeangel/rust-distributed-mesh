@@ -320,7 +320,8 @@ impl ControlPlane {
     ///
     /// Keyed on the exited birth: once the accepted Build's `recover-node:<path>` operation completed
     /// for that exact birth, a repeat answers [`Recovery::AlreadyApplied`] naming the attempt that
-    /// recovered it, and nothing is opened. A node-admin is never node-recovered (mesh-recovery.md).
+    /// recovered it, and nothing is opened. A node-admin is node-recovered only while its mesh holds
+    /// another live admin to recover it (mesh-recovery.md:8-9); otherwise it is mesh recovery.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.0, outcome = tracing::field::Empty);
         let outer = tracing::Span::current();
@@ -351,7 +352,9 @@ impl ControlPlane {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
-            if path.kind == crate::model::NodeKind::NodeAdmin {
+            // A node-admin is node-recovered by its mesh's live primary (mesh-recovery.md:8-9); one
+            // with no other live admin in its mesh is that mesh's lost mesh-primary: mesh recovery.
+            if path.kind == crate::model::NodeKind::NodeAdmin && crate::executor::node_admin_recoverer(&path, &*self.topology.read().await).is_none() {
                 let reject = BuildReject::NodeAdminNotNodeRecovered { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));

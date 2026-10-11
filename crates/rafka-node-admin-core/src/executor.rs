@@ -69,10 +69,27 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
                 t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
             }
         }
-        // A node-admin is never node-recovered: a mesh whose admins are lost is the fabric-primary's
-        // mesh recovery (mesh-recovery.md), and `open_recovery` refuses such a Build by name.
-        BuildOperation::RecoverNode { .. } => None,
+        // A lost node-admin of a mesh with a live mesh-primary is node recovery, driven by that
+        // mesh-primary (mesh-recovery.md:8-9); a mesh primary's own recovery by the admin its mesh
+        // seats in its place. A mesh with no other live admin lost its mesh-primary: that is the
+        // fabric-primary's mesh recovery, no node recovery, and no admin executes one.
+        BuildOperation::RecoverNode { node, .. } => node_admin_recoverer(node, t),
         BuildOperation::CreateNode { .. } | BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } => fabric(),
+    }
+}
+
+/// The mesh-primary that recovers node-admin `node` (node-recovery.md, mesh-recovery.md:8-9): its
+/// mesh's live primary admin, or, when `node` itself holds the seat, the admin its mesh seats in its
+/// place. `None` when no other live admin of the mesh is left: the mesh lost its mesh-primary, which
+/// is the fabric-primary's mesh recovery.
+///
+/// The seat is read from the view's election, not from liveness: a silent holder keeps its seat until
+/// it is proven gone (`crate::election`), and its own recovery is still its mesh's to run.
+pub fn node_admin_recoverer(node: &PathName, t: &Topology) -> Option<PathName> {
+    match t.cohort(&node.mesh, NodeKind::NodeAdmin).find(|n| n.is_primary) {
+        Some(p) if p.name == *node => mesh_successor_of(node, t),
+        Some(p) if p.status.is_live() => Some(p.name.clone()),
+        _ => None,
     }
 }
 
