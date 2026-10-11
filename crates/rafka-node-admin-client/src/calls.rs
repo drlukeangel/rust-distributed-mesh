@@ -348,6 +348,42 @@ impl<'a> NodeRpc<'a> {
         self.status(NodeOp::ConfigUpdate, birth, req, opts).await
     }
 
+    /// `node.update` of the exact birth's name, the caller's single call to the node's mesh-primary
+    /// `mesh_primary` (R13; node-rpc-envelope.md "Meta and config"): it validates from its held record,
+    /// claims the name in its store adapter, writes the row, tells a live birth `ApplyNodeName` and
+    /// answers `NodeUpdated` after the apply answered; a stopped birth is told nothing. `route` is the
+    /// caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward `0x1A`),
+    /// executed exactly as chosen (`NodeRpcClient::call_routed`).
+    pub async fn node_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::UpdateNode { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+        let span = NodeOp::Update.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), route = route.token(), "an object call ended"));
+        r
+    }
+
+    /// The mesh-primary's call to the exact birth, after it wrote the renamed row: take this name and carry
+    /// it in every digest from now on (`ApplyNodeName`, R12/R13). `Applied` once the birth holds and
+    /// published it, `AlreadyApplied` for the name it holds, `Busy` naming its in-flight count while it
+    /// routes traffic. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
+    pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+        let span = NodeOp::Update.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(&birth.node_id, route, &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), route = route.token(), "an object call ended"));
+        r
+    }
+
     /// `node.get` of one exact birth: it reasserts its presence and answers its current state.
     /// No transition.
     pub async fn get(&self, birth: &ExactBirth, opts: &CallOptions) -> Result<StatusReply, CallEnd> {

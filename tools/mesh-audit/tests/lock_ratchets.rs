@@ -217,7 +217,7 @@ fn typed_protocol_evidence_fails_untyped_held_evidence() {
 #[test]
 fn status_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "const REPLY_VARIANTS: u32 = 26;", "const REPLY_VARIANTS: u32 = 27;");
+    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "const REPLY_VARIANTS: u32 = 31;", "const REPLY_VARIANTS: u32 = 32;");
     only(check(t.root()), Ratchet::StatusResealIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rafka-node-rpc-contract/tests/status_wire.rs");
@@ -388,4 +388,15 @@ mod tests {
 "#,
     );
     assert!(check_one(t.root(), Ratchet::NoSpanGuardAcrossAwait).is_empty());
+}
+
+#[test]
+fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_door() {
+    let t = Planted::of_tree();
+    t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) { let _ = s.release_node_row(n, by).await; }\n");
+    let v = only(check(t.root()), Ratchet::OneRenameWritePath);
+    assert!(matches!(&v[0], Violation::Token { file, token, .. } if file.ends_with("planted.rs") && token == ".release_node_row("));
+    let d = Planted::of_tree();
+    d.edit("crates/rafka-node-admin-core/src/node_rows.rs", "pub(crate) async fn move_row(storage: &dyn NodesStorage,", "pub async fn rename(storage: &dyn NodesStorage,");
+    only(check(d.root()), Ratchet::OneRenameWritePath);
 }

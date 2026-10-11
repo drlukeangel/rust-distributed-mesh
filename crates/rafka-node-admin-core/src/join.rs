@@ -44,6 +44,17 @@ pub struct Deployed {
     pub runtime: RuntimeFact,
     /// The birth's data directory.
     pub data_dir: String,
+    /// The name this authority last accepted for this exact birth (its held stopped digest), when it
+    /// holds the birth: the join of a stopped node renamed while stopped presents it. `None` at a
+    /// first start, whose name is the create spec's.
+    pub last_accepted_name: Option<PathName>,
+    /// The authority holds this birth: the deployment is a later start of a node it admitted
+    /// before (a parked or restarted birth), whose join is reconciled to its row and handed its
+    /// row's config; `false` at a first start, admitted under its create spec's name whatever row
+    /// stands at that path.name (R-JN1 item 6). Set by the one that registers the deployment, never
+    /// inferred from the last accepted name, which an admin that joined after the stop lacks
+    /// (`MeshMembership::parked_unheard`).
+    pub held: bool,
 }
 
 /// The first field of a digest that disagrees with what was deployed.
@@ -68,7 +79,16 @@ impl Deployed {
             }
         }
         same("node_id", &self.node_id, &d.node.node_id)?;
-        same("name", &self.name, &d.node.name)?;
+        // The name is reconciled apart from identity (node-create.md step 4): a held birth is
+        // admitted under its row's name or the name this authority last accepted for it; a first
+        // start under its create spec's name only.
+        if d.node.name != self.name && self.last_accepted_name.as_ref() != Some(&d.node.name) {
+            let deployed = match &self.last_accepted_name {
+                Some(last) => format!("row's {:?}, last accepted {:?}", self.name.to_string(), last.to_string()),
+                None => format!("{:?}", self.name.to_string()),
+            };
+            return Err(Mismatch { field: "name", deployed, reported: format!("{:?}", d.node.name.to_string()) });
+        }
         same("incarnation", &self.incarnation, &d.node.incarnation)?;
         same("supersedes", &self.supersedes, &d.node.supersedes)?;
         same("endpoint_id", &self.endpoint_id, &d.node.endpoint_id)?;
@@ -108,8 +128,14 @@ pub struct Joins {
 /// What a digest is to the births this admin deployed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Standing {
-    /// The digest is the deployed birth.
-    Deployed,
+    /// The digest is the deployed birth; `name` is its row's, the name it is admitted under.
+    Deployed {
+        /// The row's name: the accepted digest is canonicalized to it before anything is installed.
+        name: PathName,
+        /// The authority holds the birth (a later join, reconciled to its row), rather than
+        /// admitting its first start under the create spec's name.
+        held: bool,
+    },
     /// The node is deployed here and the digest disagrees.
     Mismatch(Mismatch),
     /// The digest is a birth this admin deployed and whose create ended without hearing it.
@@ -153,7 +179,7 @@ impl Joins {
     pub fn standing(&self, d: &MeshDigest) -> Standing {
         if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
             return match s.deployed.verify(d) {
-                Ok(()) => Standing::Deployed,
+                Ok(()) => Standing::Deployed { name: s.deployed.name.clone(), held: s.deployed.held },
                 Err(m) => Standing::Mismatch(m),
             };
         }
@@ -193,6 +219,9 @@ pub struct JoinDoor {
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     /// The signer this admin issues each accepted birth's member cert with, on its rafka-time.
     pub issuer: Arc<crate::certs::CertIssuer>,
+    /// The node row at a `path.name`: a point read through the store's `path.name` key (`Ok(None)`
+    /// when none was ever written). The join answer hands the row's config beside its name.
+    pub row: Arc<dyn Fn(PathName) -> Pin<Box<dyn Future<Output = Result<Option<crate::storage::NodeRow>, String>> + Send>> + Send + Sync>,
 }
 
 /// The door a running admin fills once it holds a view.
@@ -211,6 +240,8 @@ impl JoinDoor {
             incarnation_id = %d.node.incarnation.0,
             reported_addr = %d.node.transport_addr,
             served_by = %self.me,
+            admitted_as = tracing::field::Empty,
+            config_keys = tracing::field::Empty,
             outcome = tracing::field::Empty,
             build_id = tracing::field::Empty,
             attempt = tracing::field::Empty,
@@ -219,7 +250,7 @@ impl JoinDoor {
         self.decide(peer, d, span.clone()).instrument(span).await
     }
 
-    async fn decide(&self, peer: EndpointId, d: MeshDigest, span: tracing::Span) -> JoinReply {
+    async fn decide(&self, peer: EndpointId, mut d: MeshDigest, span: tracing::Span) -> JoinReply {
         if peer != d.node.endpoint_id {
             span.record("outcome", "unauthorized");
             return JoinReply::Unauthorized { reason: format!("{}: the calling endpoint {} is not the endpoint {} the digest of {} names", self.me, peer.0, d.node.endpoint_id.0, d.node.name) };
@@ -231,7 +262,33 @@ impl JoinDoor {
                     .in_scope(|| tracing::warn!("the reported digest disagrees with the deployment"));
                 JoinReply::JoinMismatch { field: m.field.into(), deployed: m.deployed, reported: m.reported }
             }
-            Standing::Deployed => {
+            Standing::Deployed { name, held } => {
+                // Canonicalized to the row's name before anything is issued or installed: the
+                // reported name, when it is the last accepted one, is never admitted (R-JN1).
+                d.node.name = name;
+                span.record("admitted_as", tracing::field::display(&d.node.name));
+                // A held birth's row config, handed beside its name: read before anything is
+                // installed, so a row that cannot be read installs nothing. A first start is
+                // admitted under its create spec's name (R-JN1 item 6): the row at that path.name,
+                // if any, is a predecessor's (a recovery's exited node), which the birth's own
+                // claim takes over after it joins (node_rows.rs `claim`), so it is not read here.
+                let row = if held { (self.row)(d.node.name.clone()).await } else { Ok(None) };
+                let config = match row {
+                    Ok(None) => None,
+                    Ok(Some(row)) if row.node_id == d.node.node_id => Some(row.config),
+                    Ok(Some(row)) => {
+                        span.record("outcome", "mismatch");
+                        let m = Mismatch { field: "name", deployed: format!("the row at {} holds node {}", row.name, row.node_id), reported: format!("node {} as {}", d.node.node_id, d.node.name) };
+                        tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
+                            .in_scope(|| tracing::warn!("the row at the admitted name belongs to another node"));
+                        return JoinReply::JoinMismatch { field: m.field.into(), deployed: m.deployed, reported: m.reported };
+                    }
+                    Err(why) => {
+                        span.record("outcome", "not-ready");
+                        return JoinReply::NotReady { reason: format!("{}: the node row at {} could not be read: {why}", self.me, d.node.name) };
+                    }
+                };
+                span.record("config_keys", config.as_ref().map_or(0, |c| c.len()) as u64);
                 // The member cert is issued for this exact birth BEFORE it is admitted: a refused
                 // issuance leaves nothing installed for its key and completes no report.
                 let birth = crate::certs::BirthIdentity { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), mesh: d.node.name.mesh.clone(), endpoint_key: d.node.endpoint_id.clone() };
@@ -252,7 +309,7 @@ impl JoinDoor {
                 self.joins.report(&d);
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
-                self.joined(&d.node.name, cert).await
+                self.joined(&d.node.name, cert, config).await
             }
             Standing::Abandoned(a) => {
                 span.record("outcome", "deployment-abandoned");
@@ -271,10 +328,12 @@ impl JoinDoor {
         }
     }
 
-    async fn joined(&self, node: &PathName, member_cert: Vec<u8>) -> JoinReply {
+    async fn joined(&self, node: &PathName, member_cert: Vec<u8>, config: Option<std::collections::BTreeMap<String, String>>) -> JoinReply {
         let answer = match (self.answer)().await {
             Ok(mut a) => {
                 a.control.member_cert = member_cert;
+                a.control.name = Some(node.clone());
+                a.control.config = config;
                 a
             }
             Err(why) => return JoinReply::NotReady { reason: format!("{}: not ready to answer a join: {why}", self.me) },
@@ -333,6 +392,7 @@ pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str
         let (step, result): (&str, Result<JoinAnswer, JoinFailure>) = match out {
             RpcOutcome::Reply(r) => match r.value().clone() {
                 JoinReply::Joined { answer } => match crate::wire::answer_from_wire(&answer) {
+                    Ok(a) if a.control.name.is_none() => ("answered", Err(JoinFailure::Refused(format!("{}: its join answer hands no name for this birth to install", a.served_by)))),
                     Ok(a) => ("answered", Ok(a)),
                     Err(e) => ("answered", Err(JoinFailure::Refused(format!("the answer does not decode: {e}")))),
                 },
@@ -389,6 +449,8 @@ mod tests {
             endpoint_id: EndpointId("k".into()),
             runtime: fact(),
             data_dir: "/d".into(),
+            last_accepted_name: None,
+            held: false,
         }
     }
 
@@ -424,7 +486,7 @@ mod tests {
         let dep = deployed();
         let rx = joins.expect(dep.clone());
         let d = digest_of(&dep);
-        assert_eq!(joins.standing(&d), Standing::Deployed);
+        assert_eq!(joins.standing(&d), Standing::Deployed { name: dep.name.clone(), held: false });
         joins.report(&d);
         assert_eq!(rx.borrow().as_ref().map(|d| d.node.transport_addr), Some(d.node.transport_addr), "the address the node reported is the one the admin publishes");
     }
@@ -455,6 +517,52 @@ mod tests {
         let mut d = digest_of(&dep);
         d.node.node_id = NodeId::mint();
         assert_eq!(joins.standing(&d), Standing::Unknown);
+    }
+
+    /// The deployment of a birth this authority holds, stopped as `mesh1.rpc.1` and renamed in its
+    /// row to `mesh1.rpc.1.old` while stopped (R-JN1).
+    fn renamed_while_stopped() -> Deployed {
+        Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), held: true, ..deployed() }
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT: a held birth's join is admitted under the row's name or the name its authority
+    /// last accepted for it; any other name is refused by name naming the reported, the row's and
+    /// the last accepted value. A first start (no held name) keeps the create spec's one name.
+    #[test]
+    fn a_held_births_join_accepts_the_rows_or_the_last_accepted_name_and_refuses_any_other_naming_all_three() {
+        let dep = renamed_while_stopped();
+        let mut held = digest_of(&dep);
+        held.node.name = "mesh1.rpc.1".parse().unwrap();
+        assert_eq!(dep.verify(&held), Ok(()), "the name last accepted for this exact birth is admitted");
+        assert_eq!(dep.verify(&digest_of(&dep)), Ok(()), "the row's name is admitted");
+        let mut other = digest_of(&dep);
+        other.node.name = "mesh1.rpc.7".parse().unwrap();
+        let m = dep.verify(&other).unwrap_err();
+        assert_eq!(m.field, "name");
+        assert!(m.reported.contains("mesh1.rpc.7") && m.deployed.contains("mesh1.rpc.1.old") && m.deployed.contains("last accepted") && m.deployed.contains("\"mesh1.rpc.1\""), "the refusal names all three: {m:?}");
+        let first = deployed();
+        let mut off_spec = digest_of(&first);
+        off_spec.node.name = "mesh1.rpc.1.old".parse().unwrap();
+        assert_eq!(first.verify(&off_spec).unwrap_err().field, "name", "a first start off its create spec is still refused");
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT: a replacement deployed under the stopped node's old name is another birth: the
+    /// stopped node's join is still resolved by its exact birth and admitted, and the replacement's
+    /// deployment is untouched.
+    #[test]
+    fn a_replacement_under_the_old_name_does_not_redirect_the_stopped_nodes_admission() {
+        let joins = Joins::default();
+        let stopped = renamed_while_stopped();
+        joins.expect(stopped.clone());
+        let replacement = Deployed { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), endpoint_id: EndpointId("k2".into()), ..deployed() };
+        let replacement_rx = joins.expect(replacement.clone());
+        let mut d = digest_of(&stopped);
+        d.node.name = "mesh1.rpc.1".parse().unwrap();
+        assert!(matches!(joins.standing(&d), Standing::Deployed { .. }), "the stopped birth is admitted by its node id, whatever name it presents");
+        joins.report(&d);
+        assert!(replacement_rx.borrow().is_none(), "the replacement's deployment heard nothing of the stopped node's join");
     }
 
     // @feature: node-lifecycle

@@ -136,6 +136,9 @@ pub struct AdminSide {
     pub joins: Arc<rafka_node_admin_core::join::Joins>,
     /// The admin every launch from `template` names as its launcher.
     pub launcher: rafka_mesh_entity::launch::Launcher,
+    /// The node rows this admin side holds by `path.name` (what a mesh-primary's store answers
+    /// `node_row_at` with): its join door reads the row's config to hand a joiner.
+    rows: Arc<std::sync::Mutex<std::collections::HashMap<rafka_mesh_entity::PathName, rafka_node_admin_core::storage::NodeRow>>>,
     /// The digest this admin side publishes as itself, on the membership cadence as a node-admin does.
     digest: Arc<std::sync::Mutex<rafka_mesh_entity::digest::MeshDigest>>,
     _router: Router,
@@ -156,16 +159,33 @@ impl AdminSide {
     /// Register the birth `launch` describes, as this admin deployed it, before the node starts:
     /// the node's own `JoinNode` is then verified against it. `key` is the node's fabric key.
     pub fn deployed(&self, launch: &rafka_mesh_entity::launch::Launch, key: &SecretKey) {
+        self.register(launch, key, launch.name.clone(), None, false);
+    }
+
+    /// [`Self::deployed`] of a birth this admin side already holds: its row now names `name`, and
+    /// `last_accepted` is the name its held stopped digest carries (R-JN1).
+    pub fn deployed_as(&self, launch: &rafka_mesh_entity::launch::Launch, key: &SecretKey, name: rafka_mesh_entity::PathName, last_accepted: Option<rafka_mesh_entity::PathName>) {
+        self.register(launch, key, name, last_accepted, true);
+    }
+
+    fn register(&self, launch: &rafka_mesh_entity::launch::Launch, key: &SecretKey, name: rafka_mesh_entity::PathName, last_accepted: Option<rafka_mesh_entity::PathName>, held: bool) {
         let runtime = rafka_mesh_entity::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).expect("the birth's runtime record is written");
         let _ = self.joins.expect(rafka_node_admin_core::join::Deployed {
-            name: launch.name.clone(),
+            name,
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
             endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
             runtime,
             data_dir: launch.data_dir.display().to_string(),
+            last_accepted_name: last_accepted,
+            held,
         });
+    }
+
+    /// Hold `row` as the node row at its `path.name`, a blind put of its own key.
+    pub fn put_row(&self, row: rafka_node_admin_core::storage::NodeRow) {
+        self.rows.lock().unwrap().insert(row.name.clone(), row);
     }
 }
 
@@ -226,6 +246,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
     let joins = Arc::new(rafka_node_admin_core::join::Joins::default());
+    let rows: Arc<std::sync::Mutex<std::collections::HashMap<rafka_mesh_entity::PathName, rafka_node_admin_core::storage::NodeRow>>> = Arc::default();
     let (admin_node_id, admin_incarnation) = (NodeId::mint(), IncarnationId::mint());
     let join_slot: rafka_node_admin_core::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let door = {
@@ -240,7 +261,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
                 Box::pin(async move {
                     Ok(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new() },
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
                 })
@@ -249,6 +270,13 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| None),
             issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::new(signer, rafka_time.clone())),
+            row: Arc::new({
+                let rows = rows.clone();
+                move |name| {
+                    let row = rows.lock().unwrap().get(&name).cloned();
+                    Box::pin(async move { Ok(row) })
+                }
+            }),
         })
     };
     if takes_joins {
@@ -336,6 +364,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
         seed: (admin_ep.id().to_string(), addr),
         joins,
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
+        rows,
         digest: digest_cell,
         _router: router,
     }

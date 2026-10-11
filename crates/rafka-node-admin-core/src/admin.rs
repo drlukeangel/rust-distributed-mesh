@@ -234,8 +234,11 @@ fn node_status(s: MemberStatus) -> NodeStatus {
 pub struct Records {
     nodes: Mutex<BTreeMap<PathName, Node>>,
     removed: Mutex<std::collections::HashSet<(PathName, Option<IncarnationId>)>>,
-    /// The births a replacement renamed `<path>.old`: this view names them so until their departure.
-    renamed: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
+    /// The name a birth's row holds where it differs from the name the birth's digest says: a
+    /// predecessor a replacement renamed `<path>.old`, or a node its mesh-primary renamed while it was
+    /// stopped (`node.update`). The node authors its own digest, so only this view names it so; the
+    /// book's held digest keeps the name the node last published.
+    renamed: Mutex<HashMap<(NodeId, IncarnationId), PathName>>,
     meshes: Mutex<BTreeMap<String, MeshId>>,
     seats: Mutex<Seats>,
     /// nodes.storage: a birth this admin launches is a contact from the moment it is published,
@@ -545,7 +548,7 @@ impl TopologySink for Records {
         if nodes.get(name).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
             nodes.remove(name);
         }
-        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
+        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), name.renamed());
     }
     fn node_rows(&self) -> Option<Arc<crate::node_rows::NodeRows>> {
         self.rows.get().cloned()
@@ -579,6 +582,23 @@ impl crate::fabric_handover::WonClaims for AdminClaims {
             .await
             .map_err(|e| format!("the fabric-primary {fp}'s facts of Build {build_id} could not be read: {e}"))?;
         Ok(claim_in(&fetched.facts))
+    }
+}
+
+impl Records {
+    /// The birth `incarnation` of `node_id`, recorded at `from`, holds the row its mesh-primary moved
+    /// to `to` (`node.update`, R13): its launch record moves with the row.
+    pub fn rename_birth(&self, from: &PathName, node_id: &NodeId, incarnation: &IncarnationId, to: &PathName) {
+        {
+            let mut nodes = self.nodes.lock().unwrap();
+            if nodes.get(from).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
+                if let Some(mut n) = nodes.remove(from) {
+                    n.name = to.clone();
+                    nodes.insert(to.clone(), n);
+                }
+            }
+        }
+        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), to.clone());
     }
 }
 
@@ -718,9 +738,9 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         }
         let Some((_, age)) = book.get_at(d.node.node_id.as_str(), now) else { continue };
         heard.insert(d.node.incarnation.clone());
-        // A predecessor a replacement renamed is `<path>.old` here; its digest still says `<path>`
-        // (a node authors its own digest), so only this view names it so.
-        let name = if renamed.contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) { d.node.name.renamed() } else { d.node.name.clone() };
+        // A birth whose row holds another name is listed at the row's: a predecessor a replacement
+        // renamed `<path>.old`, a node renamed while stopped (a node authors its own digest).
+        let name = renamed.get(&(d.node.node_id.clone(), d.node.incarnation.clone())).cloned().unwrap_or_else(|| d.node.name.clone());
         // A birth under an open restart is held through everything below until its later birth is
         // heard: the restart's own retire (its Leaving, its removal from these records) is not a
         // departure (fabric-node-lifecycle.md: Restarting is commanded silence).
@@ -787,7 +807,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
             continue;
         }
         heard.insert(d.node.incarnation.clone());
-        let name = if renamed.contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) { d.node.name.renamed() } else { d.node.name.clone() };
+        let name = renamed.get(&(d.node.node_id.clone(), d.node.incarnation.clone())).cloned().unwrap_or_else(|| d.node.name.clone());
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
@@ -821,7 +841,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
             continue;
         }
         heard.insert(op.incarnation.clone());
-        let name = if renamed.contains(&(op.node_id.clone(), op.incarnation.clone())) { op.name.renamed() } else { op.name.clone() };
+        let name = renamed.get(&(op.node_id.clone(), op.incarnation.clone())).cloned().unwrap_or_else(|| op.name.clone());
         if removed.contains(&(name.clone(), Some(op.incarnation.clone()))) {
             continue;
         }
@@ -1919,6 +1939,19 @@ impl crate::node_self::Session for AdminSession {
             Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} could not join through {}: unreached: {why}", auth.node.name) }),
         };
         crate::rafka_time::adopt_join_answer(&join_step, &self.rafka_time, &name, &joined);
+        // The row's name and config the join handed are held on this admin's digest and by its
+        // membership before it re-enters its topic or says anything (R-JN1).
+        {
+            let mut d = self.digest.lock().unwrap();
+            if let Some(n) = &joined.control.name {
+                self.membership.set_name(n.clone());
+                d.node.name = n.clone();
+            }
+            if let Some(c) = &joined.control.config {
+                self.membership.set_config(c.clone());
+                d.config = c.clone();
+            }
+        }
         take_entry_control(&joined, &self.accepted, &*self.builds, &self.entry_floor).await;
         if let Some(sd) = joined.control.shutdown.clone() {
             let _ = self.shutdown.learn(sd, "start", &joined.served_by).await;
@@ -2026,7 +2059,7 @@ impl EntryState {
         // answering admin holds of the Build the pointer names is the floor a joiner's own copy
         // of that Build's attempt facts must reach before it is Ready.
         let build = e.accepted.current(&*e.builds).await.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
-        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build, rafka_time_ms, member_cert: Vec::new() };
+        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
         Ok(crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) })
     }
 }
@@ -2693,6 +2726,9 @@ impl AdminRunner {
             endpoint_id: record.endpoint_id.clone().ok_or_else(|| format!("{} has no known endpoint id", record.name))?,
             runtime: handle.fact().ok_or_else(|| format!("{}: the handle names no exact runtime to verify its rejoin against", record.name))?,
             data_dir: record.data_dir.clone().ok_or_else(|| format!("{} has no known data dir", record.name))?,
+            // The name this authority last accepted for this exact birth: its held stopped digest's (R-JN1).
+            last_accepted_name: admitted.as_ref().map(|d| d.node.name.clone()),
+            held: true,
         })
     }
 
@@ -2747,6 +2783,8 @@ impl AdminRunner {
             endpoint_id: record.endpoint_id.clone().ok_or_else(|| format!("{} has no known endpoint id", record.name))?,
             runtime: handle.fact().ok_or_else(|| format!("{}: the handle names no exact runtime to verify its rejoin against", record.name))?,
             data_dir: record.data_dir.clone().or_else(|| admitted.as_ref().and_then(|d| d.data_dir.clone())).ok_or_else(|| format!("{} has no known data dir", record.name))?,
+            last_accepted_name: admitted.as_ref().map(|d| d.node.name.clone()),
+            held: true,
         })
     }
 
@@ -3731,6 +3769,17 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("membership: {e}"))?;
+    // The row's name and config a launched admin's join handed: held before it publishes anything
+    // (R-JN1); at a first start the name is its create spec's, verified by the join.
+    let handed: Option<(Option<PathName>, Option<BTreeMap<String, String>>)> = pulled.as_ref().map(|a| (a.control.name.clone(), a.control.config.clone()));
+    if let Some((n, c)) = &handed {
+        if let Some(n) = n {
+            membership.set_name(n.clone());
+        }
+        if let Some(c) = c {
+            membership.set_config(c.clone());
+        }
+    }
     drop(step);
     // An admin that made no `JoinNode` and is no Day-0 root (a restart, or a recovery started with
     // a seed) holds no rafka-time yet: it reads it from the first node it reaches, before it
@@ -3994,6 +4043,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let hydration_cell: crate::status_rpc::Hydrating = Arc::default();
     // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
     let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
+    // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
+    let rename: crate::status_rpc::Rename = Arc::new(std::sync::OnceLock::new());
     // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
     // event rows it put, and the lifecycle state on each node row it wrote, folded into what it
     // holds as applied. A reader folds; nothing here writes a row.
@@ -4029,6 +4080,17 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             configs: configs_slot.clone(),
             configure: configure.clone(),
             hydration: hydration_cell.clone(),
+            rename: rename.clone(),
+            row_moved: {
+                // The moved row enters what the view is projected from, then the view is projected.
+                let moved: crate::status_rpc::RowMoved = Arc::new(std::sync::OnceLock::new());
+                let (records, project) = (records.clone(), view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()));
+                let _ = moved.set(Arc::new(move |from: PathName, node_id: NodeId, incarnation: IncarnationId, to: PathName| {
+                    records.rename_birth(&from, &node_id, &incarnation, &to);
+                    project()
+                }));
+                moved
+            },
         }));
     }
     // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -4207,7 +4269,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         fabric_id: cfg.fabric_id.clone(),
         node: MeshNode {
             node_id: node_id.clone(),
-            name: name.clone(),
+            name: handed.as_ref().and_then(|(n, _)| n.clone()).unwrap_or_else(|| name.clone()),
             endpoint_id: EndpointId(key.public().to_string()),
             // The mesh endpoint as bound (a rebind may have moved it).
             transport_addr: mesh_addr,
@@ -4224,7 +4286,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         digest_seq: 0,
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
-        config: BTreeMap::new(),
+        config: handed.as_ref().and_then(|(_, c)| c.clone()).unwrap_or_default(),
         load: None,
         gossip: None,
         data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
@@ -4356,6 +4418,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             known: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
             primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
             issuer: issuer.clone(),
+            row: Arc::new({
+                let rows = nodes_storage.clone();
+                move |name: PathName| {
+                    let rows = rows.clone();
+                    Box::pin(async move { rows.node_row_at(&name).await.map_err(|e| e.to_string()) })
+                }
+            }),
         });
         let _ = join_slot.set(door);
         // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
@@ -4663,6 +4732,30 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     d.clone()
                 };
                 let _ = membership.publish(&d).await;
+            })
+        }));
+    }
+    {
+        // The name is held on this admin's own digest and by its membership, taken only with no call
+        // in flight other than the apply itself; a stopped admin holds it and publishes nothing.
+        let (membership, digest, stats) = (membership.clone(), digest.clone(), rpc_server.stats());
+        let _ = rename.set(Arc::new(move |asked: PathName| {
+            let (membership, digest, stats) = (membership.clone(), digest.clone(), stats.clone());
+            Box::pin(async move {
+                let held = digest.lock().unwrap().node.name.clone();
+                let decision = crate::node_name::decide(&held, &asked, rafka_node_rpc::ServerStats::get(&stats.in_flight).saturating_sub(1));
+                if decision == crate::node_name::NameApply::Applied {
+                    membership.set_name(asked.clone());
+                    let d = {
+                        let mut d = digest.lock().unwrap();
+                        d.node.name = asked;
+                        d.clone()
+                    };
+                    if !crate::node_self::parking().is_parked() {
+                        let _ = membership.publish(&d).await;
+                    }
+                }
+                (held, decision)
             })
         }));
     }
@@ -5942,6 +6035,8 @@ mod tests {
             configs: Default::default(),
             configure: Default::default(),
             hydration: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
         };
         let _ = Declared::default();
 
@@ -5958,6 +6053,8 @@ mod tests {
             endpoint_id: reported.node.endpoint_id.clone(),
             runtime,
             data_dir: "/data/mesh1.admin.2".into(),
+            last_accepted_name: None,
+            held: false,
         };
         let joins = Arc::new(Joins::default());
         let _wait = joins.expect(deployed);
@@ -5969,7 +6066,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new() },
+                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
                 })
@@ -5979,6 +6076,7 @@ mod tests {
             }),
             known: view_projector(topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone()),
             primary: Arc::new(|| None),
+            row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(crate::certs::CertIssuer::no_certs({
                 let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);
@@ -6024,6 +6122,37 @@ mod tests {
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         let n = t.node(&admin.node.name).expect("held");
         assert_eq!(n.listeners, vec![("control".to_string(), "127.0.0.1:41777".parse().unwrap())]);
+    }
+
+    /// CONTRACT (R13; node-rpc-envelope.md "Meta and config": a stopped node is sent nothing and reads its
+    /// name in its join answer): a parked birth whose row its mesh-primary moved to `mesh1.rpc.1.old`
+    /// is listed by this admin's view at the row's name on every projection, while the book's held
+    /// stopped digest keeps the name the node last published (R-JN1's last accepted name). What must
+    /// NOT happen: the next projection from the book putting the node back at its digest's name, so a
+    /// start by the row's name finds nothing.
+    #[test]
+    fn a_parked_birth_renamed_by_its_row_is_listed_at_the_rows_name_on_every_projection() {
+        let book = DigestBook::default();
+        let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(held.clone());
+        let stop = rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "stop-node:mesh1.rpc.1".into(),
+            node_id: held.node.node_id.clone(),
+            incarnation: held.node.incarnation.clone(),
+            name: held.node.name.clone(),
+            event_at_rafka_ms: 1,
+        };
+        assert!(book.stopped(stop));
+        let records = Records::default();
+        let to: PathName = "mesh1.rpc.1.old".parse().unwrap();
+        records.rename_birth(&held.node.name, &held.node.node_id, &held.node.incarnation, &to);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        let n = t.node(&to).unwrap_or_else(|| panic!("the parked birth is listed at its row's name: {:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>()));
+        assert_eq!((n.node_id.clone(), n.incarnation_id.clone(), n.status, n.parked), (held.node.node_id.clone(), Some(held.node.incarnation.clone()), NodeStatus::Leaving, true));
+        assert!(t.node(&held.node.name).is_none(), "nothing is listed at the name the row moved from");
+        assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()], "the held stopped digest keeps the name the node last published");
     }
 
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the

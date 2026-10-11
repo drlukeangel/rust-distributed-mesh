@@ -218,6 +218,18 @@ impl RunningNode {
     }
 }
 
+/// Hold the row's name and config a join answer handed (R-JN1, node-start.md step 2): every digest
+/// `membership` publishes from now on carries them.
+fn install_handed(membership: &Membership, control: &rafka_node_admin_core::wire::JoinControl) {
+    if let Some(name) = &control.name {
+        membership.set_name(name.clone());
+    }
+    if let Some(config) = &control.config {
+        membership.set_config(config.clone());
+    }
+    tracing::info!(name = ?control.name.as_ref().map(|n| n.to_string()), config_keys = control.config.as_ref().map_or(0, |c| c.len()), "the row's name and config the join handed are held");
+}
+
 /// [`start_with_seams`] for an app that hydrates before Ready: `hydration` carries its
 /// `hydrate_before_ready` hook (and the gate its own server-side ops sit behind).
 pub async fn start_hydrating(launch: &Launch, hydration: rafka_node_admin_core::app_hydration::Hydration, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
@@ -428,6 +440,9 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     drop(join_step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-membership-joined", node = %launch.name, mesh_id = %mesh_id, seeds = seeds.len());
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds).await?;
+    // The row's name and config the join answer handed are held before this node publishes
+    // anything or declares readiness: every digest from its first carries them (R-JN1).
+    install_handed(&membership, &joined.control);
     drop(step);
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &name);
     // This node serves the topology it holds from here on (until now a read is `NotReady`).
@@ -539,7 +554,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         hydration_cell: hydration_cell.clone(),
         hydrating: hydrating_cell.clone(),
     }));
-    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own, addressed: addressed.clone(), hydration: hydration_cell.clone() }));
+    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own, addressed: addressed.clone(), hydration: hydration_cell.clone(), stats: server.stats() }));
     ready.store(true, std::sync::atomic::Ordering::SeqCst);
     *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
@@ -698,16 +713,19 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
 
     async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
         use rafka_node_admin_core::node_self::StartFailed;
-        let name = self.name.to_string();
-        let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %self.name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
-        let join_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-join-admitted", node = %self.name, launcher = %authority);
+        // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
+        // rides it, never the birth's frozen name (R-JN1).
+        let held = self.membership.with_config(&self.digest);
+        let name = held.node.name.to_string();
+        let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
+        let join_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %authority);
         let Some((auth, _)) = self.membership.book.get(authority.as_str()) else {
             return Err(StartFailed { step: "node.join", reason: format!("{name}: the admin that commanded the start ({authority}) is not held by this node, so it cannot be joined through") });
         };
         let key = auth.node.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| StartFailed { step: "node.join", reason: format!("{}: its endpoint id is not an iroh key: {e}", auth.node.name) })?;
         self.resolver.apply(rafka_node_rpc::ResolvedNode { node_id: auth.node.node_id.clone(), name: auth.node.name.clone(), endpoint_id: key, transport_addr: auth.node.transport_addr, incarnation: auth.node.incarnation.clone() }, None);
-        // 1. The join: the same digest this birth was admitted with, Pending, to the admin that commanded the start.
-        let mut join_digest = self.digest.clone();
+        // 1. The join: the digest this birth holds, Pending, to the admin that commanded the start.
+        let mut join_digest = held;
         join_digest.status = MemberStatus::Pending;
         let joined = match rafka_node_admin_core::join::call_join(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &key.fmt_short().to_string(), &join_digest, 5).await {
             Ok(a) => a,
@@ -718,8 +736,11 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         rafka_node_admin_core::rafka_time::adopt_join_answer(&join_step, &self.rafka_time, &name, &joined);
         let member_cert = joined.control.member_cert.clone();
         drop(join_step);
+        // The row's name and config the join answer handed are held before the node re-enters its
+        // topic or says anything: a node renamed while stopped publishes its row's name (R-JN1).
+        install_handed(&self.membership, &joined.control);
         // 2. The mesh channel and the topology: rafka-time again last, so both are current the moment the node re-enters.
-        let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %self.name, launcher = %authority);
+        let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %name, launcher = %authority);
         self.membership.unpark().await;
         self.membership.learn_statuses(&joined.statuses);
         let read = rafka_node_admin_core::topology_read::get_topology(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &auth.node.name.mesh, &self.membership, None, None)
@@ -889,7 +910,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_nod
             },
             other => (format!("{}: {other:?}", other.name()), false),
         };
-        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %me.name, state = ?state, to = %a.node.name, outcome = %outcome, definitive)
+        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %membership.held_name(&me.name), state = ?state, to = %a.node.name, outcome = %outcome, definitive)
             .in_scope(|| tracing::info!("declared own state to an admin of the mesh"));
         last = Some(outcome.clone());
         if definitive {
@@ -915,6 +936,8 @@ pub(crate) struct Kicked {
     /// Where this birth's `hydrate_before_ready` stands (the cell a start's hook writes): while it is
     /// Blocked, a probe is answered `Blocked` carrying its blocker.
     hydration: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>>,
+    /// This node's server counters: its in-flight calls decide whether it may take a new name.
+    stats: Arc<rafka_node_rpc::ServerStats>,
 }
 
 type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
@@ -960,7 +983,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
                 };
                 let reply = me.own.serve(&from.node.node_id, Some(peer.endpoint_id), &req).await.expect("a command");
-                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.digest.node.name, op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a node command naming this node was decided"));
                 return Ok(reply);
             }
@@ -977,12 +1000,12 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     }
                     Some(_) => me.own.serve(&from.node.node_id, None, &req).await.expect("a round op"),
                 };
-                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.digest.node.name, op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a round command naming this node was decided"));
                 return Ok(reply);
             }
             let (node_id, incarnation) = match &req {
-                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } => (node_id, incarnation),
+                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } => (node_id, incarnation),
                 _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             };
             if *node_id != me.digest.node.node_id || !from_admin {
@@ -1016,7 +1039,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
                         "rdm.node_admin.status.update.via-probe",
-                        node = %me.digest.node.name,
+                        node = %me.membership.held_name(&me.digest.node.name),
                         sender = %sender_name,
                         state = ?node_state_of(status),
                     )
@@ -1026,7 +1049,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::ApplyNodeState { state, .. } => {
                     // Not a drain command and not a stop: the only drain path is drain-node.
                     let current = node_state_of(*me.status.lock().unwrap());
-                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.digest.node.name, sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state")
+                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(StatusReply::RejectedInvalidNodeTransition { current })
                 }
@@ -1045,9 +1068,45 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             Err(_) => "publish-failed",
                         }
                     };
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.name, sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this birth's digest"));
                     Ok(StatusReply::Applied)
+                }
+                StatusRequest::ApplyNodeName { name, .. } => {
+                    // R12: the node owns its name and takes the row's name only with no traffic. It is
+                    // held first, so every later publish carries it; a live node publishes now, a
+                    // stopped one presents nothing until it starts.
+                    let held = me.membership.with_config(&me.digest).node.name;
+                    let asked = match name.parse::<rafka_mesh_entity::PathName>() {
+                        Ok(n) => n,
+                        Err(e) => {
+                            tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node = %held, sender = %sender_name, to = %name, reason = %format!("the name {name:?} is not a path.name: {e}"), "otel.kind" = "internal")
+                                .in_scope(|| tracing::info!("apply-node-name refused: the name does not parse"));
+                            return Ok(StatusReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt });
+                        }
+                    };
+                    // The apply call itself is in flight and is not traffic (as node_self's drain).
+                    let in_flight = rafka_node_rpc::ServerStats::get(&me.stats.in_flight).saturating_sub(1);
+                    let decision = rafka_node_admin_core::node_name::decide(&held, &asked, in_flight);
+                    let published = match decision {
+                        rafka_node_admin_core::node_name::NameApply::Applied => {
+                            me.membership.set_name(asked.clone());
+                            if me.own.is_parked() {
+                                "stopped"
+                            } else {
+                                let mut d = me.digest.clone();
+                                d.status = *me.status.lock().unwrap();
+                                match me.membership.publish(&d).await {
+                                    Ok(()) => "published",
+                                    Err(_) => "publish-failed",
+                                }
+                            }
+                        }
+                        _ => "unchanged",
+                    };
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, in_flight, digest = published, outcome = decision.name(), "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
+                    Ok(rafka_node_admin_core::node_name::reply(&held, &asked, &decision))
                 }
                 _ => Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             }

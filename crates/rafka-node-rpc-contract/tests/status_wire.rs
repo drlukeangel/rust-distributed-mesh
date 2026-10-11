@@ -20,7 +20,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_nineteen_variant_wire_schema() {
+fn requests_match_the_frozen_twenty_one_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c30313233343536373839616205626972746803"),
@@ -54,6 +54,8 @@ fn requests_match_the_frozen_nineteen_variant_wire_schema() {
         (StartNode { node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() }, "100c3031323334353637383961620562697274680c626c645f3161326233633464011673746172742d6e6f64653a6d657368312e7270632e31"),
         (UpdateNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c30313233343536373839616205626972746801016b0176"),
         (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c30313233343536373839616205626972746801016b0176"),
+        (ApplyNodeName { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "130c3031323334353637383961620562697274680b6d657368312e7270632e31"),
+        (UpdateNode { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "140c3031323334353637383961620562697274680b6d657368312e7270632e31"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -64,7 +66,7 @@ fn requests_match_the_frozen_nineteen_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
+fn replies_match_the_frozen_thirty_one_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -93,6 +95,11 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
         (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),
         (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
         (Blocked { node_id: node(), incarnation: birth(), reason: "r".into(), retry_on: RetryOn::TargetReachable { node_id: node() } }, "190c3031323334353637383961620562697274680172010c303132333435363738396162"),
+        (NodeUpdated { node_id: node(), incarnation: birth() }, "1a0c303132333435363738396162056269727468"),
+        (RejectedMetaFieldIsRdmOwned { field: "name".into() }, "1b046e616d65"),
+        (NameHeld { name: "n".into(), by: node() }, "1c016e0c303132333435363738396162"),
+        (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
+        (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {

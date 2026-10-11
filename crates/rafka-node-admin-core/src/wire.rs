@@ -732,8 +732,15 @@ pub struct JoinControl {
     pub rafka_time_ms: u64,
     /// The member cert the accepting authority's signer issued for exactly this birth, as opaque
     /// bytes RDM never parses (`fabric-certs.md`). Empty when the authority is configured with no
-    /// certs. Appended last: it is the control frame's final field.
+    /// certs.
     pub member_cert: Vec<u8>,
+    /// The row's name for this birth, the name it was admitted under: the node installs it before
+    /// it publishes anything or declares readiness (R-JN1, node-start.md step 2). Filled by the join
+    /// door for the accepted birth; a node refuses an answer without it.
+    pub name: Option<PathName>,
+    /// The config the birth's row holds, handed beside its name; `None` when no row was ever
+    /// written at the name. Appended last: it is the control frame's final field.
+    pub config: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// The attempt of the pointed Build a joiner's copy must reach before Ready.
@@ -760,6 +767,8 @@ struct WireControl {
     build: Option<WireBuildFloor>,
     rafka_time_ms: u64,
     member_cert: Vec<u8>,
+    name: Option<PathName>,
+    config: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -780,6 +789,8 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
             build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone(), attempt: b.attempt }),
             rafka_time_ms: c.rafka_time_ms,
             member_cert: c.member_cert.clone(),
+            name: c.name.clone(),
+            config: c.config.clone(),
         },
         statuses: answer.statuses.clone(),
     };
@@ -798,6 +809,8 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
             build: w.control.build.map(|b| BuildFloor { build_id: b.build_id, attempt: b.attempt }),
             rafka_time_ms: w.control.rafka_time_ms,
             member_cert: w.control.member_cert,
+            name: w.control.name,
+            config: w.control.config,
         },
         statuses: w.statuses,
     })

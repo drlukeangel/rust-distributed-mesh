@@ -96,6 +96,8 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
             runtime,
             data_dir: joiner_dir.display().to_string(),
+            last_accepted_name: None,
+            held: false,
         });
         let env = launch.to_env();
         let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");

@@ -2355,6 +2355,9 @@ pub struct Membership {
     /// The config this birth's mesh-primary last told it (`ApplyNodeConfig`; ops-naming "Node data"):
     /// carried in every digest this membership publishes from then on. `None` until it is told.
     config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
+    /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
+    /// digest this membership publishes from then on. `None` while the birth holds its launch name.
+    name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
 }
 
 impl Membership {
@@ -2418,7 +2421,7 @@ impl Membership {
             Box::pin(async move { channel.broadcast(&f).await })
         });
         let forward_path = ForwardPath::new(view.forwarder.clone(), Arc::default(), sink);
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default() };
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name: Arc::default() };
         me.watch_meshes(node.to_string());
         Ok(me)
     }
@@ -2573,11 +2576,25 @@ impl Membership {
         *self.config.lock().unwrap() = Some(config);
     }
 
-    /// `d` as this birth reports it: with the config it was told, when it was told one.
+    /// Hold `name` as this birth's name: every digest this membership publishes from now on carries
+    /// it (R12: the node publishes only the name its row holds).
+    pub fn set_name(&self, name: rafka_mesh_entity::PathName) {
+        *self.name.lock().unwrap() = Some(name);
+    }
+
+    /// The name this birth publishes: the one it was told ([`Self::set_name`]), else `birth`'s.
+    pub fn held_name(&self, birth: &rafka_mesh_entity::PathName) -> rafka_mesh_entity::PathName {
+        self.name.lock().unwrap().clone().unwrap_or_else(|| birth.clone())
+    }
+
+    /// `d` as this birth reports it: with the config and the name it was told, when it was told them.
     pub fn with_config(&self, d: &MeshDigest) -> MeshDigest {
         let mut d = d.clone();
         if let Some(c) = self.config.lock().unwrap().as_ref() {
             d.config = c.clone();
+        }
+        if let Some(n) = self.name.lock().unwrap().as_ref() {
+            d.node.name = n.clone();
         }
         d
     }
@@ -3388,6 +3405,10 @@ pub struct DigestBook {
     /// overlays and departures a mesh primary's aggregate carries. A local observation; nothing is
     /// sent.
     overlays: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Ticks each time a digest is taken, a fresher digest of a held birth included (its name,
+    /// config, load or `digest_seq` moved): what a local waiter on "that node published again"
+    /// wakes on. A local observation of the book; nothing is sent.
+    digests: Arc<tokio::sync::watch::Sender<u64>>,
     /// Proven departures by NodeId, with when this book accepted each: held
     /// for `retention` of local age, then forgotten.
     departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
@@ -3487,6 +3508,7 @@ impl DigestBook {
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
             heard: Arc::new(tokio::sync::watch::Sender::new(0)),
             overlays: Arc::new(tokio::sync::watch::Sender::new(0)),
+            digests: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
             in_flight: Arc::default(),
             stopped_marks: Arc::default(),
@@ -3980,6 +4002,7 @@ impl DigestBook {
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
+        self.digests.send_modify(|v| *v += 1);
         true
     }
 
@@ -4036,6 +4059,7 @@ impl DigestBook {
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
+        self.digests.send_modify(|v| *v += 1);
         true
     }
 
@@ -4079,6 +4103,7 @@ impl DigestBook {
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
+        self.digests.send_modify(|v| *v += 1);
         true
     }
 
@@ -4095,6 +4120,12 @@ impl DigestBook {
     /// interleave with its subscribing.
     pub fn heard_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.heard.subscribe()
+    }
+
+    /// Ticks each time a digest is taken (any of [`Self::record`], a forwarded or a topology copy
+    /// that moved the held digest). The value is a count, as [`Self::heard_changes`].
+    pub fn digest_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.digests.subscribe()
     }
 
     /// The digests heard within `fresh`.
@@ -4649,6 +4680,31 @@ mod tests {
         assert!(book.record_forwarded_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200), later), "an equal forwarded copy");
         assert_eq!(book.get_at(id.as_str(), later).unwrap().1, Duration::ZERO, "keeps the member heard");
         assert!(!book.record_forwarded_at(digest(&id, &birth, None, MemberStatus::Pending, 100), later), "an older copy is not taken");
+    }
+
+    /// CONTRACT: every digest the book takes ticks `digest_changes`, a fresher digest of the same
+    /// birth and status included (a renamed node's next digest is one); a digest the book refuses
+    /// as older does not tick.
+    #[test]
+    fn every_taken_digest_ticks_digest_changes_and_a_refused_one_does_not() {
+        let book = DigestBook::default();
+        let mut digests = book.digest_changes();
+        let (id, birth) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(digests.has_changed().unwrap(), "the first digest ticks");
+        digests.borrow_and_update();
+        let mut renamed = digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 101);
+        renamed.config.insert("k".into(), "v".into());
+        assert!(book.record(renamed));
+        assert!(digests.has_changed().unwrap(), "a fresher digest of the same birth and status ticks");
+        digests.borrow_and_update();
+        assert!(!book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(!digests.has_changed().unwrap(), "a refused older digest does not tick");
+        assert!(book.record_forwarded(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 102)));
+        assert!(digests.has_changed().unwrap(), "a forwarded fresher digest ticks");
+        digests.borrow_and_update();
+        assert!(book.record_topology(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 103)));
+        assert!(digests.has_changed().unwrap(), "a topology copy that moved the held digest ticks");
     }
 
     #[test]

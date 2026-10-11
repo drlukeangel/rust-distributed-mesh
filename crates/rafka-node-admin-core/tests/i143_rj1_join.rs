@@ -84,6 +84,8 @@ fn deployed() -> Deployed {
         endpoint_id: EndpointId("node-key".into()),
         runtime: RuntimeFact::of_this_process("dep-rj1").unwrap(),
         data_dir: "/data/mesh1.rpc.1".into(),
+        last_accepted_name: None,
+        held: false,
     }
 }
 
@@ -136,7 +138,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                 Box::pin(async {
                     Ok(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new() },
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
                 })
@@ -144,6 +146,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
+            row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
                 let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);
@@ -194,6 +197,134 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
     let refusal = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.reject.via-join-mismatch").unwrap();
     assert_eq!(refusal["attributes"]["field"], "incarnation", "{refusal}");
     assert!(spans.iter().any(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["outcome"] == "installed"));
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+/// The door of an admin whose node row at `mesh1.rpc.1` is `row`, its installs logged in `log`.
+fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row: rafka_node_admin_core::storage::NodeRow) -> JoinDoor {
+    JoinDoor {
+        me: "mesh1.admin.1".parse().unwrap(),
+        joins,
+        answer: Arc::new(|| {
+            Box::pin(async {
+                Ok(rafka_node_admin_core::wire::JoinAnswer {
+                    served_by: "mesh1.admin.1".into(),
+                    control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                    statuses: vec![],
+                })
+            })
+        }),
+        install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
+        known: Arc::new(|| Box::pin(async {})),
+        primary: Arc::new(|| Some("mesh1.admin.2".into())),
+        row: Arc::new(move |_| {
+            let row = row.clone();
+            Box::pin(async move { Ok(Some(row)) })
+        }),
+        issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
+            let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+            t.adopt(1_000);
+            t
+        })),
+    }
+}
+
+/// CONTRACT (R-JN1 items 2 and 5; node-start.md step 2): a held birth's start registered by an
+/// admin that holds no stopped digest of it (it joined after the stop: no last accepted name) is
+/// still a held birth: its join reads the row at its name and hands the row's name and config in
+/// the answer. Whether a join is reconciled to its row is what registered the deployment says
+/// (`Deployed::held`), never inferred from a last accepted name.
+#[test]
+fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
+    let cell = "a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cap = capture(cell);
+    let dep = Deployed { held: true, ..deployed() };
+    let result = cap.run(async {
+        let joins = Arc::new(Joins::default());
+        let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
+        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect() };
+        let door = door_over(joins.clone(), installed.clone(), row);
+        let _reported = joins.expect(dep.clone());
+        let good = digest_of(&dep, "127.0.0.1:34569");
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into() }).await;
+        let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
+        let answer = rafka_node_admin_core::wire::answer_from_wire(answer).expect("the answer decodes");
+        assert_eq!(answer.control.config.as_ref().and_then(|c| c.get("tier")).map(String::as_str), Some("gold"), "the held birth is handed its row's config: {answer:?}");
+        assert_eq!(answer.control.name.as_ref().map(|n| n.to_string()).as_deref(), Some("mesh1.rpc.1"), "and its row's name");
+        json!({ "cell": cell, "joined": format!("{joined:?}") })
+    });
+    let spans = cap.spans();
+    let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
+    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["config_keys"].as_str()), (Some("installed"), Some("1")), "{join}");
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+/// CONTRACT (R-JN1 item 6; node-create.md step 4; node-recovery.md steps 3-4): a first start (a
+/// birth this authority does not hold: no last accepted name) is admitted under its create spec's
+/// name whatever row stands at that `path.name`. A recovery creates the new node at the exited
+/// node's `path.name`, where the predecessor's row still stands (its `Deleted` row, the seed of the
+/// new node's config, which the new birth's own claim takes over after the join): the join
+/// installs the reported address and answers `Joined`, never `JoinMismatch` naming the
+/// predecessor's row. Only a held birth's join reads the row it is reconciled to.
+#[test]
+fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitted_under_its_create_spec_name() {
+    let cell = "a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitted_under_its_create_spec_name";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cap = capture(cell);
+    let dep = deployed();
+    let predecessor = NodeId::mint();
+    let result = cap.run(async {
+        let joins = Arc::new(Joins::default());
+        let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
+        let log = installed.clone();
+        let row = rafka_node_admin_core::storage::NodeRow {
+            name: dep.name.clone(),
+            node_id: predecessor.clone(),
+            status: rafka_node_admin_core::model::NodeStatus::Deleted,
+            config: [("tier".to_string(), "gold".to_string())].into_iter().collect(),
+        };
+        let door = JoinDoor {
+            me: "mesh1.admin.1".parse().unwrap(),
+            joins: joins.clone(),
+            answer: Arc::new(|| {
+                Box::pin(async {
+                    Ok(rafka_node_admin_core::wire::JoinAnswer {
+                        served_by: "mesh1.admin.1".into(),
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                        statuses: vec![],
+                    })
+                })
+            }),
+            install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
+            known: Arc::new(|| Box::pin(async {})),
+            primary: Arc::new(|| Some("mesh1.admin.2".into())),
+            row: Arc::new(move |_| {
+                let row = row.clone();
+                Box::pin(async move { Ok(Some(row)) })
+            }),
+            issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
+                let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+                t.adopt(1_000);
+                t
+            })),
+        };
+        let reported = joins.expect(dep.clone());
+        let good = digest_of(&dep, "127.0.0.1:34568");
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into() }).await;
+        assert!(matches!(joined, JoinReply::Joined { .. }), "a first start is admitted under its create spec's name over its predecessor's row: {joined:?}");
+        assert_eq!(*installed.lock().unwrap(), vec![good.node.transport_addr], "the reported address is installed for the key");
+        assert_eq!(reported.borrow().as_ref().map(|d| d.node.node_id.clone()), Some(dep.node_id.clone()), "WaitForBind receives the new node's own report");
+        json!({ "cell": cell, "joined": format!("{joined:?}"), "predecessor": predecessor.as_str() })
+    });
+    let spans = cap.spans();
+    let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
+    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["admitted_as"].as_str()), (Some("installed"), Some("mesh1.rpc.1")), "{join}");
+    assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.reject.via-join-mismatch").count(), 0, "no refusal names the predecessor's row");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }

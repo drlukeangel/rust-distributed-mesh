@@ -157,6 +157,8 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         configs: Default::default(),
         configure: Default::default(),
         hydration: Default::default(),
+        rename: Default::default(),
+        row_moved: Default::default(),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
