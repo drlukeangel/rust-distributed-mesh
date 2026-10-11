@@ -4624,7 +4624,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let view = topology.read().await.clone();
                 let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
-                let own_mesh_held = records.meshes.lock().unwrap().get(&me.mesh).and_then(|id| records.declared.lock().unwrap().meshes.get(id).copied());
+                let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
+                let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
                 // One coalesced wake from the inputs, never a timer: a poke during the round is
