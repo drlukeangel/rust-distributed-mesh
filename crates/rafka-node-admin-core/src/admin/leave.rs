@@ -520,11 +520,12 @@ impl AdminRunner {
         let Some(node_rpc) = self.node_rpc.as_ref() else {
             return StatusReply::NotReady { reason: format!("{} holds no Node RPC client to read the manifest with", self.me) };
         };
-        let facts = match crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(build_id.to_string())).await {
-            Ok(f) => f.facts,
-            Err(e) => return StatusReply::NotReady { reason: format!("{}: the manifest {receipt_manifest} could not be read from {final_node_id}: {e}", self.me) },
+        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(build_id.to_string())).await.map(|f| f.facts);
+        let verdict = match crate::mesh_leave::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &self.me.to_string(), &final_node_id.to_string()) {
+            Ok(v) => v,
+            Err(reason) => return StatusReply::NotReady { reason },
         };
-        let manifest = match crate::mesh_leave::handoff_verdict(&facts, &key, &admitted, receipt_manifest) {
+        let manifest = match verdict {
             crate::mesh_leave::HandoffVerdict::Accept(m) => m,
             crate::mesh_leave::HandoffVerdict::Incomplete { reason, without_exit } => {
                 // The leaving primary recorded no manifest: the open leave ends now with the

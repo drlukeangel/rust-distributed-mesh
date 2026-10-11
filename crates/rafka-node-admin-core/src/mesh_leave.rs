@@ -763,6 +763,16 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
     HandoffVerdict::Accept(manifest)
 }
 
+/// The verdict on the handoff of the leave `key` from the final primary's Build facts as `reader`
+/// read them from it (`read`, the sender `sender`'s FetchBuildFacts answer). `Err` is a read that
+/// decides nothing: the reply is not-ready by that name and the open leave stays open.
+pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, String> {
+    match read {
+        Ok(facts) => Ok(handoff_verdict(&facts, key, admitted, receipt_manifest)),
+        Err(e) => Err(format!("{reader}: the manifest {receipt_manifest} could not be read from {sender}: {e}")),
+    }
+}
+
 /// The key of one open mesh leave at the fabric-primary.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LeaveKey {
