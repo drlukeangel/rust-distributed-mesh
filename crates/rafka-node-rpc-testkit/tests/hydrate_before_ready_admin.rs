@@ -157,6 +157,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             runtime,
             data_dir: joiner_dir.display().to_string(),
             last_accepted_name: None,
+            held: false,
         });
         let env = launch.to_env();
         let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");

@@ -159,12 +159,16 @@ impl AdminSide {
     /// Register the birth `launch` describes, as this admin deployed it, before the node starts:
     /// the node's own `JoinNode` is then verified against it. `key` is the node's fabric key.
     pub fn deployed(&self, launch: &rafka_mesh_entity::launch::Launch, key: &SecretKey) {
-        self.deployed_as(launch, key, launch.name.clone(), None);
+        self.register(launch, key, launch.name.clone(), None, false);
     }
 
     /// [`Self::deployed`] of a birth this admin side already holds: its row now names `name`, and
     /// `last_accepted` is the name its held stopped digest carries (R-JN1).
     pub fn deployed_as(&self, launch: &rafka_mesh_entity::launch::Launch, key: &SecretKey, name: rafka_mesh_entity::PathName, last_accepted: Option<rafka_mesh_entity::PathName>) {
+        self.register(launch, key, name, last_accepted, true);
+    }
+
+    fn register(&self, launch: &rafka_mesh_entity::launch::Launch, key: &SecretKey, name: rafka_mesh_entity::PathName, last_accepted: Option<rafka_mesh_entity::PathName>, held: bool) {
         let runtime = rafka_mesh_entity::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).expect("the birth's runtime record is written");
         let _ = self.joins.expect(rafka_node_admin_core::join::Deployed {
             name,
@@ -175,6 +179,7 @@ impl AdminSide {
             runtime,
             data_dir: launch.data_dir.display().to_string(),
             last_accepted_name: last_accepted,
+            held,
         });
     }
 

@@ -1394,6 +1394,7 @@ impl DeploymentPipeline<'_> {
                 runtime,
                 data_dir: data_dir.display().to_string(),
                 last_accepted_name: None,
+                held: false,
             })),
             None => None,
         };
