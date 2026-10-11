@@ -84,7 +84,10 @@ impl AdminRunner {
         // was handed over first (fabric-primary-handover.md): the leave opens only on the confirmed
         // transfer, and an unconfirmed one is reconciled here before anything is dismantled.
         self.handover.confirmed(mesh_id).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric-primary handover is not confirmed: {e}"))?;
-        let primary = view.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to"))?;
+        let primary = match view.cohort_primary(mesh, NodeKind::NodeAdmin).cloned() {
+            Some(p) => p,
+            None => self.admin_for_leaving_mesh(build_id, attempt, mesh, &key, &steps, &view).await?,
+        };
         // A resumed attempt hands the workflow only to the final primary admitted, or to the one the
         // last roster amendment names. A different primary is the leaving mesh's primary lost
         // mid-leave: the lost one's exact exit is proven and recorded first, then the amendment
@@ -130,6 +133,62 @@ impl AdminRunner {
             self.leaves.close(&key);
         }
         result
+    }
+
+    /// The leaving mesh holds no node-admin primary. Before admission that refuses the leave; after
+    /// it, with no admin of the mesh left live, the fabric-primary resumes the leave through the one
+    /// node-admin it creates for the mesh (mesh-leave.md, "Resume after the primary's loss", steps
+    /// 1-2): the lost final primary's exact Exited is proven and recorded first, so nothing is born
+    /// for the mesh on an unproven exit (R-D1); then the admin is created at a path no birth held,
+    /// into the existing mesh under its existing MeshId. A live admin not yet seated is no loss:
+    /// the attempt ends and the next one hands that admin the workflow.
+    async fn admin_for_leaving_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &LeaveKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<Node, String> {
+        let outer = key.operation.as_str();
+        let no_primary = format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to");
+        let Some(adm) = crate::mesh_leave::admitted_of(steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))? else {
+            return Err(no_primary);
+        };
+        if let Some(live) = view.cohort(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
+            return Err(format!("{no_primary}: its admin {} is live and holds no seat yet, so it is not lost; the next attempt hands the workflow to the admin seated", live.name));
+        }
+        let lost = adm.final_primary.clone();
+        if !crate::mesh_leave::exit_receipts(steps, outer, std::slice::from_ref(&lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
+            let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {} holds no durable runtime rows to prove the lost final primary {} {}'s exit from", self.me, lost.node, lost.incarnation_id))?;
+            let rows = store.runtimes().await.map_err(|e| format!("{outer} is refused: {}'s durable runtime rows could not be read to prove the lost final primary {} {}'s exit: {e}", self.me, lost.node, lost.incarnation_id))?;
+            let terminal = crate::mesh_leave::prove_predecessor_exit(&*self.provider, &rows, &lost, &adm.final_runtime).await.map_err(|reason| {
+                crate::mesh_leave::span_unproven(key, &lost, &reason);
+                format!("{outer} is refused: {mesh} has no live admin and its final primary {} {} is silent but not proven exited, so no admin is created for it: {reason}", lost.node, lost.incarnation_id)
+            })?;
+            crate::mesh_leave::record_predecessor_exit(&*self.builds, key, &self.me.to_string(), &terminal).await?;
+        }
+        let held: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
+        let path = crate::mesh_leave::leaving_mesh_admin_path(mesh, &adm.roster, &held)?;
+        let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node = %path, build_id = %build_id, attempt, operation = %outer, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), outcome = tracing::field::Empty);
+        let created = self.create_leaving_mesh_admin(build_id, attempt, &path).instrument(span.clone()).await;
+        span.record("outcome", if created.is_ok() { "created" } else { "failed" });
+        created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
+        self.refresh_view().await;
+        let now = self.topology.read().await.clone();
+        now.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| format!("{outer}: {path} was created for {mesh} and holds no mesh-primary seat yet; the next attempt amends the roster for it"))
+    }
+
+    /// node.create of `path`, the one node-admin of a leaving mesh no admin of which survives, into
+    /// the EXISTING mesh (mesh-recovery.md: "it joins under the EXISTING MeshId and never mints
+    /// another"): the mesh's issuing material, as any mesh's only admin carries, and no Pending
+    /// hand-off: the mesh's state only moves forward (states.md, "pending -> ready-for-traffic ->
+    /// leaving -> dead"), and a mesh that is leaving is never told it is pending.
+    async fn create_leaving_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName) -> Result<(), String> {
+        match self.fence_predecessor(path).await {
+            crate::fence::FenceOutcome::Clear { gone: None } => {}
+            other => return Err(format!("{path} is not a path no birth held: the create door fenced {other:?}")),
+        }
+        let template = self.with_mesh_issuer(self.template_for(NodeKind::NodeAdmin, &path.mesh).await?, &path.mesh)?;
+        let held_runtimes = self.held_runtimes().await;
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: path.clone(), spec: spec_for(NodeKind::NodeAdmin), restart_of: None, held_runtimes };
+        let created = self.pipeline(&template).create_with(&req, None).await.map_err(|e| e.to_string())?;
+        self.bring_into_traffic(&created.node).await?;
+        self.handles.lock().unwrap().insert(path.clone(), (created.node, created.handle));
+        Ok(())
     }
 
     /// The resume after the leaving mesh's final primary `adm.final_primary` was lost and `held`

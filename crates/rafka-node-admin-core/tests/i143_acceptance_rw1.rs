@@ -257,7 +257,7 @@ fn facts() -> Vec<BuildFact> {
             out.push(step(rafka_node_admin_core::deployment::pipeline::RetireStep::SeatTransfer.name(), Some(to_json(&o))));
         }
     }
-    out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": null, "reason": "not a mesh's first admin" }))));
+    out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": null, "reason": "no Pending owed: not a new mesh's first admin" }))));
     for s in [RetireStep::NodeDeleting, RetireStep::NodeRestarting, RetireStep::NodeDeleted] {
         out.push(step(s.name(), Some(to_json(&op("retire-node:mesh2.rpc.1")))));
     }
