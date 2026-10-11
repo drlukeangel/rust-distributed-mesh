@@ -92,6 +92,8 @@ impl Declared {
 pub struct SeatFold {
     storage: Arc<dyn crate::status_storage::StatusStorage>,
     mesh: String,
+    /// This admin's `path.name`: what the fold span names it by, as every status span does.
+    name: crate::model::PathName,
     me: NodeId,
     /// Whether this admin holds the seat with the rows folded: cleared when a view names another
     /// holder, so each tenure folds once, at its start.
@@ -99,9 +101,9 @@ pub struct SeatFold {
 }
 
 impl SeatFold {
-    /// The rows of `mesh` in `storage`, folded by the admin born as `me`.
-    pub fn new(storage: Arc<dyn crate::status_storage::StatusStorage>, mesh: String, me: NodeId) -> Self {
-        Self { storage, mesh, me, folded: Mutex::new(false) }
+    /// The rows of `mesh` in `storage`, folded by the admin `name` born as `me`.
+    pub fn new(storage: Arc<dyn crate::status_storage::StatusStorage>, mesh: String, name: crate::model::PathName, me: NodeId) -> Self {
+        Self { storage, mesh, name, me, folded: Mutex::new(false) }
     }
 
     /// The view `now` is being installed: when it names this admin its mesh's primary and this
@@ -123,6 +125,7 @@ impl SeatFold {
         }
         let span = tracing::info_span!(
             "rdm.node_admin.status.resolve.via-seat-taken",
+            node = %self.name,
             node_id = %self.me,
             mesh = %self.mesh,
             node_declared_rows = tracing::field::Empty,

@@ -344,10 +344,10 @@ impl Records {
         let _ = self.rows.set(rows);
     }
 
-    /// The status rows of `mesh` this admin (born as `me`) folds when it takes `mesh`'s seat (set
-    /// once, at start).
-    pub fn set_status(&self, storage: Arc<dyn crate::status_storage::StatusStorage>, mesh: String, me: NodeId) {
-        let _ = self.status.set(crate::status_rpc::SeatFold::new(storage, mesh, me));
+    /// The status rows of `mesh` this admin (`name`, born as `me`) folds when it takes `mesh`'s seat
+    /// (set once, at start).
+    pub fn set_status(&self, storage: Arc<dyn crate::status_storage::StatusStorage>, mesh: String, name: PathName, me: NodeId) {
+        let _ = self.status.set(crate::status_rpc::SeatFold::new(storage, mesh, name, me));
     }
 
     /// The tick a waiter arms on to see the view change.
@@ -3955,7 +3955,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // the mesh's seat holder, folded into what this admin applied when it takes the seat.
     let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).map_err(storage_err)?);
     let status_storage: Arc<dyn crate::status_storage::StatusStorage> = status_files.clone();
-    records.set_status(status_storage.clone(), own_mesh.clone(), node_id.clone());
+    records.set_status(status_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
     let builds = Arc::new(
         FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone())), wiring.catch_up_seam.take())
             .await

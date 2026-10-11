@@ -59,7 +59,7 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
     // B, the other admin of mesh1, with its own store instance over the same root.
     let b_id = before_view.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().node_id.clone();
     let records = Records::default();
-    records.set_status(Arc::new(FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).unwrap()), "mesh1".into(), b_id.clone());
+    records.set_status(Arc::new(FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).unwrap()), "mesh1".into(), "mesh1.admin.2".parse().unwrap(), b_id.clone());
     let topology = RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() });
     // B installs views naming A the primary: it holds no seat and folds none of A's rows.
     records.install_projected(&topology, || before_view.clone()).await;
@@ -118,7 +118,7 @@ fn a_seat_taker_folds_the_mesh_status_rows_and_a_non_holder_folds_none() {
     assert_eq!(spans.len(), 1, "one fold, at the seat take: {spans:#?}");
     let s = &spans[0];
     assert_eq!(s["trace_id"], t.trace_id.as_str(), "the fold is the cell's own story: {s:#}");
-    for (k, v) in [("mesh", "mesh1"), ("node_declared_rows", "2"), ("mesh_status_rows", "1"), ("fabric_event_rows", "1")] {
+    for (k, v) in [("node", "mesh1.admin.2"), ("mesh", "mesh1"), ("node_declared_rows", "2"), ("mesh_status_rows", "1"), ("fabric_event_rows", "1")] {
         assert_eq!(s["attributes"][k], v, "{k}: {s:#}");
     }
 }
