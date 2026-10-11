@@ -333,6 +333,48 @@ mod tests {
         assert!(!t.is_offline("a"));
     }
 
+    /// A status store counting every read of any of its rows.
+    #[derive(Default)]
+    struct ReadCounting {
+        inner: crate::status_storage::MemoryStatusStorage,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::status_storage::StatusStorage for ReadCounting {
+        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status(row).await
+        }
+        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rafka_node_rpc_contract::status::MeshState>, crate::record_store::StorageError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.mesh_statuses().await
+        }
+        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_fabric_event(row).await
+        }
+        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.fabric_events().await
+        }
+        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_declared(row).await
+        }
+        async fn remove_node_declared(&self, node_id: &crate::model::NodeId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_node_declared(node_id).await
+        }
+        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::record_store::StorageError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.node_declared().await
+        }
+        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_silence(row).await
+        }
+        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::record_store::StorageError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.node_silences().await
+        }
+    }
+
     // @feature: node-lifecycle
     #[tokio::test]
     async fn mesh_primary_status_write_puts_only_the_births_own_silence_row() {
@@ -340,11 +382,12 @@ mod tests {
         use crate::status_storage::StatusStorage;
         let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
         held.incarnation_id = Some(IncarnationId::mint());
-        let store = crate::status_storage::MemoryStatusStorage::default();
+        let store = ReadCounting::default();
         let declared = crate::status_storage::NodeDeclaredRow { node_id: held.node_id.clone(), incarnation_id: held.incarnation_id.clone().unwrap(), state: rafka_node_rpc_contract::status::NodeState::ReadyForTraffic };
         store.put_node_declared(&declared).await.unwrap();
 
         assert_eq!(put_silence_status(&store, &held, Some(NodeStatus::Dead)).await, Ok(true), "the silence row is put");
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0, "the status write reads no row of status.storage");
         let rows = store.node_silences().await.unwrap();
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!((rows[0].node_id.clone(), rows[0].incarnation_id.clone(), rows[0].status), (held.node_id.clone(), held.incarnation_id.clone().unwrap(), Some(NodeStatus::Dead)));
