@@ -3,8 +3,8 @@
 //! A converged topology has exactly one `is_primary` per declared cohort
 //! (one `(mesh, kind)` pair) and exactly one `is_fabric_primary` across the
 //! fabric, held by a node-admin that is also its own mesh's admin primary.
-//! Mesh and Fabric views publish the live owning node-admin's control API
-//! base; callers switch control only from these views.
+//! Mesh and Fabric views publish the seat holder's control API base; callers
+//! switch control only from these views.
 
 use crate::model::{Fabric, Mesh, Node, NodeId, NodeKind, NodeStatus, PathName};
 use serde::{Deserialize, Serialize};
@@ -178,16 +178,22 @@ impl Topology {
         out
     }
 
-    /// The single primary of a cohort, when exactly one live node claims it.
+    /// The single primary of a cohort, when exactly one member holds it: the seat the election
+    /// resolved from the seat records this view was decided against, whatever the holder's status.
+    /// A holder keeps its seat until its explicit yield or a proven loss is held (R-EL1; the
+    /// committed seat row is the authority, R-EL1a), so a Draining, Leaving or silent holder is
+    /// still the one named here. A caller that needs an admin it can reach checks the holder's
+    /// status itself.
     pub fn cohort_primary(&self, mesh: &str, kind: NodeKind) -> Option<&Node> {
-        let mut p = self.cohort(mesh, kind).filter(|n| n.is_primary && n.status.is_live());
+        let mut p = self.cohort(mesh, kind).filter(|n| n.is_primary);
         let first = p.next()?;
         p.next().is_none().then_some(first)
     }
 
-    /// The fabric primary, when exactly one live node holds the role.
+    /// The fabric primary, when exactly one member holds the seat: the holder the election resolved
+    /// from the seat records, whatever its status, as [`Self::cohort_primary`].
     pub fn fabric_primary(&self) -> Option<&Node> {
-        let mut p = self.members().filter(|n| n.is_fabric_primary && n.status.is_live());
+        let mut p = self.members().filter(|n| n.is_fabric_primary);
         let first = p.next()?;
         p.next().is_none().then_some(first)
     }
@@ -210,7 +216,7 @@ impl Topology {
         self.cohort_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == *node_id)
     }
 
-    /// The live owning node-admin control endpoint of `mesh` (its admin primary's).
+    /// The control endpoint of `mesh`'s seat holder (its admin primary's).
     pub(crate) fn mesh_control_endpoint(&self, mesh: &str) -> Option<&str> {
         self.cohort_primary(mesh, NodeKind::NodeAdmin)?.admin_api_base.as_deref()
     }
@@ -392,14 +398,19 @@ mod tests {
         assert!(t.violations().contains(&TopologyViolation::FabricPrimaryCount(0)));
     }
 
+    /// CONTRACT (R-EL1; fabric-node-lifecycle-elections.md §5: silence is not proof, the holder
+    /// keeps the seat): a silent seat holder is a view that has not converged, and it is still the
+    /// holder the view names and advertises. Must NOT happen: the readers dropping a silent holder,
+    /// so the mesh shows no primary while its seat record names one.
     #[test]
-    fn dead_nodes_neither_hold_nor_need_a_primary() {
+    fn a_silent_holder_is_unconverged_and_still_the_named_holder() {
         let mut t = mn();
         t.nodes[0].status = NodeStatus::PendingReconnect;
         let v = t.violations();
         assert!(v.contains(&TopologyViolation::PrimaryNotLive("mesh1.admin.1".parse().unwrap())), "{v:?}");
         assert!(v.contains(&TopologyViolation::NoCohortPrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
-        assert_eq!(t.mesh_control_endpoint("mesh1"), None, "a dead admin's endpoint is never advertised");
+        assert_eq!(t.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent holder keeps its seat");
+        assert_eq!(t.mesh_control_endpoint("mesh1"), Some("http://127.0.0.1:18001"), "the holder's endpoint is the mesh's control endpoint");
     }
 
     #[test]

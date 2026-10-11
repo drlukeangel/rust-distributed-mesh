@@ -84,7 +84,7 @@ impl NodeConfigs {
         // `0x1A`, unless this fabric-primary is that primary or the node is the primary itself; then
         // the call is direct. Chosen before the row is written, so a member with no route changes nothing.
         let Some(primary) = view.cohort_primary(&subject.mesh, rafka_mesh_entity::NodeKind::NodeAdmin) else {
-            return StatusReply::PeerUnresolved { reason: format!("{me}: {} has no single live primary node-admin in the view; {} cannot be told its config", subject.mesh, subject.name) };
+            return StatusReply::PeerUnresolved { reason: format!("{me}: {} has no single primary node-admin in the view; {} cannot be told its config", subject.mesh, subject.name) };
         };
         let route = if primary.node_id == *me_id || primary.node_id == subject.node_id { RouteChoice::Direct } else { RouteChoice::ViaPeer { carrier: primary.node_id.clone(), path: primary.name.clone() } };
         span.record("route", route.token());

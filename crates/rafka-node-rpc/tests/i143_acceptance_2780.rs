@@ -197,6 +197,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
         listeners: Vec::new(),
         seeds: Vec::new(),
         launcher: None,
+        store_dir: data_dir.clone(),
         data_dir,
         mesh_id: None,
         mesh_issuer: None,

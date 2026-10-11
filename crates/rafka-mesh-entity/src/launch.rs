@@ -29,6 +29,9 @@ pub const ENV_SEEDS: &str = "RDM_SEEDS";
 pub const ENV_LAUNCHER: &str = "RDM_LAUNCHER";
 /// The node's data directory.
 pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
+/// The fabric's shared store root every node of the fabric reaches (R14): its stores live under
+/// `<store_dir>/<fabric id>/`.
+pub const ENV_STORE_DIR: &str = "RDM_STORE_DIR";
 /// The id of the node's mesh.
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
 /// The issuing material a new mesh's first node-admin is launched with, as hex of opaque bytes.
@@ -78,6 +81,8 @@ pub struct Launch {
     pub seeds: Vec<(String, SocketAddr)>,
     /// The node's data directory.
     pub data_dir: PathBuf,
+    /// The fabric's shared store root (R14).
+    pub store_dir: PathBuf,
     /// The id of the node's mesh: it names the mesh's membership channel.
     pub mesh_id: Option<MeshId>,
     /// The issuing material a new mesh's first node-admin is launched with (opaque bytes, never
@@ -177,6 +182,7 @@ impl Launch {
         m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
         m.insert(ENV_DATA_DIR.into(), self.data_dir.display().to_string());
+        m.insert(ENV_STORE_DIR.into(), self.store_dir.display().to_string());
         if let Some(id) = &self.mesh_id {
             m.insert(ENV_MESH_ID.into(), id.to_string());
         }
@@ -202,6 +208,7 @@ impl Launch {
             launcher: get(ENV_LAUNCHER).filter(|v| !v.trim().is_empty()).map(|v| decode_launcher(&v)).transpose()?,
             seeds: decode_seeds(&get(ENV_SEEDS).unwrap_or_default())?,
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
+            store_dir: PathBuf::from(req(ENV_STORE_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
             mesh_issuer: get(ENV_MESH_ISSUER).filter(|s| !s.trim().is_empty()).map(|s| decode_hex(ENV_MESH_ISSUER, s.trim())).transpose()?,
         })
@@ -226,12 +233,17 @@ mod tests {
             launcher: Some(Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
+            store_dir: "/tmp/store".into(),
             mesh_id: Some(MeshId::mint()),
             mesh_issuer: Some(vec![0x00, 0xab, 0xff]),
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
         assert!(Launch::from_env(|_| None).unwrap_err().contains("RDM_FABRIC is required"));
+        // A launch with no store root is refused by name (R14 item 8).
+        let mut no_store = env.clone();
+        no_store.remove(ENV_STORE_DIR);
+        assert!(Launch::from_env(|k| no_store.get(k).cloned()).unwrap_err().contains("RDM_STORE_DIR is required"));
         let mut blank = env.clone();
         blank.insert(ENV_FABRIC.into(), " ".into());
         assert!(Launch::from_env(|k| blank.get(k).cloned()).unwrap_err().contains("RDM_FABRIC is required and must not be empty"));

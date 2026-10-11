@@ -62,6 +62,10 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
                 eprintln!("{service}: {e}");
+                // The refused boot's spans (the reason it exits for) reach the evidence file and the
+                // collector: the boot span closes, then the exporters drain before the exit.
+                drop(boot);
+                rafka_mesh_telemetry::flush_before_exit();
                 std::process::exit(3);
             }
         }

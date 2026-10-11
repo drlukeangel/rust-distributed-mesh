@@ -61,6 +61,7 @@ pub mod status_rpc;
 pub(crate) mod span_capture;
 pub mod connections_writer;
 pub mod storage;
+pub mod store_root;
 pub mod status_storage;
 pub mod topology;
 pub mod topology_read;

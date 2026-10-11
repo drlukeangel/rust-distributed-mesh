@@ -53,6 +53,7 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
             seeds: vec![admin.seed.clone()],
             launcher: Some(admin.launcher.clone()),
             data_dir: dir.clone(),
+            store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
         };

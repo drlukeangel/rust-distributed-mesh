@@ -29,6 +29,7 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
         seeds: Vec::new(),
         launcher: Some(Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
         data_dir: data_dir.clone(),
+        store_dir: data_dir.clone(),
         mesh_id: None,
         mesh_issuer: None,
     };
