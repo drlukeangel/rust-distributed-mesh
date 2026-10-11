@@ -2057,7 +2057,16 @@ impl AdminRunner {
         let (record, handle) = match seen {
             Some(n) if n.incarnation_id.as_ref() == Some(from) => self.handle_for(&n).await?,
             Some(n) => return Err(format!("delete-node:{node} is fenced to birth {}, the view holds {} at that path", from.0, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("none"))),
-            None => self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from)).ok_or_else(|| format!("delete-node:{node}: birth {} is not in this admin's view and no runtime handle of it is held", from.0))?,
+            None => {
+                let launched = self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from));
+                match launched {
+                    Some(h) => h,
+                    None => {
+                        let birth = self.parked_birth_by_incarnation(node, from).await?;
+                        self.handle_for(&birth).await?
+                    }
+                }
+            }
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind: RetireKind::Removal };
@@ -2065,6 +2074,33 @@ impl AdminRunner {
         self.after_exit(&record, RetireKind::Removal);
         self.handles.lock().unwrap().remove(node);
         Ok(())
+    }
+
+    /// The exact parked birth `from` that a delete of `node` (`<path>.old`) is fenced to, for an admin
+    /// whose view does not name `node` and which did not run the replace (the mesh's primary changed
+    /// since): the birth as its membership holds it parked, or else its durable runtime row (every
+    /// admin keeps one per birth it heard, `runtime_rows_task`). The record is named `node`; its
+    /// runtime is then adopted from the same sources by [`Self::handle_for`].
+    async fn parked_birth_by_incarnation(&self, node: &PathName, from: &IncarnationId) -> Result<Node, String> {
+        let mut birth = Node::allocated(node.clone());
+        birth.incarnation_id = Some(from.clone());
+        birth.parked = true;
+        birth.status = NodeStatus::Leaving;
+        if let Some(d) = self.book.parked().into_iter().find(|d| &d.node.incarnation == from) {
+            birth.node_id = d.node.node_id.clone();
+            birth.endpoint_id = Some(d.node.endpoint_id.clone());
+            birth.transport_addr = Some(d.node.transport_addr);
+            birth.data_dir = d.data_dir.clone();
+            return Ok(birth);
+        }
+        let Some(store) = self.records.contacts.get() else {
+            return Err(format!("delete-node:{node}: birth {} is not in this admin's view or membership, and this admin has no nodes store to read its runtime row from", from.0));
+        };
+        let rows = store.runtimes().await.map_err(|e| format!("delete-node:{node}: birth {} is not in this admin's view or membership, and its runtime rows could not be read: {e}", from.0))?;
+        let row = rows.into_iter().find(|r| &r.incarnation_id == from).ok_or_else(|| format!("delete-node:{node}: birth {} is not in this admin's view or membership, and this admin holds no runtime row of it", from.0))?;
+        birth.node_id = row.node_id;
+        birth.data_dir = row.data_dir;
+        Ok(birth)
     }
 
     /// What this admin holds for the start of the parked `record`: the deployment its `JoinNode` is
@@ -3513,6 +3549,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             rows: {
                 let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
                 records.set_rows(rows.clone());
+                let held = rows.clone();
+                let _ = control.parked_old.set(Arc::new(move |old: &PathName| held.parked_at(old)));
                 rows
             },
         });

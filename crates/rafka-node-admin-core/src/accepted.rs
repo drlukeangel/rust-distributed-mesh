@@ -442,7 +442,11 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation } | AttemptAction::Delete { path, from_incarnation },
     ) = action
     {
-        let held = observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
+        // A delete of a parked `<path>.old` is admitted from the record the fabric-primary holds of
+        // that exact birth, never from a view (only its replace's executor's view names the path):
+        // it is planned until its `Complete` names the birth.
+        let deleting = matches!(action, Some(AttemptAction::Delete { .. }));
+        let held = deleting || observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
         if !replace_progress.finished && (held || replace_progress.started) {
             let (node, from_incarnation) = (path.clone(), from_incarnation.clone());
             ops.push(match action {
@@ -924,9 +928,10 @@ mod tests {
     }
 
     /// CONTRACT (node-decommission.md): the delete of the parked predecessor at `<path>.old` plans its
-    /// one operation `delete-node:<path>.old` while the view holds that exact birth there, or once its
-    /// `NodeDeleting` receipt says it began (its NodeDeleted drops it from the view), and nothing once
-    /// its `Complete` names the birth; it never plans a create or repair of the path's successor.
+    /// one operation `delete-node:<path>.old` until its `Complete` names the birth, whatever the view
+    /// holds: the fabric-primary admitted it from the record it holds of that exact birth, and no view
+    /// names a `.old` path but its replace's executor's. It never plans a create or repair of the
+    /// path's successor.
     #[test]
     fn a_delete_of_a_parked_old_birth_plans_only_its_operation_until_its_complete_names_the_birth() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
@@ -968,7 +973,7 @@ mod tests {
             action: Some(delete.clone()),
         };
         let gone = mn();
-        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, vec![], "the view never held the parked birth and nothing began");
+        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, op, "the view never names the parked birth (a fabric-primary that did not run its replace) and nothing began: owed");
         assert_eq!(plan_for_build(&build(vec![step("NodeDeleting", None)]), &gone).operations, op, "begun, the birth gone from the view: still owed");
         assert_eq!(plan_for_build(&build(vec![step("NodeDeleting", None), step("Complete", Some(&from))]), &gone).operations, vec![], "completed for this birth");
         assert_eq!(plan_for_build(&build(vec![step("NodeDeleting", None), step("Complete", Some(&IncarnationId::mint()))]), &gone).operations, op, "another birth's Complete is not this delete's");

@@ -489,12 +489,13 @@ async fn deleting_a_peer_mesh_parked_predecessor_is_admitted_from_the_fabric_pri
 /// CONTRACT: the same delete when the parked predecessor's mesh changed its primary between the
 /// replace and the delete (node-decommission.md 2: "Stop and inspect the exact runtime through
 /// provider control"). mesh2's new primary did not run the replace and its view does not name
-/// `<path>.old`; it resolves the exact parked birth the action is fenced to from its durable runtime
-/// row of that birth, ends it with the provider's Exited proof and publishes NodeDeleted for it; the
-/// fabric-primary writes the Deleted row at `<path>.old`.
+/// `<path>.old`; it resolves the exact parked birth the action is fenced to from what it holds of that
+/// birth (its membership's parked digest, else its durable runtime row of it), ends it with the
+/// provider's Exited proof and publishes NodeDeleted for it; the fabric-primary writes the Deleted row
+/// at `<path>.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_resolves_the_birth_from_the_runtime_row() {
-    let estate = Estate::bootstrap(owner("deleting_a_parked_predecessor_after_its_mesh_primary_changed_resolves_the_birth_from_the_runtime_row"), "fabric1", "mesh1").await;
+async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth() {
+    let estate = Estate::bootstrap(owner("deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth"), "fabric1", "mesh1").await;
     let (status, a) = estate
         .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 2}, {"name": "mesh2", "node_admin": 2, "rpc_node": 2}]}))
         .await;

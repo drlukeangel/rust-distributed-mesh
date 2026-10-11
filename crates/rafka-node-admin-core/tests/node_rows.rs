@@ -441,7 +441,8 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ, pred.status)
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: pred_status, config: tier("gold") }), "the predecessor's row moved to .old and stays its row, its config kept");
+    assert!(pred_status.is_live(), "the predecessor was held live from its DrainNode: {pred_status:?}");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold") }), "the predecessor's row moved to .old, parked (its stop preceded the rename), and stays its row, its config kept");
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the successor holds the path.name with the .old row's config");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     assert_eq!(renames.len(), 1, "{renames:#?}");
@@ -549,7 +550,8 @@ fn a_successor_heard_before_the_predecessor_lets_go_takes_the_name_at_the_rename
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ, pred.status)
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: pred_status, config: tier("gold") }), "the predecessor's row moved to .old, its config kept");
+    assert!(pred_status.is_live(), "the predecessor was held live from its DrainNode: {pred_status:?}");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold") }), "the predecessor's row moved to .old, parked (its stop preceded the rename), its config kept");
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the successor holds the path.name with the .old row's config");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     assert_eq!(renames.len(), 1, "{renames:#?}");
@@ -585,7 +587,7 @@ fn a_rename_the_seat_holder_never_saw_announced_moves_the_row_from_the_old_name_
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone())
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the predecessor's row moved to .old");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold") }), "the predecessor's row moved to .old, parked (its stop preceded the rename)");
     assert_eq!(row, None, "the path.name is let go");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     assert_eq!(renames.len(), 1, "{renames:#?}");
@@ -667,7 +669,8 @@ fn a_seat_taken_mid_replace_moves_the_row_from_the_rename_receipt() {
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ, pred.status)
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: pred_status, config: tier("gold") }), "the predecessor's row moved to .old at the receipt");
+    assert!(pred_status.is_live(), "the predecessor was held live from its DrainNode: {pred_status:?}");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold") }), "the predecessor's row moved to .old at the receipt, parked (its stop preceded the rename)");
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the successor holds the path.name, seeded from the .old row");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     let outcomes: Vec<&str> = renames.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
@@ -711,4 +714,75 @@ fn a_rename_handled_again_after_the_successor_took_the_name_leaves_its_row() {
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     let outcomes: Vec<&str> = renames.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
     assert_eq!(outcomes, vec!["already-moved"], "the rename is the predecessor's, read by its node id from the RenamePredecessor receipt, and it was made: {renames:#?}");
+}
+
+/// CONTRACT: the fabric-primary holds the record of the parked predecessor a replace left at
+/// `<path>.old` although its view never names that path (a fabric-primary in another mesh than the
+/// replace's executor: its view drops the parked predecessor under the successor at `<path>`). From
+/// that held record (ops-naming "Node data": "It holds the whole record of every live node ... and
+/// writes the whole row from that held record") it admits `DELETE /api/nodes/<path>.old` as the next
+/// attempt fenced to the exact old birth, and at the delete's `NodeDeleted` writes the Deleted row at
+/// `<path>.old` from it (node-decommission.md 3), after which it holds the record no more.
+#[test]
+fn a_fabric_primary_whose_view_never_names_the_old_path_admits_and_writes_the_parked_predecessors_delete() {
+    let cap = capture();
+    let (pred, held, opened, row, held_after) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let successor = node("mesh1.rpc.1", false, false);
+        let op = "replace-node:mesh1.rpc.1";
+        // This fabric-primary's view, as a peer's: the stop drops the predecessor, the successor arrives
+        // at the path; nothing here names `<path>.old`.
+        let heard = Act::View(Box::new(move |v: &mut Topology| {
+            v.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
+            v.nodes.push(successor);
+        }));
+        let acts = vec![
+            Act::Frame(op, "DrainNode"),
+            Act::Frame(op, "AwaitNodeDrained"),
+            Act::Frame(op, "StopNode"),
+            Act::Frame(op, "AwaitNodeLeft"),
+            Act::Frame(op, "RenamePredecessor"),
+            Act::Frame(op, "AllocateIdentity"),
+            heard,
+            Act::Frame(op, "WaitForNodeReady"),
+            Act::Frame(op, "Complete"),
+        ];
+        let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
+        let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
+        let old: PathName = "mesh1.rpc.1.old".parse().unwrap();
+        assert!(r.env.topology.read().await.node(&old).is_none(), "the view never names {old}");
+        let held = r.env.rows.parked_at(&old);
+        // The replace's attempt converged, as its executor's attempt receipt says.
+        let attempt = r.env.builds.read_build(&r.build).await.unwrap().attempt;
+        let converged = rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: r.build.clone(), attempt, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged };
+        r.env.builds.append_attempt_receipt(&converged).await.unwrap();
+        // The door: the next attempt of the accepted Build, fenced to the held record's exact birth.
+        let mut cp = ControlPlane::new(r.env.builds.clone(), r.env.accepted.clone(), "mesh1.admin.1".parse().unwrap(), r.env.topology.read().await.clone(), crate::adopted_time());
+        cp.topology = r.env.topology.clone();
+        let rows = r.env.rows.clone();
+        let _ = cp.parked_old.set(Arc::new(move |p: &PathName| rows.parked_at(p)));
+        let opened = cp.open_attempt("DELETE /api/nodes/{name}", rafka_node_admin_core::build_state::AttemptReason::Delete, old.clone(), rafka_node_admin_core::http::ActionKind::Delete, None).await;
+        let opened = opened.map(|o| o.build_id).map_err(|e| format!("{e:?}"));
+        let read = r.env.builds.read_build(&r.build).await.unwrap();
+        let opened = opened.map(|_| serde_json::to_value(&read.action).unwrap());
+        // The delete's frames, as the executor streams them: the view still names no `.old` path.
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let del = "delete-node:mesh1.rpc.1.old";
+        r.env.rows.on_step(&me, &r.env.topology, del, "NodeDeleting", None).await;
+        r.env.rows.on_step(&me, &r.env.topology, del, "NodeDeleted", None).await;
+        (pred, held, opened, r.storage.node_row_at(&old).await.unwrap(), r.env.rows.parked_at(&old))
+    });
+    let held = held.expect("the fabric-primary holds the parked predecessor's record at mesh1.rpc.1.old");
+    assert_eq!((&held.node_id, &held.incarnation_id, held.parked, held.status), (&pred.node_id, &pred.incarnation_id, true, NodeStatus::Leaving), "the exact old birth, parked: {held:?}");
+    let action = opened.unwrap_or_else(|e| panic!("the delete is admitted from the held record: {e}"));
+    assert_eq!((action["action"].as_str(), action["path"].as_str()), (Some("delete"), Some("mesh1.rpc.1.old")), "{action}");
+    assert_eq!(action["from_incarnation"].as_str(), pred.incarnation_id.as_ref().map(|i| i.0.as_str()), "fenced to the exact old birth: {action}");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.node_id.clone(), status: NodeStatus::Deleted, config: tier("gold") }), "the Deleted row at .old, the record and config kept");
+    assert!(held_after.is_none(), "the record is held no more once its Deleted row is written");
+    let rows = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    let a = &rows[0]["attributes"];
+    assert_eq!((a["subject"].as_str(), a["node_id"].as_str(), a["held_from"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1.old"), Some(pred.node_id.as_str()), Some("node-deleting"), Some("row-deleted")), "{a:#?}");
 }

@@ -46,12 +46,17 @@ pub struct NodeRows {
     /// a seat): each is claimed once, when a view first holds it, and a later view install that
     /// holds it again is not an arrival.
     held: Mutex<Option<HashSet<(NodeId, IncarnationId)>>>,
+    /// The record of each parked predecessor a replace left at `<path>.old`, by that `.old` path, from
+    /// the move of its row there (`moved_to_old`) until its `NodeDeleted` writes its Deleted row: the
+    /// fabric-primary's held record of a node no view names (only the replace's executor renders the
+    /// `.old` path), which admits its `node.delete` and writes that row.
+    parked_old: Mutex<HashMap<PathName, Node>>,
 }
 
 impl NodeRows {
     /// The writer of the admin `me` over `storage`, the fabric-primary's nodes store.
     pub fn new(me: PathName, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(None) }
+        Self { me, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(None), parked_old: Mutex::new(HashMap::new()) }
     }
 
     /// Tell each birth whose row is seeded its config through `configs`, the fabric-primary's
@@ -64,6 +69,12 @@ impl NodeRows {
     /// The store the rows are written to.
     pub fn storage(&self) -> &Arc<dyn NodesStorage> {
         &self.storage
+    }
+
+    /// The record this fabric-primary holds of the parked predecessor at `old` (a `<path>.old`): the
+    /// exact birth a `node.delete` of that path is fenced to.
+    pub fn parked_at(&self, old: &PathName) -> Option<Node> {
+        self.parked_old.lock().unwrap().get(old).cloned()
     }
 
     /// A completed step of a Build the fabric-primary `me` drives, over its held view, handled once
@@ -82,9 +93,13 @@ impl NodeRows {
                 // A receipt read after the step names its node by id: by then the view may hold a
                 // replace's successor at the path.name. A `DrainNode` receipt names none, and the
                 // rename's receipt decides whose record it is (`moved_to_old`).
-                let held = match subject {
-                    Some(id) => held_by(view, id).await,
-                    None => held_at(view, &name).await,
+                // A delete of a parked predecessor names its `.old` path, which only the replace's
+                // executor's view renders: the record is the one this fabric-primary holds of it.
+                let parked = (verb == "delete-node").then(|| self.parked_at(&name)).flatten().filter(|n| subject.is_none_or(|id| &n.node_id == id));
+                let held = match (parked, subject) {
+                    (Some(n), _) => Some(n),
+                    (None, Some(id)) => held_by(view, id).await,
+                    (None, None) => held_at(view, &name).await,
                 };
                 if let Some(n) = held {
                     self.announced.lock().unwrap().entry(operation.to_string()).or_insert(n);
@@ -115,7 +130,10 @@ impl NodeRows {
         let announced = self.announced.lock().unwrap().get(operation).cloned().filter(|n| is_subject(n));
         // A fabric-primary that took the seat since the operation's first step reads its view now:
         // the executor's own view names the predecessor `<path>.old` already, a peer's still `<path>`.
-        let record = match announced {
+        // A rename this seat moved already (its receipt read again by a later drive of the Build):
+        // the record held since, at `<path>.old`.
+        let parked = self.parked_old.lock().unwrap().get(&to).cloned().filter(|n| is_subject(n));
+        let record = match announced.or(parked) {
             Some(n) => Some(n),
             None => match subject {
                 Some(id) => held_by(view, id).await,
@@ -143,7 +161,7 @@ impl NodeRows {
             return;
         };
         span.record("node_id", record.node_id.as_str());
-        let r = tracing::Instrument::instrument(self.move_row(me, &record, name, &to), span.clone()).await;
+        let r = tracing::Instrument::instrument(self.move_row(me, &parked_record(&record, &to), name, &to), span.clone()).await;
         let (outcome, detail) = match &r {
             Ok(Moved::Renamed) => ("renamed", None),
             Ok(Moved::AlreadyMoved) => ("already-moved", Some(format!("{me}: the replace of {name} ({}) reached RenamePredecessor again: the predecessor holds {to} and no longer holds {name}; nothing is written", record.node_id))),
@@ -156,6 +174,9 @@ impl NodeRows {
             span.record("detail", d.as_str());
         }
         span.in_scope(|| tracing::info!("node.replace: the predecessor's row moved"));
+        if r.is_ok() {
+            self.parked_old.lock().unwrap().insert(to.clone(), parked_record(&record, &to));
+        }
         if r == Ok(Moved::Renamed) {
             tracing::Instrument::instrument(self.successor_at(view, name, &record), span).await;
         }
@@ -185,11 +206,14 @@ impl NodeRows {
             "otel.kind" = "internal",
         );
         let announced = self.announced.lock().unwrap().remove(operation);
-        let (held, from) = match announced {
-            Some(n) => (Some(n), "node-deleting"),
+        let parked = self.parked_old.lock().unwrap().remove(name).filter(|n| subject.is_none_or(|id| &n.node_id == id));
+        let (held, from) = match (announced, parked) {
+            (Some(n), _) => (Some(n), "node-deleting"),
+            // The parked predecessor at `<path>.old` no view names: the record held since its row moved.
+            (None, Some(n)) => (Some(n), "parked-record"),
             // A fabric-primary that took the seat after the announcement holds no record of it:
             // the view as it is now, while it still holds the node (the node the receipt names).
-            None => match subject {
+            (None, None) => match subject {
                 Some(id) => (held_by(view, id).await, "view-at-node-deleted"),
                 None => (held_at(view, name).await, "view-at-node-deleted"),
             },
@@ -227,6 +251,7 @@ impl NodeRows {
         let mut held = self.held.lock().unwrap();
         if now.fabric_primary().map(|n| &n.name) != Some(&self.me) {
             *held = None;
+            self.parked_old.lock().unwrap().clear();
             return Vec::new();
         }
         let took_seat = prev.fabric_primary().map(|n| &n.name) != Some(&self.me);
@@ -436,6 +461,20 @@ enum Moved {
     Renamed,
     /// The node held the new name already and not the old one: the move was made before.
     AlreadyMoved,
+}
+
+/// The record of a replace's predecessor at its rename to `to`: parked there. A live branch's
+/// predecessor was held live at its `DrainNode`, and its stop (`StopNode`, `AwaitNodeLeft`) precedes
+/// the rename, so it is `Leaving` and parked now; a recovery's predecessor keeps the status it was held
+/// with (its exit is what the recovery proves).
+fn parked_record(record: &Node, to: &PathName) -> Node {
+    let mut n = record.clone();
+    n.name = to.clone();
+    if n.status.is_live() {
+        n.status = NodeStatus::Leaving;
+        n.parked = true;
+    }
+    n
 }
 
 /// The record the view holds of the node `id`.

@@ -49,6 +49,11 @@ pub struct ControlPlane {
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// replaced or deleted from here (R-D1). Set once by the admin that owns the ladder.
     pub peer_mesh: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<crate::investigate::PeerMesh> + Send + Sync>>,
+    /// The record the fabric-primary holds of the parked predecessor a replace left at a `<path>.old`
+    /// (`crate::node_rows::NodeRows::parked_at`): what admits its `node.delete`, fenced to that exact
+    /// birth. No view names the path but the replace's executor's (set once by the admin that owns
+    /// the row writer).
+    pub parked_old: std::sync::OnceLock<Arc<dyn Fn(&PathName) -> Option<crate::model::Node> + Send + Sync>>,
     /// The connection facts this admin holds (set once by the admin that owns its connections
     /// writer): the active Directs of the fleet, and this admin's own latest Directs and Proxies.
     pub connections: std::sync::OnceLock<Arc<std::sync::Mutex<rafka_mesh_entity::connections::ConnectionsHeld>>>,
@@ -97,6 +102,7 @@ impl ControlPlane {
             connections: std::sync::OnceLock::new(),
             loads: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
+            parked_old: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
             time,
         }
@@ -245,11 +251,15 @@ impl ControlPlane {
                 return Err(Refusal::Reject(reject));
             }
             let from_incarnation = {
+                // The parked predecessor at a `.old` path is admitted from the record the
+                // fabric-primary holds of it (ops-naming "Node data": the fabric-primary holds the whole
+                // record of every node), never from a view: only the replace's executor's view names it.
                 let t = match self.view_now.get() {
                     Some(project) => project(),
                     None => self.topology.read().await.clone(),
                 };
-                let Some(n) = t.node(&path) else {
+                let held = if parked_old { self.parked_old.get().and_then(|held| held(&path)) } else { t.node(&path).cloned() };
+                let Some(n) = held else {
                     // A node being replaced is the node nobody hears: the Build names it, the heard
                     // view need not. The caller names the exact birth to retire.
                     if let (true, Some(birth)) = (replace, named_birth) {
@@ -262,7 +272,11 @@ impl ControlPlane {
                         let action = AttemptAction::Replace { path, from_incarnation: birth };
                         return self.open_with(&current, reason, action, route, &outer, &named_path, span.clone()).await;
                     }
-                    let why = self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string());
+                    let why = if parked_old {
+                        format!("{}: this fabric-primary holds no record of a parked predecessor at {path} (no replace it drove moved a row there, or its Deleted row is written)", self.me)
+                    } else {
+                        self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string())
+                    };
                     let reject = BuildReject::UnknownNode { node: path.to_string() };
                     drop(t);
                     outer.in_scope(|| {
