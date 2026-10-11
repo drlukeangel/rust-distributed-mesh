@@ -397,8 +397,11 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     let i_am_mesh_primary = view.holds_mesh_seat(&me.mesh, me_id);
     let i_am_fabric_primary = view.holds_fabric_seat(me_id);
     // My Mesh's status, as its primary, to the fabric-primary: the report that its round is complete,
-    // owed only once every planned birth of the accepted Build checked in (`crate::round`).
-    if i_am_mesh_primary && mesh_round_done {
+    // owed only once every planned birth of the accepted Build checked in (`crate::round`), and only
+    // while the state this admin holds for its mesh is not past ready-for-traffic: a primary holding
+    // Leaving reports the Leaving it holds (below), never a backward move.
+    let past_ready = matches!(own_mesh_held, Some(MeshState::Leaving | MeshState::Dead));
+    if i_am_mesh_primary && mesh_round_done && !past_ready {
         if let (Some(mesh), Some(id)) = (view.meshes.iter().find(|m| m.name == me.mesh), mesh_ids.get(&me.mesh)) {
             if mesh.status == crate::model::ScopeStatus::ReadyForTraffic {
                 d.owe(Key::Mesh(id.clone(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::ReadyForTraffic });
