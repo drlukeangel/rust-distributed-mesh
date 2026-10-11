@@ -319,7 +319,7 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
         })
         .await;
     }
-    assert_eq!(estate.pid_of(path.to_string().as_str()).await, pid, "the same process");
+    assert_eq!(estate.pid_of(renamed.to_string().as_str()).await, pid, "the same process, listed at the row's name");
 
     estate.stop().await;
     let spans = estate.spans();

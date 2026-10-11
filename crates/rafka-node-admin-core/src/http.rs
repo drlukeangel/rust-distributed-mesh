@@ -42,9 +42,10 @@ pub struct ControlPlane {
     /// the live view carries it, so the refusal names the exclusion instead of hiding it.
     pub absence: std::sync::OnceLock<Arc<dyn Fn(&PathName) -> String + Send + Sync>>,
     /// This admin's view projected now, from the same inputs the periodic refresh projects
-    /// from: what a decision on one node reads, so it never acts on a snapshot up to one refresh
-    /// old (set once by the admin that owns the inputs).
-    pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> Topology + Send + Sync>>,
+    /// from (the node rows of the births that do not publish read with it): what a decision on one
+    /// node reads, so it never acts on a snapshot up to one refresh old (set once by the admin that
+    /// owns the inputs).
+    pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Topology> + Send>> + Send + Sync>>,
     /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// replaced or deleted from here (R-D1). Set once by the admin that owns the ladder.
@@ -273,14 +274,17 @@ impl ControlPlane {
         async {
             self.authority(route).await?;
             let (_admitted, current) = self.current_settled().await?;
-            if !current.topology.contains(&path) {
+            // A node's `.old` or `.new` name is its accepted path's (node-replace.md: a predecessor
+            // renamed `<name>.old`, a successor born `<name>.new`): a node renamed while stopped is
+            // started by its row's name (R-JN1, node-start.md step 2), and its birth is fenced below.
+            if !current.topology.contains(&path.base()) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
             let from_incarnation = {
                 let t = match self.view_now.get() {
-                    Some(project) => project(),
+                    Some(project) => project().await,
                     None => self.topology.read().await.clone(),
                 };
                 let Some(n) = t.node(&path) else {

@@ -240,15 +240,11 @@ fn node_status(s: MemberStatus) -> NodeStatus {
 pub struct Records {
     nodes: Mutex<BTreeMap<PathName, Node>>,
     removed: Mutex<std::collections::HashSet<(PathName, Option<IncarnationId>)>>,
-    /// The name a birth's row holds where it differs from the name the birth's digest says: a
-    /// predecessor a replacement renamed `<path>.old`, or a node its mesh-primary renamed while it was
-    /// stopped (`node.update`). The node authors its own digest, so only this view names it so; the
-    /// book's held digest keeps the name the node last published.
-    renamed: Mutex<HashMap<(NodeId, IncarnationId), PathName>>,
     meshes: Mutex<BTreeMap<String, MeshId>>,
     seats: Mutex<Seats>,
-    /// nodes.storage: a birth this admin launches is a contact from the moment it is published,
-    /// not only once gossip carries it.
+    /// nodes.storage on the fabric's shared store root: the durable runtime rows a birth this admin
+    /// never heard is adopted from, and the node rows the view reads a birth's name from when the
+    /// birth does not publish it ([`RowNames`]).
     contacts: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
     /// The lifecycle states this admin applied as an authority (`status_rpc`): the view's
     /// `declared`, never its `status`.
@@ -482,16 +478,39 @@ impl Records {
     /// the later state: a projection taken before waiting could carry a removal's absence away
     /// again. The declarer wakes when the view changed; a write of the same view wakes nothing.
     pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
-        let mut held = topology.write().await;
+        let held = topology.write().await;
         let t = project();
+        self.install(held, t).await
+    }
+
+    /// [`Self::install_projected`] of the admin `me`'s projection that names each birth not
+    /// publishing its own name by its row: the rows are read for `book`'s births of `fabric_id` while
+    /// the view lock is held ([`RowNames::read`]), so the installed view is never older than the rows
+    /// it was named from. A birth the view lists at a moved row's name for the first time is one span.
+    pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, book: &DigestBook, fabric_id: &FabricId, project: impl FnOnce(&RowNames) -> Topology) -> Topology {
+        let held = topology.write().await;
+        let rows = RowNames::read(book, self, fabric_id, std::time::Instant::now()).await;
+        let t = project(&rows);
+        for (node_id, incarnation, published, name) in rows.moved() {
+            let listed = |v: &Topology| v.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation) && &n.name == name);
+            if listed(&t) && !listed(&held) {
+                tracing::info_span!("rdm.node_admin.topology.update.via-row-name", node = %me, subject = %name, published = %published, node_id = %node_id, incarnation_id = %incarnation.0)
+                    .in_scope(|| tracing::info!("the view lists a birth that does not publish at the name its row holds"));
+            }
+        }
+        self.install(held, t).await
+    }
+
+    /// Install `t` over the view `held` (its write lock held).
+    async fn install(&self, mut held: tokio::sync::RwLockWriteGuard<'_, Topology>, t: Topology) -> Topology {
         if *held != t {
             // The seat of this admin's mesh taken with this view: its status rows are folded in
             // before the view is installed, so no decision reads the view against an empty record.
             if let Some(fold) = self.status.get() {
                 fold.on_install(&t, &self.declared).await;
             }
-            // A replaced predecessor this view now names `<path>.old` (the executor's own view; its
-            // digest still says `<path>`): one span as it enters, with the member that took the path.
+            // A replaced predecessor this view now names `<path>.old` (its row moved there; its digest
+            // still says `<path>`): one span as it enters, with the member that took the path.
             for old in t.predecessors().filter(|o| !held.predecessors().any(|h| h.node_id == o.node_id && h.incarnation_id == o.incarnation_id)) {
                 tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node = %old.name, node_id = %old.node_id, status = ?old.status)
                     .in_scope(|| tracing::info!("the view names a replaced predecessor under its .old path"));
@@ -546,12 +565,13 @@ impl TopologySink for Records {
         }
         self.removed.lock().unwrap().insert((name.clone(), Some(incarnation.clone())));
     }
-    fn rename_predecessor(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
+    fn rename_predecessor(&self, name: &PathName, _node_id: &NodeId, incarnation: &IncarnationId) {
+        // The predecessor's launch record no longer stands at the path.name its successor takes; the
+        // view names it by its row (`RowNames`), which its mesh's row writer moves to `<path>.old`.
         let mut nodes = self.nodes.lock().unwrap();
         if nodes.get(name).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
             nodes.remove(name);
         }
-        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), name.renamed());
     }
 }
 
@@ -582,23 +602,6 @@ impl crate::fabric_handover::WonClaims for AdminClaims {
             .await
             .map_err(|e| format!("the fabric-primary {fp}'s facts of Build {build_id} could not be read: {e}"))?;
         Ok(claim_in(&fetched.facts))
-    }
-}
-
-impl Records {
-    /// The birth `incarnation` of `node_id`, recorded at `from`, holds the row its mesh-primary moved
-    /// to `to` (`node.update`, R13): its launch record moves with the row.
-    pub fn rename_birth(&self, from: &PathName, node_id: &NodeId, incarnation: &IncarnationId, to: &PathName) {
-        {
-            let mut nodes = self.nodes.lock().unwrap();
-            if nodes.get(from).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
-                if let Some(mut n) = nodes.remove(from) {
-                    n.name = to.clone();
-                    nodes.insert(to.clone(), n);
-                }
-            }
-        }
-        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), to.clone());
     }
 }
 
@@ -654,18 +657,131 @@ pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&Nod
 }
 
 /// The observed topology from membership digests and this admin's records,
-/// with the settled primary rule (module docs).
+/// with the settled primary rule (module docs). No node row is read: each birth is listed at the name
+/// it published ([`project_with`] names the births that do not publish by their rows).
 pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records) -> Topology {
     project_at(fabric, fabric_id, provider, book, records, std::time::Instant::now())
 }
 
+/// [`project`] as of the instant `rows` was read at, each birth that does not publish its own name
+/// listed at the name its row holds.
+pub fn project_with(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, rows: &RowNames) -> Topology {
+    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), rows)
+}
+
+/// The names the node rows hold for the births a projection lists that do not publish their own
+/// (CLAUDE.md read rule: the node-row kind declares no projection, so each is a point read through
+/// the row's `path.name` key, read for one projection and held by nothing after it). A birth that
+/// publishes names itself: its digest carries its row's name (R12: it publishes only the row's name,
+/// a live rename reaching it as `ApplyNodeName`). One that does not (stopped, silent past the
+/// staleness floor, proven exited, held true offline) may have had its row moved while it said
+/// nothing: a stopped node's `node.update` (R13: it is told nothing and reads the name at its next
+/// join) or a replace's `RenamePredecessor`. A move toggles one suffix of the name
+/// (`NodeMeta::check_update`), so the row is at the name the birth last published, that name's base,
+/// its `.old` or its `.new`.
+pub struct RowNames {
+    /// The instant the births were judged at: the projection is taken as of it, so the births it lists
+    /// by their rows are exactly the ones this read covered.
+    at: std::time::Instant,
+    /// Each birth read: the name it published, and where its row stands.
+    names: HashMap<(NodeId, IncarnationId), (PathName, RowName)>,
+}
+
+/// Where the row of one birth stands.
+enum RowName {
+    /// The key whose row holds the birth (the name it published, when no row of it was ever moved).
+    At(PathName),
+    /// A key could not be read: the birth's name is not known, and the view does not list it.
+    Unreadable,
+}
+
+impl RowNames {
+    /// No row read: every birth is listed at the name it published, as of `at`.
+    pub fn none_at(at: std::time::Instant) -> Self {
+        Self { at, names: HashMap::new() }
+    }
+
+    /// The row of every birth of `fabric_id` in `book` that does not publish its own name as of `at`,
+    /// read from `records`' nodes store (no store: nothing is read).
+    pub async fn read(book: &DigestBook, records: &Records, fabric_id: &FabricId, at: std::time::Instant) -> Self {
+        let mut rows = Self::none_at(at);
+        let Some(store) = records.contacts.get().cloned() else { return rows };
+        let mut quiet: Vec<(NodeId, IncarnationId, PathName)> = Vec::new();
+        for d in book.all() {
+            let Some((_, age)) = book.get_at(d.node.node_id.as_str(), at) else { continue };
+            if &d.fabric_id == fabric_id && !publishes(book, records, &d.node.node_id, &d.node.incarnation, age) {
+                quiet.push((d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.clone()));
+            }
+        }
+        quiet.extend(book.parked().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| (d.node.node_id, d.node.incarnation, d.node.name)));
+        quiet.extend(book.parked_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+        for (node_id, incarnation, published) in quiet {
+            let name = row_name(&*store, &node_id, &incarnation, &published).await;
+            rows.names.insert((node_id, incarnation), (published, name));
+        }
+        rows
+    }
+
+    /// Each birth read whose row stands at another name than the one it published:
+    /// `(node id, incarnation, published, row's name)`.
+    fn moved(&self) -> impl Iterator<Item = (&NodeId, &IncarnationId, &PathName, &PathName)> {
+        self.names.iter().filter_map(|((id, inc), (published, row))| match row {
+            RowName::At(name) if name != published => Some((id, inc, published, name)),
+            _ => None,
+        })
+    }
+
+    /// The name the projection lists the birth `(node_id, incarnation)` at, which published
+    /// `published`: its row's when this read covered it, else the published one. `None`: its row
+    /// could not be read, and the birth is not listed.
+    fn name_of(&self, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> Option<PathName> {
+        match self.names.get(&(node_id.clone(), incarnation.clone())) {
+            Some((_, RowName::At(n))) => Some(n.clone()),
+            Some((_, RowName::Unreadable)) => None,
+            None => Some(published.clone()),
+        }
+    }
+}
+
+/// The birth speaks for its own name: it published within the staleness floor and is neither proven
+/// exited nor held true offline.
+fn publishes(book: &DigestBook, records: &Records, node_id: &NodeId, incarnation: &IncarnationId, age: Duration) -> bool {
+    age <= book.staleness_floor() && !records.is_exited(node_id, incarnation) && !records.offline.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
+}
+
+/// Where the row of the birth `(node_id, incarnation)`, which last published `published`, stands: a
+/// point read of each key a move reaches, the published name first.
+async fn row_name(store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> RowName {
+    let base = published.base();
+    let mut keys = vec![published.clone()];
+    for key in [base.clone(), base.renamed(), base.successor()] {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    for key in keys {
+        match store.node_row_at(&key).await {
+            Ok(Some(row)) if &row.node_id == node_id => return RowName::At(key),
+            Ok(_) => {}
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", subject = %published, node_id = %node_id, incarnation_id = %incarnation.0, key = %key, detail = %e)
+                    .in_scope(|| tracing::info!("the birth's row could not be read at {key}: its name is not known and the view does not list it"));
+                return RowName::Unreadable;
+            }
+        }
+    }
+    // No row holds the birth at any key a move reaches: a move claims the new key before it lets go
+    // of the old one, so nothing moved it, and the name it published is its row's.
+    RowName::At(published.clone())
+}
+
 /// Projects the book into the view now: what the join door runs once it installed an admitted
 /// birth's address, so the view the status authority resolves senders from holds that birth.
-pub fn view_projector(topology: Arc<RwLock<Topology>>, fabric: String, fabric_id: FabricId, provider: ProviderKind, book: DigestBook, records: Arc<Records>) -> Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> {
+pub fn view_projector(me: PathName, topology: Arc<RwLock<Topology>>, fabric: String, fabric_id: FabricId, provider: ProviderKind, book: DigestBook, records: Arc<Records>) -> Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> {
     Arc::new(move || {
-        let (topology, fabric, fabric_id, book, records) = (topology.clone(), fabric.clone(), fabric_id.clone(), book.clone(), records.clone());
+        let (me, topology, fabric, fabric_id, book, records) = (me.clone(), topology.clone(), fabric.clone(), fabric_id.clone(), book.clone(), records.clone());
         Box::pin(async move {
-            records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+            records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
         })
     })
 }
@@ -713,19 +829,25 @@ pub fn describe_absence(book: &DigestBook, records: &Records, name: &PathName) -
 
 /// [`project`] as of `now`.
 pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, now: std::time::Instant) -> Topology {
-    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), now)
+    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), &RowNames::none_at(now))
 }
 
-/// [`project`] with its seats decided against `decided`, the seat records and proven-gone births
+/// [`project_with`] with its seats decided against `decided`, the seat records and proven-gone births
 /// read once: a caller that acts on the projection's seats (the hierarchy loop announcing one)
 /// acts against the very records the projection was decided from, never a later read of them.
-pub(crate) fn project_decided(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency) -> Topology {
-    project_decided_at(fabric, fabric_id, provider, book, records, decided, std::time::Instant::now())
+pub(crate) fn project_decided(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, rows: &RowNames) -> Topology {
+    project_decided_at(fabric, fabric_id, provider, book, records, decided, rows)
 }
 
-fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, now: std::time::Instant) -> Topology {
+/// The launch record this admin holds of the exact birth `incarnation`, whatever name the view lists
+/// the birth at.
+fn launched(recorded: &BTreeMap<PathName, Node>, incarnation: &Option<IncarnationId>) -> Option<Node> {
+    incarnation.as_ref().and_then(|inc| recorded.values().find(|r| r.incarnation_id.as_ref() == Some(inc)).cloned())
+}
+
+fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, rows: &RowNames) -> Topology {
+    let now = rows.at;
     let removed = records.removed.lock().unwrap().clone();
-    let renamed = records.renamed.lock().unwrap().clone();
     let recorded = records.nodes.lock().unwrap().clone();
     let mut nodes: BTreeMap<PathName, Node> = BTreeMap::new();
     // Every birth membership has spoken for, whatever became of it.
@@ -738,9 +860,16 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         }
         let Some((_, age)) = book.get_at(d.node.node_id.as_str(), now) else { continue };
         heard.insert(d.node.incarnation.clone());
-        // A birth whose row holds another name is listed at the row's: a predecessor a replacement
-        // renamed `<path>.old`, a node renamed while stopped (a node authors its own digest).
-        let name = renamed.get(&(d.node.node_id.clone(), d.node.incarnation.clone())).cloned().unwrap_or_else(|| d.node.name.clone());
+        // A birth that publishes names itself (R12); one that does not is listed at the name its row
+        // holds (a predecessor a replace renamed `<path>.old`), one whose row could not be read not at all.
+        let name = if publishes(book, records, &d.node.node_id, &d.node.incarnation, age) {
+            d.node.name.clone()
+        } else {
+            match rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.name) {
+                Some(n) => n,
+                None => continue,
+            }
+        };
         // A birth under an open restart is held through everything below until its later birth is
         // heard: the restart's own retire (its Leaving, its removal from these records) is not a
         // departure (fabric-node-lifecycle.md: Restarting is commanded silence).
@@ -788,7 +917,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         n.data_dir = d.data_dir.clone();
         // The birth's own published runtime fact names its deployment, whichever admin launched it.
         n.deployment_id = d.node.runtime.as_ref().map(|f| DeploymentId(f.deployment_id.clone()));
-        if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
+        if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
             n.data_dir = r.data_dir.clone();
         }
@@ -807,7 +936,8 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
             continue;
         }
         heard.insert(d.node.incarnation.clone());
-        let name = renamed.get(&(d.node.node_id.clone(), d.node.incarnation.clone())).cloned().unwrap_or_else(|| d.node.name.clone());
+        // A stopped node is told nothing of a rename (R13): it is listed at the name its row holds.
+        let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.name) else { continue };
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
@@ -828,7 +958,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         n.deployment_id = d.node.runtime.as_ref().map(|f| DeploymentId(f.deployment_id.clone()));
-        if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
+        if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
             n.data_dir = r.data_dir.clone();
         }
@@ -841,7 +971,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
             continue;
         }
         heard.insert(op.incarnation.clone());
-        let name = renamed.get(&(op.node_id.clone(), op.incarnation.clone())).cloned().unwrap_or_else(|| op.name.clone());
+        let Some(name) = rows.name_of(&op.node_id, &op.incarnation, &op.name) else { continue };
         if removed.contains(&(name.clone(), Some(op.incarnation.clone()))) {
             continue;
         }
@@ -853,7 +983,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         n.parked = n.status == NodeStatus::Leaving;
         n.routable = false;
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
-        if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
+        if let Some(r) = launched(&recorded, &n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone();
             n.data_dir = r.data_dir.clone();
         }
@@ -2017,7 +2147,6 @@ impl NodeObserver for MembershipObserver {
 /// connections are cut; a start joins the commanding admin again, takes the topology and runs its hook.
 struct AdminSession {
     gate: crate::park_gate::ParkGate,
-    name: PathName,
     node_id: NodeId,
     incarnation: IncarnationId,
     fabric_id: FabricId,
@@ -2059,9 +2188,12 @@ impl crate::node_self::Session for AdminSession {
 
     async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), crate::node_self::StartFailed> {
         use crate::node_self::StartFailed;
-        let name = self.name.to_string();
-        let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %self.name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
-        let join_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-join-admitted", node = %self.name, launcher = %authority);
+        // The name this admin holds (its row's, as its last join or apply handed it): what its join
+        // presents and what it is named by until the join answer hands it the row's (R12).
+        let held = self.digest.lock().unwrap().node.name.clone();
+        let name = held.to_string();
+        let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
+        let join_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-join-admitted", node = %held, launcher = %authority, installed = tracing::field::Empty);
         let Some((auth, _)) = self.membership.book.get(authority.as_str()) else {
             return Err(StartFailed { step: "node.join", reason: format!("{name}: the admin that commanded the start ({authority}) is not held by this admin, so it cannot be joined through") });
         };
@@ -2088,26 +2220,30 @@ impl crate::node_self::Session for AdminSession {
                 d.config = c.clone();
             }
         }
+        // From here on it is named by the name it installed.
+        let me = self.digest.lock().unwrap().node.name.clone();
+        join_step.record("installed", tracing::field::display(&me));
+        let name = me.to_string();
         take_entry_control(&joined, &self.accepted, &*self.builds, &self.entry_floor).await;
         if let Some(sd) = joined.control.shutdown.clone() {
             let _ = self.shutdown.learn(sd, "start", &joined.served_by).await;
         }
         let member_cert = Some(joined.control.member_cert.clone());
         drop(join_step);
-        let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %self.name, launcher = %authority);
+        let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %me, launcher = %authority);
         self.membership.unpark().await;
         self.backbone.unpark().await;
         self.membership.learn_statuses(&joined.statuses);
         let read = crate::topology_read::get_topology(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &auth.node.name.mesh, &self.membership, None, None)
             .await
             .map_err(|e| StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {}: {e}", auth.node.name) })?;
-        read.adopt_rafka_time(&self.rafka_time, &self.membership, &name, &self.name.mesh, &self.node_id, &auth.node.name.to_string())
+        read.adopt_rafka_time(&self.rafka_time, &self.membership, &name, &me.mesh, &self.node_id, &auth.node.name.to_string())
             .map_err(|e| StartFailed { step: "node.topology", reason: format!("{name} could not adopt rafka-time from {}: {e}", auth.node.name) })?;
         let mesh_peers: Vec<EndpointAddr> = read
             .installed
             .iter()
             .flat_map(|m| m.members.iter())
-            .filter(|d| d.fabric_id == self.fabric_id && d.node.name != self.name && d.node.name.mesh == self.name.mesh)
+            .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == me.mesh)
             .filter_map(rafka_mesh_transport::membership::gossip_addr)
             .collect();
         let _ = self.membership.join_peers(mesh_peers).await;
@@ -2122,7 +2258,7 @@ impl crate::node_self::Session for AdminSession {
         // The hook, with `AfterStop` in its context; Ready waits on it.
         let ctx = crate::app_hydration::HydrateCtx {
             start_kind: crate::app_hydration::StartKind::AfterStop,
-            birth: crate::app_hydration::Birth { name: self.name.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), fabric_id: self.fabric_id.clone(), mesh_id: self.mesh_id.clone(), kind: NodeKind::NodeAdmin },
+            birth: crate::app_hydration::Birth { name: me.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), fabric_id: self.fabric_id.clone(), mesh_id: self.mesh_id.clone(), kind: NodeKind::NodeAdmin },
             authority: crate::app_hydration::Authority::Accepted(crate::app_hydration::AcceptingAuthority { name: auth.node.name.clone(), node_id: auth.node.node_id.clone(), incarnation: auth.node.incarnation.clone() }),
             client: self.client.clone(),
             membership: self.membership.clone(),
@@ -2403,7 +2539,7 @@ impl AdminRunner {
     /// Publish the view as it is now, so a Build that completes after this
     /// operation is never read back against an older view.
     async fn refresh_view(&self) {
-        self.records.install_projected(&self.topology, || project(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records)).await;
+        self.records.install_read(&self.me, &self.topology, &self.book, &self.fabric_id, |rows| project_with(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records, rows)).await;
     }
 
     /// A launch of `kind` in `mesh`. Every node carries its mesh's identity (it
@@ -4140,7 +4276,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     }
     {
         let (book, records, fabric, fabric_id, provider) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
-        let _ = control.view_now.set(Arc::new(move || project(&fabric, &fabric_id, provider, &book, &records)));
+        let _ = control.view_now.set(Arc::new(move || {
+            let (book, records, fabric, fabric_id) = (book.clone(), records.clone(), fabric.clone(), fabric_id.clone());
+            Box::pin(async move {
+                let rows = RowNames::read(&book, &records, &fabric_id, std::time::Instant::now()).await;
+                project_with(&fabric, &fabric_id, provider, &book, &records, &rows)
+            })
+        }));
     }
     let _ = control.connections.set(connections.held());
     {
@@ -4186,13 +4328,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             hydration: hydration_cell.clone(),
             rename: rename.clone(),
             row_moved: {
-                // The moved row enters what the view is projected from, then the view is projected.
+                // The view is projected at once: it reads the moved row, as every admin's next
+                // projection does (`RowNames`), so it holds nothing of the move itself.
                 let moved: crate::status_rpc::RowMoved = Arc::new(std::sync::OnceLock::new());
-                let (records, project) = (records.clone(), view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()));
-                let _ = moved.set(Arc::new(move |from: PathName, node_id: NodeId, incarnation: IncarnationId, to: PathName| {
-                    records.rename_birth(&from, &node_id, &incarnation, &to);
-                    project()
-                }));
+                let project = view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
+                let _ = moved.set(Arc::new(move |_from: PathName, _node_id: NodeId, _incarnation: IncarnationId, _to: PathName| project()));
                 moved
             },
         }));
@@ -4267,7 +4407,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         handovers: Default::default(),
         decisions: builds.decisions(),
         claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
-        project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
+        project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
         cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
     });
     handover.restore().await?;
@@ -4326,11 +4466,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 me: name.clone(),
                 topology: control.topology.clone(),
                 refresh: {
-                    let (topology, records, book, fabric, fabric_id, provider) = (control.topology.clone(), records.clone(), book.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
+                    let (me, topology, records, book, fabric, fabric_id, provider) = (name.clone(), control.topology.clone(), records.clone(), book.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
                     Arc::new(move || {
-                        let (topology, records, book, fabric, fabric_id) = (topology.clone(), records.clone(), book.clone(), fabric.clone(), fabric_id.clone());
+                        let (me, topology, records, book, fabric, fabric_id) = (me.clone(), topology.clone(), records.clone(), book.clone(), fabric.clone(), fabric_id.clone());
                         Box::pin(async move {
-                            records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                            records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
                         })
                     })
                 },
@@ -4483,7 +4623,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     tracing::info!(node = %d.node.name, applied = ?applied, "the resolver holds the joined birth");
                 }
             }),
-            known: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
+            known: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
             primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
             issuer: issuer.clone(),
             row: Arc::new({
@@ -4841,7 +4981,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
         own.set_session(Arc::new(AdminSession {
             gate: park_gate.clone(),
-            name: name.clone(),
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),
             fabric_id: cfg.fabric_id.clone(),
@@ -5164,9 +5303,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // view is never older than the records it replaces.
                 let mut decided = crate::election::Incumbency::default();
                 let t = records
-                    .install_projected(&topology, || {
+                    .install_read(&me, &topology, &view_book, &view_fabric_id, |rows| {
                         decided = incumbency_of(&view_book, &records);
-                        project_decided(&view_fabric, &view_fabric_id, view_provider, &view_book, &records, &decided)
+                        project_decided(&view_fabric, &view_fabric_id, view_provider, &view_book, &records, &decided, rows)
                     })
                     .await;
                 // The accepted Build is the authority on which meshes the fabric has: the book
@@ -5290,7 +5429,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         tasks.push(park_gate.spawn(async move {
             let mut held: BTreeSet<PathName> = BTreeSet::new();
             loop {
-                let t = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                let t = records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
                 elections.observe(&t);
                 // A name this view held and now lacks: the exclusion is named from the same
                 // inputs at the moment it happens, not reconstructed later.
@@ -5362,7 +5501,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 }
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
-                let now = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                let now = records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
                 // Every Build whose next operation this admin executes; none
                 // while it is cut off or within one silence window of healing
                 // (its view then authorizes nothing). The fabric authority first
@@ -5373,7 +5512,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                     // proven exited is not live there, and holds no seat.
                     if opened.is_some() {
-                        records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                        records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
                     }
                     if now.holds_fabric_seat(&me_id) {
                         crate::build_op::ensure_active(&drives, &drive_env).await;
@@ -6334,7 +6473,7 @@ mod tests {
         let me_birth = (&me.node.node_id, &me.node.incarnation);
         // The loop decides: this admin holds both of its seats, and their records already name it.
         let decided = incumbency_of(&book, &records);
-        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided);
+        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &RowNames::none_at(std::time::Instant::now()));
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
         // While the loop awaits its climb, the committed transfer lands: mesh2.admin.1 at epoch 2.
         book.seats.take(FabricPrimary, &holder_of(&successor, 2));
@@ -6353,7 +6492,7 @@ mod tests {
         book.seats.take(FabricPrimary, &holder_of(&gone, 5));
         records.mark_exited(&gone.node.node_id, &gone.node.incarnation);
         let decided = incumbency_of(&book, &records);
-        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided);
+        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &RowNames::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
         let epochs: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.epoch)).collect();
         assert_eq!(epochs, vec![(MeshPrimary, me.node.node_id.clone(), 6), (FabricPrimary, me.node.node_id.clone(), 6)], "the successor of a proven-gone holder takes both seats at the next epoch (decided against {:?})", decided.fabric);
@@ -6629,7 +6768,7 @@ mod tests {
             install: Arc::new(move |d: &MeshDigest| {
                 installed.record(d.clone());
             }),
-            known: view_projector(topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone()),
+            known: view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone()),
             primary: Arc::new(|| None),
             row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(crate::certs::CertIssuer::no_certs({
@@ -6679,37 +6818,6 @@ mod tests {
         assert_eq!(n.listeners, vec![("control".to_string(), "127.0.0.1:41777".parse().unwrap())]);
     }
 
-    /// CONTRACT (R13; node-rpc-envelope.md "Meta and config": a stopped node is sent nothing and reads its
-    /// name in its join answer): a parked birth whose row its mesh-primary moved to `mesh1.rpc.1.old`
-    /// is listed by this admin's view at the row's name on every projection, while the book's held
-    /// stopped digest keeps the name the node last published (R-JN1's last accepted name). What must
-    /// NOT happen: the next projection from the book putting the node back at its digest's name, so a
-    /// start by the row's name finds nothing.
-    #[test]
-    fn a_parked_birth_renamed_by_its_row_is_listed_at_the_rows_name_on_every_projection() {
-        let book = DigestBook::default();
-        let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
-        book.record(held.clone());
-        let stop = rafka_mesh_entity::LifecycleOp {
-            build_id: "b1".into(),
-            attempt: 1,
-            operation: "stop-node:mesh1.rpc.1".into(),
-            node_id: held.node.node_id.clone(),
-            incarnation: held.node.incarnation.clone(),
-            name: held.node.name.clone(),
-            event_at_rafka_ms: 1,
-        };
-        assert!(book.stopped(stop));
-        let records = Records::default();
-        let to: PathName = "mesh1.rpc.1.old".parse().unwrap();
-        records.rename_birth(&held.node.name, &held.node.node_id, &held.node.incarnation, &to);
-        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
-        let n = t.node(&to).unwrap_or_else(|| panic!("the parked birth is listed at its row's name: {:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>()));
-        assert_eq!((n.node_id.clone(), n.incarnation_id.clone(), n.status, n.parked), (held.node.node_id.clone(), Some(held.node.incarnation.clone()), NodeStatus::Leaving, true));
-        assert!(t.node(&held.node.name).is_none(), "nothing is listed at the name the row moved from");
-        assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()], "the held stopped digest keeps the name the node last published");
-    }
-
     /// CONTRACT (CLAUDE.md read rule: a kind with no projection is a point read through its store
     /// index; R12/R13: the mesh-primary writes the row, a stopped node is told nothing): `mesh1.rpc.1`
     /// is stopped and its mesh-primary moves its row to `mesh1.rpc.1.old` on the fabric's shared store
@@ -6748,12 +6856,20 @@ mod tests {
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(mine);
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
-        view_projector(topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
+        view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
         let t = topology.read().await.clone();
         let names: Vec<String> = t.nodes.iter().map(|n| n.name.to_string()).collect();
         let n = t.node(&to).unwrap_or_else(|| panic!("the parked birth is listed at its row's name: {names:?}"));
         assert_eq!((n.node_id.clone(), n.incarnation_id.clone(), n.status, n.parked), (held.node.node_id.clone(), Some(held.node.incarnation.clone()), NodeStatus::Leaving, true));
         assert!(t.node(&held.node.name).is_none(), "nothing is listed at the name the row moved from: {names:?}");
+        // The book's held stopped digest keeps the name the node last published (R-JN1's last accepted
+        // name): only the view names the birth by its row.
+        assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()]);
+        // The row moved back (node-replace.md Rollback): the next projection reads it there.
+        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, &to, &held.node.name).await.unwrap();
+        view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
+        let t = topology.read().await.clone();
+        assert!(t.node(&held.node.name).is_some_and(|n| n.node_id == held.node.node_id && n.parked) && t.node(&to).is_none(), "{:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&d);
     }
 

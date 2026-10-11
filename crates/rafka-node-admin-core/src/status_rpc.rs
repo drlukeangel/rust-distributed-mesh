@@ -207,8 +207,8 @@ pub struct StatusAuthority {
     /// This admin as the subject of `ApplyNodeName`: it takes the name with no traffic in flight
     /// and publishes its digest carrying it; filled once its digest exists.
     pub rename: Rename,
-    /// This admin's view taking a node's row its `node.update` moved (R13): the view lists the birth
-    /// at the row's name on every projection from now on. Filled with the view.
+    /// This admin's view taking a node's row its `node.update` moved (R13): the view is projected
+    /// again, reading the moved row. Filled with the view.
     pub row_moved: RowMoved,
 }
 

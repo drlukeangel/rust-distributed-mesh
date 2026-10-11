@@ -206,7 +206,7 @@ impl crate::http::ControlPlane {
     /// This admin's view as it is now.
     async fn view(&self) -> crate::topology::Topology {
         match self.view_now.get() {
-            Some(project) => project(),
+            Some(project) => project().await,
             None => self.topology.read().await.clone(),
         }
     }
