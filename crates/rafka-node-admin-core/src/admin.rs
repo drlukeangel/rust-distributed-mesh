@@ -907,6 +907,7 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 pub async fn reconcile_drift(
     time: &rafka_mesh_transport::clock::RafkaTime,
     me: &PathName,
+    me_id: &NodeId,
     t: &Topology,
     accepted: &AcceptedStore,
     book: &DigestBook,
@@ -922,7 +923,7 @@ pub async fn reconcile_drift(
     decided: &(dyn Fn(&str) -> bool + Sync),
     on_exit_proven: &(dyn Fn(&NodeId, &IncarnationId) + Sync),
 ) -> Option<(crate::build::BuildId, u32)> {
-    let authority = t.fabric_primary().filter(|n| &n.name == me)?;
+    let authority = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
     let current = accepted.current(builds).await?;
     if matches!(current.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) {
         return None;
@@ -1935,9 +1936,9 @@ impl AdminRunner {
     /// `Build(shape)` never starts under an assumed state.
     fn pending_handoff_hook(&self, admin: &PathName) -> Result<crate::deployment::pipeline::BeforeReady, String> {
         let Some(node_rpc) = &self.node_rpc else { return Err(format!("{admin}: this admin has no Node RPC client for the Pending hand-off")) };
-        let (client, resolver, me, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
+        let (client, resolver, me, me_id, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
         Ok(Arc::new(move |target: Node| {
-            let (client, resolver, me, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), topology.clone(), mesh.clone(), records.clone());
+            let (client, resolver, me, me_id, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone());
             Box::pin(async move {
                 // The mesh's exact identity, as the launch took it: what this admin created, or else
                 // what its view holds from the mesh's members (a recovery never mints one).
@@ -1945,7 +1946,7 @@ impl AdminRunner {
                 let Some(mesh_id) = records.meshes.lock().unwrap().get(&mesh).cloned().or(known).map(|m| m.to_string()) else {
                     return Err(format!("{}: neither this admin's records nor its view hold a mesh id for {mesh}, so no Pending can be applied", target.name));
                 };
-                apply_mesh_pending(&client, &resolver, &me, &topology, &mesh, &mesh_id, &target).await
+                apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, &target).await
             })
         }))
     }
@@ -2227,8 +2228,8 @@ impl AdminRunner {
     pub async fn stop_all(&self) {
         let mut all: Vec<(String, DeploymentHandle)> = self.handles.lock().unwrap().iter().map(|(k, (_, h))| (k.to_string(), h.clone())).collect();
         let view = self.topology.read().await.clone();
-        if view.fabric_primary().is_some_and(|p| p.name == self.me) {
-            for n in view.members().filter(|n| n.name != self.me && n.status.is_live()) {
+        if view.holds_fabric_seat(&self.node_id) {
+            for n in view.members().filter(|n| n.node_id != self.node_id && n.status.is_live()) {
                 if all.iter().any(|(k, _)| *k == n.name.to_string()) {
                     continue;
                 }
@@ -2289,7 +2290,7 @@ impl OperationRunner for AdminRunner {
     /// the retire is then the new fabric-primary, by the Build's ordinary hand-off.
     async fn prepare(&self, _build_id: &crate::build::BuildId, _attempt: u32, op: &BuildOperation) -> Result<(), String> {
         let BuildOperation::ShutdownMesh { mesh, mesh_id } = op else { return Ok(()) };
-        let holds_seat_inside = self.topology.read().await.fabric_primary().is_some_and(|fp| fp.name == self.me && fp.mesh == *mesh);
+        let holds_seat_inside = self.topology.read().await.fabric_primary().is_some_and(|fp| fp.node_id == self.node_id && fp.mesh == *mesh);
         if !holds_seat_inside {
             return Ok(());
         }
@@ -2382,9 +2383,10 @@ impl AdminRunner {
     }
 }
 
-/// `ApplyMeshState(Pending)` at `target` (a mesh's first admin, just joined), from `me`.
+/// `ApplyMeshState(Pending)` at `target` (a mesh's first admin, just joined), from `me` (born as `me_id`).
 #[doc(hidden)]
-pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, target: &Node) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, target: &Node) -> Result<(), String> {
     use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
     use rafka_node_rpc_contract::status::{MeshState, Status, StatusReply, StatusRequest};
     // The target is not heard yet (a peer mesh's admin reaches the backbone only as its mesh's
@@ -2398,8 +2400,7 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
     tracing::info!(target = %target.name, applied = ?fed, "the resolver holds the launched birth for the Pending hand-off");
     let (me_id, me_inc) = {
         let v = topology.read().await;
-        let my = v.members().find(|n| &n.name == me).cloned();
-        (my.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), my.and_then(|n| n.incarnation_id).map(|i| i.0).unwrap_or_default())
+        (me_id.to_string(), v.own(me_id).and_then(|n| n.incarnation_id.clone()).map(|i| i.0).unwrap_or_default())
     };
     let request = StatusRequest::ApplyMeshState {
         mesh_id: crate::model::MeshId::parse(mesh_id).map_err(|e| format!("{mesh}: its mesh id {mesh_id:?} is not a MeshId: {e}"))?,
@@ -3289,7 +3290,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()),
     );
     // The claim door: this admin decides a claim only while it holds the fabric-primary seat.
-    let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });
+    let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), node_id: node_id.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });
     let _ = claim_slot.set(claim_door.clone());
     {
         let (book, records) = (book.clone(), records.clone());
@@ -3325,6 +3326,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
             status_storage: status_storage.clone(),
             me: name.clone(),
+            node_id: node_id.clone(),
             fabric_id: cfg.fabric_id.clone(),
             topology: control.topology.clone(),
             declared: records.declared.clone(),
@@ -3750,6 +3752,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let (slot, records, provider_kind) = (sweep_slot.clone(), records.clone(), policy.provider);
         let decommission = crate::reenter::Decommission {
             me: name.clone(),
+            me_id: node_id.clone(),
             topology: control.topology.clone(),
             accepted: accepted.clone(),
             builds: builds_dyn.clone(),
@@ -4072,7 +4075,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let view = topology.read().await.clone();
                 let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
-                crate::status_declare::owed_from_view(&declarer, &me, &incarnation, own_ready, records.declare_gate(), &view, &mesh_ids);
+                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), &view, &mesh_ids);
                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
                 // One coalesced wake from the inputs, never a timer: a poke during the round is
                 // the stored permit, so the next round runs at once; a burst runs one.
@@ -4088,16 +4091,16 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // the same kick through a live node of the target's mesh on the ViaPeer route. The node's
     // status lands on its row in nodes.storage and in the view.
     {
-        let (topology, records, nodes_storage, runner, me, mesh) = (control.topology.clone(), records.clone(), nodes_storage.clone(), runner.clone(), name.clone(), cfg.mesh.clone());
+        let (topology, records, nodes_storage, runner, me_id, mesh) = (control.topology.clone(), records.clone(), nodes_storage.clone(), runner.clone(), node_id.clone(), cfg.mesh.clone());
         tasks.push(park_gate.spawn(async move {
             let mut tickle = crate::offline::OfflineTickle::new();
             let floor = rafka_mesh_transport::membership::staleness_floor();
             loop {
                 let view = topology.read().await.clone();
-                let holds_seat = view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me);
+                let holds_seat = view.holds_mesh_seat(&mesh, &me_id);
                 let watched: BTreeMap<String, Node> = view
                     .members()
-                    .filter(|n| n.name != me && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))
+                    .filter(|n| n.node_id != me_id && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))
                     .filter(|n| n.mesh == mesh || n.kind == NodeKind::NodeAdmin)
                     .map(|n| (n.node_id.to_string(), n.clone()))
                     .collect();
@@ -4109,7 +4112,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     node_id: n.node_id.clone(),
                     incarnation: n.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
                 };
-                let own_name = me.clone();
+                let own_id = me_id.clone();
                 let report = tickle
                     .tick(
                         local_now_ms(),
@@ -4150,7 +4153,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             // serves the core Forward op).
                             let carriers: Vec<Node> = view
                                 .members()
-                                .filter(|c| node.as_ref().is_some_and(|n| c.mesh == n.mesh && c.node_id != n.node_id) && c.name != own_name && c.status == NodeStatus::ReadyForTraffic)
+                                .filter(|c| node.as_ref().is_some_and(|n| c.mesh == n.mesh && c.node_id != n.node_id) && c.node_id != own_id && c.status == NodeStatus::ReadyForTraffic)
                                 .take(crate::offline::VIA_PEER_TICKLE_FANOUT)
                                 .cloned()
                                 .collect();
@@ -4229,7 +4232,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             backbone: backbone.clone(),
             topology: control.topology.clone(),
             records: records.clone(),
-            looker: crate::seat_watch::Looker { me: name.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone() },
+            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone() },
             republish: republish.clone(),
             builds: builds.clone(),
         };
@@ -4251,7 +4254,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let fabric_rounds = rounds_slot.get().cloned().expect("the rounds are built before the hierarchy runs");
         hierarchy = park_gate.spawn(async move {
             // The round a new primary runs before it republishes the status it adopted (`crate::round`).
-            let mut rounds = crate::round::RoundDriver::new(me.clone());
+            let mut rounds = crate::round::RoundDriver::new(me.clone(), seat_node_id.clone());
             let mut was_fabric_primary = false;
             // Each unreadable pre-event step is named once, not every round.
             let mut named: std::collections::HashSet<(String, u32, String, String)> = std::collections::HashSet::new();
@@ -4289,8 +4292,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // Cut off, or within one silence window of healing, its view
                 // authorizes nothing: it publishes as no primary.
                 let live = membership.authorizes();
-                let mesh_primary = live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me);
-                let fabric_primary = live && t.fabric_primary().is_some_and(|n| n.name == me);
+                let mesh_primary = live && t.holds_mesh_seat(&mesh, &seat_node_id);
+                let fabric_primary = live && t.holds_fabric_seat(&seat_node_id);
                 backbone.set_mesh_primary(mesh_primary);
                 backbone.set_fabric_primary(fabric_primary);
                 // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
@@ -4390,7 +4393,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         _ = records.view_changed.notified() => {
                             let now = topology.read().await.clone();
                             let live = membership.authorizes();
-                            let (mp, fp) = (live && now.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me), live && now.fabric_primary().is_some_and(|n| n.name == me));
+                            let (mp, fp) = (live && now.holds_mesh_seat(&mesh, &seat_node_id), live && now.holds_fabric_seat(&seat_node_id));
                             let status = now.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                             if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status {
                                 break;
@@ -4442,6 +4445,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let held = connections.held();
         let watch = crate::investigate::Watch {
             me: name.clone(),
+            me_id: node_id.clone(),
             round: rafka_mesh_transport::membership::backbone_gossip_interval(),
             membership: membership.clone(),
             topology: control.topology.clone(),
@@ -4462,7 +4466,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     {
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
-        let (me, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
+        let (me, me_id, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), node_id.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
         let drift_admission = control.admission.clone();
         let (drives, drive_env) = (drives.clone(), drive_env.clone());
         let frozen = shutdown_control.clone();
@@ -4487,14 +4491,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // (its view then authorizes nothing). The fabric authority first
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
-                    let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-let opened =                     reconcile_drift(&drift_time, &me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh, round).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+                    let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
+let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh, round).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                     // proven exited is not live there, and holds no seat.
                     if opened.is_some() {
                         records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
                     }
-                    if now.fabric_primary().is_some_and(|n| n.name == me) {
+                    if now.holds_fabric_seat(&me_id) {
                         crate::build_op::ensure_active(&drives, &drive_env).await;
                     }
                 }
@@ -4508,7 +4512,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
     // A fabric shutdown: freeze (the executor stops, this admin says Draining), then this admin's
     // part of the drain. The fabric-primary stops itself last by waking the shutdown route.
     {
-        let (abort, digest_w, membership_w, me, records_w, runs_w) = (executor.abort_handle(), digest.clone(), membership.clone(), name.clone(), records.clone(), runs.clone());
+        let (abort, digest_w, membership_w, me, me_id, records_w, runs_w) = (executor.abort_handle(), digest.clone(), membership.clone(), name.clone(), node_id.clone(), records.clone(), runs.clone());
         let (seen, drain_control) = (shutdown_control.subscribe(), shutdown_control.clone());
         let stopper: Arc<dyn crate::shutdown::Stopper> = Arc::new(AdminStopper { runner: runner.clone(), topology: control.topology.clone() });
         let done = control.shutdown.clone();
@@ -4537,7 +4541,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
             let _ = membership_w.publish(&d).await;
             tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me)
                 .in_scope(|| tracing::info!("reconciliation frozen; Draining"));
-            if crate::shutdown::drain(me, drain_control, stopper).await {
+            if crate::shutdown::drain(me, me_id, drain_control, stopper).await {
                 done.notify_waiters();
             }
         }));
@@ -4990,6 +4994,7 @@ mod tests {
         let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric seat").clone();
         let authority = StatusAuthority {
             me: me.name.clone(),
+            node_id: me.node_id.clone(),
             fabric_id: fabric1(),
             topology: topology.clone(),
             declared: records.declared.clone(),

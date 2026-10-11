@@ -15,7 +15,7 @@
 
 use crate::build::BuildId;
 use crate::build_state::{BuildAttemptClaim, BuildStateAdapter, ClaimOutcome};
-use crate::model::{EndpointId, NodeKind, PathName};
+use crate::model::{EndpointId, NodeId, NodeKind, PathName};
 use crate::record_store::{FileRecords, StorageError};
 use crate::topology::Topology;
 use rafka_node_rpc::ServerBuilder;
@@ -112,6 +112,8 @@ impl AttemptContexts {
 pub struct ClaimDoor {
     /// This admin's path.name.
     pub me: PathName,
+    /// The node id this admin was born with: whether it holds the fabric seat is decided by it.
+    pub node_id: NodeId,
     /// The admin's observed topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// This admin's Build log: the fabric-primary's own, when it holds the seat.
@@ -125,7 +127,7 @@ impl ClaimDoor {
     async fn not_fabric_primary(&self) -> Option<BuildClaimReply> {
         let t = self.topology.read().await;
         match t.fabric_primary() {
-            Some(n) if n.name == self.me => None,
+            Some(n) if n.node_id == self.node_id => None,
             other => Some(BuildClaimReply::NotFabricPrimary { fabric_primary: other.map(|n| n.name.to_string()) }),
         }
     }
