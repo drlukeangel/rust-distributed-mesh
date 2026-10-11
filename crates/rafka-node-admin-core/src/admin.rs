@@ -852,6 +852,137 @@ pub(crate) async fn exit_proof_of(
     }
 }
 
+/// What the mesh primary's recovery of one TRUE OFFLINE member reads and calls
+/// (node-recovery.md "Detection and proof" step 3, sequence step 1).
+#[derive(Clone)]
+pub(crate) struct RecoverySubmitter {
+    /// This mesh primary's `path.name`: the submitter.
+    pub me: PathName,
+    pub topology: Arc<RwLock<Topology>>,
+    pub book: DigestBook,
+    pub provider: Arc<dyn DeploymentProvider>,
+    pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
+    pub status_storage: Arc<dyn crate::status_storage::StatusStorage>,
+    /// This admin's Build door: the fabric-primary's own, when this admin holds that seat too.
+    pub door: crate::build_op::BuildSlot,
+    pub client: Option<Arc<rafka_node_rpc::NodeRpcClient>>,
+}
+
+/// What the provider's inspection of a TRUE OFFLINE member proved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Inspected {
+    /// Exited: the exit code and where it came from.
+    Exited(Option<i32>, &'static str),
+    /// Not proven exited (still running, or no runtime fact): why.
+    NotExited(String),
+}
+
+impl RecoverySubmitter {
+    /// The provider's exact-exit proof of `node`'s birth: the runtime fact the book's digest of that
+    /// birth carries, else the birth's own durable runtime row (a point read by its key).
+    pub(crate) async fn inspect(&self, node: &Node) -> Inspected {
+        let Some(incarnation) = node.incarnation_id.clone() else { return Inspected::NotExited(format!("{} holds no incarnation to inspect", node.name)) };
+        let held_row = self.book.get(node.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
+        let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
+            None
+        } else {
+            match self.nodes_storage.runtime(&node.node_id, &incarnation).await {
+                Ok(r) => r,
+                Err(e) => return Inspected::NotExited(format!("the durable runtime row of {} at {} could not be read: {e}", node.node_id, incarnation.0)),
+            }
+        };
+        match exit_proof_of(&*self.provider, &held_row, row.as_ref()).await {
+            Ok((code, source)) => Inspected::Exited(code, source),
+            Err(why) => Inspected::NotExited(why),
+        }
+    }
+
+    /// The inspection's span, named when its verdict for the birth changes (a hung member is
+    /// inspected every tick and named once).
+    pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected) {
+        let (verdict, exit_code, exit_proof, reason) = match outcome {
+            Inspected::Exited(code, source) => ("exited", code.map(|c| c.to_string()).unwrap_or_default(), *source, String::new()),
+            Inspected::NotExited(why) => ("not-exited", String::new(), "none", why.clone()),
+        };
+        let incarnation = node.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default();
+        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.me, verdict, exit_code, exit_proof, reason = %reason)
+            .in_scope(|| tracing::info!("the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime"));
+    }
+
+    /// The exit is recorded durably as the birth's own exit-proof row, then the recovery is
+    /// submitted to the fabric-primary keyed on the exited birth: in process when this admin holds
+    /// that seat, else as `build.create` on op `0x20`. The call is followed to its end, so the caller
+    /// holds the birth as submitted until then. A repeat answers AlreadyApplied or BuildInProgress.
+    pub(crate) async fn submit(&self, node: &Node, code: Option<i32>, source: &'static str) -> Result<(), String> {
+        let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
+        crate::offline::put_exit_proof(&*self.status_storage, node, code, source, local_now_ms()).await?;
+        let span = tracing::info_span!(
+            "rdm.node_admin.build.update.via-node-recovery",
+            node = %node.name,
+            node_id = %node.node_id,
+            incarnation_id = %incarnation.0,
+            submitter = %self.me,
+            exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
+            exit_proof = source,
+            fabric_primary = tracing::field::Empty,
+            build_id = tracing::field::Empty,
+            attempt = tracing::field::Empty,
+            disposition = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        );
+        let r = self.submit_in(&span, node, &incarnation).instrument(span.clone()).await;
+        span.record("outcome", match &r {
+            Ok(()) => "submitted".to_string(),
+            Err(e) => e.clone(),
+        });
+        span.in_scope(|| tracing::info!("the mesh primary submits the recovery of its proven-exited member to the fabric-primary"));
+        r
+    }
+
+    async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<(), String> {
+        let fp = self.topology.read().await.fabric_primary().map(|n| n.name.clone()).ok_or_else(|| format!("{}'s view names no fabric-primary to submit the recovery of {} to", self.me, node.name))?;
+        span.record("fabric_primary", fp.to_string().as_str());
+        if fp == self.me {
+            // This admin holds the fabric-primary seat too: its own door, in process.
+            let door = self.door.get().cloned().ok_or_else(|| format!("{} holds the fabric-primary seat but its Build door is not built yet", self.me))?;
+            return match door.control.open_recovery("node-recovery", node.name.clone(), node.node_id.clone(), incarnation.clone()).await {
+                Ok(crate::http::Recovery::Opened(o)) => {
+                    span.record("build_id", o.build_id.0.as_str());
+                    span.record("attempt", o.attempt);
+                    span.record("disposition", "created");
+                    let drive = door.drives.ensure(&door.env, &o.build_id);
+                    let mut reader = drive.reader(o.attempt);
+                    while reader.next().await.is_some() {}
+                    Ok(())
+                }
+                Ok(crate::http::Recovery::AlreadyApplied(o)) => {
+                    span.record("build_id", o.build_id.0.as_str());
+                    span.record("attempt", o.attempt);
+                    span.record("disposition", "already-applied");
+                    Ok(())
+                }
+                Err(r) => {
+                    let reply = crate::build_op::refusal_reply(r);
+                    Err(format!("{}: {reply:?}", reply.name()))
+                }
+            };
+        }
+        let client = self.client.clone().ok_or_else(|| format!("{} has no Node RPC client to submit the recovery of {} with", self.me, node.name))?;
+        let carrier = rafka_node_admin_client::BuildCarrier::new(client, fp);
+        let change = rafka_node_rpc_contract::build::BuildChange::Recover { node: node.name.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+        let mut stream = carrier.create(change).await.map_err(|e| format!("build.create(recover {}) refused: {e}", node.name))?;
+        span.record("build_id", stream.build_id().0.as_str());
+        span.record("attempt", stream.attempt());
+        span.record("disposition", format!("{:?}", stream.disposition()).as_str());
+        while let Some(frame) = stream.next().await {
+            if let Err(e) = frame {
+                return Err(format!("the recovery of {} ended: {e}", node.name));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The gates of the fabric-primary's drive: the membership's cut-off rule and the Build log's
 /// sticky seat fence.
 struct SeatGate {
@@ -909,8 +1040,10 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 
 /// The fabric authority's drift check (`crate::drift`): when this admin is the fabric primary,
 /// the accepted Build is settled, and a cohort the Build's topology names has fewer births than
-/// it should, at least one of them with its exact runtime inspected and found exited, it opens
-/// the next attempt of that same Build (`Fabric.build_id` unchanged: the topology did not change).
+/// it should, at least one of its node-admins with its exact runtime inspected and found exited, it
+/// opens the next attempt of that same Build (`Fabric.build_id` unchanged: the topology did not
+/// change). An ordinary member is not repaired here: its mesh-primary proves its exit and submits its
+/// recovery (node-recovery.md).
 /// `started` holds the (build, attempt, exited births) it already opened, so a repair that fails
 /// is not opened again and again; the adapter's insert-and-fail on the attempt keeps two
 /// authorities from opening it twice.
@@ -1007,6 +1140,12 @@ pub async fn reconcile_drift(
         let recovery = (current.build_id.clone(), 0u32, vec!["recovery".to_string(), n.mesh.clone()]);
         let first_recovering_admin = n.kind == NodeKind::NodeAdmin && decided(&n.mesh) && !started.contains(&recovery);
         let unheard_ms = if n.mesh != me.mesh && !first_recovering_admin { hold(&n.mesh) } else { None };
+        // An ordinary member is recovered by its own mesh-primary (node-recovery.md: "The
+        // mesh-primary is the reconciler for its own members"), never restarted or replaced from
+        // here; only a held mesh's ordinary birth is still inspected, as evidence (R-D1).
+        if n.kind != NodeKind::NodeAdmin && unheard_ms.is_none() {
+            continue;
+        }
         let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
         let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
         // A silent birth this authority cannot prove is named once, with what it lacks: it is not
@@ -4138,7 +4277,23 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // status lands on its row in nodes.storage and in the view.
     {
         let (topology, records, status_storage, runner, me, mesh) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), cfg.mesh.clone());
+        // The recovery of a TRUE OFFLINE member of this mesh (node-recovery.md): the provider's
+        // exact-exit proof, the exit-proof row, the submit to the fabric-primary.
+        let recovery = RecoverySubmitter {
+            me: name.clone(),
+            topology: control.topology.clone(),
+            book: book.clone(),
+            provider: runner.provider.clone(),
+            nodes_storage: nodes_storage.clone(),
+            status_storage: status_storage.clone(),
+            door: build_slot.clone(),
+            client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
+        };
         tasks.push(park_gate.spawn(async move {
+            // The births whose inspection or submitted recovery is in flight, and the last verdict
+            // named per birth. The tick never waits on either.
+            let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
+            let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
             let mut tickle = crate::offline::OfflineTickle::new();
             let floor = rafka_mesh_transport::membership::staleness_floor();
             let mut written = HashMap::new();
@@ -4265,6 +4420,33 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 for id in &report.returned {
                     records.offline.lock().unwrap().retain(|(n, _)| n.as_str() != id);
                     write(id, None, &mut written).await;
+                }
+                // node-recovery.md: on TRUE OFFLINE the mesh primary asks the provider about the exact
+                // runtime of each ordinary member of its own mesh; Exited is the proof, and the
+                // recovery is submitted keyed on the exited birth. Re-evaluated every tick while the
+                // member stays TRUE OFFLINE, so a recovery that failed is submitted again.
+                if holds_seat {
+                    let offline = records.offline.lock().unwrap().clone();
+                    for n in watched.values().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin) {
+                        let Some(incarnation) = n.incarnation_id.clone() else { continue };
+                        let birth = (n.node_id.clone(), incarnation);
+                        if !offline.contains(&birth) || !in_flight.lock().unwrap().insert(birth.clone()) {
+                            continue;
+                        }
+                        let (recovery, n, in_flight, verdicts) = (recovery.clone(), n.clone(), in_flight.clone(), verdicts.clone());
+                        tokio::spawn(async move {
+                            let outcome = recovery.inspect(&n).await;
+                            if verdicts.lock().unwrap().insert(birth.clone(), outcome.clone()).as_ref() != Some(&outcome) {
+                                recovery.span_inspection(&n, &outcome);
+                            }
+                            if let Inspected::Exited(code, source) = outcome {
+                                if let Err(e) = recovery.submit(&n, code, source).await {
+                                    tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
+                                }
+                            }
+                            in_flight.lock().unwrap().remove(&birth);
+                        });
+                    }
                 }
                 tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
             }

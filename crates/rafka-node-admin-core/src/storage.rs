@@ -152,6 +152,8 @@ pub trait NodesStorage: Send + Sync {
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError>;
     /// Every birth's runtime row this admin holds; folded by the reader.
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
+    /// The runtime row of the exact birth `(node_id, incarnation)`: a point read by its key.
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError>;
     /// This admin's own row; `None` before its first start completed.
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError>;
     /// Keep `record` as this admin's own row.
@@ -180,6 +182,9 @@ impl NodesStorage for MemoryNodesStorage {
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
         Ok(self.runtimes.lock().unwrap().values().cloned().collect())
+    }
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
+        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.0)).cloned())
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         Ok(self.own.lock().unwrap().clone())
@@ -226,6 +231,9 @@ impl NodesStorage for FileNodesStorage {
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
         self.runtimes.list(RUNTIME_FORMAT)
+    }
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
+        self.runtimes.read(&format!("{}--{}", node_id, incarnation.0), RUNTIME_FORMAT)
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         self.own.read("self", NODE_FORMAT)
