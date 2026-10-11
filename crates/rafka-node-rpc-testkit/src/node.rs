@@ -1028,7 +1028,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         }
                     };
                     tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.name, sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the fabric-primary's config is held and rides this birth's digest"));
+                        .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this birth's digest"));
                     Ok(StatusReply::Applied)
                 }
                 _ => Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),

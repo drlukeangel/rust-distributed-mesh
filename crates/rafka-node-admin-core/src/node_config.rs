@@ -16,10 +16,12 @@ use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use std::sync::Arc;
 
-/// A mesh-primary's config door: the client it tells a birth through, and the lock that makes
-/// every config change one at a time.
+/// A mesh-primary's config door: the client it tells a birth of its mesh through, what holds this
+/// admin's own config (the mesh-primary is a member of its mesh and the writer of its own row too),
+/// and the lock that makes every config change one at a time.
 pub struct NodeConfigs {
     client: Arc<NodeRpcClient>,
+    own: crate::status_rpc::Configure,
     one_at_a_time: tokio::sync::Mutex<()>,
 }
 
@@ -27,9 +29,9 @@ pub struct NodeConfigs {
 pub type NodeConfigsSlot = Arc<std::sync::OnceLock<Arc<NodeConfigs>>>;
 
 impl NodeConfigs {
-    /// The door over `client`.
-    pub fn new(client: Arc<NodeRpcClient>) -> Self {
-        Self { client, one_at_a_time: tokio::sync::Mutex::new(()) }
+    /// The door over `client`; `own` holds this admin's config when it is the subject.
+    pub fn new(client: Arc<NodeRpcClient>, own: crate::status_rpc::Configure) -> Self {
+        Self { client, own, one_at_a_time: tokio::sync::Mutex::new(()) }
     }
 
     /// Serve an `UpdateNodeConfig` at the admin `me` (born as `me_id`) deciding over `view`, writing to `storage`. One
@@ -46,6 +48,7 @@ impl NodeConfigs {
             incarnation_id = %incarnation.0,
             keys = config.len(),
             row_status = tracing::field::Empty,
+            apply = tracing::field::Empty,
             outcome = tracing::field::Empty,
             answered = tracing::field::Empty,
             detail = tracing::field::Empty,
@@ -87,8 +90,23 @@ impl NodeConfigs {
             span.record("detail", detail.as_str());
             return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
         }
-        let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let told = NodeRpc::new(&self.client).config_apply(&birth, config.clone(), &CallOptions::default()).await;
+        // The node applies it. This admin as the subject applies it in-process, through what holds
+        // its config (the same hand-off its `ApplyNodeConfig` door uses); any other member of its
+        // mesh is called directly.
+        let told = if subject.node_id == *me_id {
+            span.record("apply", "in-process");
+            match self.own.get() {
+                Some(configure) => {
+                    configure(config.clone()).await;
+                    Ok(StatusReply::Applied)
+                }
+                None => Ok(StatusReply::NotReady { reason: format!("{me}: its digest does not exist yet; the config is not held") }),
+            }
+        } else {
+            span.record("apply", "direct");
+            let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
+            NodeRpc::new(&self.client).config_apply(&birth, config.clone(), &CallOptions::default()).await
+        };
         let (answered, detail) = match told {
             Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() },
             Ok(refused) => (refused.name(), format!("{me} wrote the row; the birth answered {refused:?}")),

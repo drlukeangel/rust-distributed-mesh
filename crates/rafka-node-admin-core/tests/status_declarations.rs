@@ -356,7 +356,7 @@ async fn configs_door(rig: &Rig, node: &ServedNode) {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
     let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))));
+    let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.authority.configure.clone())));
 }
 
 fn exact(b: &Birth) -> rafka_node_admin_client::ExactBirth {
@@ -530,7 +530,7 @@ async fn door_at(key: &SecretKey, node: &ServedNode) -> rafka_node_admin_core::n
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))
+    rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())
 }
 
 /// CONTRACT (ops-naming "Node data" :78-79, fabric-node-lifecycle §4.3: the mesh-primary of a node's
@@ -853,7 +853,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         resolver.insert(node.resolved.clone());
         let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
-        let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))));
+        let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())));
         let records = rafka_node_admin_core::admin::Records::default();
         records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.storage.clone()).with_configs(configs)));
         let mut t = rig.topology.read().await.clone();

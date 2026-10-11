@@ -108,7 +108,8 @@ pub struct StatusAuthority {
     /// This admin's rounds (commit-state, open-traffic); filled once the admin holds the handles
     /// they act through.
     pub rounds: Arc<OnceLock<Arc<crate::fabric_rounds::FabricRounds>>>,
-    /// The fabric-primary's `node.config.update` door; filled once the admin's node-RPC client exists.
+    /// This admin's `node.config.update` door, served while it holds a mesh's primary seat (the writer
+    /// of that mesh's rows); filled once the admin's node-RPC client exists.
     pub configs: crate::node_config::NodeConfigsSlot,
     /// This admin as the subject of `ApplyNodeConfig`: it holds the config and publishes its digest
     /// carrying it; filled once its digest exists.
@@ -512,8 +513,8 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
     // A probe changes nothing: it asks this node to say it is here, so any fabric member other than
     // the subject may ask, and a node-admin's probe from another mesh arrives through a carrier (a
     // forward carries no origin identity: the target authenticates the carrier, node-rpc.md 36.1).
-    // An apply changes the node: only a node-admin may ask (the fabric-primary's config reaches a
-    // node of another mesh through that mesh's primary, which is the sender this node authenticates).
+    // An apply changes the node: only a node-admin may ask (its mesh-primary, the writer of its row,
+    // calls it directly; a mesh-primary that is the subject applies in-process, never through here).
     let sender_may = |s: &crate::model::Node| s.node_id != me.node_id && (matches!(req, StatusRequest::ProbeNodeState { .. }) || s.kind == NodeKind::NodeAdmin);
     if me.node_id != *node_id || !sender.is_some_and(sender_may) {
         return None;
@@ -561,7 +562,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             };
             configure(config.clone()).await;
             tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.name, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the fabric-primary's config is held and rides this admin's digest"));
+                .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this admin's digest"));
             Some(StatusReply::Applied)
         }
         _ => None,
