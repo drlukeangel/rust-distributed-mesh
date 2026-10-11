@@ -4736,19 +4736,22 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 .collect();
                             async move {
                                 let (Some(node), Some(client)) = (node, client) else { return crate::offline::ViaPeerVerdict::CandidatesUnreadable(format!("{id} is not in the topology, or this admin has no Node RPC client")) };
-                                let mut asked = Vec::new();
-                                for c in carriers {
-                                    asked.push(c.name.to_string());
-                                    let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
-                                    let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, &kick_of(&node), &rafka_node_rpc::CallOptions::default()).await;
-                                    // The exact birth answered (node-recovery.md step 2): its state, parked or not, or
-                                    // its hook's blocker while that hook is Blocked.
-                                    let incarnation = node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new()));
-                                    if crate::seat_watch::birth_answered(out.reply().map(|r| r.value()), &node.node_id, &incarnation) {
-                                        return crate::offline::ViaPeerVerdict::Answered { via: c.name.to_string() };
-                                    }
-                                }
-                                crate::offline::ViaPeerVerdict::NoPath { asked }
+                                let incarnation = node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new()));
+                                // Every probe names the same exact birth: one kick, by node id and incarnation.
+                                let kick = kick_of(&node);
+                                let (node, client, kick) = (&node, &client, &kick);
+                                let peers: Vec<_> = carriers
+                                    .iter()
+                                    .map(|c| {
+                                        let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
+                                        let probe = async move {
+                                            let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, kick, &rafka_node_rpc::CallOptions::default()).await;
+                                            out.reply().map(|r| r.value().clone())
+                                        };
+                                        (c.name.to_string(), probe)
+                                    })
+                                    .collect();
+                                crate::offline::via_peer_verdict(&node.node_id, &incarnation, peers).await
                             }
                         },
                         |id| {
