@@ -135,10 +135,12 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     // states.md: the mesh's `leaving` is entered by the leave-mesh down op, and "one commit stores
     // the row, applies it, gossips it and answers the op"; fabric-node-lifecycle.md (2.7): the mesh's
     // primary "keeps that mesh's row ... and writes every status". mesh1's primary stored its own
-    // mesh row Leaving when it admitted leave-mesh: the keyed row is in its status store.
+    // mesh row Leaving when it admitted leave-mesh: the keyed row is in mesh1's status store on the
+    // fabric's store root (R14: `status/<mesh>/`).
     let mesh1_bare: String = mesh1_id.split_once('_').map(|(_, r)| r).unwrap_or(&mesh1_id).replace('-', "").to_lowercase();
-    let leaving_row = format!("{mesh1_dir}/status/meshes/{mesh1_bare}-Leaving.json");
-    let row: Value = std::fs::read(&leaving_row).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("mesh1's primary stored no Leaving row for its mesh at {leaving_row}: {:?}", std::fs::read_dir(format!("{mesh1_dir}/status/meshes")).map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())));
+    let mesh1_statuses = estate.fabric_store_root().join("status").join("mesh1").join("meshes");
+    let leaving_row = mesh1_statuses.join(format!("{mesh1_bare}-Leaving.json"));
+    let row: Value = std::fs::read(&leaving_row).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("mesh1's primary stored no Leaving row for its mesh at {}: {:?}", leaving_row.display(), std::fs::read_dir(&mesh1_statuses).map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())));
     assert_eq!((s(&row["record"]["mesh_id"]), s(&row["record"]["state"])), (mesh1_bare.clone(), "Leaving".to_string()), "{row}");
     let (_, fabric_now) = estate.get("/api/fabric").await;
     estate.admin = s(&fabric_now["admin_api_base"]);

@@ -103,7 +103,7 @@ fn a_seat_taker_folds_the_mesh_status_rows_and_a_non_holder_folds_none() {
         let trace_id = crate::mesh_leave_resume::trace_id(&root_span);
         tracing::Instrument::instrument(seat_taken_over_one_root(trace_id), root_span).await
     });
-    println!("trace_id={}", t.trace_id);
+    println!("status_seat_fold trace_id={}", t.trace_id);
     assert_eq!(t.before.node(&t.rpc.0, &t.rpc.1), None, "a non-holder folds none of the primary's rows: {:#?}", t.before);
     assert!(t.before.meshes.is_empty(), "a non-holder folds no Mesh status row: {:#?}", t.before);
     assert_eq!(t.before.fabric.get(&t.fabric_id), Some(&vec!["b-own".to_string()]), "a non-holder holds only the events it applied: {:#?}", t.before);
