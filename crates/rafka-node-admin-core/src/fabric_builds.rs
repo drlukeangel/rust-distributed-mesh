@@ -98,6 +98,29 @@ pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStat
     (runs.into_iter().map(|(_, b)| b).collect(), refused)
 }
 
+/// A broadcast on the Build topic that failed, named: a send is durability and recovery evidence
+/// (node-rpc-envelope.md "Build carrier": progress waits on no gossip), so its failure fails nothing
+/// that was committed locally; the neighbour-up catch-up and `FetchBuildFacts` carry what it held.
+/// `fact` says which send (`hand-over` of a yielded seat, `neighbour-up` catch-up), `sent_by` who.
+fn span_broadcast_refused(sent_by: &str, fact: &'static str, detail: String) {
+    tracing::info_span!("rdm.node_admin.build.reject.via-broadcast-refused", sent_by = %sent_by, fact, detail = %detail)
+        .in_scope(|| tracing::info!("a Build topic send failed: the neighbour-up catch-up and FetchBuildFacts carry what it held"));
+}
+
+/// Every fact [`encode_chunks`] left out, named under its own span: a fact with no wire shape, or
+/// one that fits no gossip message. `sent_by` says which send left it out (the fabric's
+/// neighbour-up catch-up, or a node-admin's seat hand-over).
+fn span_refused(sent_by: &str, refused: &[BuildStateError]) {
+    for e in refused {
+        match e {
+            BuildStateError::Unencodable(_) => tracing::info_span!("rdm.node_admin.build.reject.via-unencodable-fact", sent_by = %sent_by, detail = %e)
+                .in_scope(|| tracing::info!("a Build fact has no wire shape")),
+            _ => tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", sent_by = %sent_by, detail = %e)
+                .in_scope(|| tracing::info!("a Build fact does not fit one gossip message")),
+        }
+    }
+}
+
 /// The facts of every active Build `local` holds, and of `also` (the Build the pointer names),
 /// in append order.
 async fn active_facts(local: &dyn LocalBuildLog, also: Option<BuildId>) -> Vec<BuildFact> {
@@ -290,15 +313,26 @@ impl FabricBuildStateAdapter {
                             let (absorb, shared, fabric_name) = (absorb.clone(), shared.clone(), fabric_name.clone());
                             let (record, pointer) = (store.record().await.ok().flatten(), store.build_id().await);
                             let in_force = held_shutdown.held();
+                            let sent_by = node.clone();
                             tokio::spawn(async move {
+                                let catch_up = format!("neighbour-up catch-up of fabric {fabric_name} by {sent_by} for {peer}");
+                                let send = async |bytes: bytes::Bytes, what: &str| {
+                                    if let Err(e) = shared.read().await.clone().broadcast_neighbors(bytes).await {
+                                        span_broadcast_refused(&sent_by, "neighbour-up", format!("sending {what} in the {catch_up}: {e}"));
+                                    }
+                                };
                                 // A shutdown in force first: the neighbour comes up frozen.
-                                if let Some(sd) = in_force.as_ref().and_then(|sd| encode_shutdown(sd).ok()) {
-                                    let _ = shared.read().await.clone().broadcast_neighbors(sd).await;
+                                match in_force.as_ref().map(encode_shutdown) {
+                                    Some(Ok(sd)) => send(sd, "the fabric shutdown in force").await,
+                                    Some(Err(e)) => span_refused(&catch_up, &[e]),
+                                    None => {}
                                 }
                                 // The Fabric record first, as its own message; then the facts of the
                                 // Build it names and of every active Build.
-                                if let Some(r) = record.as_ref().and_then(|r| encode_fabric(r).ok()) {
-                                    let _ = shared.read().await.clone().broadcast_neighbors(r).await;
+                                match record.as_ref().map(encode_fabric) {
+                                    Some(Ok(r)) => send(r, "the Fabric record").await,
+                                    Some(Err(e)) => span_refused(&catch_up, &[e]),
+                                    None => {}
                                 }
                                 let facts = active_facts(&*absorb, pointer.clone()).await;
                                 let _span = tracing::info_span!(
@@ -308,17 +342,9 @@ impl FabricBuildStateAdapter {
                                     facts = facts.len(),
                                 );
                                 let (messages, refused) = encode_chunks(facts);
-                                for e in refused {
-                                    match &e {
-                                        BuildStateError::Unencodable(_) => tracing::info_span!("rdm.node_admin.build.reject.via-unencodable-fact", fabric = %fabric_name, detail = %e)
-                                            .in_scope(|| tracing::info!("a Build fact has no wire shape")),
-                                        _ => tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", fabric = %fabric_name, detail = %e)
-                                            .in_scope(|| tracing::info!("a Build fact does not fit one gossip message")),
-                                    }
-                                }
-                                let sender = shared.read().await.clone();
+                                span_refused(&catch_up, &refused);
                                 for bytes in messages {
-                                    let _ = sender.broadcast_neighbors(bytes).await;
+                                    send(bytes, "a chunk of Build facts").await;
                                 }
                             });
                         }
@@ -399,21 +425,26 @@ impl FabricBuildStateAdapter {
 
     /// The fabric-primary seat was yielded: set the sticky fence under the gate's lock (so a
     /// decision in flight has committed durably), then hand every active committed fact to the
-    /// neighbours before the new holder acts. Returns how many facts were sent.
-    pub async fn yield_seat(&self, by: &str) -> Result<usize, BuildStateError> {
+    /// neighbours before the new holder acts. Returns how many facts were handed on. A send that
+    /// fails is named (`via-broadcast-refused`, fact `hand-over`) and fails nothing: the fence is
+    /// local and committed, and the new holder's catch-up and `FetchBuildFacts` carry the facts.
+    pub async fn yield_seat(&self, by: &str) -> usize {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence", node = %self.authority.node, by, facts = tracing::field::Empty, fenced = tracing::field::Empty);
         async {
             let fenced = self.authority.fence(by, None).await;
             tracing::Span::current().record("fenced", fenced);
             let facts = active_facts(&*self.local, None).await;
             let n = facts.len();
-            let (messages, _refused) = encode_chunks(facts);
+            let (messages, refused) = encode_chunks(facts);
+            span_refused(&format!("seat hand-over by {}", self.authority.node), &refused);
             let sender = self.sender.read().await.clone();
             for bytes in messages {
-                sender.broadcast_neighbors(bytes).await.map_err(|e| BuildStateError::Io(format!("handing the committed Build facts to the neighbours: {e}")))?;
+                if let Err(e) = sender.broadcast_neighbors(bytes).await {
+                    span_broadcast_refused(&self.authority.node, "hand-over", format!("handing the committed Build facts of {} to the neighbours ({by}): {e}", self.authority.node));
+                }
             }
             tracing::Span::current().record("facts", n as u64);
-            Ok(n)
+            n
         }
         .instrument(span)
         .await
@@ -425,9 +456,32 @@ impl FabricBuildStateAdapter {
         sender.broadcast(encode_shutdown(shutdown)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting fabric shutdown: {e}")))
     }
 
-    async fn broadcast(&self, fact: BuildFact) -> Result<(), BuildStateError> {
+    /// Broadcast `fact` (encoded as `bytes`), already committed to this admin's own log. A send
+    /// that fails is named and never undoes or fails the commit: progress waits on no gossip, and
+    /// the Build topic is durability and recovery evidence (node-rpc-envelope.md "Build carrier"),
+    /// repaired by the neighbour-up catch-up and `FetchBuildFacts`.
+    async fn publish(&self, fact: &BuildFact, bytes: bytes::Bytes) {
         let sender = self.sender.read().await.clone();
-        sender.broadcast(encode(vec![fact])?).await.map_err(|e| BuildStateError::Io(format!("broadcasting Build fact: {e}")))
+        if let Err(e) = sender.broadcast(bytes).await {
+            let (kind, attempt, step) = match fact {
+                BuildFact::Accepted(_) => ("accepted", None, None),
+                BuildFact::Opened(o) => ("opened", Some(o.attempt), None),
+                BuildFact::Claim(c) => ("claim", Some(c.attempt), None),
+                BuildFact::Step(r) => ("step", Some(r.attempt), Some(r.step.as_str())),
+                BuildFact::Attempt(r) => ("attempt", Some(r.attempt), None),
+                BuildFact::Forget { .. } => ("forget", None, None),
+            };
+            tracing::info_span!(
+                "rdm.node_admin.build.reject.via-broadcast-refused",
+                sent_by = %self.authority.node,
+                fact = kind,
+                build_id = %fact.build_id(),
+                attempt = attempt.map(u64::from),
+                step = step,
+                detail = %format!("broadcasting a Build fact committed to {}'s own log on the fabric's Build topic: {e}", self.authority.node),
+            )
+            .in_scope(|| tracing::info!("a committed Build fact was not broadcast: the neighbour-up catch-up and FetchBuildFacts carry it"));
+        }
     }
 }
 
@@ -435,14 +489,20 @@ impl FabricBuildStateAdapter {
 impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let _gate = self.authority.enter().await?;
+        let fact = BuildFact::Accepted(accepted.clone());
+        let bytes = encode(vec![fact.clone()])?;
         self.local.publish_accepted(accepted).await?;
-        self.broadcast(BuildFact::Accepted(accepted.clone())).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         let _gate = self.authority.enter().await?;
+        let fact = BuildFact::Opened(opened.clone());
+        let bytes = encode(vec![fact.clone()])?;
         self.local.open_attempt(opened).await?;
-        self.broadcast(BuildFact::Opened(opened.clone())).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
@@ -456,9 +516,11 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         let _gate = self.authority.enter().await?;
+        let fact = BuildFact::Claim(claim.clone());
+        let bytes = encode(vec![fact.clone()])?;
         let outcome = self.local.claim_attempt(claim).await?;
         if outcome == ClaimOutcome::Won {
-            self.broadcast(BuildFact::Claim(claim.clone())).await?;
+            self.publish(&fact, bytes).await;
         }
         Ok(outcome)
     }
@@ -468,23 +530,38 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        // Encoded before it commits: a receipt with no wire shape is refused by name and lands in
+        // no log, never in this admin's own log alone where no other admin can read it. Once the
+        // local write commits, the receipt is the step's durable commit whatever its broadcast does.
+        let fact = BuildFact::Step(receipt.clone());
+        let bytes = encode(vec![fact.clone()])?;
         self.local.append_step_receipt(receipt).await?;
-        self.broadcast(BuildFact::Step(receipt.clone())).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+        let fact = BuildFact::Attempt(receipt.clone());
+        let bytes = encode(vec![fact.clone()])?;
         self.local.append_attempt_receipt(receipt).await?;
-        self.broadcast(BuildFact::Attempt(receipt.clone())).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.local.facts().await
     }
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+        self.local.recovery_of(path, node_id, incarnation).await
+    }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         let _gate = self.authority.enter().await?;
+        let fact = BuildFact::Forget { build_id: build_id.clone() };
+        let bytes = encode(vec![fact.clone()])?;
         self.local.forget(build_id).await?;
-        self.broadcast(BuildFact::Forget { build_id: build_id.clone() }).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
 

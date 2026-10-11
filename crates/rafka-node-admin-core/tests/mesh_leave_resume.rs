@@ -134,6 +134,9 @@ impl BuildStateAdapter for WireBuilds {
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.0.forget(id).await
     }
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+        self.0.recovery_of(path, node_id, incarnation).await
+    }
 }
 
 /// The host's runtimes: every termination, and the one inspection the provider cannot answer.
@@ -196,6 +199,12 @@ impl TopologySink for View {
         self.0.lock().unwrap().insert(n.name.to_string(), n);
     }
     fn remove(&self, _: &PathName) {}
+    fn remove_birth(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
+        let mut view = self.0.lock().unwrap();
+        if view.get(&name.to_string()).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)) {
+            view.remove(&name.to_string());
+        }
+    }
 }
 
 fn node(name: &str) -> Node {

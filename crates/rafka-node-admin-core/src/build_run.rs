@@ -276,6 +276,9 @@ impl BuildStateAdapter for FramedBuilds {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
@@ -560,9 +563,73 @@ mod tests {
         async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
             self.0.facts().await
         }
+        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+            self.0.recovery_of(path, node_id, incarnation).await
+        }
         async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
             self.0.forget(id).await
         }
+    }
+
+    /// A Build state whose fact log may not be scanned: every lookup is a point read by key.
+    struct NoScan(Arc<MemoryBuildStateAdapter>);
+
+    #[async_trait::async_trait]
+    impl BuildStateAdapter for NoScan {
+        async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
+            self.0.publish_accepted(a).await
+        }
+        async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
+            self.0.open_attempt(o).await
+        }
+        async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+            self.0.read_build(id).await
+        }
+        async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+            self.0.list_active().await
+        }
+        async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
+            self.0.claim_attempt(c).await
+        }
+        async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+            self.0.adopt_claim(c).await
+        }
+        async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
+            self.0.append_step_receipt(r).await
+        }
+        async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+            self.0.append_attempt_receipt(r).await
+        }
+        async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+            panic!("the whole fact log was read for a lookup")
+        }
+        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+            self.0.recovery_of(path, node_id, incarnation).await
+        }
+        async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
+            self.0.forget(id).await
+        }
+    }
+
+    /// CONTRACT (CLAUDE.md read rule: a lookup is a point read through an index; node-recovery.md
+    /// "A repeat submit answers AlreadyApplied"): the recovery dedup of an exited birth is read by
+    /// its key `(node_id, incarnation)` through every decorator of the Build state, never by
+    /// scanning the fact log.
+    /// Must NOT happen: a decorator answering the lookup by reading every fact.
+    #[tokio::test]
+    async fn a_recovery_lookup_through_the_framed_builds_is_a_point_read_by_the_exited_birth() {
+        let memory = Arc::new(MemoryBuildStateAdapter::new());
+        let (path, node_id, incarnation): (crate::model::PathName, _, _) = ("mesh1.rpc.1".parse().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        let deleted = rafka_mesh_entity::LifecycleOp { build_id: id().to_string(), attempt: 2, operation: format!("recover-node:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        for (step, output) in [("NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("Complete", None)] {
+            memory
+                .append_step_receipt(&BuildStepReceipt { build_id: id(), attempt: 2, operation: format!("recover-node:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .await
+                .unwrap();
+        }
+        let framed = FramedBuilds::new(Arc::new(NoScan(memory)), Arc::new(AttemptRuns::default()));
+        assert_eq!(framed.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((id(), 2)), "the exited birth's recovery, by its key");
+        assert_eq!(framed.recovery_of(&path, &node_id, &crate::model::IncarnationId::mint()).await.unwrap(), None, "another birth of the node was not recovered");
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {

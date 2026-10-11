@@ -53,7 +53,7 @@ fn path(name: &str) -> PathName {
 }
 
 /// A caller outside the fabric: its own endpoint, and the node-admins it reaches by path.
-struct Caller {
+pub(crate) struct Caller {
     admin: NodeAdminClient,
     client: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
@@ -63,7 +63,7 @@ struct Caller {
 
 impl Caller {
     /// A caller that learns the fabric from the admin serving `base`.
-    async fn of(base: &str) -> Caller {
+    pub(crate) async fn of(base: &str) -> Caller {
         let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
         let resolver = Arc::new(StaticResolver::new());
         let client = Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm"));
@@ -86,7 +86,7 @@ impl Caller {
         }
     }
 
-    async fn carrier(&self) -> BuildCarrier {
+    pub(crate) async fn carrier(&self) -> BuildCarrier {
         let fp = self.admin.fabric().await.expect("the answering admin's fabric").fabric_primary.expect("a fabric-primary");
         BuildCarrier::new(self.client.clone(), fp)
     }

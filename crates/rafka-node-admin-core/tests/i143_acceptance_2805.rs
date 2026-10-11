@@ -12,7 +12,6 @@ use rafka_mesh_entity::{EndpointId, IncarnationId, MeshId, NodeId, NodeKind};
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
-use rafka_node_admin_core::storage::MemoryNodesStorage;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
@@ -145,8 +144,8 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         fabric_id,
         topology,
         declared: Arc::new(Mutex::new(declared)),
-        nodes_storage: Arc::new(MemoryNodesStorage::default()),
         status_storage,
+        nodes_storage: Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         republish: Arc::new(OnceLock::new()),
         commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
@@ -418,6 +417,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     impl TopologySink for Discard {
         fn publish(&self, _: Node) {}
         fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
+        fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
     }
 
     // The drawing's first box: the operation is claimed under an accepted Build.
@@ -536,6 +536,31 @@ impl StatusStorage for Refusing {
     async fn fabric_events(&self) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
         self.inner.fabric_events().await
     }
+    async fn put_node_declared(&self, row: &rafka_node_admin_core::status_storage::NodeDeclaredRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.put_node_declared(row).await
+    }
+    async fn remove_node_declared(&self, node_id: &rafka_mesh_entity::NodeId, incarnation_id: &rafka_mesh_entity::IncarnationId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.remove_node_declared(node_id, incarnation_id).await
+    }
+    async fn node_declared(&self) -> Result<Vec<rafka_node_admin_core::status_storage::NodeDeclaredRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_declared().await
+    }
+    async fn put_node_silence(&self, row: &rafka_node_admin_core::status_storage::NodeSilenceRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.put_node_silence(row).await
+    }
+    async fn node_silences(&self) -> Result<Vec<rafka_node_admin_core::status_storage::NodeSilenceRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_silences().await
+    }
+    async fn put_node_exit(&self, row: &rafka_node_admin_core::status_storage::NodeExitRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.put_node_exit(row).await
+    }
+    async fn node_exit(&self, node_id: &rafka_mesh_entity::NodeId, incarnation_id: &rafka_mesh_entity::IncarnationId) -> Result<Option<rafka_node_admin_core::status_storage::NodeExitRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_exit(node_id, incarnation_id).await
+    }
 }
 
 /// CONTRACT (#2805, acceptance 9): a Mesh status or Fabric event is answered `Applied` only after
@@ -583,7 +608,7 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
 
         // The authority restarts over the same rows: what it folds is what it applied.
-        let folded = Declared::rehydrate(&*store, &MemoryNodesStorage::default()).await.unwrap();
+        let folded = Declared::rehydrate(&*store).await.unwrap();
         assert_eq!(folded.meshes.get(&mesh2), Some(&MeshState::Pending));
         let me_again = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let restarted = rig_with(me_again, &[&fabric_primary], ids, store.clone(), folded, Some(fabric.clone())).await;
@@ -639,7 +664,7 @@ fn status_authority_refuses_every_backward_move_by_name() {
                 assert_eq!(reply(&call(&node_rig, s, &decl(*start), &CallOptions::default()).await), StatusReply::AlreadyApplied, "a repeat of {start:?}");
                 repeats += 1;
             }
-            assert_eq!(node_rig.authority.declared.lock().unwrap().node(&s.node.node_id).map(|(_, st)| st), Some(*start), "refusals moved nothing");
+            assert_eq!(node_rig.authority.declared.lock().unwrap().node(&s.node.node_id, s.node.incarnation_id.as_ref().unwrap()), Some(*start), "refusals moved nothing");
         }
         for start in meshes {
             let id = MeshId::mint();
@@ -777,7 +802,7 @@ fn applied_events_survive_authority_change_and_the_old_authority_is_refused() {
         assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");
         assert_eq!(reply(&call(&rig, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::Applied, "the new authority applies new work");
         // The receiver restarts over its rows.
-        let folded = Declared::rehydrate(&*store, &MemoryNodesStorage::default()).await.unwrap();
+        let folded = Declared::rehydrate(&*store).await.unwrap();
         let receiver2 = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), store.clone(), folded, Some(fabric.clone())).await;
         {
@@ -828,10 +853,10 @@ fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_appli
         }
         let in_flight = reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Leaving), &CallOptions::default()).await);
         assert_eq!(in_flight, StatusReply::RejectedStaleIncarnation { held: new_inc.clone() });
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id), Some((old_inc.clone(), NodeState::Draining)), "the stale declaration moved nothing");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, &old_inc), Some(NodeState::Draining), "the stale declaration moved nothing");
         let fresh = reply(&call(&rig, &subject, &decl(&new_inc, NodeState::Pending), &CallOptions::default()).await);
         assert_eq!(fresh, StatusReply::Applied, "the new birth starts on a clean key: Pending after the old birth's Draining is not backward");
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id), Some((new_inc.clone(), NodeState::Pending)));
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, &new_inc), Some(NodeState::Pending));
         let spans = finish(&capture, &dir, json!({"cell": cell, "in_flight": format!("{in_flight:?}"), "fresh": format!("{fresh:?}"), "new_incarnation": new_inc.to_string()}));
         let stale = spans_where(&spans, DECLARATION, &[("outcome", "rejected-stale-incarnation")]);
         assert_eq!(stale.len(), 1, "{stale:?}");
@@ -868,7 +893,7 @@ fn status_route_loss_never_synthesizes_dead() {
         let t = rig.authority.topology.read().await;
         assert!(t.nodes.iter().all(|n| n.status == NodeStatus::ReadyForTraffic), "no node became Dead or Leaving: {:?}", t.nodes.iter().map(|n| (n.name.to_string(), n.status)).collect::<Vec<_>>());
         drop(t);
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id).map(|(_, s)| s), Some(NodeState::ReadyForTraffic), "the applied state is unchanged");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the applied state is unchanged");
         let spans = finish(&capture, &dir, json!({"cell": cell, "no_route": out.name(), "declaration_spans_before": served_before}));
         assert_eq!(spans_where(&spans, DECLARATION, &[]).len(), served_before, "the unsent call reached no handler");
         assert!(spans.iter().all(|s| !s["name"].as_str().unwrap_or("").contains("dead")), "no span names a death");

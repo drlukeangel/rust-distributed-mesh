@@ -196,6 +196,16 @@ fn facts() -> Vec<BuildFact> {
     out.push(action(None));
     out.push(action(Some(AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
     out.push(action(Some(AttemptAction::Replace { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
+    // A member's recovery (node-recovery.md): the attempt the mesh-primary's submit opens.
+    out.push(BuildFact::Opened(AttemptOpened {
+        build_id: bid("bld-1"),
+        attempt: 2,
+        reason: AttemptReason::Recovery,
+        action: Some(AttemptAction::Recover { path: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() }),
+        opened_by: "mesh1.admin.1".into(),
+        opened_at_ms: 56,
+    }));
+
     out.push(BuildFact::Claim(BuildAttemptClaim { build_id: bid("bld-1"), attempt: 2, executor: "mesh1.admin.1".into() }));
     out.push(step("PrepareNetwork", None));
     out.push(BuildFact::Step(BuildStepReceipt {

@@ -94,7 +94,8 @@ impl MeshStorage for FileMeshStorage {
 
 // ---------------------------------------------------------------- nodes.storage
 
-/// One birth as last known: the admin's own row, or a contact it heard.
+/// One birth as last known: the admin's own row, or a contact it heard. Its address facts only:
+/// the declared state and the silence status are their own keyed rows in `status.storage`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRecord {
     /// The node's minted id.
@@ -110,15 +111,6 @@ pub struct NodeRecord {
     /// Non-Iroh listeners (the own row of a node-admin: its `control` API).
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
-    /// The lifecycle state this birth declared and its authority applied (`status_rpc`), when
-    /// this admin is that authority. Never liveness: membership still says what is heard.
-    #[serde(default)]
-    pub declared: Option<String>,
-    /// The status the mesh primary holds for this birth while it is silent (fabric-node-lifecycle.md
-    /// §7.3): `PendingReconnect`, then `Dead` once its offline tickle found no path on two rounds a
-    /// staleness floor apart. `None` while the birth is heard. Never a reason to restart or delete it.
-    #[serde(default)]
-    pub status: Option<crate::model::NodeStatus>,
 }
 
 impl NodeRecord {
@@ -176,6 +168,8 @@ pub trait NodesStorage: Send + Sync {
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError>;
     /// Every birth's runtime row this admin holds; folded by the reader.
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
+    /// The runtime row of the exact birth `(node_id, incarnation)`: a point read by its key.
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError>;
     /// This admin's own row; `None` before its first start completed.
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError>;
     /// Keep `record` as this admin's own row.
@@ -239,6 +233,9 @@ impl NodesStorage for MemoryNodesStorage {
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
         Ok(self.runtimes.lock().unwrap().values().cloned().collect())
     }
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
+        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.0)).cloned())
+    }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         Ok(self.own.lock().unwrap().clone())
     }
@@ -283,7 +280,7 @@ impl NodesStorage for MemoryNodesStorage {
     }
 }
 
-const NODE_FORMAT: &str = "node-record/1";
+const NODE_FORMAT: &str = "node-record/2";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
 const ROW_FORMAT: &str = "node-row/1";
 
@@ -313,6 +310,9 @@ impl NodesStorage for FileNodesStorage {
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
         self.runtimes.list(RUNTIME_FORMAT).await
+    }
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
+        self.runtimes.read(&format!("{}--{}", node_id, incarnation.0), RUNTIME_FORMAT).await
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         self.own.read("self", NODE_FORMAT).await
@@ -479,8 +479,6 @@ mod tests {
             endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
             listeners: vec![],
-            declared: None,
-            status: None,
         }
     }
 

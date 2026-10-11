@@ -70,9 +70,17 @@ pub fn refusal_reply(r: Refusal) -> BuildReply {
     }
 }
 
+/// What a submitted change was admitted as.
+enum Admitted {
+    /// A new Build or the next attempt of the accepted one.
+    Opened(crate::http::Opened),
+    /// The fact the change is keyed on was already applied, by this attempt.
+    AlreadyApplied(crate::http::Opened),
+}
+
 impl BuildDoor {
     /// A change a caller submitted: a new Build or the next attempt of the accepted one.
-    async fn admit_change(&self, change: &BuildChange) -> Result<crate::http::Opened, BuildReply> {
+    async fn admit_change(&self, change: &BuildChange) -> Result<Admitted, BuildReply> {
         let cp = &self.control;
         let node_span = |node: &PathName| tracing::info_span!("rdm.node_admin.build.update.via-node-rpc", route = "build.create", build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %node);
         let created = |change: &TopologyChange| {
@@ -102,8 +110,15 @@ impl BuildDoor {
             BuildChange::Drain { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Drain, node.clone(), ActionKind::Drain, None).await,
             BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop, None).await,
             BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start, None).await,
+            BuildChange::Recover { node, node_id, incarnation } => {
+                return match cp.open_recovery("build.create", node.clone(), node_id.clone(), incarnation.clone()).await {
+                    Ok(crate::http::Recovery::Opened(o)) => Ok(Admitted::Opened(o)),
+                    Ok(crate::http::Recovery::AlreadyApplied(o)) => Ok(Admitted::AlreadyApplied(o)),
+                    Err(r) => Err(refusal_reply(r)),
+                }
+            }
         };
-        r.map_err(refusal_reply)
+        r.map(Admitted::Opened).map_err(refusal_reply)
     }
 
     /// Only the fabric-primary accepts a Build call; any other admin names the one it sees.
@@ -150,7 +165,15 @@ impl BuildDoor {
         match submit {
             BuildSubmit::Change(change) => {
                 let opened = match self.admit_change(&change).await {
-                    Ok(o) => o,
+                    Ok(Admitted::Opened(o)) => o,
+                    // A change keyed on a fact already applied (a recovery of a birth already
+                    // recovered): nothing runs and no drive is made or started (a drive of a Failed
+                    // Build would claim its next attempt); the terminal names the attempt whose
+                    // receipts applied it.
+                    Ok(Admitted::AlreadyApplied(o)) => {
+                        let _sink = started(sink, BuildReply::Started { build_id: o.build_id.0.clone(), attempt: o.attempt, disposition: Disposition::AlreadyApplied }).await?;
+                        return Ok(BuildReply::Complete { build_id: o.build_id.0, attempt: o.attempt });
+                    }
                     Err(refusal) => return Ok(refusal),
                 };
                 let drive = self.drives.ensure(&self.env, &opened.build_id);

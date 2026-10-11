@@ -22,7 +22,7 @@ use crate::mesh_leave::ExitManifest;
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::{FabricRecord, FabricShutdown};
-use crate::model::{EndpointId, FabricId, IncarnationId, NodeKind, PathName};
+use crate::model::{EndpointId, FabricId, IncarnationId, NodeId, NodeKind, PathName};
 use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rafka_mesh_entity::LifecycleOp;
 use serde::{Deserialize, Serialize};
@@ -142,6 +142,7 @@ enum WireAction {
     Drain { path: PathName, from_incarnation: IncarnationId },
     Stop { path: PathName, from_incarnation: IncarnationId },
     Start { path: PathName, from_incarnation: IncarnationId },
+    Recover { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -196,6 +197,7 @@ impl From<&AttemptAction> for WireAction {
             AttemptAction::Drain { path, from_incarnation } => Self::Drain { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Recover { path, node_id, from_incarnation } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
         }
     }
 }
@@ -207,6 +209,7 @@ impl From<WireAction> for AttemptAction {
             WireAction::Drain { path, from_incarnation } => Self::Drain { path, from_incarnation },
             WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
             WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
+            WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation },
         }
     }
 }
