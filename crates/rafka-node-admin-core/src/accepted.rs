@@ -535,14 +535,15 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     if let Some((path, from_incarnation)) = replaced {
         ops.push(BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from_incarnation.clone() });
     }
-    // A live node of a kept mesh that the topology no longer names is retired; a mesh the
-    // topology no longer names is retired whole (every member, dead or live, by the retire
-    // pipeline), never member by member.
+    // A live or stopped (parked) node of a kept mesh that the topology no longer names is retired
+    // (a node.delete of a stopped node retires it: node-decommission.md); a node leaving under
+    // another operation is that operation's. A mesh the topology no longer names is retired whole
+    // (every member, dead or live, by the retire pipeline), never member by member.
     // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
     let mut extra: Vec<&PathName> = observed
         .members()
-        .filter(|n| action.is_none() && n.status.is_live() && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
+        .filter(|n| action.is_none() && (n.status.is_live() || n.parked) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
         .map(|n| &n.name)
         .collect();
     extra.sort();

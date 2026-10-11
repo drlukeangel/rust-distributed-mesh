@@ -1746,19 +1746,27 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.restarting(&op).await;
             None
         };
-        // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
-        // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
-        // terminal proof. A caller that puts other work between them (a replace) calls the halves.
-        self.seat_transfer_step(&mut run, &node).await?;
-        self.drain_steps(&mut run, &mut node, handle).await?;
-        if req.kind == RetireKind::Restart {
-            // The birth parks and stays: its process is the one that starts again.
-            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Park { publish_stopped: false }).await?;
-            // The retire leg of this restart is finished: the next restart of the node runs it afresh.
-            self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
-            return Ok(());
-        }
-        let _terminal = self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.expect("a stop that terminates yields the provider's receipt");
+        let _terminal = if req.kind == RetireKind::Removal && node.parked {
+            // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
+            // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
+            // fabricated again. The delete proceeds to the exact runtime's exit proof
+            // (node-decommission.md 1-2, node-stop.md 6).
+            self.terminate_step(&mut run, &node, handle).await?
+        } else {
+            // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
+            // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
+            // terminal proof. A caller that puts other work between them (a replace) calls the halves.
+            self.seat_transfer_step(&mut run, &node).await?;
+            self.drain_steps(&mut run, &mut node, handle).await?;
+            if req.kind == RetireKind::Restart {
+                // The birth parks and stays: its process is the one that starts again.
+                self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Park { publish_stopped: false }).await?;
+                // The retire leg of this restart is finished: the next restart of the node runs it afresh.
+                self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
+                return Ok(());
+            }
+            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.expect("a stop that terminates yields the provider's receipt")
+        };
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is.
         if let Some(op) = op {

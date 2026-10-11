@@ -2887,8 +2887,8 @@ impl AdminRunner {
 
     async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, kind: RetireKind) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
-        let (record, handle) = match seen {
-            Some(n) => self.handle_for(&n).await?,
+        let (record, handle) = match &seen {
+            Some(n) => self.handle_for(n).await?,
             None => {
                 let held = self.handles.lock().unwrap().get(node).cloned();
                 match held {
@@ -2899,6 +2899,13 @@ impl AdminRunner {
                     None => return Err(format!("{node} is not in this admin's view")),
                 }
             }
+        };
+        // The record handed back with the runtime is the one this admin deployed; whether the birth
+        // is stopped (parked) is the view's, as `parked_birth` takes it: a stopped birth's delete
+        // goes straight to its exact runtime's exit proof.
+        let record = match &seen {
+            Some(n) => Node { parked: n.parked, ..record },
+            None => record,
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind };

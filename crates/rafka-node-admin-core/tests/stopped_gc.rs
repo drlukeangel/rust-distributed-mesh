@@ -286,7 +286,7 @@ async fn an_earlier_stop_before_a_later_start_does_not_count() {
 
     let verdicts = cp.scan_stopped(TTL, now(&cp)).await;
     assert!(verdicts.contains(&Verdict::Young { node: a.0.clone(), stopped_at_ms: latest }), "{verdicts:?}");
-    assert!(verdicts.iter().any(|v| matches!(v, Verdict::Skipped { node, .. } if *node == b.0)), "{verdicts:?}");
+    assert!(verdicts.iter().any(|v| matches!(v, Verdict::NoCurrentReceipt { node, .. } if *node == b.0)), "{verdicts:?}");
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     assert_eq!(cp.accepted.build_id().await, Some(b0));
     assert!(spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt").iter().any(|(_, x)| x["node"] == YOUNG));

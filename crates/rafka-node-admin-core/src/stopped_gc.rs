@@ -78,11 +78,36 @@ pub enum Verdict {
         /// The open Build.
         build_id: BuildId,
     },
-    /// The birth's age cannot be decided from the Build log.
-    Skipped {
+    /// The accepted Build no longer names the node: its delete is under way.
+    Deleting {
+        /// The node.
+        node: PathName,
+    },
+    /// The view holds no birth (incarnation) for the stopped node: there is no birth to age.
+    NoIncarnation {
+        /// The node.
+        node: PathName,
+    },
+    /// No stop receipt opens the birth's current stopped period.
+    NoCurrentReceipt {
         /// The node.
         node: PathName,
         /// Why.
+        reason: String,
+    },
+    /// The birth's current stop receipt is held but cannot be read.
+    UnreadableReceipt {
+        /// The node.
+        node: PathName,
+        /// The decode failure.
+        reason: String,
+    },
+    /// The Build log (or its active Builds) cannot be read: neither the age nor the open-Build
+    /// reference can be decided.
+    UnreadableBuildLog {
+        /// The node.
+        node: PathName,
+        /// The read failure.
         reason: String,
     },
 }
@@ -210,11 +235,11 @@ impl crate::http::ControlPlane {
         for n in stopped {
             let node = n.name.clone();
             let Some(incarnation) = n.incarnation_id.clone() else {
-                out.push(Verdict::Skipped { node, reason: "the view holds no incarnation for the stopped node".into() });
+                out.push(Verdict::NoIncarnation { node });
                 continue;
             };
             if !desired.as_ref().is_some_and(|t| t.contains(&node)) {
-                out.push(Verdict::Skipped { node, reason: "the accepted Build no longer names it: its delete is under way".into() });
+                out.push(Verdict::Deleting { node });
                 continue;
             }
             match self.open_reference(&incarnation).await {
@@ -224,14 +249,14 @@ impl crate::http::ControlPlane {
                 }
                 Ok(None) => {}
                 Err(reason) => {
-                    out.push(Verdict::Skipped { node, reason });
+                    out.push(Verdict::UnreadableBuildLog { node, reason });
                     continue;
                 }
             }
             let facts = match &facts {
                 Ok(f) => f,
                 Err(e) => {
-                    out.push(Verdict::Skipped { node, reason: format!("the Build log cannot be read: {e}") });
+                    out.push(Verdict::UnreadableBuildLog { node, reason: format!("the Build log cannot be read: {e}") });
                     continue;
                 }
             };
@@ -240,7 +265,8 @@ impl crate::http::ControlPlane {
                     out.push(Verdict::Expired(Candidate { node, node_id: n.node_id.clone(), incarnation, stopped_at_ms }))
                 }
                 Age::StoppedAt(stopped_at_ms) => out.push(Verdict::Young { node, stopped_at_ms }),
-                Age::NoCurrentReceipt(reason) | Age::Unreadable(reason) => out.push(Verdict::Skipped { node, reason }),
+                Age::NoCurrentReceipt(reason) => out.push(Verdict::NoCurrentReceipt { node, reason }),
+                Age::Unreadable(reason) => out.push(Verdict::UnreadableReceipt { node, reason }),
             }
         }
         out
@@ -265,8 +291,16 @@ impl crate::http::ControlPlane {
                 Verdict::Young { .. } => {}
                 Verdict::Referenced { node, build_id } => tracing::info_span!("rdm.node_admin.node.reject.via-open-build-reference", node = %node, build_id = %build_id, ttl = ttl_ms)
                     .in_scope(|| tracing::info!("the stopped birth is referenced by an open Build: it is not collected")),
-                Verdict::Skipped { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-no-current-stop-receipt", node = %node, reason = %reason, ttl = ttl_ms)
-                    .in_scope(|| tracing::info!(%reason, "the stopped birth's age cannot be decided: skipped, never treated as expired")),
+                Verdict::Deleting { node } => tracing::info_span!("rdm.node_admin.node.reject.via-delete-under-way", node = %node, ttl = ttl_ms)
+                    .in_scope(|| tracing::info!("the accepted Build no longer names the stopped node: its delete is under way, not submitted again")),
+                Verdict::NoIncarnation { node } => tracing::info_span!("rdm.node_admin.node.reject.via-no-incarnation", node = %node, ttl = ttl_ms)
+                    .in_scope(|| tracing::info!("the view holds no birth for the stopped node: there is no birth to age, skipped")),
+                Verdict::NoCurrentReceipt { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-no-current-stop-receipt", node = %node, reason = %reason, ttl = ttl_ms)
+                    .in_scope(|| tracing::info!(%reason, "no stop receipt opens the birth's current stopped period: skipped, never treated as expired")),
+                Verdict::UnreadableReceipt { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-unreadable-stop-receipt", node = %node, reason = %reason, ttl = ttl_ms)
+                    .in_scope(|| tracing::info!(%reason, "the birth's stop receipt cannot be read: skipped, never treated as expired")),
+                Verdict::UnreadableBuildLog { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-unreadable-build-log", node = %node, reason = %reason, ttl = ttl_ms)
+                    .in_scope(|| tracing::info!(%reason, "the Build log cannot be read: the birth's age is not decided, skipped")),
             }
         }
         let Some(c) = first else { return Swept::Nothing };
