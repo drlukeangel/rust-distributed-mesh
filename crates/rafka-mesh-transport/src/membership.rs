@@ -2880,8 +2880,7 @@ impl Backbone {
         if self.publishing.load(Ordering::Relaxed) != primary {
             // A forwarder that takes (or loses) the seat has published nothing into its Mesh: the
             // first publication of every source after taking it is a full (gossip.md §3.3).
-            self.membership.view.forwarder.lock().unwrap().reset();
-            self.full_due.store(primary, Ordering::Relaxed);
+            self.membership.forward_path.set_role(primary);
         }
         self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
