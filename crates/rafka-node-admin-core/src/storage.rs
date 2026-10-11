@@ -17,7 +17,7 @@
 //! - `connections.storage`: the latest connection fact per (source, destination, kind).
 
 use async_trait::async_trait;
-use crate::model::{IncarnationId, MeshId, NodeId, PathName, EndpointId};
+use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName, EndpointId};
 pub use rafka_node_admin_client::NameHeld;
 use crate::record_store::{FileRecords, StorageError};
 use rafka_mesh_entity::connections::{ConnectionIndex, NodeConnection};
@@ -105,6 +105,9 @@ impl MeshStorage for FileMeshStorage {
 pub struct NodeRecord {
     /// The node's minted id.
     pub node_id: NodeId,
+    /// The Fabric the birth belongs to: a restarting node-admin opens the fabric's store root
+    /// (`<store_dir>/<fabric_id>/`) from its own row's, read before any store opens (R-FI1).
+    pub fabric_id: FabricId,
     /// The node's `path.name`.
     pub name: PathName,
     /// The incarnation this birth last ran (a restart supersedes it).
@@ -285,7 +288,7 @@ impl NodesStorage for MemoryNodesStorage {
     }
 }
 
-const NODE_FORMAT: &str = "node-record/2";
+const NODE_FORMAT: &str = "node-record/3";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
 const ROW_FORMAT: &str = "node-row/1";
 
@@ -344,7 +347,7 @@ impl FileNodesStorage {
     }
 
     /// The admin's own row in `own_data_dir`, read before the store opens: a restarting admin's row
-    /// names the mesh whose rows it opens on.
+    /// names the Fabric whose store root it opens and the mesh whose rows it opens on.
     pub async fn own_in(own_data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
         FileRecords::open(own_data_dir, "nodes", writer)?.read("self", NODE_FORMAT).await
     }
@@ -597,6 +600,7 @@ mod tests {
     fn node(name: &str) -> NodeRecord {
         NodeRecord {
             node_id: NodeId::mint(),
+            fabric_id: FabricId::mint(),
             name: name.parse().unwrap(),
             incarnation_id: IncarnationId::mint(),
             endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),

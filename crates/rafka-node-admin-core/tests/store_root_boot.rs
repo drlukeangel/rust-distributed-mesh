@@ -172,5 +172,5 @@ fn a_restarted_bootstrap_admin_opens_its_fabric_from_its_own_row() {
     let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the restart left no storage step: {spans:?}"));
     println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
     assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(fabric.as_str()), "{opened}");
-    assert_eq!(opened["attributes"]["restart"].as_bool(), Some(true), "{opened}");
+    assert_eq!(opened["attributes"]["restart"].as_str(), Some("true"), "{opened}");
 }

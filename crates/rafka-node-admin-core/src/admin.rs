@@ -955,6 +955,7 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
 /// root holds for the mesh first, then writes each member whose held birth differs and drops a
 /// contact whose path.name another node now holds. A contact is a restart's hint, never topology.
 pub(crate) struct MeshRowsWriter {
+    fabric_id: FabricId,
     mesh: String,
     mesh_id: MeshId,
     nodes: Arc<dyn crate::storage::NodesStorage>,
@@ -965,8 +966,8 @@ pub(crate) struct MeshRowsWriter {
 }
 
 impl MeshRowsWriter {
-    pub(crate) fn new(mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>) -> Self {
-        Self { mesh: mesh.to_string(), mesh_id, nodes, meshes, written: None, mesh_written: false }
+    pub(crate) fn new(fabric_id: FabricId, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>) -> Self {
+        Self { fabric_id, mesh: mesh.to_string(), mesh_id, nodes, meshes, written: None, mesh_written: false }
     }
 
     /// One round over the births `held` (every birth of the fabric this admin holds, itself
@@ -997,6 +998,7 @@ impl MeshRowsWriter {
         for d in &members {
             let r = crate::storage::NodeRecord {
                 node_id: d.node.node_id.clone(),
+                fabric_id: self.fabric_id.clone(),
                 name: d.node.name.clone(),
                 incarnation_id: d.node.incarnation.clone(),
                 endpoint_id: d.node.endpoint_id.clone(),
@@ -3516,7 +3518,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     };
     let key = load_or_mint_key(&cfg.data_dir)?;
     drop(step);
-    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = %cfg.fabric_id);
+    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, restart = tracing::field::Empty);
     // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
     // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
     // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage
@@ -3528,13 +3530,30 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     if let (None, Ok(p)) = (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
         crate::store_root::qualify(p.provider).map_err(|e| format!("refusing to start: {e}"))?;
     }
+    // The own row (data dir), read before the store root opens: a restarting admin's row names its
+    // Fabric, whose root it opens, and its mesh, whose rows it opens on (R-FI1). A restart is never
+    // handed its fabric id: a different one named beside the row is refused by name.
+    let own_row = crate::storage::FileNodesStorage::own_in(&cfg.data_dir, &incarnation).await.map_err(storage_err)?;
+    if let (None, Some(own)) = (&cfg.launch, &own_row) {
+        if cfg.fabric_id_named && cfg.fabric_id != own.fabric_id {
+            return Err(format!(
+                "refusing to start: {}: this admin's own row ({}) belongs to Fabric {}, and {} names Fabric {}: a restart opens the Fabric of its own row",
+                cfg.data_dir.display(),
+                own.name,
+                own.fabric_id,
+                rafka_mesh_entity::launch::ENV_FABRIC_ID,
+                cfg.fabric_id
+            ));
+        }
+        cfg.fabric_id = own.fabric_id.clone();
+    }
+    storage_step.record("fabric_id", tracing::field::display(&cfg.fabric_id));
+    storage_step.record("restart", cfg.launch.is_none() && own_row.is_some());
     let store_root = crate::store_root::StoreRoot::open(&cfg.store_dir, &cfg.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
     let fabric_files = Arc::new(crate::fabric_storage::FileFabricStorage::open(&store_root, &incarnation).map_err(storage_err)?);
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_files.clone());
     let mesh_files = Arc::new(crate::storage::FileMeshStorage::open(&store_root, &incarnation).map_err(storage_err)?);
     let mesh_storage: Arc<dyn crate::storage::MeshStorage> = mesh_files.clone();
-    // The own row (data dir) names a restarting admin's mesh: its nodes store opens on that mesh's rows.
-    let own_row = crate::storage::FileNodesStorage::own_in(&cfg.data_dir, &incarnation).await.map_err(storage_err)?;
     let own_mesh = match (&cfg.launch, &own_row) {
         (None, Some(own)) => own.name.mesh.clone(),
         _ => cfg.mesh.clone(),
@@ -4376,6 +4395,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         nodes_storage
             .put_own(&crate::storage::NodeRecord {
                 node_id: node_id.clone(),
+                fabric_id: cfg.fabric_id.clone(),
                 name: name.clone(),
                 incarnation_id: incarnation.clone(),
                 endpoint_id: d.node.endpoint_id.clone(),
@@ -4394,7 +4414,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let (own_seat_tx, mut own_seat) = tokio::sync::watch::channel(false);
     let contacts_task = {
         let (book, fabric_id) = (membership.book.clone(), cfg.fabric_id.clone());
-        let mut writer = MeshRowsWriter::new(&cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone());
+        let mut writer = MeshRowsWriter::new(cfg.fabric_id.clone(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone());
         park_gate.spawn(async move {
             let mut births = book.birth_changes();
             loop {
@@ -5560,8 +5580,8 @@ mod tests {
         let meshes = || -> Arc<dyn crate::storage::MeshStorage> { Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).unwrap()) };
         let (p, q, rpc, other) = (digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.admin.2", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
         let held = vec![p.clone(), q.clone(), rpc.clone(), other.clone()];
-        let mut pw = MeshRowsWriter::new("mesh1", mesh_id("mesh1"), p_nodes.clone(), meshes());
-        let mut qw = MeshRowsWriter::new("mesh1", mesh_id("mesh1"), q_nodes.clone(), meshes());
+        let mut pw = MeshRowsWriter::new(fabric1(), "mesh1", mesh_id("mesh1"), p_nodes.clone(), meshes());
+        let mut qw = MeshRowsWriter::new(fabric1(), "mesh1", mesh_id("mesh1"), q_nodes.clone(), meshes());
         tokio::join!(pw.round(&held, true), qw.round(&held, false));
         let contacts = root.dir().join("nodes").join("mesh1").join("contacts");
         assert_eq!(contact_names(&contacts), 3, "mesh1's primary writes its three members");
