@@ -212,8 +212,8 @@ fn sole_admin_off_the_seat(settled: &[Value]) -> String {
 }
 
 /// CONTRACT (#2805, acceptance 8): the sole node-admin of a peer mesh (mesh2 or mesh3, whichever does not hold the fabric seat) is restarted through the
-/// Build rectifier (never the fabric-primary): it comes back as the same node with a new
-/// incarnation and reaches Ready without a fabric-primary hand-off, because the Pending it was
+/// Build rectifier (never the fabric-primary): it comes back as the same birth, the same node and
+/// incarnation (node-restart.md: a restart introduces no new incarnation), and reaches Ready without a fabric-primary hand-off, because the Pending it was
 /// applied before the restart is its own durable status row, folded at boot. Ready is never
 /// granted by election authority it lacks; mesh2's primary is the restarted admin only through
 /// the ordinary election afterwards. What must NOT happen: the restarted admin stuck holding its
@@ -252,7 +252,7 @@ async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
     let spans = estate.spans();
 
     assert_eq!(after["node_id"], before["node_id"], "the same node");
-    assert_ne!(after["incarnation_id"], before["incarnation_id"], "a new incarnation");
+    assert_eq!(after["incarnation_id"], before["incarnation_id"], "the same incarnation: a restart keeps the birth (node-restart.md, Kept: same node.id, incarnation)");
     assert_eq!(after["status"], "ready-for-traffic", "{after}");
     let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| r["attributes"]["node"] == target.as_str()).collect();
     assert_eq!(readies.len(), 2, "Ready at birth and again after the restart: {readies:?}");
