@@ -5421,7 +5421,7 @@ mod tests {
     /// already running (round 1 at once) and, one staleness floor later, holds the old primary TRUE
     /// OFFLINE and due for its recovery. Must NOT happen: a recovery due at the successor while the
     /// silent primary still holds the seat.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_successor_has_no_recovery_due_for_a_silent_mesh_primary_until_the_seat_moves() {
         use crate::offline::{OfflineTickle, SilentNode, ViaPeerVerdict};
         use rafka_mesh_entity::Seat::MeshPrimary;

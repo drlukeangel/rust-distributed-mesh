@@ -6,8 +6,9 @@
 //! (`first_seen`), so a node-admin that takes the seat mid-window tickles on the window already
 //! running; only the node-admin holding its mesh's primary seat tickles. Half a floor after the
 //! mark (floor + half a floor in all) it makes one QUIC connect, direct then via a peer. An answer
-//! is `reachable-silent`: recorded, no action. No path on round 1 opens the hold-down; no path again
-//! at least one staleness floor later is TRUE OFFLINE. A node that leaves the silent set has
+//! is `reachable-silent`: recorded, no action. No path on round 1 opens the hold-down at the instant
+//! that no path is known, once round 1's probes have ended; no path again at least one staleness
+//! floor after that instant is TRUE OFFLINE. A node that leaves the silent set has
 //! returned. The `Dead` status is observer-inferred, never sent, never a reason to restart or delete.
 //! The admin writes the node's status on its row in nodes.storage and shows it in the view.
 
@@ -52,7 +53,8 @@ pub(crate) struct OfflineTickle {
     /// Every node held as silent: node id -> the instant (ms) it was first seen silent. Kept
     /// whether or not this node-admin holds the seat.
     first_seen: HashMap<String, u64>,
-    /// Silent nodes whose round 1 returned NoPath, waiting for round 2: node id -> no-path-since (ms).
+    /// Silent nodes whose round 1 returned NoPath, waiting for round 2: node id -> no-path-since (ms),
+    /// the instant round 1's verdict came back, after its probes spent their budgets.
     hold_down: HashMap<String, u64>,
     /// Silent nodes whose tickle has settled (answered, or true offline): not tickled again until
     /// they leave and re-enter the silent set.
@@ -89,7 +91,9 @@ impl OfflineTickle {
     /// One tick. `holds_seat` is this node-admin's primary seat, sampled once for the tick;
     /// `silent` is this tick's silent set (every `PendingReconnect` node it watches); `in_view` says
     /// whether the view still holds a node id at all (a node that left the silent set is heard
-    /// again only if it does); `probe_delay_ms`
+    /// again only if it does); `now_ms` is the tick's start instant, and an instant inside the tick
+    /// (a verdict that came back after awaited probes) is `now_ms` plus the time the tick has run;
+    /// `probe_delay_ms`
     /// is how long a node stays silent before its one tickle; `staleness_floor_ms` is the minimum
     /// delay between round 1 and round 2; `tickle` makes the direct connect and `via_peer` the
     /// via-peer step. `observe` reads iroh's local view of a node once for the answered and the
@@ -116,6 +120,7 @@ impl OfflineTickle {
         O: Fn(String) -> OF,
         OF: std::future::Future<Output = rafka_mesh_transport::iroh_obs::IrohObservation>,
     {
+        let began = tokio::time::Instant::now();
         let mut report = OfflineTickReport::default();
         let silent_ids: HashSet<String> = silent.iter().map(|n| n.node_id.clone()).collect();
         let left: Vec<String> = self.first_seen.keys().filter(|id| !silent_ids.contains(*id)).cloned().collect();
@@ -210,9 +215,12 @@ impl OfflineTickle {
                             .in_scope(|| tracing::info!(node_id = %id, error = %e, "offline tickle failed round 2 — TRUE OFFLINE, no restart, no delete"));
                             report.offline.push(id);
                         } else {
-                            self.hold_down.insert(id.clone(), now_ms);
+                            // The hold-down runs from the instant no path is known: round 1's probes
+                            // have spent their budgets inside this tick, so that is after `now_ms`.
+                            let no_path_at = now_ms + began.elapsed().as_millis() as u64;
+                            self.hold_down.insert(id.clone(), no_path_at);
                             let asked = asked.join(",");
-                            tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, observer = %self.observer, first_seen_ms = seen_at as i64, "otel.kind" = "internal")
+                            tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, observer = %self.observer, first_seen_ms = seen_at as i64, no_path_at_ms = no_path_at as i64, round_began_ms = now_ms as i64, "otel.kind" = "internal")
                                 .in_scope(|| tracing::info!(node_id = %id, asked = %asked, "offline hold down opened after round 1 no path"));
                         }
                     }
@@ -290,7 +298,7 @@ mod tests {
     /// CONTRACT (A1, diagnostics only): iroh is read exactly once per answered or round-2 failed
     /// event, never on a tick that records neither, and the reports are the tickle's own: the
     /// answered node is reachable-silent and round 2 with no path is TRUE OFFLINE.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn iroh_is_read_once_per_answered_or_failed_event_and_decides_nothing() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let reads = AtomicUsize::new(0);
@@ -316,7 +324,7 @@ mod tests {
         ViaPeerVerdict::NoPath { asked: vec!["mesh1.rpc.2".into()] }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_one_tickle_waits_half_a_floor_after_the_mark() {
         let mut t = OfflineTickle::new();
         assert!(tick(&mut t, 0, true, silent("a"), true, no_path()).await.tickled.is_empty(), "marked silent now: no tickle yet");
@@ -327,7 +335,7 @@ mod tests {
         assert!(tick(&mut t, PROBE_DELAY * 4, true, silent("a"), true, no_path()).await.tickled.is_empty(), "settled: not tickled again");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn only_the_seat_holder_tickles_and_a_new_holder_keeps_the_window() {
         let mut t = OfflineTickle::new();
         assert!(tick(&mut t, 0, false, silent("a"), false, no_path()).await.tickled.is_empty(), "not the seat: bookkeeping only");
@@ -335,7 +343,7 @@ mod tests {
         assert_eq!(r.tickled, vec!["a".to_string()], "the window started before this admin took the seat");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn true_offline_needs_two_rounds_with_no_path_at_least_one_floor_apart() {
         let mut t = OfflineTickle::new();
         tick(&mut t, 0, true, silent("a"), false, no_path()).await;
@@ -403,7 +411,7 @@ mod tests {
         eprintln!("span rdm.node_admin.node.resolve.via-offline-tickle-failed trace_id={} {:?}", failed[0].trace_id, failed[0].attributes);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_answer_via_a_peer_is_reachable_silent() {
         let mut t = OfflineTickle::new();
         tick(&mut t, 0, true, silent("a"), false, no_path()).await;
@@ -412,7 +420,7 @@ mod tests {
         assert!(!t.is_in_hold_down("a") && !t.is_offline("a"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unreadable_candidates_change_no_status() {
         let mut t = OfflineTickle::new();
         tick(&mut t, 0, true, silent("a"), false, no_path()).await;
@@ -420,7 +428,7 @@ mod tests {
         assert!(r.offline.is_empty() && r.reachable_silent.is_empty() && !t.is_in_hold_down("a"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_node_heard_again_ends_its_tickle_and_status() {
         let mut t = OfflineTickle::new();
         tick(&mut t, 0, true, silent("a"), false, no_path()).await;
@@ -438,7 +446,7 @@ mod tests {
     /// the view (node.deleted, or a recovery that created a new node.id at its path.name) ends its
     /// tickle and its status as GONE, named apart from a node heard again.
     /// Must NOT happen: a deleted birth reported and spanned `via-offline-returned` ("heard again").
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_silent_node_that_left_the_view_is_gone_never_heard_again() {
         let mut t = OfflineTickle::new();
         tick(&mut t, 0, true, silent("a"), false, no_path()).await;
