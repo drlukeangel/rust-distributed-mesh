@@ -84,14 +84,20 @@ impl Capture {
     }
 }
 
-/// CONTRACT (node-stop.md steps 3-4, R-ON1; park_gate.rs): the admin's hierarchy is in a turn, past
+/// CONTRACT (node-stop.md steps 3-4, R-ON1; park_gate.rs): the admin's executor is in a turn, past
 /// its wait point and held where it takes the view lock, when its mesh-admin's `stop-node` reaches
 /// it; the cell lets the lock go only once the stop has parked the gate. The stop is answered
-/// `Stopped`; its quiesce step (in the stop's own trace) names the hierarchy among the turns it
-/// waited for and ends after the aggregate that turn published (its `topology_version` bump), and
-/// the stop's connection cut begins only after the quiesce: its cut finds no turn in progress.
-/// Must NOT happen: a turn that was in progress at the park running on past the cut, so a stopped
-/// admin publishes its aggregate (and calls out) after it was cut.
+/// `Stopped`; its quiesce step (in the stop's own trace) names the executor among the turns it
+/// waited for, and the stop's connection cut begins only after the quiesce ended: the cut finds no
+/// turn in progress, and no aggregate of the admin's mesh is published once the cut began. Must
+/// NOT happen: a turn that was in progress at the park running on past the cut, so a stopped admin
+/// plans, publishes or calls out after it was cut.
+///
+/// The executor is the turn held because its idle wait (`select!` on a submitted Build or its
+/// 300 ms poll, admin.rs) touches no lock: it always reaches its turn and holds there, at the
+/// cell's writer. The hierarchy's idle wait reads the view on a view change (admin.rs, its
+/// `view_changed` branch), so a hierarchy woken by the install the cell's writer queued behind
+/// would hold at the writer outside its turn.
 #[test]
 fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running() {
     let cell = "a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running";
@@ -102,7 +108,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
         std::env::set_var(k, v);
     }
     let cap = capture();
-    let (stop_trace, lock_taken_ns) = cap.run(async {
+    let stop_trace = cap.run(async {
         let dir = std::env::temp_dir().join(format!("park-gate-quiesce-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
@@ -121,13 +127,12 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
         .await
         .expect("the Day-0 admin never became its mesh's publisher with its hierarchy idle");
 
-        // The view lock is taken; the hierarchy's next round begins its turn and holds where it
-        // takes the lock.
+        // The view lock is taken; the executor's next poll begins its turn and holds where it takes
+        // the lock.
         let topology = running.control.topology.clone();
         let holder = topology.write().await;
-        let lock_taken_ns = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
         let own = running.digest.lock().unwrap().clone();
-        tokio::time::timeout(NEVER, state.wait_for(|s| s.turns.contains_key("hierarchy"))).await.expect("the hierarchy began no turn within its round").unwrap();
+        tokio::time::timeout(NEVER, state.wait_for(|s| s.turns.contains_key("executor"))).await.expect("the executor began no turn within its poll").unwrap();
 
         // Its mesh-admin's stop reaches it while that turn is in progress.
         let root = tracing::info_span!("cell.park-gate-quiesce", node = %own.node.name);
@@ -142,11 +147,11 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
         let reply = tokio::time::timeout(NEVER, stop).await.expect("the stop was not answered").unwrap();
         assert!(matches!(reply, Some(StatusReply::Stopped { .. })), "the stop is answered Stopped: {reply:?}");
         // The held turn runs to its end before the admin is ended.
-        tokio::time::timeout(NEVER, state.wait_for(|s| !s.turns.contains_key("hierarchy"))).await.expect("the held hierarchy turn never ended").unwrap();
+        tokio::time::timeout(NEVER, state.wait_for(|s| !s.turns.contains_key("executor"))).await.expect("the held executor turn never ended").unwrap();
 
         running.leave_after_stop().await;
         let _ = std::fs::remove_dir_all(&dir);
-        (stop_trace, lock_taken_ns)
+        stop_trace
     });
 
     let spans = cap.spans();
@@ -157,37 +162,25 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     let named = |name: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && s["attributes"]["node"] == me).collect() };
     let cut = named("rdm.node_admin.node.connections.delete.via-stop");
     assert_eq!(cut.len(), 1, "one connection cut for the stop: {cut:?}");
+    assert_eq!(cut[0]["trace_id"], stop_trace.as_str(), "the cut is in the stop's own trace");
     let cut_began = cut[0]["start_ns"].as_u64().unwrap();
-    // The aggregate the held turn published: no hierarchy turn publishes while the cell holds the
-    // view lock, and none begins once the gate is parked, so it is the one bump after the lock.
-    let held: Vec<&Value> = named("rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| s["start_ns"].as_u64().unwrap() > lock_taken_ns).collect();
-    assert_eq!(held.len(), 1, "the held hierarchy turn published its mesh's aggregate once (its own Draining moved it): {held:?}");
-    let bump = held[0];
-    let bumped_at = bump["start_ns"].as_u64().unwrap();
-    assert!(
-        bumped_at < cut_began,
-        "the hierarchy turn that was in progress at the park published its aggregate (topology_version {}) {} µs after the stop's connection cut began: the stop cut while a turn was still running (stop trace {stop_trace})",
-        bump["attributes"]["topology_version"],
-        (bumped_at - cut_began) / 1000
-    );
     let quiesce = named("rdm.node_admin.node.update.via-stop-quiesce");
-    assert_eq!(quiesce.len(), 1, "one quiesce step for the stop: {quiesce:?}");
+    assert_eq!(quiesce.len(), 1, "one quiesce step for the stop (stop trace {stop_trace}): {quiesce:?}");
     let quiesce = quiesce[0];
     assert_eq!(quiesce["trace_id"], stop_trace.as_str(), "the quiesce is in the stop's own trace");
     let waited_for = quiesce["attributes"]["waited_for"].as_str().unwrap_or_default();
-    assert!(waited_for.split(',').any(|t| t.split(':').next() == Some("hierarchy")), "the quiesce waited for the hierarchy's turn: {quiesce}");
-    assert!(bump["end_ns"].as_u64().unwrap() <= quiesce["end_ns"].as_u64().unwrap(), "the quiesce ended before the held turn published: {quiesce} {bump}");
+    assert!(waited_for.split(',').any(|t| t.split(':').next() == Some("executor")), "the quiesce waited for the executor's held turn (stop trace {stop_trace}): {quiesce}");
     assert!(quiesce["end_ns"].as_u64().unwrap() <= cut_began, "the cut began before the quiesce ended: {quiesce}");
     let cut_report = named("rdm.node_admin.node.connections.delete.via-stop-cut");
     assert_eq!(cut_report.len(), 1, "{cut_report:?}");
-    assert_eq!(cut_report[0]["attributes"]["turns_in_progress"], "0", "the cut found a turn in progress: {}", cut_report[0]);
-    assert_eq!(cut[0]["trace_id"], stop_trace.as_str(), "the cut is in the stop's own trace");
+    assert_eq!(cut_report[0]["attributes"]["turns_in_progress"], "0", "the cut found a turn in progress (stop trace {stop_trace}): {}", cut_report[0]);
+    // Nothing of a turn follows the cut: no aggregate of the admin's mesh is published after it began.
+    let late: Vec<&Value> = named("rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| s["start_ns"].as_u64().unwrap() >= cut_began).collect();
+    assert!(late.is_empty(), "the stopped admin published its mesh's aggregate after its cut began: {late:?}");
     println!(
-        "stop trace {stop_trace}; held bump trace {} topology_version {}; quiesce waited for [{waited_for}] {} µs; aggregate bumped {} µs before the cut began; spans in {}",
-        bump["trace_id"].as_str().unwrap_or_default(),
-        bump["attributes"]["topology_version"].as_str().unwrap_or_default(),
+        "stop trace {stop_trace}; quiesce waited for [{waited_for}] {} us, ended {} us before the cut began; spans in {}",
         (quiesce["end_ns"].as_u64().unwrap() - quiesce["start_ns"].as_u64().unwrap()) / 1000,
-        (cut_began - bumped_at) / 1000,
+        (cut_began - quiesce["end_ns"].as_u64().unwrap()) / 1000,
         artifact.display()
     );
 }
