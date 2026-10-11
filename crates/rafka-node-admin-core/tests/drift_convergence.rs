@@ -954,3 +954,54 @@ async fn a_birth_whose_retirement_the_build_receipted_is_not_surplus() {
         }
     }
 }
+
+/// CONTRACT: a removed mesh whose shutdown ended incomplete is resumed from evidence. The accepted
+/// Build's topology no longer names the leaving mesh (the one without the fabric seat), its attempt
+/// failed (the leaving primary's member workflows were incomplete), and the view still holds that
+/// mesh's births live (an incomplete leave leaves at least its final primary running and live).
+/// With no `MeshLeft` receipt under `shutdown-mesh:<mesh id>` the fabric-primary opens the next
+/// attempt of the same Build, with no action, and that attempt's plan is the mesh's shutdown again; once `MeshLeft` is recorded it opens
+/// nothing (mesh-leave.md, "Failure/certainty behavior": the workflow stays incomplete, resumed
+/// from its receipts).
+#[tokio::test]
+async fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again() {
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, StepOutcome};
+    for left in [false, true] {
+        let e = estate().await;
+        let fp = e.fabric_primary().await;
+        // The leaving mesh is the one that does not hold the fabric seat (the seat is handed over first).
+        let leaving = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+        let mut topology = e.accepted.current(&*e.builds).await.unwrap().topology;
+        topology.meshes.remove(leaving);
+        let build_id = BuildId::mint();
+        e.builds.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: 1 }).await.unwrap();
+        e.builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: fp.clone() }).await.unwrap();
+        let leaving_id = e.view.read().await.meshes.iter().find(|m| m.name == leaving).and_then(|m| m.id.clone()).unwrap();
+        let outer = rafka_node_admin_core::mesh_leave::operation(&leaving_id);
+        if left {
+            e.builds
+                .append_step_receipt(&BuildStepReceipt { build_id: build_id.clone(), attempt: 1, operation: outer.clone(), step: rafka_node_admin_core::mesh_leave::STEP_MESH_LEFT.into(), outcome: StepOutcome::Complete, output: None, executor: Some(fp.clone()) })
+                .await
+                .unwrap();
+        }
+        e.builds
+            .append_attempt_receipt(&BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: format!("{outer}: {leaving}'s primary reported its member workflows incomplete") } })
+            .await
+            .unwrap();
+        e.accepted.point(&build_id, 1, "test").await.unwrap();
+        let opened = e.drift().await;
+        if left {
+            assert_eq!(opened, None, "a mesh whose MeshLeft is recorded has left: nothing is opened");
+            continue;
+        }
+        assert_eq!(opened, Some((build_id.clone(), 2)), "the removed mesh still live with no MeshLeft opens the next attempt of the same Build");
+        let current = e.accepted.current(&*e.builds).await.unwrap();
+        assert_eq!(current.attempt, 2);
+        let view = e.view.read().await.clone();
+        assert_eq!(
+            rafka_node_admin_core::accepted::plan(&current.topology, &view, None).operations,
+            vec![BuildOperation::ShutdownMesh { mesh: leaving.into(), mesh_id: leaving_id.clone() }],
+            "the opened attempt plans {leaving}'s shutdown again"
+        );
+    }
+}
