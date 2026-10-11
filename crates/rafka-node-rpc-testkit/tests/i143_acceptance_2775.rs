@@ -195,6 +195,9 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         })
     });
     let spans = cap.spans();
+    // The trace holds only the cell's own story: product spans, none of the transport's internals.
+    let foreign: std::collections::BTreeSet<&str> = spans.iter().filter_map(|s| s["name"].as_str()).filter(|n| !n.starts_with("rdm.")).collect();
+    assert!(foreign.is_empty(), "spans outside the cell's story were exported: {foreign:?}");
     // Every call is served at this birth, under its caller's trace, naming the op and its outcome.
     let served: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.proof_store.serve.via-request").collect();
     let calls: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.update.via-call").collect();
