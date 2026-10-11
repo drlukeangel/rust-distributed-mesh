@@ -90,6 +90,8 @@ fn replies_match_the_frozen_twenty_one_variant_wire_schema() {
         (CurrentParked { node_id: node(), incarnation: birth() }, "140c303132333435363738396162056269727468"),
         (ConfigUpdated { node_id: node(), incarnation: birth() }, "150c303132333435363738396162056269727468"),
         (RejectedConfig { over: rafka_mesh_entity::ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, "16210a208010"),
+        (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),
+        (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
