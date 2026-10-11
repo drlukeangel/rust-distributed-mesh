@@ -447,7 +447,6 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
             Act::Frame(op, "WaitForNodeReady"),
             Act::Frame(op, "NodeDeleted"),
             gone("mesh1.rpc.1.old"),
-            Act::Frame(op, "ReleaseStorage"),
             Act::Frame(op, "Complete"),
         ];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
@@ -503,7 +502,6 @@ fn a_successor_heard_before_the_predecessor_lets_go_takes_the_name_at_the_rename
             Act::Frame(op, "AllocateIdentity"),
             Act::Frame(op, "WaitForNodeReady"),
             Act::Frame(op, "NodeDeleted"),
-            Act::Frame(op, "ReleaseStorage"),
             Act::Frame(op, "Complete"),
         ];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
@@ -623,7 +621,7 @@ fn a_seat_taken_mid_replace_moves_the_row_from_the_rename_receipt() {
             v.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
             v.nodes.push(successor);
         }));
-        let acts = vec![Act::Frame(op, "AllocateIdentity"), heard, Act::Frame(op, "WaitForNodeReady"), Act::Frame(op, "NodeDeleted"), Act::Frame(op, "ReleaseStorage"), Act::Frame(op, "Complete")];
+        let acts = vec![Act::Frame(op, "AllocateIdentity"), heard, Act::Frame(op, "WaitForNodeReady"), Act::Frame(op, "NodeDeleted"), Act::Frame(op, "Complete")];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
         let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
         r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();

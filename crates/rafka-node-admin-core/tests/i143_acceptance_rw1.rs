@@ -276,7 +276,8 @@ fn facts() -> Vec<BuildFact> {
         }
     }
     for s in [StorageDisposition::Released { locator: "/data/x".into() }, StorageDisposition::Preserved, StorageDisposition::PreservedNoMeta] {
-        out.push(step(RetireStep::ReleaseStorage.name(), Some(to_json(&s))));
+        // A receipt an earlier build wrote: no step of this build runs it, and it still decodes.
+        out.push(step(rafka_node_admin_core::wire::RELEASE_STORAGE_STEP, Some(to_json(&s))));
     }
     out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("bld-1"), attempt: 2, outcome: AttemptOutcome::Converged }));
     out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("bld-1"), attempt: 2, outcome: AttemptOutcome::Failed { reason: "step failed".into() } }));
