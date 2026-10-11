@@ -203,7 +203,9 @@ pub struct RunPlan {
 }
 
 /// The run of `executor` within `ops` in view `t`: the leading operations it executes, and the
-/// executor of the first one it does not (an operation no admin can execute stays in the run).
+/// executor of the first one it does not. An operation no admin can execute stays in the run here;
+/// the fabric-primary's drive cuts the run before it when it is not the first (`build_drive`), so it
+/// waits for its mesh's own seat.
 pub fn run_of(ops: &[BuildOperation], t: &Topology, executor: &PathName) -> RunPlan {
     let mut run = RunPlan::default();
     for op in ops {

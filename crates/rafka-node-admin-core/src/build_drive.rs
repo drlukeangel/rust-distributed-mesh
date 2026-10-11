@@ -24,7 +24,8 @@ use crate::build::BuildId;
 use crate::build_claim::ClaimDoor;
 use crate::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter, BuildStateError};
 use crate::executor::{lead_for, run_of, RunPlan};
-use crate::model::PathName;
+use crate::build::BuildOperation;
+use crate::model::{NodeKind, PathName};
 use crate::topology::Topology;
 use rafka_node_rpc_contract::build::BuildReply;
 use rafka_node_rpc_contract::build_claim::BuildClaimReply;
@@ -151,6 +152,9 @@ struct DriveState {
     terminal: Option<BuildReply>,
     lost: Option<SeatLoss>,
     stall: Option<String>,
+    /// The peer meshes held unheard whose first recovering node-admin this drive dispatched under
+    /// the investigation's rebirth verdict (R-D1: only that one admin crosses the fence).
+    rebirths: HashSet<String>,
 }
 
 /// One Build's drive: the frames its callers read. The task that makes them is [`DriveEnv::run`].
@@ -300,6 +304,14 @@ impl Drive {
 
     fn clear_stall(&self) {
         self.state.lock().unwrap().stall = None;
+    }
+
+    fn rebirth_dispatched(&self, mesh: &str) -> bool {
+        self.state.lock().unwrap().rebirths.contains(mesh)
+    }
+
+    fn note_rebirth(&self, mesh: &str) {
+        self.state.lock().unwrap().rebirths.insert(mesh.to_string());
     }
 }
 
@@ -550,6 +562,94 @@ impl DriveEnv {
         drive.push(BuildReply::Blocked { build_id: drive.build_id.0.clone(), attempt, operation: operation.into(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
     }
 
+    /// What the peer-mesh investigation holds of the mesh of `op`'s node when that mesh is a peer
+    /// mesh it holds unheard (R-D1: loss of peer-mesh control-plane visibility fences lifecycle
+    /// mutation for every node in that mesh): the mesh, how long it is unheard, and whether its
+    /// rebirth is decided. `None` for a mesh operation, a node of this admin's own mesh, or a mesh
+    /// the investigation does not hold unheard.
+    fn unheard_peer(&self, op: &BuildOperation) -> Option<(PathName, u64, bool)> {
+        let node = op.node()?;
+        if node.mesh == self.me.mesh {
+            return None;
+        }
+        let peer = self.gate.peer_mesh(&node.mesh)?;
+        Some((node.clone(), peer.unheard_ms?, peer.rebirth_decided))
+    }
+
+    /// The restore the investigation's rebirth verdict authorizes (R-D1; mesh-investigation.md steps
+    /// 5-6): `op` acts on a node-admin of a peer mesh held unheard whose rebirth is decided, and this
+    /// drive has dispatched no recovering node-admin of that mesh yet. The fabric-primary executes it,
+    /// whatever else the mesh's view holds (an admin held silent included): it is the mesh's first
+    /// recovering node-admin.
+    fn rebirth_admits(&self, drive: &Drive, op: &BuildOperation) -> bool {
+        self.unheard_peer(op).is_some_and(|(node, _, decided)| decided && node.kind == NodeKind::NodeAdmin && !drive.rebirth_dispatched(&node.mesh))
+    }
+
+    /// The fence on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
+    /// except the mesh's first recovering node-admin once the investigation decided its rebirth
+    /// ([`Self::rebirth_admits`]). `Some` names the fence.
+    fn fenced(&self, drive: &Drive, op: &BuildOperation) -> Option<(PathName, u64, bool)> {
+        if self.rebirth_admits(drive, op) {
+            return None;
+        }
+        self.unheard_peer(op)
+    }
+
+    /// The drive stops at the fence on `op` by name: once per mesh, operation and verdict on its own
+    /// span, framed as the attempt's blocker, and stalled until the investigation's state changes.
+    fn stop_at_fence(&self, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool)) -> DriveEnd {
+        let why = format!(
+            "{}: {} acts on {node} of peer mesh {mesh}, which the peer-mesh investigation holds unheard ({unheard_ms} ms){}: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
+            self.me,
+            op.key(),
+            if decided { "; its decided rebirth admits only the mesh's first recovering node-admin" } else { ", with no rebirth decided" },
+            mesh = node.mesh,
+        );
+        if drive.stall_is_new(&format!("unheard-mesh|{}|{}|{decided}", node.mesh, op.key())) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id, attempt, node = %self.me, operation = %op.key(), target = %node, mesh = %node.mesh, unheard_ms, rebirth_decided = decided)
+                .in_scope(|| tracing::info!("the drive claims and dispatches nothing for a node of a peer mesh held unheard"));
+        }
+        self.blocked(drive, attempt, &op.key(), "unheard-mesh", &why);
+        DriveEnd::Stalled(why)
+    }
+
+    /// What this admin dispatches to `executor` for what is left of `p` in view `t`. The mesh's first
+    /// recovering node-admin under a rebirth verdict runs alone, on this admin (the fabric-primary),
+    /// and is noted so no second admin of that mesh crosses the fence. Otherwise the executor's run
+    /// ([`run_of`]) is cut before the first operation on a peer mesh held unheard (R-D1) and before
+    /// an operation no admin executes in this view (it waits for its mesh's own seat, never for the
+    /// run's executor); a cut run hands back to this admin, whose next claim re-reads the view and
+    /// the investigation. `Err` names the fence on the first operation.
+    fn plan_dispatch(&self, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
+        let ops = crate::accepted::plan_for_build(p, t).operations;
+        if let Some(op) = ops.first().filter(|op| *executor == self.me && self.rebirth_admits(drive, op)) {
+            if let Some(node) = op.node() {
+                drive.note_rebirth(&node.mesh);
+            }
+            return Ok(RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| self.me.to_string()) });
+        }
+        let mut plan = run_of(&ops, t, executor);
+        let mut cut = None;
+        for (i, op) in plan.operations.iter().enumerate() {
+            if let Some(f) = self.fenced(drive, op) {
+                if i == 0 {
+                    return Err((op.clone(), f));
+                }
+                cut = Some(i);
+                break;
+            }
+            if i > 0 && (self.unheard_peer(op).is_some() || crate::executor::executor_for(op, t).is_none()) {
+                cut = Some(i);
+                break;
+            }
+        }
+        if let Some(i) = cut {
+            plan.operations.truncate(i);
+            plan.hand_off_to = Some(self.me.to_string());
+        }
+        Ok(plan)
+    }
+
     async fn pass(self: &Arc<Self>, drive: &Arc<Drive>, dispatches: &mut u32) -> DriveEnd {
         let id = drive.build_id.clone();
         let mut handed_to: Option<PathName> = None;
@@ -621,7 +721,10 @@ impl DriveEnv {
             }
             let plan = {
                 let t = self.topology.read().await.clone();
-                run_of(&crate::accepted::plan_for_build(&p, &t).operations, &t, &executor)
+                match self.plan_dispatch(drive, &p, &t, &executor) {
+                    Ok(plan) => plan,
+                    Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f),
+                }
             };
             let inner = self.run_inner(drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
             drive.clear_stall();
@@ -698,6 +801,22 @@ impl DriveEnv {
     async fn claim_next(&self, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<PathName>) -> Result<(u32, PathName, CallContext), DriveEnd> {
         let id = &drive.build_id;
         let attempt = p.attempt + 1;
+        let first = {
+            let t = self.topology.read().await.clone();
+            crate::accepted::plan_for_build(p, &t).operations.into_iter().next().map(|op| {
+                let placed = crate::executor::executor_for(&op, &t).is_some();
+                (op, placed)
+            })
+        };
+        if let Some((op, f)) = first.as_ref().and_then(|(op, _)| self.fenced(drive, op).map(|f| (op, f))) {
+            return Err(self.stop_at_fence(drive, attempt, op, f));
+        }
+        // The mesh's first recovering node-admin under the investigation's rebirth verdict is this
+        // admin's to execute (R-D1). A run cut by this admin's own fence hands back here: this admin
+        // claims for itself only an operation its view names an executor for (an operation no admin
+        // executes waits for its mesh's own seat).
+        let rebirth = first.as_ref().is_some_and(|(op, _)| self.rebirth_admits(drive, op));
+        let forced = if rebirth { Some(self.me.clone()) } else { forced.filter(|to| *to != self.me || first.as_ref().is_none_or(|(_, placed)| *placed)) };
         let lead = match forced {
             Some(to) => Some(to),
             None => {

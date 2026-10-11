@@ -348,6 +348,26 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 1);
 }
 
+/// Births `mesh2.admin.1` anew in place of its exited birth when its create has run, seated as
+/// mesh2's primary, as the restore of a mesh's first admin does.
+struct Reborn {
+    ran: Arc<Creates>,
+    topology: Arc<RwLock<Topology>>,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for Reborn {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        self.ran.run(build, attempt, op).await?;
+        if op.key() == "create-node:mesh2.admin.1" {
+            let mut v = self.topology.write().await;
+            v.nodes.retain(|n| n.name.to_string() != "mesh2.admin.1");
+            v.nodes.push(node("mesh2.admin.1", true, false));
+        }
+        Ok(())
+    }
+}
+
 /// CONTRACT (R-D1, Luke 10-08: "Loss of peer-mesh control-plane visibility fences lifecycle
 /// mutation for every node in that mesh ... Only the peer-mesh investigation may authorize
 /// restoration of the mesh's first recovering node-admin; once mesh authority is restored, that mesh
@@ -356,8 +376,9 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
 /// its view, and the investigation holds mesh2 unheard. While no rebirth is decided the drive claims
 /// nothing and dispatches nothing for mesh2, and says so on its own span naming the mesh, the
 /// operation and how long the mesh is unheard. Once the investigation decides the rebirth, the
-/// mesh's first recovering node-admin, and only it, is claimed and run; mesh2's ordinary node waits
-/// until the mesh is heard again, and is then run.
+/// mesh's first recovering node-admin, and only it, is claimed and run on the fabric-primary; the
+/// mesh's second admin and its ordinary node wait until the mesh is heard again, and are then run by
+/// mesh2's own primary.
 #[tokio::test]
 async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_then_only_its_first_admin() {
     let mut t = view();
@@ -367,11 +388,12 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     t.nodes.push(lost);
     t.nodes.push(node("mesh2.rpc.1", true, false));
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
-    let r = rig_for(t, change, |ran, _| ran).await;
+    let r = rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await;
     let held = |rebirth_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(31_000), rebirth_decided };
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-unheard-mesh-drive");
     let drive = Drive::detached(r.build.clone());
+    let before = r.builds.read_build(&r.build).await.unwrap();
 
     // Held unheard, no rebirth decided: nothing is claimed or dispatched for mesh2.
     match r.env.run(&drive).await {
@@ -379,27 +401,34 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
         other => panic!("the fabric-primary claims nothing for a peer mesh held unheard: {other:?}"),
     }
     let p = r.builds.read_build(&r.build).await.unwrap();
-    assert_eq!((p.attempt, p.executor.as_deref()), (1, None), "no attempt is claimed across the fence");
+    assert_eq!((p.attempt, p.executor.as_deref()), (before.attempt, None), "no attempt is claimed across the fence");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty() && r.ran.0.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
     let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(fenced.len(), 1, "the fence is named once: {fenced:?}");
     let a = &fenced[0].1;
-    assert_eq!((a.get("mesh").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("rebirth_decided").map(String::as_str)), (Some("mesh2"), Some("31000"), Some("false")), "{a:?}");
-    assert!(a.get("operation").is_some_and(|o| o.contains("mesh2.")), "{a:?}");
+    assert_eq!((a.get("mesh").map(String::as_str), a.get("target").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("rebirth_decided").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin.1"), Some("31000"), Some("false")), "{a:?}");
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {a:?}", fenced[0].0);
 
-    // The investigation decided the rebirth: the first recovering node-admin, and only it, runs.
+    // The investigation decided the rebirth: the first recovering node-admin, and only it, runs, on
+    // the fabric-primary.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("mesh2.rpc.2") && why.contains("mesh2"), "the ordinary node still waits for the mesh to be heard: {why}"),
-        other => panic!("mesh2's ordinary node waits until the mesh is heard again: {other:?}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2") && why.contains("first recovering node-admin"), "the mesh's second admin waits for the mesh to be heard: {why}"),
+        other => panic!("mesh2's other nodes wait until the mesh is heard again: {other:?}"),
     }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.2".to_string()], "only the first recovering node-admin ran");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "only the first recovering node-admin ran");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), before.attempt + 1)], "the restore ran on the fabric-primary");
+    let second = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
+    assert_eq!(second.len(), 2, "{second:?}");
+    assert_eq!((second[1].1.get("target").map(String::as_str), second[1].1.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{:?}", second[1].1);
+    eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", second[1].0, second[1].1);
 
-    // Heard again: the mesh's ordinary node is run.
+    // Heard again: mesh2's own primary runs the rest of the mesh.
     r.switch.peer.lock().unwrap().remove("mesh2");
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.2".to_string(), "create-node:mesh2.rpc.2".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string(), "create-node:mesh2.admin.2".to_string(), "create-node:mesh2.rpc.2".to_string()]);
+    let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+    assert_eq!(dispatched.last().map(|(x, _)| x.as_str()), Some("mesh2.admin.1"), "the mesh reconciles its own nodes once heard: {dispatched:?}");
 }
 
 /// CONTRACT: an executor runs the first operation of the attempt the fabric-primary claimed for it

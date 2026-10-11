@@ -1398,6 +1398,9 @@ struct SeatGate {
     membership: Membership,
     builds: Arc<FabricBuildStateAdapter>,
     shutdown: Arc<crate::shutdown::ShutdownControl>,
+    /// The control plane whose peer-mesh reader the investigation installs once its ladder runs
+    /// (after the drive is built): read when asked, as the Build door reads it.
+    control: Arc<ControlPlane>,
 }
 
 #[async_trait::async_trait]
@@ -1413,6 +1416,9 @@ impl crate::build_drive::Gate for SeatGate {
     }
     fn frozen(&self) -> Option<String> {
         self.shutdown.held().map(|_| "a fabric shutdown froze reconciliation: no claim and no dispatch from here on".to_string())
+    }
+    fn peer_mesh(&self, mesh: &str) -> Option<crate::investigate::PeerMesh> {
+        self.control.peer_mesh.get().and_then(|f| f(mesh))
     }
 }
 
@@ -4332,7 +4338,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             builds: builds_dyn.clone(),
             door: claim_door.clone(),
             dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
-            gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone() }),
+            gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone(), control: control.clone() }),
             departure: Arc::new(ProviderDeparture {
                 me: name.clone(),
                 topology: control.topology.clone(),
