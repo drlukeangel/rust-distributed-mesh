@@ -453,31 +453,40 @@ impl NodesStorage for RefusingRows {
 /// CONTRACT (ops-naming "Node data": the fabric-primary writes the record, then the node applies it):
 /// when the birth does not apply the config, the update ends `ConfigNotApplied`, naming the node and
 /// the birth's answer by name; the row was written first, so the node's record at its path.name holds
-/// the new config. Not `NotReady`: the fabric-primary is ready, the birth refused.
+/// the new config. The fabric-primary is ready; the birth refused. The birth's answer here is longer than
+/// the reply's reason budget, so the reply carries it cut (ending `…`) and the via-config span carries
+/// it whole: nothing of the refusal is lost.
 #[test]
 fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
     let cap = capture();
-    cap.run(async {
+    let cut = cap.run(async {
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
-        let node = serve_node_answering(rpc1, StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }).await;
+        let refusal = format!("hydration has not passed: {}", "the store of mesh1.rpc.1 is still behind; ".repeat(20));
+        let node = serve_node_answering(rpc1, StatusReply::NotReady { reason: refusal.clone() }).await;
         configs_door(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
         let client = client_of(&rig, admin2).await;
         let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
         let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
-        assert!(
-            matches!(&reply, StatusReply::ConfigNotApplied { node, answered, .. } if node == "mesh1.rpc.1" && answered == "rejected-stale-incarnation"),
-            "the row is written and the birth refused: {reply:?}"
-        );
+        let StatusReply::ConfigNotApplied { node: named, answered, reason } = &reply else { panic!("the row is written and the birth refused: {reply:?}") };
+        assert_eq!((named.as_str(), answered.as_str()), ("mesh1.rpc.1", "not-ready"), "{reply:?}");
+        assert!(reason.ends_with('…'), "the birth's long answer is cut to the reply's budget: {reason}");
         assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
         let row = rig.storage.node_row_at(&rpc1.node.name).await.unwrap().expect("the fabric-primary wrote the row before telling the birth");
         assert_eq!(row.config, config);
+        (reason.clone(), refusal)
     });
+    let (cut, refusal) = cut;
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
     assert_eq!(spans.len(), 1, "{spans:?}");
-    assert_eq!(spans[0].1.get("outcome").map(String::as_str), Some("config-not-applied"), "{spans:?}");
-    eprintln!("trace {}: rdm.node_admin.node.update.via-config outcome=config-not-applied", spans[0].0);
+    let (trace_id, attrs) = &spans[0];
+    assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-not-applied"), "{spans:?}");
+    assert_eq!(attrs.get("answered").map(String::as_str), Some("not-ready"), "{attrs:?}");
+    let detail = attrs.get("detail").expect("the via-config span carries the refusal's detail");
+    assert!(detail.len() > rafka_node_rpc_contract::status::MAX_REFUSAL_REASON_BYTES && !detail.ends_with('…'), "the span's detail is whole: {detail}");
+    assert!(detail.starts_with(cut.trim_end_matches('…')) && detail.contains(&refusal), "the reply's cut detail is the head of the span's whole one: {detail}");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config outcome=config-not-applied answered=not-ready detail={} bytes (reply reason {} bytes, cut)", detail.len(), cut.len());
 }
 
 /// CONTRACT (ops-naming "Node data": the fabric-primary writes the record, then tells the node): when
@@ -503,6 +512,7 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
     assert_eq!(spans.len(), 1, "{spans:?}");
     assert_eq!(spans[0].1.get("outcome").map(String::as_str), Some("config-row-refused"), "{spans:?}");
+    assert!(spans[0].1.get("detail").is_some_and(|d| d.contains("disk refused the write") && !d.ends_with('…')), "the via-config span carries the store's whole refusal: {spans:?}");
     eprintln!("trace {}: rdm.node_admin.node.update.via-config outcome=config-row-refused", spans[0].0);
 }
 
