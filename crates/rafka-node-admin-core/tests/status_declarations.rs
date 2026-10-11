@@ -831,9 +831,9 @@ fn a_rename_through_the_mesh_primary_writes_the_row_then_the_live_node_applies_i
         let reply = reply(&call(&rig, &b["admin2"], &update_node(&succ, "mesh1.rpc.3")).await);
         assert_eq!(reply, StatusReply::NodeUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        let row = rig.storage.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
+        let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
         assert_eq!(row.node_id, succ.node.node_id, "the row at mesh1.rpc.3 is the successor");
-        assert_eq!(rig.storage.node_row_at(&succ.node.name).await.unwrap(), None, "the .new key is released");
+        assert_eq!(rig.nodes.node_row_at(&succ.node.name).await.unwrap(), None, "the .new key is released");
         assert_eq!(node.seen.lock().unwrap().clone(), vec![StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }]);
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == succ.node.node_id && n.name == taken), "the mesh-primary's view moved with the row");
     });
@@ -856,10 +856,10 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         let (succ, node) = successor_new(&rig).await;
         let holder = NodeId::mint();
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        rig.storage.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default() }).await.unwrap();
+        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default() }).await.unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_node(&succ, "mesh1.rpc.3")).await);
         assert_eq!(held, StatusReply::NameHeld { name: taken.to_string(), by: holder.clone() });
-        assert_eq!(rig.storage.node_row_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
+        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
         let routed = &b["rpc1"];
         let refused = reply(&call(&rig, &b["admin2"], &update_node(routed, "mesh1.rpc.1.old")).await);
@@ -894,7 +894,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_no
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let reply = rafka_node_admin_client::NodeRpc::new(&client).node_update(&rig.admin.node.node_id, &route, &exact(&succ), &taken, &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::NodeUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
-        let row = rig.storage.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
+        let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
         assert_eq!(row.node_id, succ.node.node_id);
         assert_eq!(node.seen.lock().unwrap().clone(), vec![StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }]);
     });
@@ -923,12 +923,12 @@ fn a_stopped_nodes_rename_at_its_mesh_primary_writes_the_row_and_tells_the_node_
         if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == stopped.node.node_id) {
             (n.parked, n.status) = (true, NodeStatus::Leaving);
         }
-        rig.storage.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: stopped.node.name.clone(), node_id: stopped.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default() }).await.unwrap();
+        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: stopped.node.name.clone(), node_id: stopped.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default() }).await.unwrap();
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
         let reply = reply(&call(&rig, &b["admin2"], &update_node(stopped, &to.to_string())).await);
         assert_eq!(reply, StatusReply::NodeUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() });
-        assert_eq!(rig.storage.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(stopped.node.node_id.clone()), "the row moved to the new name");
-        assert_eq!(rig.storage.node_row_at(&stopped.node.name).await.unwrap(), None, "the old key is released");
+        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(stopped.node.node_id.clone()), "the row moved to the new name");
+        assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap(), None, "the old key is released");
         assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.name == to), "the view lists the stopped node at the row's name");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-update-node");
