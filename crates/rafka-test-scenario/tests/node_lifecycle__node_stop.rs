@@ -309,7 +309,8 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
 /// Build); the delete runs as a delete does: the provider's exit proof of the parked process
 /// (TerminateRuntime complete), NodeDeleted, and `node.get` lists no `mesh1.rpc.1`. The other stopped
 /// period never started: nothing else is deleted. Must NOT happen: a delete before one ttl, a second
-/// delete Build, or a collection the sweep made itself without a Build.
+/// delete Build, a collection the sweep made itself without a Build, or a seat transfer, drain or stop
+/// sent again to the stopped birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     let test = "a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep";
@@ -346,6 +347,13 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
         .into_iter()
         .find(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == NODE && sp["attributes"]["outcome"] == "complete" && s(&sp["attributes"]["build_id"]) == build);
     assert!(exit.is_some(), "the delete Build proved the parked process exited");
+    // The stopped birth's stop already ran: its delete sends no seat transfer, drain or stop again
+    // (node-decommission.md 1, node-stop.md 6).
+    let again: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
+        .into_iter()
+        .filter(|sp| s(&sp["attributes"]["build_id"]) == build && ["SeatTransfer", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"].iter().any(|st| sp["attributes"]["step"] == *st))
+        .collect();
+    assert!(again.is_empty(), "the delete of a stopped birth composes no stop again: {again:?}");
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == NODE).collect();
     assert!(!deleted.is_empty(), "NodeDeleted is published for the stopped birth");
     estate.record_trace_url(collected[0]["trace_id"].as_str().unwrap_or(""));
