@@ -9,11 +9,12 @@
 //!   again. A Concern is a warning, never permission to take the seat.
 //! - an **investigation**: an admin of the holder's mesh (a standby included, it need not hold any
 //!   seat), and any admin looking at the fabric holder's mesh from outside it, looks at the exact
-//!   silent birth: a direct ping, the status kick when it answers, the same kick through a live
-//!   member of its mesh, and last the provider's inspection of the birth's exact runtime. An
-//!   answer, or a runtime that still runs, ends it: the seat stays. Only a runtime found exited is
-//!   a verified loss (`Records::mark_exited`); a failed ping, `NotSent`, silence and the
-//!   observer-inferred `Dead` are not.
+//!   silent birth: a direct ping, the status kick when it answers, the same kick through up to two
+//!   live members of its mesh at once, and last the provider's inspection of the birth's exact
+//!   runtime (node-recovery.md step 2, ruling R-SW1). An answer from the exact birth (`Current`,
+//!   `CurrentParked`, `Blocked`), or a runtime that still runs, ends it: the seat stays. Only a
+//!   runtime found exited is a verified loss (`Records::mark_exited`); a failed ping, `NotSent`,
+//!   a deadline, silence and the observer-inferred `Dead` are not.
 //!
 //! [`plan`] decides what a pass owes, from the view and what was already said; [`run`] drives it.
 
@@ -199,7 +200,7 @@ impl Looker {
             let _ = rafka_node_admin_client::NodeRpc::new(&self.client).get(&birth, &CallOptions::default()).await;
             true
         };
-        // 2. The same kick through up to two live members of the birth's mesh.
+        // 2. The same kick through up to two live members of the birth's mesh, at once.
         let kick = &kick;
         let peers: Vec<_> = view
             .members()
@@ -238,29 +239,34 @@ impl Looker {
     }
 }
 
-/// The birth's own answer on the kick: `Current` or, while its hook is Blocked, `Blocked`, naming
-/// the exact birth probed.
+/// The birth's own answer on the kick (node-recovery.md step 2): `Current`, `CurrentParked` while it
+/// is parked, or `Blocked` while its hook is Blocked, naming the exact birth probed. A carrier's
+/// carrier-edge-lost (no reply reaches the ladder), a `NotReady` and any refusal are not answers.
 pub fn birth_answered(reply: Option<&rafka_node_rpc_contract::status::StatusReply>, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
     use rafka_node_rpc_contract::status::StatusReply;
     match reply {
-        Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::Blocked { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
+        Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::CurrentParked { node_id: n, incarnation: i } | StatusReply::Blocked { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
         _ => false,
     }
 }
 
-/// The ladder over one exact birth: the direct probe, then the via-peer kicks one after another,
-/// then the provider.
+/// The ladder over one exact birth (ruling R-SW1): the direct probe; when it fails, every via-peer
+/// kick at once, where the first answer from the exact birth ends the investigation and drops the
+/// probes still running, and a failed probe cancels none of the others; the provider only once
+/// every peer probe ended unanswered. A failure, a deadline included, proves nothing.
 async fn ladder<D, P, V>(node_id: &NodeId, incarnation: &IncarnationId, direct: D, peers: Vec<(String, P)>, provider: V) -> Finding
 where
     D: std::future::Future<Output = bool>,
     P: std::future::Future<Output = Option<rafka_node_rpc_contract::status::StatusReply>>,
     V: std::future::Future<Output = Finding>,
 {
+    use futures_util::StreamExt as _;
     if direct.await {
         return Finding::Answered;
     }
-    for (carrier, probe) in peers {
-        if birth_answered(probe.await.as_ref(), node_id, incarnation) {
+    let mut running: futures_util::stream::FuturesUnordered<_> = peers.into_iter().map(|(carrier, probe)| async move { (carrier, probe.await) }).collect();
+    while let Some((carrier, reply)) = running.next().await {
+        if birth_answered(reply.as_ref(), node_id, incarnation) {
             return Finding::AnsweredViaPeer { carrier };
         }
     }
