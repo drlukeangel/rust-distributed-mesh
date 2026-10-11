@@ -322,9 +322,35 @@ impl StatusAuthority {
             .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
     }
 
-    /// The declared-state rows of every birth this admin holds that `book` says is superseded: a
-    /// later incarnation of the node is held, or the node was deleted.
-    pub async fn retire_superseded(&self, _book: &rafka_mesh_transport::membership::DigestBook) {}
+    /// The declared-state rows of every birth this admin holds that `book` says is superseded: the
+    /// book holds a later incarnation of the node (a restart), or holds the node departed
+    /// (node.deleted). Each such birth's keys are tombstoned, blind, and then forgotten in memory. A
+    /// birth the book holds at the same incarnation keeps its rows, however long it is silent, and
+    /// so does a birth the book does not hold at all (nothing is proven of it).
+    pub async fn retire_superseded(&self, book: &rafka_mesh_transport::membership::DigestBook) {
+        // The births held, read under the lock and the lock released before any await.
+        let held: Vec<(NodeId, IncarnationId)> = self.declared.lock().unwrap().nodes.keys().cloned().collect();
+        for (node_id, incarnation) in held {
+            let (why, by) = match book.get(node_id.as_str()) {
+                Some((d, _)) if d.node.incarnation != incarnation => ("new-incarnation", d.node.incarnation.0.clone()),
+                Some(_) => continue,
+                None if book.is_departed(node_id.as_str()) => ("node-deleted", String::new()),
+                None => continue,
+            };
+            let (outcome, error) = match self.status_storage.remove_node_declared(&node_id, &incarnation).await {
+                Ok(()) => {
+                    self.declared.lock().unwrap().nodes.remove(&(node_id.clone(), incarnation.clone()));
+                    ("retired", String::new())
+                }
+                Err(e) => ("refused", e.to_string()),
+            };
+            let span = match why {
+                "new-incarnation" => tracing::info_span!("rdm.node_admin.status.remove.via-new-incarnation", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.0, held_incarnation_id = %by, outcome, error = %error, "otel.kind" = "internal"),
+                _ => tracing::info_span!("rdm.node_admin.status.remove.via-node-deleted", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.0, outcome, error = %error, "otel.kind" = "internal"),
+            };
+            span.in_scope(|| tracing::info!("a superseded birth's declared-state keys are tombstoned: nothing of that birth is folded back"));
+        }
+    }
 
     /// A birth's completion call (`node-drained`, `node-left`) at the admin that commanded it: it
     /// resolves the open command it names, by `(build_id, attempt, operation, node_id,
@@ -823,7 +849,18 @@ mod tests {
         });
         // rpc.3 is held at the birth that declared (silent or not, it is not superseded).
         book.record(digest_of(&standing, standing.incarnation_id.clone().unwrap()));
-        authority.retire_superseded(&book).await;
+        let capture = crate::span_capture::Capture::new("i143-3051-superseded-rows");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            authority.retire_superseded(&book).await;
+        }
+        let by_incarnation = capture.named("rdm.node_admin.status.remove.via-new-incarnation");
+        let by_deletion = capture.named("rdm.node_admin.status.remove.via-node-deleted");
+        for s in by_incarnation.iter().chain(&by_deletion) {
+            eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
+        }
+        assert_eq!(by_incarnation.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(restarted.node_id.to_string(), "retired".to_string())], "the restarted node's old birth is retired for its new incarnation");
+        assert_eq!(by_deletion.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(), vec![(deleted.node_id.to_string(), "retired".to_string())], "the deleted node's birth is retired for its deletion");
         use crate::status_storage::StatusStorage as _;
         let rows: Vec<String> = status.node_declared().await.unwrap().into_iter().map(|r| r.node_id.to_string()).collect();
         assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the book still holds keeps its declared-state row");
