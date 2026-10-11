@@ -881,3 +881,60 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
     assert_eq!(ours[0].1.get("outcome").map(String::as_str), Some("row-seeded"), "{ours:?}");
     eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.3 outcome=row-seeded, then ApplyNodeConfig to the birth", ours[0].0);
 }
+
+/// CONTRACT (ops-naming "Node data", node-recovery.md "Retained": config seeded from the Deleted
+/// row; R13: the mesh-primary of a node's mesh is the only writer of that mesh's rows): in a mesh
+/// whose primary does not hold the fabric seat, a birth entering mesh2's primary's view at a
+/// `Deleted` row's path.name claims its row seeded with that row's config, written by mesh2's
+/// primary, and mesh2's primary tells the birth that config through its own config door
+/// (`ApplyNodeConfig`, the whole map, the exact birth, once). Spans: `via-node-row` at
+/// mesh2.admin.1 `row-seeded`, then `via-config` at mesh2.admin.1 `config-updated` in its trace.
+#[test]
+fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabric_primary_is_told_its_seeded_config_by_that_primary() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let m2admin = &b["m2admin"];
+        assert!(!m2admin.node.is_fabric_primary && m2admin.node.is_primary, "mesh2's primary does not hold the fabric seat");
+        let newcomer = birth("mesh2.rpc.2", NodeKind::RpcNode, "mesh2", false, false);
+        let seeded: BTreeMap<String, String> = [("zone".to_string(), "c".to_string()), ("tags".to_string(), "far".to_string())].into();
+        let mp_rows = Arc::new(MemoryNodesStorage::default());
+        mp_rows
+            .put_node_row(&rafka_node_admin_core::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone() })
+            .await
+            .unwrap()
+            .unwrap();
+        let node = serve_node(&newcomer).await;
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(node.resolved.clone());
+        let ep = rafka_node_rpc::endpoint::bind(m2admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
+        let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())));
+        let records = rafka_node_admin_core::admin::Records::default();
+        records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(m2admin.node.name.clone(), m2admin.node.node_id.clone(), rig.topology.clone(), mp_rows.clone()).with_configs(configs)));
+        let mut t = rig.topology.read().await.clone();
+        t.nodes.push(newcomer.node.clone());
+        records.install_projected(&rig.topology, || t).await;
+        tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("mesh2's primary told the birth its seeded config");
+        assert_eq!(
+            node.seen.lock().unwrap().clone(),
+            vec![StatusRequest::ApplyNodeConfig { node_id: newcomer.node.node_id.clone(), incarnation: newcomer.node.incarnation_id.clone().unwrap(), config: seeded.clone() }],
+            "the birth was told the Deleted row's whole config, once, by its mesh's primary"
+        );
+        let row = mp_rows.node_row_at(&newcomer.node.name).await.unwrap().expect("the birth's row");
+        assert_eq!((row.node_id, row.config), (newcomer.node.node_id.clone(), seeded), "mesh2's primary wrote the birth's row with the seeded config");
+        assert!(rig.nodes.node_row_at(&newcomer.node.name).await.unwrap().is_none(), "the fabric-primary wrote no row of mesh2");
+    });
+    let rows = cap.spans("rdm.node_admin.node.create.via-node-row");
+    let ours: Vec<_> = rows.iter().filter(|(_, a)| a.get("subject").map(String::as_str) == Some("mesh2.rpc.2")).collect();
+    assert_eq!(ours.len(), 1, "{rows:?}");
+    assert_eq!(ours[0].1.get("node").map(String::as_str), Some("mesh2.admin.1"), "{ours:?}");
+    assert_eq!(ours[0].1.get("outcome").map(String::as_str), Some("row-seeded"), "{ours:?}");
+    let trace = &ours[0].0;
+    let told = cap.spans("rdm.node_admin.node.update.via-config");
+    let told: Vec<_> = told.iter().filter(|(t, _)| t == trace).collect();
+    assert_eq!(told.len(), 1, "one via-config span in the row write's trace: {told:?}");
+    assert_eq!(told[0].1.get("node").map(String::as_str), Some("mesh2.admin.1"), "{told:?}");
+    assert_eq!(told[0].1.get("outcome").map(String::as_str), Some("config-updated"), "{told:?}");
+    eprintln!("trace {trace}: rdm.node_admin.node.create.via-node-row node=mesh2.admin.1 subject=mesh2.rpc.2 outcome=row-seeded > rdm.node_admin.node.update.via-config node=mesh2.admin.1 outcome=config-updated");
+}
