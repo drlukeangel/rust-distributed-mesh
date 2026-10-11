@@ -201,14 +201,17 @@ impl OfflineTickle {
             self.hold_down.clear();
             self.settled.clear();
         }
+        // The window runs from the mark the admin's book holds for the birth (node-recovery.md step 2:
+        // "Half a floor after the mark"); a birth with no mark is first seen at this tick.
         for n in &silent {
-            self.first_seen.entry(n.node_id.clone()).or_insert(now_ms);
+            self.first_seen.entry(n.node_id.clone()).or_insert(n.marked_at_ms.unwrap_or(now_ms));
         }
         if !holds_seat {
             return report;
         }
         for SilentNode { node_id: id, path, .. } in silent {
-            // The instant this admin first saw the node silent: a seat taken mid-window tickles on it.
+            // The mark (or, with none, the instant this admin first saw the node silent): a seat taken
+            // mid-window tickles on it.
             let seen_at = self.first_seen.get(&id).copied().unwrap_or(now_ms);
             if now_ms.saturating_sub(seen_at) < probe_delay_ms || self.settled.contains(&id) {
                 continue;
