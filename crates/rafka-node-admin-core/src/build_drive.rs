@@ -503,7 +503,7 @@ impl DriveEnv {
                 let Some(holder) = parse_path(&holder) else {
                     return self.stalled(drive, format!("{}: attempt {} of Build {id} is claimed by {holder:?}, which is not a path.name", self.me, p.attempt));
                 };
-                (p.attempt, holder, self.door.contexts.get(&id, p.attempt).ok().flatten().unwrap_or_default())
+                (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
             } else {
                 match self.claim_next(drive, &p, handed_to.take()).await {
                     Ok(c) => c,
@@ -621,7 +621,7 @@ impl DriveEnv {
             BuildClaimReply::Won { context } => Ok((attempt, lead, context)),
             BuildClaimReply::Lost { holder } => match parse_path(&holder) {
                 Some(h) => {
-                    let context = self.door.contexts.get(id, attempt).ok().flatten().unwrap_or_default();
+                    let context = self.door.contexts.get(id, attempt).await.ok().flatten().unwrap_or_default();
                     Ok((attempt, h, context))
                 }
                 None => Err(self.stalled(drive, format!("attempt {attempt} of Build {id} is held by {holder:?}, which is not a path.name"))),
@@ -658,7 +658,7 @@ impl DriveEnv {
             return Some(DriveEnd::Terminal);
         };
         drive.note_first_attempt(p.attempt);
-        let context = self.door.contexts.get(id, p.attempt).ok().flatten().unwrap_or_default();
+        let context = self.door.contexts.get(id, p.attempt).await.ok().flatten().unwrap_or_default();
         let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %self.me, outcome = tracing::field::Empty);
         match self.run_inner(drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
             Inner::Terminal(BuildReply::Complete { .. }) => {

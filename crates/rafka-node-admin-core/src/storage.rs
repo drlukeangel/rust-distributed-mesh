@@ -82,7 +82,7 @@ impl FileMeshStorage {
 #[async_trait]
 impl MeshStorage for FileMeshStorage {
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
-        self.0.read(name, MESH_FORMAT)
+        self.0.read(name, MESH_FORMAT).await
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
         self.0.write(&record.name, MESH_FORMAT, record).await
@@ -308,7 +308,7 @@ impl NodesStorage for FileNodesStorage {
         self.runtimes.list(RUNTIME_FORMAT)
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
-        self.own.read("self", NODE_FORMAT)
+        self.own.read("self", NODE_FORMAT).await
     }
     async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
         self.own.write("self", NODE_FORMAT, record).await
@@ -327,12 +327,12 @@ impl NodesStorage for FileNodesStorage {
         self.rows.write(&row.name.to_string(), ROW_FORMAT, row).await
     }
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        self.rows.read(&name.to_string(), ROW_FORMAT)
+        self.rows.read(&name.to_string(), ROW_FORMAT).await
     }
     async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
         let _one = self.row_writes.lock().await;
         let key = row.name.to_string();
-        let claimed = claim_against(self.rows.read::<NodeRow>(&key, ROW_FORMAT)?.as_ref(), row);
+        let claimed = claim_against(self.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.as_ref(), row);
         if claimed == Ok(Claimed::Written) {
             self.rows.write(&key, ROW_FORMAT, row).await?;
         }

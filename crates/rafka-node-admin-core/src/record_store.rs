@@ -73,10 +73,12 @@ impl FileRecords {
         Ok(stored.record)
     }
 
-    /// The record stored under `key`, or `None` when none was ever written.
-    pub fn read<T: DeserializeOwned>(&self, key: &str, format: &str) -> Result<Option<T>, StorageError> {
+    /// The record stored under `key`, or `None` when none was ever written: a point read of its
+    /// file on the blocking pool, as every write is, so no worker thread waits on the disk.
+    pub async fn read<T: DeserializeOwned>(&self, key: &str, format: &str) -> Result<Option<T>, StorageError> {
         let path = self.path(key);
-        match std::fs::read(&path) {
+        let file = path.clone();
+        match blocking_io(move || std::fs::read(&file)).await {
             Ok(b) => Self::decode(&path, &b, format).map(Some),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
@@ -215,13 +217,13 @@ mod tests {
     async fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
         let d = tempdir("records");
         let r = FileRecords::open(&d, "things").unwrap();
-        assert_eq!(r.read::<String>("a", "thing/1").unwrap(), None);
+        assert_eq!(r.read::<String>("a", "thing/1").await.unwrap(), None);
         r.write("a", "thing/1", &"one".to_string()).await.unwrap();
         r.write("b", "thing/1", &"two".to_string()).await.unwrap();
         let again = FileRecords::open(&d, "things").unwrap();
-        assert_eq!(again.read::<String>("a", "thing/1").unwrap().as_deref(), Some("one"));
+        assert_eq!(again.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"));
         assert_eq!(again.list::<String>("thing/1").unwrap(), ["one", "two"]);
-        assert!(matches!(again.read::<String>("a", "thing/2"), Err(StorageError::Unrecognised { .. })));
+        assert!(matches!(again.read::<String>("a", "thing/2").await, Err(StorageError::Unrecognised { .. })));
         std::fs::write(d.join("things").join("c.json"), b"not json").unwrap();
         assert!(matches!(again.list::<String>("thing/1"), Err(StorageError::Unrecognised { file, .. }) if file.ends_with("c.json")));
         again.remove("c").await.unwrap();
