@@ -3324,6 +3324,8 @@ pub struct Running {
     executor: tokio::task::JoinHandle<()>,
     hierarchy: tokio::task::JoinHandle<()>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// The gate a stop parks (`node_self`'s `Session::cut`) and a start opens.
+    gate: crate::park_gate::ParkGate,
     /// Asked before each leave announcement publish (a testkit executable's wiring; none in the product).
     leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,
     /// This admin's Build log: fenced before the first `Leaving` (ruling R-A2).
@@ -3339,6 +3341,12 @@ pub struct Running {
 }
 
 impl Running {
+    /// The gate a stop parks and a start opens: every task this admin runs is held at its own wait
+    /// while it is parked.
+    pub fn gate(&self) -> &crate::park_gate::ParkGate {
+        &self.gate
+    }
+
     /// Where this admin's `hydrate_before_ready` stands; `None` when the app registered no hook.
     pub fn hydration(&self) -> Option<crate::app_hydration::HydrationHandle> {
         self.hydration.lock().unwrap().clone()
@@ -5486,7 +5494,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert })
+    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert, gate: park_gate.clone() })
 }
 
 #[cfg(test)]
