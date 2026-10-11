@@ -384,8 +384,11 @@ impl NodeSelf {
             StatusRequest::StartNode { .. } => Some(self.start(commander.clone(), spare, op, parent).await),
             _ => {
                 use tracing::Instrument;
-                // Forward only: a node already leaving is not drained.
-                if (self.status)() == MemberStatus::Leaving {
+                // Forward only: a node already leaving is not drained. A parked birth whose start
+                // is under way is still in Leaving until the start ends (states.md, "Stopped
+                // nodes"), whatever status the rejoin has set: the drain of the cycle its stop
+                // ended never answers for it.
+                if self.is_parked() || (self.status)() == MemberStatus::Leaving {
                     return Some(StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
                 }
                 let (me, commander) = (self.clone(), commander.clone());
