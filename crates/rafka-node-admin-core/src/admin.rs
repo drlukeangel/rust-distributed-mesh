@@ -7761,6 +7761,96 @@ mod tests {
         assert!(topology.read().await.node(&old.node.name).is_none(), "the view holds the removed node: a projection taken before the lock was installed after the removal");
     }
 
+    /// A status store whose exit-proof row read waits on a latch: it says it is inside the read,
+    /// then holds until released. Every other row is the memory store's.
+    struct LatchedExits {
+        inner: crate::status_storage::MemoryStatusStorage,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::status_storage::StatusStorage for LatchedExits {
+        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status(row).await
+        }
+        async fn mesh_statuses(&self) -> Result<HashMap<MeshId, rafka_node_rpc_contract::status::MeshState>, crate::record_store::StorageError> {
+            self.inner.mesh_statuses().await
+        }
+        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_fabric_event(row).await
+        }
+        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events().await
+        }
+        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_declared(row).await
+        }
+        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_node_declared(node_id, incarnation_id).await
+        }
+        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::record_store::StorageError> {
+            self.inner.node_declared().await
+        }
+        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_silence(row).await
+        }
+        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::record_store::StorageError> {
+            self.inner.node_silences().await
+        }
+        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_exit(row).await
+        }
+        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+            self.inner.node_exit(node_id, incarnation_id).await
+        }
+        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.mesh_status_held_of(mesh, row).await
+        }
+        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status_of(mesh, row).await
+        }
+        async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            self.inner.node_exit_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_exit_of(mesh, row).await
+        }
+    }
+
+    /// CONTRACT (s41 land 4: no disk read under the view's write lock): an install reads the
+    /// exit-proof rows of the births it projects before it takes the view's write lock, so a reader of
+    /// the view (a handler, the status authority) is served while an exit-row read is slow, and the
+    /// projection installed under the lock holds what the read found. Must NOT happen: the view's
+    /// write lock held across a point read of the store.
+    #[tokio::test]
+    async fn a_reader_of_the_view_is_served_while_an_installs_exit_row_read_is_slow() {
+        use crate::status_storage::StatusStorage as _;
+        let book = Arc::new(DigestBook::default());
+        let lost = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(lost.clone());
+        let store = Arc::new(LatchedExits { inner: Default::default(), entered: tokio::sync::Notify::new(), release: tokio::sync::Notify::new() });
+        let row = crate::status_storage::NodeExitRow { node_id: lost.node.node_id.clone(), name: lost.node.name.clone(), incarnation_id: lost.node.incarnation.clone(), exit_code: Some(9), proof: "provider".into(), observed_at_ms: 1 };
+        store.inner.put_node_exit_of("mesh1", &row).await.unwrap();
+        let records = Arc::new(Records::default());
+        records.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
+        let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
+        let install = {
+            let (records, topology, book) = (records.clone(), topology.clone(), book.clone());
+            tokio::spawn(async move { records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await })
+        };
+        store.entered.notified().await;
+        let served = topology.try_read().map(|t| t.nodes.len());
+        store.release.notify_one();
+        let installed = install.await.unwrap();
+        assert!(served.is_ok(), "the view's write lock is held while the install waits on an exit-proof row read");
+        let listed = installed.node(&lost.node.name).map(|n| n.status);
+        assert_eq!(listed, Some(NodeStatus::Dead), "the projection installed under the lock holds the exit the read found");
+        assert_eq!(topology.read().await.node(&lost.node.name).map(|n| n.status), Some(NodeStatus::Dead));
+    }
+
     const STORE_DIR: &str = "/tmp/rdm-admin-cells/store";
 
     fn cfg(env: &[(&str, &str)]) -> AdminConfig {
