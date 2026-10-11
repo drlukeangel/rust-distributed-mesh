@@ -181,29 +181,46 @@ pub struct Looker {
 }
 
 impl Looker {
-    /// Look at `n`'s exact birth: the ladder ends at the first rung that settles it.
+    /// Look at `n`'s exact birth: the ladder ends at the first rung that settles it
+    /// (node-recovery.md step 2, run by the seat watch: fabric-node-lifecycle-elections.md §4.1).
     pub async fn look(&self, view: &Topology, n: &Node) -> Finding {
         let target = NodeTarget::ExactNode(n.node_id.clone());
         let incarnation = n.incarnation_id.clone().unwrap_or_else(|| IncarnationId(String::new()));
-        let kick = rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation };
+        // Every probe names the same exact birth: one kick, by node id and incarnation.
+        let kick = rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
         // 1. A direct ping; when it answers, the status kick makes the birth say it is there.
-        let ping = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"seat-watch".to_vec() };
-        let (out, _) = self.client.call::<rafka_node_rpc_contract::ping::Ping>(&target, &ping, &CallOptions::default()).await;
-        if out.reply().is_some() {
-            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap_or_else(|| IncarnationId(String::new())) };
-            let _ = rafka_node_admin_client::NodeRpc::new(&self.client).get(&birth, &CallOptions::default()).await;
-            return Finding::Answered;
-        }
-        // 2. The same kick through a live member of the birth's mesh.
-        for c in view.members().filter(|c| c.mesh == n.mesh && c.node_id != n.node_id && c.node_id != self.me_id && c.status == NodeStatus::ReadyForTraffic).take(crate::offline::VIA_PEER_TICKLE_FANOUT) {
-            let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
-            let (out, _, _) = self.client.call_routed::<rafka_node_rpc_contract::status::Status>(&n.node_id, &route, &kick, &CallOptions::default()).await;
-            // The exact birth answered: its state, or its hook's blocker while that hook is Blocked.
-            if matches!(out.reply().map(|r| r.value()), Some(rafka_node_rpc_contract::status::StatusReply::Current { .. } | rafka_node_rpc_contract::status::StatusReply::Blocked { .. })) {
-                return Finding::AnsweredViaPeer { carrier: c.name.to_string() };
+        let direct = async {
+            let ping = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"seat-watch".to_vec() };
+            let (out, _) = self.client.call::<rafka_node_rpc_contract::ping::Ping>(&target, &ping, &CallOptions::default()).await;
+            if out.reply().is_none() {
+                return false;
             }
-        }
+            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone() };
+            let _ = rafka_node_admin_client::NodeRpc::new(&self.client).get(&birth, &CallOptions::default()).await;
+            true
+        };
+        // 2. The same kick through up to two live members of the birth's mesh.
+        let kick = &kick;
+        let peers: Vec<_> = view
+            .members()
+            .filter(|c| c.mesh == n.mesh && c.node_id != n.node_id && c.node_id != self.me_id && c.status == NodeStatus::ReadyForTraffic)
+            .take(crate::offline::VIA_PEER_TICKLE_FANOUT)
+            .map(|c| {
+                let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
+                let probe = async move {
+                    let (out, _, _) = self.client.call_routed::<rafka_node_rpc_contract::status::Status>(&n.node_id, &route, kick, &CallOptions::default()).await;
+                    out.reply().map(|r| r.value().clone())
+                };
+                (c.name.to_string(), probe)
+            })
+            .collect();
         // 3. The provider's inspection of the exact runtime: the only rung that proves a loss.
+        let provider = self.inspect(n);
+        ladder(&n.node_id, &incarnation, direct, peers, provider).await
+    }
+
+    /// The provider's inspection of `n`'s exact runtime.
+    async fn inspect(&self, n: &Node) -> Finding {
         let Some(inc) = n.incarnation_id.clone() else { return Finding::Unproven { reason: "the view holds no incarnation for it".into() } };
         let held = self.membership.book.get(n.node_id.as_str()).filter(|(d, _)| d.node.incarnation == inc);
         let Some((digest, _)) = held else { return Finding::Unproven { reason: "this admin holds no digest of this exact birth, so no runtime fact".into() } };
@@ -219,6 +236,35 @@ impl Looker {
             other => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
         }
     }
+}
+
+/// The birth's own answer on the kick: `Current` or, while its hook is Blocked, `Blocked`, naming
+/// the exact birth probed.
+pub fn birth_answered(reply: Option<&rafka_node_rpc_contract::status::StatusReply>, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+    use rafka_node_rpc_contract::status::StatusReply;
+    match reply {
+        Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::Blocked { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
+        _ => false,
+    }
+}
+
+/// The ladder over one exact birth: the direct probe, then the via-peer kicks one after another,
+/// then the provider.
+async fn ladder<D, P, V>(node_id: &NodeId, incarnation: &IncarnationId, direct: D, peers: Vec<(String, P)>, provider: V) -> Finding
+where
+    D: std::future::Future<Output = bool>,
+    P: std::future::Future<Output = Option<rafka_node_rpc_contract::status::StatusReply>>,
+    V: std::future::Future<Output = Finding>,
+{
+    if direct.await {
+        return Finding::Answered;
+    }
+    for (carrier, probe) in peers {
+        if birth_answered(probe.await.as_ref(), node_id, incarnation) {
+            return Finding::AnsweredViaPeer { carrier };
+        }
+    }
+    provider.await
 }
 
 /// What the watch drives.
@@ -434,5 +480,142 @@ mod tests {
         assert_eq!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh2's seat in this view");
         let p = plan(&t, &reborn.name, &me_of(&reborn), &[], &mut Said::default());
         assert!(p.concerns.is_empty(), "the reborn admin holds no seat: it says no Concern about {}, got {:?}", holder.name, p.concerns);
+    }
+
+    mod ladder {
+        //! The ladder's rungs and completion rules (ruling R-SW1; node-recovery.md step 2), under
+        //! paused time: a probe's wait is its budget, and the clock moves only when every probe waits.
+        use super::super::*;
+        use rafka_node_rpc_contract::status::{NodeState, RetryOn, StatusReply};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        use tokio::time::{sleep, Instant};
+
+        /// The default call budget each probe spends against a process that never answers.
+        const BUDGET: Duration = Duration::from_secs(10);
+
+        fn birth() -> (NodeId, IncarnationId) {
+            (NodeId::mint(), IncarnationId("inc-of-the-holder".into()))
+        }
+
+        fn current(b: &(NodeId, IncarnationId)) -> StatusReply {
+            StatusReply::Current { node_id: b.0.clone(), incarnation: b.1.clone(), state: NodeState::ReadyForTraffic }
+        }
+
+        fn parked(b: &(NodeId, IncarnationId)) -> StatusReply {
+            StatusReply::CurrentParked { node_id: b.0.clone(), incarnation: b.1.clone() }
+        }
+
+        /// A probe that spends `after` and ends with `reply` (`None`: no answer from the birth,
+        /// a deadline or a carrier's refusal).
+        async fn probe(after: Duration, reply: Option<StatusReply>) -> Option<StatusReply> {
+            sleep(after).await;
+            reply
+        }
+
+        async fn provider_says(f: Finding, asked: &AtomicBool) -> Finding {
+            asked.store(true, Ordering::SeqCst);
+            f
+        }
+
+        /// CONTRACT (R-SW1 acceptance 1): after the direct probe failed, both peer probes run at
+        /// once, so a ladder whose two peers each spend a whole budget costs one budget on that
+        /// rung, not two. Both failing ends at the provider, which is asked once.
+        #[tokio::test(start_paused = true)]
+        async fn both_peer_probes_spend_their_budgets_at_once() {
+            let b = birth();
+            let asked = AtomicBool::new(false);
+            let start = Instant::now();
+            let peers = vec![("mesh1.rpc.1".to_string(), probe(BUDGET, None)), ("mesh1.rpc.2".to_string(), probe(BUDGET, None))];
+            let found = ladder(&b.0, &b.1, async { false }, peers, provider_says(Finding::Running, &asked)).await;
+            assert_eq!(start.elapsed(), BUDGET, "the two peer probes overlap: one budget, not two");
+            assert_eq!(found, Finding::Running);
+            assert!(asked.load(Ordering::SeqCst), "the provider is asked once both peers ended unanswered");
+        }
+
+        /// CONTRACT (R-SW1 acceptance 2, completion rule): one failed peer probe does not cancel the
+        /// other. The first peer fails at 1 s; the second answers for the exact birth at 3 s and
+        /// ends the ladder there, naming that carrier; the provider is never asked.
+        #[tokio::test(start_paused = true)]
+        async fn the_second_peer_answers_after_the_first_fails() {
+            let b = birth();
+            let asked = AtomicBool::new(false);
+            let start = Instant::now();
+            let peers = vec![("mesh1.rpc.1".to_string(), probe(Duration::from_secs(1), None)), ("mesh1.rpc.2".to_string(), probe(Duration::from_secs(3), Some(current(&b))))];
+            let found = ladder(&b.0, &b.1, async { false }, peers, provider_says(Finding::Running, &asked)).await;
+            assert_eq!(found, Finding::AnsweredViaPeer { carrier: "mesh1.rpc.2".into() });
+            assert_eq!(start.elapsed(), Duration::from_secs(3), "the second peer's answer, not the first's failure, ends the rung");
+            assert!(!asked.load(Ordering::SeqCst), "an answer settles it: no provider inspection");
+        }
+
+        /// CONTRACT (R-SW1 completion rule): the first answer from the exact birth ends the
+        /// investigation and drops the probe still running; that probe never completes.
+        #[tokio::test(start_paused = true)]
+        async fn an_answer_drops_the_probe_still_running() {
+            let b = birth();
+            let finished = Arc::new(AtomicBool::new(false));
+            let slow = {
+                let finished = finished.clone();
+                async move {
+                    sleep(BUDGET).await;
+                    finished.store(true, Ordering::SeqCst);
+                    None
+                }
+            };
+            let fast = async { probe(Duration::from_secs(1), Some(current(&b))).await };
+            let start = Instant::now();
+            let peers: Vec<(String, std::pin::Pin<Box<dyn std::future::Future<Output = Option<StatusReply>> + Send + '_>>)> = vec![("mesh1.rpc.1".into(), Box::pin(slow)), ("mesh1.rpc.2".into(), Box::pin(fast))];
+            let found = ladder(&b.0, &b.1, async { false }, peers, async { Finding::Running }).await;
+            assert_eq!(found, Finding::AnsweredViaPeer { carrier: "mesh1.rpc.2".into() });
+            assert_eq!(start.elapsed(), Duration::from_secs(1));
+            sleep(BUDGET * 2).await;
+            assert!(!finished.load(Ordering::SeqCst), "the probe still running was dropped with the investigation");
+        }
+
+        /// CONTRACT (R-SW1 acceptance 3): a stopped holder is parked, its process alive; its
+        /// `CurrentParked` through a peer is the birth's answer and ends the ladder. A carrier's
+        /// refusal before it (carrier-edge-lost reaches the ladder as no reply) is not an answer.
+        #[tokio::test(start_paused = true)]
+        async fn a_stopped_holder_answering_current_parked_through_a_peer_ends_the_ladder() {
+            let b = birth();
+            let asked = AtomicBool::new(false);
+            let peers = vec![("mesh1.rpc.1".to_string(), probe(Duration::from_millis(5), None)), ("mesh1.rpc.2".to_string(), probe(Duration::from_millis(20), Some(parked(&b))))];
+            let found = ladder(&b.0, &b.1, async { false }, peers, provider_says(Finding::Running, &asked)).await;
+            assert_eq!(found, Finding::AnsweredViaPeer { carrier: "mesh1.rpc.2".into() });
+            assert!(!asked.load(Ordering::SeqCst));
+        }
+
+        /// CONTRACT (R-SW1 item 3): an answer is `Current`, `CurrentParked` or `Blocked` from the
+        /// exact birth probed. A NotReady (a carrier's or anyone's), another incarnation's reply,
+        /// a refusal and no reply at all are not answers.
+        #[test]
+        fn only_the_exact_births_state_is_an_answer() {
+            let b = birth();
+            let blocked = StatusReply::Blocked { node_id: b.0.clone(), incarnation: b.1.clone(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } };
+            for r in [current(&b), parked(&b), blocked] {
+                assert!(birth_answered(Some(&r), &b.0, &b.1), "{} is the birth's answer", r.name());
+            }
+            let other = (b.0.clone(), IncarnationId("an-older-birth".into()));
+            for r in [StatusReply::NotReady { reason: "carrier not ready".into() }, current(&other), parked(&other), StatusReply::RejectedStaleIncarnation { held: other.1.clone() }] {
+                assert!(!birth_answered(Some(&r), &b.0, &b.1), "{} is no answer from the exact birth", r.name());
+            }
+            assert!(!birth_answered(None, &b.0, &b.1), "no reply (a deadline, carrier-edge-lost) is no answer");
+        }
+
+        /// CONTRACT (R-SW1 item 2; elections §4.1): no probe outcome proves a loss. With the direct
+        /// probe and both peers failed, deadlines included, the finding is whatever the provider
+        /// proves: `Running` or `Unproven` leave the seat, only its `Exited` is a verified loss.
+        #[tokio::test(start_paused = true)]
+        async fn no_probe_outcome_proves_a_loss_without_the_provider() {
+            let b = birth();
+            for (said, expect_exit) in [(Finding::Running, false), (Finding::Unproven { reason: "its runtime is not proven exited".into() }, false), (Finding::Exited { code: Some(137) }, true)] {
+                let asked = AtomicBool::new(false);
+                let peers = vec![("mesh1.rpc.1".to_string(), probe(BUDGET, None)), ("mesh1.rpc.2".to_string(), probe(BUDGET, Some(StatusReply::NotReady { reason: "carrier not ready".into() })))];
+                let found = ladder(&b.0, &b.1, async { false }, peers, provider_says(said.clone(), &asked)).await;
+                assert!(asked.load(Ordering::SeqCst), "the provider check is mandatory once no probe was answered");
+                assert_eq!(found, said);
+                assert_eq!(matches!(found, Finding::Exited { .. }), expect_exit, "only the provider's exit proof is a loss");
+            }
+        }
     }
 }
