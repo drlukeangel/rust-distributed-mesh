@@ -1016,7 +1016,8 @@ impl RecoverySubmitter {
         match self.nodes_storage.runtimes().await {
             Ok(rows) => rows,
             Err(e) => {
-                tracing::info!(error = %e, "the durable runtime rows could not be read: this tick watches the view's births only");
+                tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %self.me, store = "nodes.storage", error = %e)
+                    .in_scope(|| tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only"));
                 Vec::new()
             }
         }
