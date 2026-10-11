@@ -407,10 +407,7 @@ async fn a_seat_yield_whose_broadcast_fails_is_fenced_and_names_each_refused_sen
     accepted_and_claimed(&builds, &build_id).await;
     gossip.shutdown().await.unwrap();
 
-    let handed = match builds.yield_seat("the seat is now mesh2 test").await {
-        Ok(n) => n,
-        Err(e) => panic!("the fence committed locally and only the hand-over broadcast failed, yet the yield failed: {e}"),
-    };
+    let handed = builds.yield_seat("the seat is now mesh2 test").await;
     assert!(handed >= 2, "the accepted Build and its claim were held and handed on: {handed}");
     assert!(builds.fence_check().await.is_err(), "the fence holds: the yielded log decides nothing");
     let refused = capture.spans("rdm.node_admin.build.reject.via-broadcast-refused");

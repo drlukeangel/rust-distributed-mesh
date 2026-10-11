@@ -1783,8 +1783,8 @@ impl DeploymentPipeline<'_> {
     }
 
     /// [`Self::drain_steps`]; `strict` (a standalone drain) fails the wait step by name unless the
-    /// matching `node-drained` call was accepted: an admission acknowledgement, a deadline and an exit
-    /// are each indeterminate, never drain completion (node-drain.md).
+    /// matching `node-drained` call was accepted: a command not admitted, an admission
+    /// acknowledgement, a deadline and an exit are each not drain completion (node-drain.md).
     async fn drain_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool) -> Result<(), PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Drain, node);
@@ -1801,6 +1801,11 @@ impl DeploymentPipeline<'_> {
         let _: Completion = self
             .step(run, RetireStep::AwaitNodeDrained.name(), async {
                 if !admission.admitted() {
+                    // Admission is not drain completion, and a command the birth never held has
+                    // none to follow (node-drain.md): a standalone drain is not complete.
+                    if strict {
+                        return Err(format!("{}: drain-node was not admitted ({admission:?}); no node-drained can follow, the drain is not complete", node.name));
+                    }
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
                 let c = tokio::select! {
@@ -1824,8 +1829,8 @@ impl DeploymentPipeline<'_> {
         Ok(terminal.expect("a stop that terminates yields the provider's receipt"))
     }
 
-    /// [`Self::stop_steps`]; `strict` (a standalone stop) fails the wait step by name unless the birth's
-    /// `stopped` reply was received. `end` says what follows: the process parks, or the provider ends it.
+    /// [`Self::stop_steps`]; `strict` (a standalone stop) fails the wait step by name unless the birth
+    /// admitted `stop-node` and its `stopped` reply was received. `end` says what follows: the process parks, or the provider ends it.
     async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
@@ -1844,6 +1849,11 @@ impl DeploymentPipeline<'_> {
         let _: Completion = self
             .step(run, RetireStep::AwaitNodeLeft.name(), async {
                 if !admission.admitted() {
+                    // A command the birth never held has no left reply to follow (node-stop.md): a
+                    // standalone stop is not complete.
+                    if strict {
+                        return Err(format!("{}: stop-node was not admitted ({admission:?}); no left reply can follow, the stop is not complete", node.name));
+                    }
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
                 let c = tokio::select! {
