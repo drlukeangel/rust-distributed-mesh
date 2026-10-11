@@ -130,6 +130,13 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     estate.settled(&names(&["mesh1"], 2), Duration::from_secs(30)).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
     let recreated = estate.settled(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await;
+    // R-NS1 item 1 + states.md ("A mesh id is never reissued; dead is final ... a mesh created again
+    // under that name is a new mesh with a new id"): the removed mesh2 was Dead, and Dead belongs to its
+    // id. No admin's view states the new mesh2 Dead.
+    for n in recreated.iter().filter(|n| n["kind"] == "node_admin") {
+        let m = get(&s(&n["admin_api_base"]), "/api/meshes/mesh2").await;
+        assert_ne!(s(&m["status"]), "dead", "{} states the recreated mesh2 Dead: {m}", s(&n["name"]));
+    }
     let (_, fabric_after) = estate.get("/api/fabric").await;
     assert_eq!(s(&fabric_after["id"]), fabric_id, "the Fabric keeps its id for its lifetime");
     let m2 = fabric_after["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh2").unwrap().clone();
@@ -156,6 +163,17 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         assert_eq!(s(&a["fabric_id"]), fabric_id);
         assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
     }
+
+    // The removed mesh2's last admin published MeshStatus Dead while it lived, and it left with MeshLeft;
+    // after that nothing publishes mesh2 Dead: the recreated mesh2's primary authors its new mesh's own
+    // status and restates no heard status as its own (gossip.md frame catalog, MeshStatus).
+    let left_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh_ids["mesh2"]).map(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0)).min().expect("the removed mesh2 left with a MeshLeft receipt");
+    let dead_after: Vec<String> = named(&spans, "rdm.mesh.fabric.update.via-status-send")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["scope"] == "mesh:mesh2" && sp["attributes"]["status"] == "dead" && sp["start_unix_nano"].as_u64().unwrap_or(0) > left_at)
+        .map(|sp| format!("{}@{}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["changed_at_rafka_ms"])))
+        .collect();
+    assert!(dead_after.is_empty(), "MeshStatus Dead for mesh2 was sent after the removed mesh2 left: {dead_after:?}");
 
     let reborn = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()

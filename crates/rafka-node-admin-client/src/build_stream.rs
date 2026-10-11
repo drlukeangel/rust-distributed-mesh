@@ -208,7 +208,7 @@ fn refusal(reply: BuildReply) -> CallEnd {
         BuildReply::Rejected { reason, detail } => format!("{reason}: {detail}"),
         BuildReply::BuildInProgress { current_build_id } => format!("Build {current_build_id} is still reconciling; one Build at a time"),
         BuildReply::AttemptTaken { detail } => detail.clone(),
-        BuildReply::Fenced { node, by } => format!("{node} yielded the fabric-primary seat ({by})"),
+        BuildReply::Fenced { node, by } => format!("{node} no longer holds the fabric-primary seat: the committed seat row moved it ({by})"),
         BuildReply::CannotDelete { build_id, reason } => format!("Build {build_id} stays in history: {reason}"),
         BuildReply::PeerUnresolved { reason } | BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::Draining { reason } | BuildReply::Unauthorized { reason } => reason.clone(),
         BuildReply::Malformed { kind } => format!("{kind:?}"),

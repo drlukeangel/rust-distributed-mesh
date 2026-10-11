@@ -628,6 +628,22 @@ impl NodeSelf {
             }
         };
         tokio::join!(completions, declared);
+        // R-NS1 item 2 (gossip.md mesh-leave section): a node-admin that still publishes its mesh's
+        // aggregate (the last admin of a deleted mesh, still its primary) publishes it once more
+        // before the cut, itself Leaving: "Its last aggregate before a stop carries itself Leaving."
+        // After the cut it publishes nothing (step 4, R-ON1).
+        if let Some(backbone) = self.backbone.as_ref().filter(|b| b.is_mesh_primary()) {
+            let me = (self.set_status)(MemberStatus::Leaving);
+            let mut members: Vec<MeshDigest> = backbone.own_members(&self.membership);
+            match members.iter_mut().find(|d| d.node.node_id == me.node.node_id) {
+                Some(slot) => *slot = me.clone(),
+                None => members.push(me.clone()),
+            }
+            let count = members.len();
+            let published = backbone.publish(&self.membership, members).await;
+            tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %op.operation, status = "Leaving", members = count, published)
+                .in_scope(|| tracing::info!("the last aggregate before the stop carries this node Leaving"));
+        }
         // 3. The hard cut, sparing the commander's connection the stop call rides.
         let session = self.session.lock().unwrap().clone();
         let report = match session {

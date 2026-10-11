@@ -75,13 +75,20 @@ pub fn candidate_sha() -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
+/// The executable `name` in `dir`, built, present and built from the source this tree holds now
+/// ([`crate::estate::binary_is_fresh`]): a stale one is refused by name with its rebuild command.
+pub fn executable_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let p = dir.join(name);
+    assert!(p.exists(), "RED: executable `{name}` is not built at {} (cargo build -p rafka-node-rpc-testkit --bins)", p.display());
+    if let Err(why) = crate::estate::binary_is_fresh(name, &p) {
+        panic!("{why}");
+    }
+    p.canonicalize().unwrap()
+}
+
 /// The estate's executables: the faulted node-admin, and the testkit rpc node the admin launches.
 pub fn binding_set(sha: &str) -> BindingSet {
-    let exe = |name: &str| {
-        let p = bin_dir().join(name);
-        assert!(p.exists(), "RED: executable `{name}` is not built at {} (cargo build -p rafka-node-rpc-testkit --bins)", p.display());
-        p.canonicalize().unwrap()
-    };
+    let exe = |name: &str| executable_in(&bin_dir(), name);
     let bind = |id: &str, name: &str| {
         let path = exe(name);
         Binding { launch_id: id.into(), sha256: sha256_file(&path).unwrap(), executable: path, image: None }
@@ -105,4 +112,35 @@ pub fn binding_set_with_roles(sha: &str) -> BindingSet {
         set.bindings.push(Binding { launch_id: role.into(), sha256: sha256_file(&path).unwrap(), executable: path, image: None });
     }
     set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // CONTRACT: the faulted estate's executables are judged fresh like every other binary an estate
+    // launches (`estate::binary_is_fresh`): a faulted-node-admin older than a source file its dep-info
+    // lists is refused by name with its rebuild command, never launched as this tree's code.
+    #[test]
+    fn a_faulted_node_admin_older_than_its_source_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!("rdm-stale-faulted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, exe) = (dir.join("leave.rs"), dir.join("faulted-node-admin"));
+        std::fs::write(&src, "fn main() {}").unwrap();
+        std::fs::write(&exe, "bin").unwrap();
+        std::fs::write(exe.with_extension("d"), format!("{}: {}\n", exe.display(), src.display())).unwrap();
+        let set = |path: &std::path::Path, secs: u64| std::fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
+        set(&exe, 2_000);
+        set(&src, 1_000);
+        assert_eq!(executable_in(&dir, "faulted-node-admin"), exe.canonicalize().unwrap(), "a fresh executable is launched");
+        set(&src, 3_000);
+        let refused = std::panic::catch_unwind(|| executable_in(&dir, "faulted-node-admin"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let why = match refused {
+            Ok(p) => panic!("a stale faulted-node-admin was handed to the estate: {}", p.display()),
+            Err(e) => e.downcast_ref::<String>().cloned().unwrap_or_default(),
+        };
+        assert!(why.contains("REFUSED: faulted-node-admin") && why.contains("leave.rs") && why.contains("cargo build -p rafka-node-rpc-testkit --bin faulted-node-admin"), "{why}");
+    }
 }
