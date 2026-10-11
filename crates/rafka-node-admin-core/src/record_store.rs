@@ -57,8 +57,13 @@ struct Stored<T> {
 pub struct FileRecords {
     dir: PathBuf,
     /// Serializes this store's writers. An async lock: a writer waiting on another's fsync yields
-    /// its worker instead of blocking it.
-    write: tokio::sync::Mutex<()>,
+    /// its worker instead of blocking it. Each writer moves its guard into its disk job, so the
+    /// lock is held until the disk operation finishes whatever happens to the caller: taking it
+    /// once waits for every write this store issued (R14 item 4).
+    write: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Set when this store's writer gave up its authority (a seat transfer's cut-off): every write
+    /// granted the lock from then on is refused by name, a write queued before it included.
+    cut_off: std::sync::Mutex<Option<String>>,
 }
 
 impl FileRecords {
@@ -66,7 +71,7 @@ impl FileRecords {
     pub fn open(own_data_dir: &Path, dir: &str) -> Result<Self, StorageError> {
         let dir = own_data_dir.join(dir);
         std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
-        Ok(Self { dir, write: tokio::sync::Mutex::new(()) })
+        Ok(Self { dir, write: std::sync::Arc::new(tokio::sync::Mutex::new(())), cut_off: std::sync::Mutex::new(None) })
     }
 
     fn path(&self, key: &str) -> PathBuf {
@@ -127,8 +132,12 @@ impl FileRecords {
         let path = self.path(key);
         let bytes = serde_json::to_vec(&Stored { format: format.to_string(), record }).map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })?;
         let (dir, tmp) = (self.dir.clone(), self.dir.join(format!(".{key}.json.tmp")));
-        let _g = self.write.lock().await;
-        blocking_io(move || write_file(&dir, &tmp, &path, &bytes)).await
+        let held = self.writer(&path).await?;
+        blocking_io(move || {
+            let _held = held;
+            write_file(&dir, &tmp, &path, &bytes)
+        })
+        .await
     }
 
     /// Store `record` under `key` only if no record is there: the claim is the filesystem's own
@@ -138,8 +147,12 @@ impl FileRecords {
         let path = self.path(key);
         let bytes = serde_json::to_vec(&Stored { format: format.to_string(), record }).map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })?;
         let (dir, tmp) = (self.dir.clone(), self.dir.join(format!(".{key}.json.tmp")));
-        let _g = self.write.lock().await;
-        blocking_io(move || insert_file(&dir, &tmp, &path, &bytes)).await
+        let held = self.writer(&path).await?;
+        blocking_io(move || {
+            let _held = held;
+            insert_file(&dir, &tmp, &path, &bytes)
+        })
+        .await
     }
 
     /// Whether a file under `key` exists, whatever it holds.
@@ -147,24 +160,46 @@ impl FileRecords {
         self.path(key).exists()
     }
 
-    /// Wait for every write this store issued: the write lock taken once and released.
+    /// The write lock, owned so the caller moves it into its disk job, and the cut-off checked
+    /// once it is granted: a write queued before the cut-off and granted the lock after it is
+    /// refused by name.
+    async fn writer(&self, file: &Path) -> Result<tokio::sync::OwnedMutexGuard<()>, StorageError> {
+        let held = self.write.clone().lock_owned().await;
+        if let Some(reason) = self.cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return Err(StorageError::CutOff { file: file.display().to_string(), reason });
+        }
+        Ok(held)
+    }
+
+    /// Wait for every write this store issued: the write lock taken once and released. Each
+    /// write holds the lock until its disk job finishes, so this returns only once they have.
     pub async fn drain(&self) {
         drop(self.write.lock().await);
     }
 
-    /// Refuse every write from now on, naming `reason`.
+    /// Refuse every write granted the lock from now on, naming `reason`.
     pub fn cut_off(&self, reason: String) {
-        let _ = reason;
+        *self.cut_off.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+    }
+
+    /// Lift the cut-off: the transfer it was set for committed nothing, so this store's writer
+    /// keeps its authority.
+    pub fn lift_cut_off(&self) {
+        *self.cut_off.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Remove the record under `key`, if any.
     pub async fn remove(&self, key: &str) -> Result<(), StorageError> {
-        let path = self.path(key);
-        let _g = self.write.lock().await;
-        blocking_io(move || match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+        let (path, dir) = (self.path(key), self.dir.clone());
+        let held = self.writer(&path).await?;
+        blocking_io(move || {
+            let _held = held;
+            match std::fs::remove_file(&path) {
+                // A removal that must survive a crash syncs its directory.
+                Ok(()) => sync_dir(&dir, &path),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+            }
         })
         .await
     }
@@ -177,10 +212,15 @@ fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), S
     f.write_all(bytes).map_err(io)?;
     f.sync_all().map_err(io)?;
     std::fs::rename(tmp, path).map_err(io)?;
-    if let Ok(d) = std::fs::File::open(dir) {
-        let _ = d.sync_all();
-    }
-    Ok(())
+    sync_dir(dir, path)
+}
+
+/// Sync `dir` after `file` was renamed, linked or removed in it: a change whose directory sync
+/// fails is a failed change, named.
+fn sync_dir(dir: &Path, file: &Path) -> Result<(), StorageError> {
+    std::fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .map_err(|e| StorageError::Io { file: file.display().to_string(), reason: format!("the change landed but the directory {} could not be synced: {e}", dir.display()) })
 }
 
 fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool, StorageError> {
@@ -192,12 +232,7 @@ fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool
     let linked = std::fs::hard_link(tmp, path);
     let _ = std::fs::remove_file(tmp);
     match linked {
-        Ok(()) => {
-            if let Ok(d) = std::fs::File::open(dir) {
-                let _ = d.sync_all();
-            }
-            Ok(true)
-        }
+        Ok(()) => sync_dir(dir, path).map(|()| true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(io(e)),
     }
