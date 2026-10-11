@@ -326,9 +326,12 @@ impl AdminRunner {
         if !me.is_primary {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", me.mesh) } };
         }
-        // The handoff goes back to whoever owns the workflow: the admin that sent this command.
-        let Some(owner) = sender.map(|n| n.node_id.clone()) else {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } };
+        // The handoff goes back to whoever owns the workflow: the admin that sent this command, else
+        // the fabric-primary this admin's view names (LeaveMesh is the fabric-primary's command,
+        // node-rpc-envelope.md "Mesh delete command pair"). Nothing checks who is calling
+        // (node-rpc.md §14).
+        let Some(owner) = sender.map(|n| n.node_id.clone()).or_else(|| view.fabric_primary().map(|n| n.node_id.clone())) else {
+            return StatusReply::NotReady { reason: format!("{}: leave-mesh for {mesh_id} came from an endpoint this admin holds no birth for, and its view names no fabric-primary to hand the leave back to", self.me) };
         };
         // states.md: the mesh's `leaving` is entered by this down op, and "one commit stores the row,
         // applies it, gossips it and answers the op" (the command hook's mesh-leaving is the owner's);

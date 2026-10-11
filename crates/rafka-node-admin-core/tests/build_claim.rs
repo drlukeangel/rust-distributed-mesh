@@ -181,10 +181,11 @@ async fn a_claim_put_to_a_non_primary_is_redirected_to_the_fabric_primary_it_see
     assert_eq!(q_seat.door.claim("mesh1.admin.2", &id, 1).await, reply, "a non-primary decides nothing and names the one it sees");
 }
 
-/// CONTRACT: the sender is the authenticated peer, held to the request: a request naming another
-/// birth of the executor is refused by name, and nothing is claimed.
+/// CONTRACT: the claim is decided for the executor the request names, at its exact birth as the
+/// fabric-primary's view holds it (node-rpc.md §14: never the caller): the executor's own endpoint
+/// naming another birth of it is refused by name about that subject, and nothing is claimed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_claim_naming_another_birth_than_the_caller_is_refused_by_name() {
+async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     use rafka_node_rpc_contract::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
     let reborn_birth = birth("mesh1.admin.2", false);
@@ -198,7 +199,7 @@ async fn a_claim_naming_another_birth_than_the_caller_is_refused_by_name() {
     let (out, _) = client.call::<BuildClaim>(&rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
     match out {
         rafka_node_rpc_contract::outcome::RpcOutcome::Reply(reply) => match reply.value() {
-            BuildClaimReply::Unauthorized { reason } => assert!(reason.contains("names birth"), "{reason}"),
+            BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth"), "{reason}"),
             other => panic!("{other:?}"),
         },
         other => panic!("{other:?}"),

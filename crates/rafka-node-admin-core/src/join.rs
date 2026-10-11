@@ -211,9 +211,9 @@ pub struct JoinDoor {
     /// Install the reported address for the key: membership's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
-    /// Project the installed birth into the view this admin's status authority resolves senders
-    /// from, so the admitted birth is known to that authority when the join is answered: its
-    /// first declaration is never `unknown peer`.
+    /// Project the installed birth into the view this admin's status authority decides from, so the
+    /// admitted birth is in that view when the join is answered: its first declaration finds its
+    /// subject held.
     pub known: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     /// The mesh primary this admin sees, by path.name.
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
@@ -240,6 +240,7 @@ impl JoinDoor {
             incarnation_id = %d.node.incarnation.0,
             reported_addr = %d.node.transport_addr,
             served_by = %self.me,
+            caller = tracing::field::Empty,
             admitted_as = tracing::field::Empty,
             config_keys = tracing::field::Empty,
             outcome = tracing::field::Empty,
@@ -250,11 +251,11 @@ impl JoinDoor {
         self.decide(peer, d, span.clone()).instrument(span).await
     }
 
+    /// Decide a join on its digest against what was deployed. Nothing checks who is calling
+    /// (node-rpc.md §14): the caller's endpoint names the call in its span, and the digest's
+    /// endpoint is what the deployment verifies.
     async fn decide(&self, peer: EndpointId, mut d: MeshDigest, span: tracing::Span) -> JoinReply {
-        if peer != d.node.endpoint_id {
-            span.record("outcome", "unauthorized");
-            return JoinReply::Unauthorized { reason: format!("{}: the calling endpoint {} is not the endpoint {} the digest of {} names", self.me, peer.0, d.node.endpoint_id.0, d.node.name) };
-        }
+        span.record("caller", peer.0.as_str());
         match self.joins.standing(&d) {
             Standing::Mismatch(m) => {
                 span.record("outcome", "mismatch");

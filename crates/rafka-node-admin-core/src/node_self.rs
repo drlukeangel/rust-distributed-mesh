@@ -193,8 +193,11 @@ enum Drain {
 
 /// A commander owed `node-drained` by this cycle's drain.
 struct Owed {
-    /// The admin whose `DrainNode` asked.
-    commander: NodeId,
+    /// The admin whose `DrainNode` asked, as the call resolved it; `None` when this birth held no
+    /// birth for the calling endpoint then (it is read from the book when the completion is due).
+    commander: Option<NodeId>,
+    /// The endpoint the `DrainNode` came from, as the transport proved it.
+    endpoint: Option<iroh::PublicKey>,
     /// Its operation: the completion names its own Build, attempt and operation.
     op: LifecycleOp,
     /// The serve span of its `DrainNode`: the completion call continues that command's trace,
@@ -206,7 +209,7 @@ impl Owed {
     /// The completion call this commander is owed, in its own command's trace.
     async fn complete(self, me: &NodeSelf) {
         use tracing::Instrument;
-        me.complete(&self.commander, &self.op).instrument(self.trace).await
+        me.complete(self.commander.as_ref(), self.endpoint, &self.op).instrument(self.trace).await
     }
 }
 
@@ -390,11 +393,11 @@ impl NodeSelf {
     /// Serve `DeleteConnections` from `commander` (its connection `spare`): a scope that names
     /// nothing to cut is refused by name and cuts nothing; any other is the cut, answered
     /// `node.connections.deleted`. One span names the scope and every count.
-    async fn serve_delete_connections(&self, commander: &NodeId, spare: Option<iroh::PublicKey>, scope: &ConnectionScope) -> StatusReply {
+    async fn serve_delete_connections(&self, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, scope: &ConnectionScope) -> StatusReply {
         use tracing::Instrument;
         let span = tracing::info_span!(
             "rdm.node_admin.node.connections.delete.via-delete-connections",
-            node = %self.held_name(), commander = %commander, scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
+            node = %self.held_name(), commander = %named(commander), scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
             closed = tracing::field::Empty, not_open = tracing::field::Empty, held = tracing::field::Empty, neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty,
             outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal"
         );
@@ -551,12 +554,17 @@ impl NodeSelf {
             .in_scope(|| tracing::info!("the completion call was made to the commanding primary"));
     }
 
-    /// Serve `DrainNode`, `StopNode` or `StartNode` from `commander` (a node-admin the caller resolved,
-    /// whose connection is `spare`), or a round command from its mesh primary. `None` for any other
-    /// request.
-    pub async fn serve(self: &Arc<Self>, commander: &NodeId, spare: Option<iroh::PublicKey>, req: &StatusRequest) -> Option<StatusReply> {
+    /// Serve `DrainNode`, `StopNode` or `StartNode` on the exact birth it names, whoever calls
+    /// (node-rpc.md §14: nothing inside the mesh checks who is calling): `commander` is the caller as
+    /// the receiver resolved it (`None` when it holds no birth for the calling endpoint), `spare` the
+    /// call's own connection. A round command is served for `commander`, the primary of this birth's
+    /// mesh, which its check-in goes to. `None` for any other request.
+    pub async fn serve(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &StatusRequest) -> Option<StatusReply> {
         if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
-            return Some(self.serve_round(commander, req));
+            return Some(match commander {
+                Some(commander) => self.serve_round(commander, req),
+                None => StatusReply::NotReady { reason: format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op()) },
+            });
         }
         if let StatusRequest::DeleteConnections { node_id, incarnation, .. } = req {
             if *node_id != self.node_id {
@@ -592,9 +600,10 @@ impl NodeSelf {
         // The command's serve span carries the caller's propagated trace; the work this command
         // starts continues it, so the spans it opens join the outer trace.
         let parent = tracing::Span::current();
+        let commander = commander.cloned();
         match req {
-            StatusRequest::StopNode { .. } => Some(self.stop(commander.clone(), spare, op, parent).await),
-            StatusRequest::StartNode { .. } => Some(self.start(commander.clone(), spare, op, parent).await),
+            StatusRequest::StopNode { .. } => Some(self.stop(commander, spare, op, parent).await),
+            StatusRequest::StartNode { .. } => Some(self.start(commander, spare, op, parent).await),
             _ => {
                 use tracing::Instrument;
                 // Forward only: a node already leaving is not drained. A parked birth whose start
@@ -604,8 +613,8 @@ impl NodeSelf {
                 if self.is_parked() || (self.status)() == MemberStatus::Leaving {
                     return Some(StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
                 }
-                let (me, commander) = (self.clone(), commander.clone());
-                match self.admit_drain(&commander, &op, &parent) {
+                let me = self.clone();
+                match self.admit_drain(commander.as_ref(), spare, &op, &parent) {
                     DrainAdmission::Start => {
                         // The eligible work in flight when the drain is admitted: every dispatched
                         // handler but this command's own, which is in flight while it is served.
@@ -615,7 +624,7 @@ impl NodeSelf {
                     }
                     DrainAdmission::Joined | DrainAdmission::EndedAtBound => Some(StatusReply::AlreadyApplied),
                     DrainAdmission::Drained => {
-                        tokio::spawn(async move { me.complete(&commander, &op).await }.instrument(parent));
+                        tokio::spawn(async move { me.complete(commander.as_ref(), spare, &op).await }.instrument(parent));
                         Some(StatusReply::AlreadyApplied)
                     }
                 }
@@ -627,16 +636,17 @@ impl NodeSelf {
     /// Draining)` of this cycle (the caller checked the birth and that it is not leaving): the first
     /// starts the drain; any later one, of any attempt or commander, is owed the same drain's
     /// completion under its own operation. An identical repeat while the drain runs is owed it once.
-    fn admit_drain(&self, commander: &NodeId, op: &LifecycleOp, serve: &tracing::Span) -> DrainAdmission {
+    fn admit_drain(&self, commander: Option<&NodeId>, endpoint: Option<iroh::PublicKey>, op: &LifecycleOp, serve: &tracing::Span) -> DrainAdmission {
         let mut drain = self.drain.lock().unwrap();
+        let owed_now = || Owed { commander: commander.cloned(), endpoint, op: op.clone(), trace: serve.clone() };
         match &mut *drain {
             None => {
-                *drain = Some(Drain::Running(vec![Owed { commander: commander.clone(), op: op.clone(), trace: serve.clone() }]));
+                *drain = Some(Drain::Running(vec![owed_now()]));
                 DrainAdmission::Start
             }
             Some(Drain::Running(owed)) => {
-                if !owed.iter().any(|o| &o.commander == commander && o.op.build_id == op.build_id && o.op.attempt == op.attempt && o.op.operation == op.operation) {
-                    owed.push(Owed { commander: commander.clone(), op: op.clone(), trace: serve.clone() });
+                if !owed.iter().any(|o| o.commander.as_ref() == commander && o.endpoint == endpoint && o.op.build_id == op.build_id && o.op.attempt == op.attempt && o.op.operation == op.operation) {
+                    owed.push(owed_now());
                 }
                 DrainAdmission::Joined
             }
@@ -657,13 +667,13 @@ impl NodeSelf {
 
     /// The drain `commander`'s `DrainNode` admitted, `began` the eligible work in flight then: refuse
     /// new work and observe the in-flight work under the drain bound (node-drain.md step 3).
-    async fn drain(self: Arc<Self>, commander: NodeId, op: LifecycleOp, parent: tracing::Span, began: u64) {
+    async fn drain(self: Arc<Self>, commander: Option<NodeId>, op: LifecycleOp, parent: tracing::Span, began: u64) {
         use tracing::Instrument;
         let span = tracing::info_span!(
             parent: &parent,
             "rdm.node_admin.status.update.via-drain-node",
             node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-            commander = %commander, receipt = tracing::field::Empty, in_flight = tracing::field::Empty, in_flight_at_zero = tracing::field::Empty, "otel.kind" = "internal"
+            commander = %named(commander.as_ref()), receipt = tracing::field::Empty, in_flight = tracing::field::Empty, in_flight_at_zero = tracing::field::Empty, "otel.kind" = "internal"
         );
         async {
             if let Some(retire) = &self.retire {
@@ -724,7 +734,7 @@ impl NodeSelf {
     /// drain's. A second stop of the same birth, while this one runs or after it, answers the same
     /// receipt: stopping a stopped birth is done. A stop while a start of the birth is under way is
     /// refused naming the start.
-    async fn stop(self: &Arc<Self>, commander: NodeId, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
+    async fn stop(self: &Arc<Self>, commander: Option<NodeId>, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
         use tracing::Instrument;
         enum Next {
             Done(DrainReceipt),
@@ -763,9 +773,9 @@ impl NodeSelf {
                     parent: &parent,
                     "rdm.node_admin.status.update.via-stop-node",
                     node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-                    commander = %commander, state = "Leaving", receipt = tracing::field::Empty, "otel.kind" = "internal"
+                    commander = %named(commander.as_ref()), state = "Leaving", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
-                let receipt = self.park(&commander, spare, &op).instrument(span.clone()).await;
+                let receipt = self.park(commander.as_ref(), spare, &op).instrument(span.clone()).await;
                 span.record("receipt", receipt.name());
                 *self.cycle.lock().unwrap() = Cycle::Parked(receipt);
                 let _ = tx.send(Some(receipt));
@@ -775,7 +785,7 @@ impl NodeSelf {
         StatusReply::Stopped { receipt }
     }
 
-    async fn park(&self, commander: &NodeId, spare: Option<iroh::PublicKey>, op: &LifecycleOp) -> DrainReceipt {
+    async fn park(&self, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, op: &LifecycleOp) -> DrainReceipt {
         use tracing::Instrument;
         parking().park();
         if let Some(retire) = &self.retire {
@@ -834,7 +844,7 @@ impl NodeSelf {
         // stop call rides, and the drop of every connection it held.
         let report = self
             .delete_connections(spare, &ConnectionScope::All)
-            .instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %op.operation, commander = %commander))
+            .instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %op.operation, commander = %named(commander)))
             .await
             .report;
         // Leaving is this node's own status from the moment its tasks are cut; nothing publishes it.
@@ -877,13 +887,13 @@ impl NodeSelf {
     /// refuses it, naming the state it is in. A start that reaches the birth while another start of
     /// it is under way is the same natural key `(node_id, incarnation, Pending)`: it runs no rejoin
     /// of its own and answers that start's outcome.
-    async fn start(self: &Arc<Self>, commander: NodeId, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
+    async fn start(self: &Arc<Self>, commander: Option<NodeId>, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
         use tracing::Instrument;
         let span = tracing::info_span!(
             parent: &parent,
             "rdm.node_admin.status.update.via-start-node",
             node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-            commander = %commander, joined = tracing::field::Empty, outcome = tracing::field::Empty, failed_step = tracing::field::Empty, "otel.kind" = "internal"
+            commander = %named(commander.as_ref()), joined = tracing::field::Empty, outcome = tracing::field::Empty, failed_step = tracing::field::Empty, "otel.kind" = "internal"
         );
         let reply = async {
             enum Next {
@@ -938,7 +948,16 @@ impl NodeSelf {
             };
             let _ = (self.set_status)(MemberStatus::Pending);
             self.server.resume();
-            let reply = match session.rejoin(retire, &commander, rows).await {
+            // The admin that commanded the start answers its join: the caller as the call resolved
+            // it, else the node this birth's book holds at the calling endpoint now.
+            let joined = match commander.clone().or_else(|| self.node_at_endpoint(spare)) {
+                Some(authority) => session.rejoin(retire, &authority, rows).await,
+                None => Err(StartFailed {
+                    step: "node.join",
+                    reason: format!("{}: the endpoint {} that commanded the start is in no digest this birth holds, so the start has no admin to join through", self.held_name(), spare.map(|k| k.to_string()).unwrap_or_else(|| "(none)".into())),
+                }),
+            };
+            let reply = match joined {
                 Ok(()) => {
                     // A new cycle: its next drain is a new drain.
                     let mut cycle = self.cycle.lock().unwrap();
@@ -970,24 +989,40 @@ impl NodeSelf {
     }
 
     /// The drain's completion: the node's own gossip hook on its mesh channel, then the call at the
-    /// commanding admin, while this endpoint is open.
-    async fn complete(&self, commander: &NodeId, op: &LifecycleOp) {
+    /// commanding admin, while this endpoint is open. The commander is the caller as its command
+    /// resolved it, else the node this birth's book holds at the calling endpoint now; when it holds
+    /// none, the hook is all that goes out and the span says why no call was made.
+    async fn complete(&self, commander: Option<&NodeId>, endpoint: Option<iroh::PublicKey>, op: &LifecycleOp) {
         let frame = Frame::NodeDrained { op: op.clone(), forwarded_by: None };
         let req = StatusRequest::NodeDrained { node_id: op.node_id.clone(), incarnation: op.incarnation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
         let kind = "node-drained";
         let _ = self.membership.publish_lifecycle(&frame).await;
-        let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
-        let answer = match &out {
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
-            other => other.name().to_string(),
+        let target = commander.cloned().or_else(|| self.node_at_endpoint(endpoint));
+        let answer = match &target {
+            Some(commander) => match self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await.0 {
+                rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
+                other => other.name().to_string(),
+            },
+            None => format!("commander-unresolved: the endpoint {} that commanded the drain is in no digest this birth holds", endpoint.map(|k| k.to_string()).unwrap_or_else(|| "(none)".into())),
         };
         tracing::info_span!(
             "rdm.node_admin.status.update.via-completion-call",
             node = %self.held_name(), completion = kind, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-            commander = %commander, answer = %answer, "otel.kind" = "internal"
+            commander = %named(target.as_ref()), answer = %answer, "otel.kind" = "internal"
         )
         .in_scope(|| tracing::info!("the completion call was made to the commanding admin"));
     }
+
+    /// The node this birth's digest book holds at the endpoint `key` now.
+    fn node_at_endpoint(&self, key: Option<iroh::PublicKey>) -> Option<NodeId> {
+        let key = key?.to_string();
+        self.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == key).map(|d| d.node.node_id)
+    }
+}
+
+/// A commander as a span field: its node id, or empty when the call resolved none.
+fn named(commander: Option<&NodeId>) -> String {
+    commander.map(ToString::to_string).unwrap_or_default()
 }
 
 /// The record this runtime's provider wrote for it (`rafka_mesh_entity::runtime::read_own_record`),
