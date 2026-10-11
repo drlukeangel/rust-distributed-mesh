@@ -36,6 +36,18 @@ pub struct ConnectionsWriter {
     inner: Arc<Inner>,
 }
 
+/// A start's hold on every row of its connections writer ([`ConnectionsWriter::hold_rows`]):
+/// dropping it lets the rows observed meanwhile be written, naming the node as it is then.
+pub struct RowsHeld {
+    _gate: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl std::fmt::Debug for RowsHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RowsHeld")
+    }
+}
+
 /// Makes an observation's row from the held projection, inside the write gate, naming this node as
 /// it is at that moment (the source end the held projection's own source was just set to).
 type Build = Box<dyn FnOnce(&ConnectionsWriter, ConnectionEnd) -> NodeConnection + Send>;
@@ -63,8 +75,9 @@ struct Inner {
     /// applies them one at a time, so the index member of a pair is always the last observed.
     queue: tokio::sync::mpsc::UnboundedSender<(Build, &'static str)>,
     /// The one write gate: held across every build, durable write and apply, whether it is an
-    /// observation, a [`ConnectionsWriter::record`] or a retirement settlement.
-    write_gate: tokio::sync::Mutex<()>,
+    /// observation, a [`ConnectionsWriter::record`] or a retirement settlement; and by a start
+    /// until it holds the name its join answer handed ([`ConnectionsWriter::hold_rows`]).
+    write_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// The local OS clock: a writer orders its own rows by it and ages its owed retirements by it. No
@@ -114,7 +127,7 @@ impl ConnectionsWriter {
             in_flight: std::sync::atomic::AtomicUsize::new(0),
             idle: tokio::sync::Notify::new(),
             queue,
-            write_gate: tokio::sync::Mutex::new(()),
+            write_gate: Arc::new(tokio::sync::Mutex::new(())),
         });
         let weak = Arc::downgrade(&inner);
         runtime.spawn(async move {
@@ -124,6 +137,15 @@ impl ConnectionsWriter {
             }
         });
         Self { inner }
+    }
+
+    /// Hold every row: until the returned hold is dropped no row is built, written or applied, and
+    /// every connection observed meanwhile waits for it. A start takes it before its join and lets
+    /// it go once it holds the name its join answer handed (node-start.md step 2), so the join's
+    /// connection, and any other the start makes or accepts, is recorded under that name: a node
+    /// renamed while it was stopped never writes a row naming the name it gave up at its join.
+    pub async fn hold_rows(&self) -> RowsHeld {
+        RowsHeld { _gate: self.inner.write_gate.clone().lock_owned().await }
     }
 
     /// The projection the writer holds.

@@ -135,8 +135,10 @@ pub trait Session: Send + Sync {
     /// Rejoin as the same birth: join the authority, rejoin the mesh channel, take the topology and
     /// run the hydrate hook with `AfterStop` in its context under `retire`, the new cycle's token.
     /// `authority` is the admin that commanded the start: it answers the join and is the hook's
-    /// accepting authority.
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), StartFailed>;
+    /// accepting authority. `rows` is the start's hold on this birth's connections rows: the
+    /// session drops it once it holds the name its join answer handed, and no earlier, so the join's
+    /// connection is recorded under that name (node-start.md step 2).
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
 }
 
 /// Declares a state this birth entered to its authority.
@@ -927,9 +929,16 @@ impl NodeSelf {
                 Some(r) => r.renew(),
                 None => rafka_node_rpc::CancelToken::new(),
             };
+            // No row is written from here until the session holds the name its join answer hands:
+            // every connection the start makes or accepts is recorded under that name.
+            let writer = self.connections.lock().unwrap().clone();
+            let rows = match writer {
+                Some(w) => Some(w.hold_rows().await),
+                None => None,
+            };
             let _ = (self.set_status)(MemberStatus::Pending);
             self.server.resume();
-            let reply = match session.rejoin(retire, &commander).await {
+            let reply = match session.rejoin(retire, &commander, rows).await {
                 Ok(()) => {
                     // A new cycle: its next drain is a new drain.
                     let mut cycle = self.cycle.lock().unwrap();

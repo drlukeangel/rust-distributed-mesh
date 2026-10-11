@@ -729,7 +729,7 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<rafka_node_admin_core::connections_writer::RowsHeld>) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
         use rafka_node_admin_core::node_self::StartFailed;
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
@@ -757,6 +757,8 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         // The row's name and config the join answer handed are held before the node re-enters its
         // topic or says anything: a node renamed while stopped publishes its row's name (R-JN1).
         install_handed(&self.membership, &joined.control);
+        // Only now are its connections recorded: the join's names the handed name.
+        drop(rows);
         // 2. The mesh channel and the topology: rafka-time again last, so both are current the moment the node re-enters.
         let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %name, launcher = %authority);
         self.membership.unpark().await;

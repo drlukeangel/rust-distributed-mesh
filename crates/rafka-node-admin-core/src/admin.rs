@@ -2140,7 +2140,7 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), crate::node_self::StartFailed> {
         use crate::node_self::StartFailed;
         let name = self.name.to_string();
         let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %self.name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
@@ -2171,6 +2171,8 @@ impl crate::node_self::Session for AdminSession {
                 d.config = c.clone();
             }
         }
+        // Only now are its connections recorded: the join's names the handed name.
+        drop(rows);
         take_entry_control(&joined, &self.accepted, &*self.builds, &self.entry_floor).await;
         if let Some(sd) = joined.control.shutdown.clone() {
             let _ = self.shutdown.learn(sd, "start", &joined.served_by).await;
