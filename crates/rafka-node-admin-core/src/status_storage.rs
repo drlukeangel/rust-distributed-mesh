@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use rafka_node_rpc_contract::status::{MeshState, NodeState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+
 use std::sync::Mutex;
 
 /// One Mesh status fact: the Mesh entered `state`.
@@ -285,14 +285,16 @@ pub struct FileStatusStorage {
 }
 
 impl FileStatusStorage {
-    /// Open the store under the admin's own data directory.
-    pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
+    /// Open the store under `status/<mesh>/` of the fabric's store root, written by the process
+    /// born as `writer`.
+    pub fn open(root: &crate::store_root::StoreRoot, mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
+        let base = root.status(mesh);
         Ok(Self {
-            meshes: FileRecords::open(own_data_dir, "status/meshes")?,
-            fabric: FileRecords::open(own_data_dir, "status/fabric")?,
-            declared: FileRecords::open(own_data_dir, "status/declared")?,
-            silence: FileRecords::open(own_data_dir, "status/silence")?,
-            exits: FileRecords::open(own_data_dir, "status/exits")?,
+            meshes: FileRecords::open(&base, "meshes", writer)?,
+            fabric: FileRecords::open(&base, "fabric", writer)?,
+            declared: FileRecords::open(&base, "declared", writer)?,
+            silence: FileRecords::open(&base, "silence", writer)?,
+            exits: FileRecords::open(&base, "exits", writer)?,
         })
     }
 }
@@ -346,7 +348,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("status-storage-{}", MeshId::mint()));
         let (m, f) = (MeshId::mint(), FabricId::mint());
         {
-            let s = FileStatusStorage::open(&dir).unwrap();
+            let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId("test".into())).unwrap();
             // Written out of order: the later fact first, a lagging earlier one after it.
             s.put_mesh_status(&MeshStatusRow { mesh_id: m.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
             s.put_mesh_status(&MeshStatusRow { mesh_id: m.clone(), state: MeshState::Pending }).await.unwrap();
@@ -354,7 +356,7 @@ mod tests {
             s.put_fabric_event(&FabricEventRow { fabric_id: f.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
             s.put_fabric_event(&FabricEventRow { fabric_id: f.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
         }
-        let s = FileStatusStorage::open(&dir).unwrap();
+        let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId("test".into())).unwrap();
         assert_eq!(s.mesh_statuses().await.unwrap().get(&m), Some(&MeshState::ReadyForTraffic), "the greatest state wins whatever the write order");
         assert_eq!(s.fabric_events().await.unwrap().len(), 1, "one row per event key");
         std::fs::remove_dir_all(&dir).ok();

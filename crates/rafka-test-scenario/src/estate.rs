@@ -465,6 +465,12 @@ impl ExternalLaunch {
 /// This estate's own root: test name, process and a per-process sequence, so a test that ends one
 /// estate and births another (a re-roll) never shares a root. The scope of the estate being
 /// replaced deletes its own root when it drops, and only its own.
+/// The estate's one store root (R14 item 6, the process provider): `<estate root>/store`, handed to
+/// every node-admin the estate starts and, through each launch, to every node of the fabric.
+pub fn estate_store_dir(root: &Path) -> PathBuf {
+    root.join("store")
+}
+
 fn estate_root(test: &str) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -590,6 +596,7 @@ impl Estate {
         let root = estate_root(&owner.test);
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(estate_store_dir(&root)).unwrap();
         let scope = EstateScope::begin(&root);
         let external = external.map(|(validated, candidate)| {
             let file = root.join("executable-bindings.json");
@@ -603,6 +610,7 @@ impl Estate {
             ("RDM_FABRIC", fabric.into()),
             ("RDM_MESH", mesh.into()),
             ("RDM_DATA_DIR", root.join(format!("{mesh}.admin.1")).display().to_string()),
+            ("RDM_STORE_DIR", estate_store_dir(&root).display().to_string()),
             ("RDM_BIN_DIR", bin_dir().display().to_string()),
             ("RDM_EVIDENCE_DIR", evidence.display().to_string()),
             ("RDM_ESTATE_ROOT", root.display().to_string()),
@@ -1093,6 +1101,7 @@ impl Estate {
         let mut env = vec![
             ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
             ("RDM_DATA_DIR", data_dir.display().to_string()),
+            ("RDM_STORE_DIR", estate_store_dir(&self.root).display().to_string()),
             ("RDM_BIN_DIR", bin_dir().display().to_string()),
             ("RDM_EVIDENCE_DIR", self.evidence.display().to_string()),
             ("RDM_ESTATE_ROOT", self.root.display().to_string()),

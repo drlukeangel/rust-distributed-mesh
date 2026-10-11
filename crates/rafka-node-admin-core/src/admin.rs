@@ -69,8 +69,11 @@ pub struct AdminConfig {
     pub seeds: Vec<(String, SocketAddr)>,
     /// `RDM_FABRIC_ID` was given: the Fabric is named, not new.
     pub fabric_id_named: bool,
-    /// The admin's data directory.
+    /// The admin's data directory: its own runtime material only.
     pub data_dir: PathBuf,
+    /// The fabric's shared store root (`RDM_STORE_DIR`, or its launch's): its stores open under
+    /// `<store_dir>/<fabric_id>/` (R14, `crate::store_root`).
+    pub store_dir: PathBuf,
     /// The directory the node executables are looked up in.
     pub bin_dir: PathBuf,
     /// `MESH_SPAWN_TYPE` as given (normalised by the fabric policy).
@@ -113,6 +116,13 @@ impl AdminConfig {
             .map(|l| l.data_dir.clone())
             .or_else(|| get("RDM_DATA_DIR").map(PathBuf::from))
             .unwrap_or_else(|| std::env::temp_dir().join(format!("rafka-node-admin-{}", rand::random::<u32>())));
+        // The fabric's store root: required, never defaulted, never the data dir (R14 items 1, 8).
+        let store_dir = match &launch {
+            Some(l) => l.store_dir.clone(),
+            None => get(rafka_mesh_entity::launch::ENV_STORE_DIR).filter(|v| !v.trim().is_empty()).map(PathBuf::from).ok_or_else(|| {
+                format!("{} is required: the fabric's shared store root every node of the fabric reaches; nothing falls back to the data dir", rafka_mesh_entity::launch::ENV_STORE_DIR)
+            })?,
+        };
         let bin_dir = get("RDM_BIN_DIR").map(PathBuf::from).unwrap_or_else(|| {
             std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from("."))
         });
@@ -175,6 +185,7 @@ impl AdminConfig {
                 .or_else(|| get("RDM_MESH_ID").filter(|v| !v.trim().is_empty()).map(|v| MeshId::parse(&v).map_err(|e| format!("RDM_MESH_ID: {e}"))))
                 .transpose()?,
             data_dir,
+            store_dir,
             bin_dir,
             spawn_type: get(crate::deployment::provider::SPAWN_TYPE_ENV),
             api_bind,
@@ -3450,22 +3461,34 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     };
     let key = load_or_mint_key(&cfg.data_dir)?;
     drop(step);
-    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display());
-    // The node-admin storage boundaries, in its own data dir. An admin that finds its own row in
-    // nodes.storage was here before: it restarts as the same logical node, in the same Mesh and
-    // Fabric, holding the same Builds.
+    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = %cfg.fabric_id);
+    // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
+    // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
+    // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage
+    // was here before: it restarts as the same logical node, in the same Mesh and Fabric, holding the
+    // same Builds. Every store's temp files carry this process's incarnation, decided here, before
+    // any store opens: the launch's, else a new one (a restart supersedes the one it last ran).
     let storage_err = |e: crate::record_store::StorageError| e.to_string();
-    let fabric_files = Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let incarnation = cfg.launch.as_ref().map(|l| l.incarnation.clone()).unwrap_or_else(IncarnationId::mint);
+    if let (None, Ok(p)) = (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
+        crate::store_root::qualify(p.provider).map_err(|e| format!("refusing to start: {e}"))?;
+    }
+    let store_root = crate::store_root::StoreRoot::open(&cfg.store_dir, &cfg.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
+    let fabric_files = Arc::new(crate::fabric_storage::FileFabricStorage::open(&store_root, &incarnation).map_err(storage_err)?);
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_files.clone());
-    let mesh_files = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let mesh_files = Arc::new(crate::storage::FileMeshStorage::open(&store_root, &incarnation).map_err(storage_err)?);
     let mesh_storage: Arc<dyn crate::storage::MeshStorage> = mesh_files.clone();
-    let nodes_files = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    // The own row (data dir) names a restarting admin's mesh: its nodes store opens on that mesh's rows.
+    let own_row = crate::storage::FileNodesStorage::own_in(&cfg.data_dir, &incarnation).await.map_err(storage_err)?;
+    let own_mesh = match (&cfg.launch, &own_row) {
+        (None, Some(own)) => own.name.mesh.clone(),
+        _ => cfg.mesh.clone(),
+    };
+    let nodes_files = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir, &store_root, &own_mesh, &incarnation).map_err(storage_err)?);
     let nodes_storage: Arc<dyn crate::storage::NodesStorage> = nodes_files.clone();
-    let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
-        Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).map_err(storage_err)?);
     let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).map_err(|e| e.to_string())?);
-    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir).map_err(storage_err)?);
-    let restart = match (&cfg.launch, nodes_storage.own().await.map_err(storage_err)?) {
+    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir, &incarnation).map_err(storage_err)?);
+    let restart = match (&cfg.launch, own_row) {
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
                 format!("{}: nodes.storage holds this admin ({}) but fabric.storage holds no Fabric record", cfg.data_dir.display(), own.name)
@@ -3505,7 +3528,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &restart) {
         (Some(l), _) => {
             let control = l.listeners.iter().find(|(n, _)| n == "control").map(|(_, a)| *a).ok_or_else(|| "launch assigns no `control` listener".to_string())?;
-            (l.name.clone(), l.node_id.clone(), l.incarnation.clone(), l.supersedes.clone(), l.bind_addr, control, l.seeds.clone())
+            (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, control, l.seeds.clone())
         }
         (None, Some(own)) => {
             let addr_of = |s: &str| own.listeners.iter().find(|(n, _)| n == s).map(|(_, a)| *a);
@@ -3525,7 +3548,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             (
                 own.name.clone(),
                 own.node_id.clone(),
-                IncarnationId::mint(),
+                incarnation.clone(),
                 Some(own.incarnation_id.clone()),
                 // A restart reuses identity and data dir and binds a fresh port (the operating
                 // system assigns it), never the one it last held: its peers learn the new address
@@ -3538,7 +3561,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         (None, None) => (
             PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1),
             NodeId::mint(),
-            IncarnationId::mint(),
+            incarnation.clone(),
             None,
             SocketAddr::new(cfg.api_bind.ip(), 0),
             cfg.api_bind,
@@ -3546,6 +3569,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         ),
     };
 
+    // This node's own connections rows: `connections/<its path.name>/` of the store root (R14).
+    let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
+        Arc::new(crate::storage::FileConnectionsStorage::open(&store_root, &name, &incarnation).map_err(storage_err)?);
     boot.record("node", tracing::field::display(&name));
     boot.record("node_id", tracing::field::display(&node_id));
     boot.record("incarnation_id", tracing::field::display(&incarnation.0));
@@ -4030,7 +4056,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
     let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
     let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone())));
-    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &cfg.mesh, &incarnation).map_err(storage_err)?);
     *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage).await?;
     {
         let records_for_ids = records.clone();
@@ -4111,6 +4137,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         launcher: rafka_mesh_entity::launch::Launcher { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
         env: cfg.passthrough.clone(),
         data_root,
+        store_dir: cfg.store_dir.clone(),
         mesh_issuer: None,
     };
     let mut registry = HookRegistry::new();
@@ -4344,14 +4371,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         written.insert(r.node_id.clone(), r);
                     }
                 }
-                let replaced: Vec<NodeId> = written
+                let replaced: Vec<crate::storage::NodeRecord> = written
                     .values()
                     .filter(|w| !held.iter().any(|d| d.node.node_id == w.node_id) && held.iter().any(|d| d.node.name == w.name))
-                    .map(|w| w.node_id.clone())
+                    .cloned()
                     .collect();
-                for id in replaced {
-                    if nodes_storage.remove_contact(&id).await.is_ok() {
-                        written.remove(&id);
+                for r in replaced {
+                    if nodes_storage.remove_contact(&r).await.is_ok() {
+                        written.remove(&r.node_id);
                     }
                 }
                 if births.changed().await.is_err() {
@@ -6618,8 +6645,11 @@ mod tests {
         assert!(topology.read().await.node(&old.node.name).is_none(), "the view holds the removed node: a projection taken before the lock was installed after the removal");
     }
 
+    const STORE_DIR: &str = "/tmp/rdm-admin-cells/store";
+
     fn cfg(env: &[(&str, &str)]) -> AdminConfig {
-        let env: std::collections::HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut env: std::collections::HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        env.entry("RDM_STORE_DIR".into()).or_insert_with(|| STORE_DIR.into());
         AdminConfig::from_env(|k| env.get(k).cloned()).expect("a readable environment")
     }
 
@@ -6665,6 +6695,12 @@ mod tests {
         // A mesh recovery is the fabric primary's launch, not a person's.
         assert!(ok(&[("RDM_MESH_PRIMARY", "1"), ("RDM_MESH_ID", MESH_ID), ("RDM_SEEDS", SEED)]).unwrap_err().contains("started by the fabric primary"));
         // The fabric flag implies the mesh flag.
-        assert!(AdminConfig::from_env(|k| (k == "RDM_FABRIC_PRIMARY").then(|| "1".to_string())).unwrap_err().contains("RDM_FABRIC_PRIMARY is set without RDM_MESH_PRIMARY"));
+        assert!(AdminConfig::from_env(|k| match k {
+            "RDM_FABRIC_PRIMARY" => Some("1".to_string()),
+            "RDM_STORE_DIR" => Some(STORE_DIR.to_string()),
+            _ => None,
+        })
+        .unwrap_err()
+        .contains("RDM_FABRIC_PRIMARY is set without RDM_MESH_PRIMARY"));
     }
 }

@@ -16,7 +16,7 @@ const WRONG: Duration = Duration::from_secs(60);
 fn day0_config(dir: &std::path::Path) -> AdminConfig {
     let dir = dir.display().to_string();
     AdminConfig::from_env(|k| match k {
-        "RDM_DATA_DIR" => Some(dir.clone()),
+        "RDM_DATA_DIR" | "RDM_STORE_DIR" => Some(dir.clone()),
         "RDM_BIN_DIR" => Some(dir.clone()),
         "RDM_NODE_ADMIN_API_BIND" => Some("127.0.0.1:0".into()),
         "MESH_SPAWN_TYPE" => Some("process".into()),
@@ -144,6 +144,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             seeds: vec![(key_of(&root_digest), root_digest.node.transport_addr)],
             launcher: Some(Launcher { name: root_digest.node.name.clone(), node_id: root_digest.node.node_id.clone(), incarnation: root_digest.node.incarnation.clone() }),
             data_dir: joiner_dir.clone(),
+            store_dir: joiner_dir.clone(),
             mesh_id: Some(root_mesh_id),
             mesh_issuer: None,
         };

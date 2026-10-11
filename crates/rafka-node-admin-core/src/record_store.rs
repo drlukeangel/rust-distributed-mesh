@@ -1,4 +1,4 @@
-//! One record per file in an admin's data dir: the durable implementation every node-admin
+//! One record per file in a store directory (the fabric's store root, or a node's data dir): the durable implementation every node-admin
 //! storage boundary (`fabric.storage`, `mesh.storage`, `nodes.storage`) is built on.
 //!
 //! Each write is a temp file, fsync and atomic rename, then a directory fsync. Each record is
@@ -52,7 +52,7 @@ struct Stored<T> {
     record: T,
 }
 
-/// The records of one store under `<data dir>/<dir>/`, one `<key>.json` each.
+/// The records of one store under `<base>/<dir>/`, one `<key>.json` each.
 #[derive(Debug)]
 pub struct FileRecords {
     dir: PathBuf,
@@ -64,18 +64,27 @@ pub struct FileRecords {
     /// Set when this store's writer gave up its authority (a seat transfer's cut-off): every write
     /// granted the lock from then on is refused by name, a write queued before it included.
     cut_off: std::sync::Mutex<Option<String>>,
+    /// The incarnation of the process writing through this store: its temp files are named by it,
+    /// so two writers' temp files never share a name (R14 item 5).
+    writer: String,
 }
 
 impl FileRecords {
-    /// Open (creating) the directory `dir` under the admin's data directory.
-    pub fn open(own_data_dir: &Path, dir: &str) -> Result<Self, StorageError> {
-        let dir = own_data_dir.join(dir);
+    /// Open (creating) the directory `dir` under `base` (the node's data dir, or a directory of the
+    /// fabric's store root), written by the process born as `writer`.
+    pub fn open(base: &Path, dir: &str, writer: &crate::model::IncarnationId) -> Result<Self, StorageError> {
+        let dir = base.join(dir);
         std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
-        Ok(Self { dir, write: std::sync::Arc::new(tokio::sync::Mutex::new(())), cut_off: std::sync::Mutex::new(None) })
+        Ok(Self { dir, write: std::sync::Arc::new(tokio::sync::Mutex::new(())), cut_off: std::sync::Mutex::new(None), writer: writer.0.clone() })
     }
 
     fn path(&self, key: &str) -> PathBuf {
         self.dir.join(format!("{key}.json"))
+    }
+
+    /// `.<key>.<writer incarnation>.json.tmp`: the temp file a write of `key` renames from.
+    pub(crate) fn tmp_path(&self, key: &str) -> PathBuf {
+        self.dir.join(format!(".{key}.{}.json.tmp", self.writer))
     }
 
     fn decode<T: DeserializeOwned>(path: &Path, bytes: &[u8], format: &str) -> Result<T, StorageError> {
@@ -131,7 +140,7 @@ impl FileRecords {
     pub async fn write<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<(), StorageError> {
         let path = self.path(key);
         let bytes = serde_json::to_vec(&Stored { format: format.to_string(), record }).map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })?;
-        let (dir, tmp) = (self.dir.clone(), self.dir.join(format!(".{key}.json.tmp")));
+        let (dir, tmp) = (self.dir.clone(), self.tmp_path(key));
         let held = self.writer(&path).await?;
         blocking_io(move || {
             let _held = held;
@@ -146,7 +155,7 @@ impl FileRecords {
     pub async fn insert<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<bool, StorageError> {
         let path = self.path(key);
         let bytes = serde_json::to_vec(&Stored { format: format.to_string(), record }).map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })?;
-        let (dir, tmp) = (self.dir.clone(), self.dir.join(format!(".{key}.json.tmp")));
+        let (dir, tmp) = (self.dir.clone(), self.tmp_path(key));
         let held = self.writer(&path).await?;
         blocking_io(move || {
             let _held = held;
@@ -323,7 +332,7 @@ mod tests {
     fn a_cancelled_writer_holds_the_store_lock_until_its_disk_job_finishes() {
         one_blocking_thread().block_on(async {
             let d = tempdir("records-cancel");
-            let r = FileRecords::open(&d, "things").unwrap();
+            let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).unwrap();
             let release = park_the_blocking_pool();
             assert!(!cancel_after_issue(r.write("a", "thing/1", &"one".to_string())).await, "the write finished while the blocking pool was parked");
             assert!(r.write.try_lock().is_err(), "the cancelled caller released the store's write lock while its disk job was still issued");
@@ -339,7 +348,7 @@ mod tests {
     fn a_write_queued_before_the_cut_off_and_granted_after_it_is_refused_by_name() {
         one_blocking_thread().block_on(async {
             let d = tempdir("records-cut-off");
-            let r = std::sync::Arc::new(FileRecords::open(&d, "things").unwrap());
+            let r = std::sync::Arc::new(FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).unwrap());
             let release = park_the_blocking_pool();
             // The first write holds the lock across its (parked) disk job.
             let first = tokio::spawn({
@@ -373,7 +382,7 @@ mod tests {
     async fn a_directory_fsync_failure_fails_the_write_the_insert_and_the_delete_by_name() {
         use std::os::unix::fs::PermissionsExt as _;
         let d = tempdir("records-dir-fsync");
-        let r = FileRecords::open(&d, "things").unwrap();
+        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).unwrap();
         r.write("gone", "thing/1", &"x".to_string()).await.unwrap();
         let dir = d.join("things");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300)).unwrap();
@@ -405,11 +414,11 @@ mod tests {
     #[tokio::test]
     async fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
         let d = tempdir("records");
-        let r = FileRecords::open(&d, "things").unwrap();
+        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).unwrap();
         assert_eq!(r.read::<String>("a", "thing/1").await.unwrap(), None);
         r.write("a", "thing/1", &"one".to_string()).await.unwrap();
         r.write("b", "thing/1", &"two".to_string()).await.unwrap();
-        let again = FileRecords::open(&d, "things").unwrap();
+        let again = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).unwrap();
         assert_eq!(again.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"));
         assert_eq!(again.list::<String>("thing/1").await.unwrap(), ["one", "two"]);
         assert!(matches!(again.read::<String>("a", "thing/2").await, Err(StorageError::Unrecognised { .. })));
@@ -425,7 +434,7 @@ mod tests {
     #[tokio::test]
     async fn a_list_racing_a_removal_answers_the_records_that_remain() {
         let d = tempdir("records-race");
-        let r = std::sync::Arc::new(FileRecords::open(&d, "things").unwrap());
+        let r = std::sync::Arc::new(FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).unwrap());
         for round in 0..20 {
             for k in 0..200 {
                 r.write(&format!("k{k:03}"), "thing/1", &k).await.unwrap();

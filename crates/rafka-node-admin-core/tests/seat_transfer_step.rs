@@ -115,6 +115,7 @@ fn run_with(transfer: Result<SeatTransferOutcome, String>, workflow: NodeCommand
             launcher: rafka_mesh_entity::launch::Launcher { name: "mesh2.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
+            store_dir: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
             mesh_issuer: None,
         };
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &NoView, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };

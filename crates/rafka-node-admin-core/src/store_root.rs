@@ -1,4 +1,82 @@
-//! The fabric's one shared store root (R14).
+//! The fabric's one shared store root (R14): `<store_dir>/<fabric_id>/`, one location every node
+//! of the fabric reaches on the same backing namespace.
+//!
+//! Layout: `fabric/` (the fabric-primary's), `meshes/<mesh>` (each mesh's primary's Mesh row),
+//! `nodes/<mesh>/` (each mesh's primary's members' Node rows and contacts), `connections/<node>/`
+//! (each node its own) and `status/<mesh>/`. The writers are exactly the writer ladder
+//! (fabric-node-lifecycle.md §4.3), so no two writers share a key. A node's data dir keeps only its
+//! own runtime material. A `store_dir` that is missing or unreadable fails the boot by name; nothing
+//! falls back to the data dir and nothing creates the `store_dir` (the provider supplies it).
+
+use crate::model::{FabricId, PathName};
+use crate::record_store::StorageError;
+use std::path::{Path, PathBuf};
+
+/// The env variable that names a node's `store_dir`.
+pub use rafka_mesh_entity::launch::ENV_STORE_DIR;
+
+/// The fabric's store root, `<store_dir>/<fabric_id>/`, checked at boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreRoot {
+    dir: PathBuf,
+}
+
+impl StoreRoot {
+    /// The root of `fabric_id` under `store_dir`: `store_dir` must be a readable directory, refused by
+    /// name (its path and the cause) otherwise and never created here; the fabric's directory under it
+    /// is created when absent.
+    pub fn open(store_dir: &Path, fabric_id: &FabricId) -> Result<Self, StorageError> {
+        let refused = |cause: String| StorageError::Io { file: store_dir.display().to_string(), reason: format!("the store_dir ({ENV_STORE_DIR}) cannot be used: {cause}") };
+        let meta = std::fs::metadata(store_dir).map_err(|e| refused(e.to_string()))?;
+        if !meta.is_dir() {
+            return Err(refused("it is not a directory".into()));
+        }
+        std::fs::read_dir(store_dir).map_err(|e| refused(format!("it cannot be listed: {e}")))?;
+        let dir = store_dir.join(fabric_id.to_string());
+        std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: format!("the fabric's store root could not be created: {e}") })?;
+        Ok(Self { dir })
+    }
+
+    /// The root at `dir` itself, the fabric's directory already chosen and created by the caller (a
+    /// cell's own directory, or a store an embedding app hands in).
+    pub fn at(dir: &Path) -> Self {
+        Self { dir: dir.to_path_buf() }
+    }
+
+    /// `<store_dir>/<fabric_id>/`.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// `nodes/<mesh>/`: the mesh's members' Node rows and contacts.
+    pub fn nodes(&self, mesh: &str) -> PathBuf {
+        self.dir.join("nodes").join(mesh)
+    }
+
+    /// `connections/<node>/`: the node's own connections rows and raw log.
+    pub fn connections(&self, node: &PathName) -> PathBuf {
+        self.dir.join("connections").join(node.to_string())
+    }
+
+    /// `status/<mesh>/`.
+    pub fn status(&self, mesh: &str) -> PathBuf {
+        self.dir.join("status").join(mesh)
+    }
+}
+
+/// Whether `provider` may back the store root: the process provider hands every node of an estate
+/// one directory on the host's own filesystem. Any other provider qualifies only by a functional
+/// cell proving hard-link insertion, atomic rename, file and directory fsync, and coherent reads
+/// and listings on its actual backing store, cross-host included (R14 item 6); none exists, so it is
+/// refused by name.
+pub fn qualify(provider: crate::model::ProviderKind) -> Result<(), String> {
+    match provider {
+        crate::model::ProviderKind::Process => Ok(()),
+        other => Err(format!(
+            "the {other:?} provider is not qualified to back the fabric's store root ({ENV_STORE_DIR}): no cell proves hard-link insertion, atomic rename, file and directory fsync, and coherent reads and listings on its backing store (R14 item 6)"
+        )),
+    }
+}
 
 #[cfg(test)]
 mod tests {
