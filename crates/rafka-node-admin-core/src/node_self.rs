@@ -94,11 +94,6 @@ pub trait Session: Send + Sync {
     async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), StartFailed>;
 }
 
-/// What a node does before it stops being eligible for the seat it holds: a node-admin that holds the
-/// fabric-primary seat fences its Build log and hands its committed facts to its neighbours
-/// (`FabricBuildStateAdapter::yield_seat`). The argument names the command that is about to move it.
-pub type YieldSeat = Arc<dyn Fn(&'static str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
-
 /// Declares a state this birth entered to its authority.
 pub type Declare = Arc<dyn Fn(NodeState) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
@@ -144,14 +139,6 @@ pub struct NodeSelf {
     /// Declare the state this birth entered to its authority (a node-admin of its mesh); `None` for
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
-    /// Run before this birth publishes `Draining` or `Leaving`: a birth that still holds the
-    /// fabric-primary seat at that point fences its Build log and hands its committed facts on. No
-    /// seat moves at that status (election.rs `holding` ignores status): a drained, stopped,
-    /// restarted or replaced holder's seats moved earlier, by its executor's TakeSeats, whose seat
-    /// row is the fence (node-rpc-envelope.md "TakeSeats"), so for it this finds no seat; it acts
-    /// only for a holder drained with no transfer before it (a mesh leave member, a fabric
-    /// shutdown's final admin). `None` for a node that holds no seat.
-    pub yield_seat: Option<YieldSeat>,
     /// Cancelled when `drain-node` or `stop-node` is admitted: the birth is retired, so its
     /// `hydrate_before_ready` hook and any pull it has in flight end.
     pub retire: Option<rafka_node_rpc::Retirement>,
@@ -184,14 +171,9 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, yield_seat: None, retire: None, backbone: None, seen: Mutex::new(HashSet::new()), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, retire: None, backbone: None, seen: Mutex::new(HashSet::new()), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
-    /// This surface, fencing its seat before it publishes `Draining` or `Leaving`.
-    pub fn with_yield_seat(mut self, yield_seat: YieldSeat) -> Self {
-        self.yield_seat = Some(yield_seat);
-        self
-    }
 
     /// This surface, publishing its round hooks on `backbone` as well as its mesh channel.
     pub fn with_backbone(mut self, backbone: rafka_mesh_transport::membership::Backbone) -> Self {
@@ -370,9 +352,6 @@ impl NodeSelf {
             if let Some(retire) = &self.retire {
                 retire.cancel();
             }
-            if let Some(yield_seat) = &self.yield_seat {
-                yield_seat("drain-node").await;
-            }
             self.server.drain();
             let draining = (self.set_status)(MemberStatus::Draining);
             let _ = self.membership.publish(&draining).await;
@@ -458,9 +437,6 @@ impl NodeSelf {
         parking().park();
         if let Some(retire) = &self.retire {
             retire.cancel();
-        }
-        if let Some(yield_seat) = &self.yield_seat {
-            yield_seat("stop-node").await;
         }
         // 1. The whole drain: Draining is live and not routable; the receipt never turns a deadline into zero.
         let receipt = self
