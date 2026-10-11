@@ -240,6 +240,7 @@ async fn three_reply_deadlines_leave_the_pooled_connection_in_place_and_reused()
     }
     assert!(next_out.reply().is_some(), "{next_out:?}");
     assert!(next.reused && next.connection == first.connection, "the next call is answered on the same pooled connection: {next:?}");
+    assert_eq!(next.node_id, r.node_id);
     assert_eq!(r.client.pooled().len(), 1, "the one connection is still pooled");
     assert_eq!(calls.len(), 4, "three late calls and the answered one: {rows:?}");
 }
