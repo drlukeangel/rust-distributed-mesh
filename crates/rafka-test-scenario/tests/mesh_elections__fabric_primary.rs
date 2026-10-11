@@ -15,11 +15,8 @@
 //!   endpoints alone (no hidden map): the surviving mesh's admin answers, its
 //!   fabric view names one new fabric primary (the surviving mesh's primary)
 //!   and advertises that admin's control API;
-//! - control has moved: that API accepts a change and the new primary drives it, and the lost
-//!   mesh is held, not recovered: no member of it answers either probe of the new primary's
-//!   peer-mesh investigation, so its verdict is `unreachable` and the drive claims and dispatches
-//!   nothing for the lost mesh's nodes (R-D1, mesh-investigation.md step 5); the fabric then shuts
-//!   down from the new primary and no runtime of the estate is left running.
+//! - control has moved: that API accepts a change, which waits behind the lost mesh, and the
+//!   fabric then shuts down from the new primary; no runtime of the estate is left running.
 //!
 //! A three-mesh fabric with shuffled names keeps the Day-0 holder whatever the other mesh
 //! primaries' NodeIds are; every mesh primary reports the same holder; losing every node-admin
@@ -28,9 +25,11 @@
 //! Evidence: the new fabric primary's election is announced as
 //! `rdm.mesh.election.resolve.via-fabric-recompute` (`election_level =
 //! fabric_primary`, the winner's NodeId, path and mesh) by a surviving mesh
-//! primary; the hold is its `rdm.node_admin.mesh.update.via-probe-verdict` (`outcome =
-//! unreachable`) and `rdm.node_admin.build.reject.via-unheard-mesh-drive` (`rebirth_decided =
-//! false`) for the lost mesh.
+//! primary. The lost mesh is held, not recovered (R-D1, mesh-investigation.md step 5): no member
+//! of it answers either probe of the new primary's peer-mesh investigation, so its
+//! `rdm.node_admin.mesh.update.via-probe-verdict` is `outcome = unreachable`, its drive stops at
+//! `rdm.node_admin.build.reject.via-unheard-mesh-drive` (`rebirth_decided = false`) and claims and
+//! dispatches nothing for the lost mesh's nodes.
 
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
 use rafka_test_scenario::estate::{named, own_fabric_at, wait_for, Estate, Owner};
