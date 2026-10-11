@@ -349,6 +349,11 @@ pub struct WorkflowStream {
     ended: bool,
     /// The events of one receipt after the first, delivered before the next frame is read.
     queued: std::collections::VecDeque<NodeEvent>,
+    /// The `(operation, step)` of every step whose event this stream delivered. A step is one event
+    /// to the caller whichever attempts completed it, as in [`fold`]: a successor attempt that
+    /// reissues a step whose receipt the lost executor alone held completes it again under its own
+    /// receipt key, and that frame announces nothing new.
+    delivered: std::collections::HashSet<(String, String)>,
 }
 
 impl WorkflowStream {
@@ -358,7 +363,7 @@ impl WorkflowStream {
         let accepted = Accepted { build_id: inner.build_id().clone(), attempt: inner.attempt() };
         span.record("build_id", accepted.build_id.0.as_str());
         span.record("attempt", accepted.attempt);
-        Self { inner, kind, accepted, span, started: false, ended: false, queued: Default::default() }
+        Self { inner, kind, accepted, span, started: false, ended: false, queued: Default::default(), delivered: Default::default() }
     }
 
     /// The Build and attempt the call opened.
@@ -409,6 +414,10 @@ impl WorkflowStream {
                     let Some(row) = rows.iter().find(|r| r.operation == prefix && r.step == step) else {
                         return Some(Err(self.broke(CallEnd::UnrecognisedReceipt { operation, step })));
                     };
+                    if !self.delivered.insert((operation.clone(), step.clone())) {
+                        self.span.in_scope(|| tracing::info!(attempt, operation = %operation, step = %step, "a later attempt completed a step whose event this stream delivered: one event per step"));
+                        continue;
+                    }
                     let mut events = row.events.iter().copied();
                     let Some(e) = events.next() else { continue };
                     self.queued.extend(events);
