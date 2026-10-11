@@ -411,15 +411,15 @@ async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_par
     let complete = step_span(&spans, &birth_build, &attempt, NODE, "Complete").expect("Complete ran");
     assert!(start(held_old) < start(complete), "the view named the predecessor {old_name} before the replace completed: {held_old}");
     // The node's row (ops-naming "Node data": "a Deleted row, or the <name>.old row"): at the
-    // executor's RenamePredecessor the fabric-primary moves the predecessor's row to `<path>.old`,
-    // where it stays the parked predecessor's row, and the successor's row at the path.name is
-    // claimed seeded from the .old row.
+    // executor's RenamePredecessor the mesh's primary, which executes it, moves the predecessor's row
+    // to `<path>.old`, where it stays the parked predecessor's row, and the successor's create claims
+    // its row at the path.name, seeded from the .old row, before it is launched (R13).
     let moved: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-rename").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert_eq!(moved.len(), 1, "one move of the predecessor's row: {moved:?}");
     assert_eq!((s(&moved[0]["attributes"]["from"]), s(&moved[0]["attributes"]["to"]), s(&moved[0]["attributes"]["outcome"])), (NODE.to_string(), old_name.clone(), "renamed".to_string()), "{}", moved[0]);
     let old_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == old_name.as_str()).collect();
     assert!(old_deleted.is_empty(), "no Deleted row at {old_name}: the predecessor is parked, not deleted: {old_deleted:?}");
-    let seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == NODE && sp["attributes"]["node_id"] == after["node_id"]).collect();
+    let seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == NODE && sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "claim").collect();
     assert_eq!(seeded.len(), 1, "the successor claims its row once: {seeded:?}");
     assert_eq!((s(&seeded[0]["attributes"]["outcome"]), s(&seeded[0]["attributes"]["seeded_from"])), ("row-seeded".to_string(), s(&before["node_id"])), "{}", seeded[0]);
     assert!(start(moved[0]) < start(seeded[0]), "the predecessor's row moved before the successor claimed the path.name");
@@ -457,8 +457,8 @@ const DELETE_PARKED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "Nod
 /// the accepted Build (reason delete, action delete fenced to the exact old birth, no Build minted).
 /// One operation `delete-node:<path>.old` asks the provider to end the parked runtime and inspects
 /// it; only the provider's Exited is the proof, after which the executor publishes NodeDeleted for
-/// the exact old birth and the fabric-primary writes the Deleted row at `<path>.old`, its record
-/// kept. The predecessor's process is gone; its data dir stays; the successor at the path is
+/// the exact old birth and the mesh's primary, which executes it, writes the Deleted row at
+/// `<path>.old`, its record kept (R13). The predecessor's process is gone; its data dir stays; the successor at the path is
 /// untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_the_parked_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row() {
@@ -469,12 +469,11 @@ async fn deleting_the_parked_predecessor_proves_its_exit_publishes_node_deleted_
 }
 
 /// CONTRACT: the same delete when the fabric-primary is in another mesh than the admin that ran the
-/// replace (ops-naming "Node data": the fabric-primary is the only writer of the node record and
-/// holds the whole record of every node; node-decommission.md 3). The fabric-primary in mesh1 admits
-/// `delete-node:<path>.old` of a mesh2 node from the record it holds of the parked predecessor (it
-/// moved that row to `<path>.old` at the replace's RenamePredecessor), fenced to that exact birth,
-/// although its own view never names `<path>.old`; mesh2's primary executes the delete, and the
-/// fabric-primary writes the Deleted row at `<path>.old` from that held record.
+/// replace (node-decommission.md 3; R13: the mesh-primary of a node's mesh is the only writer of that
+/// mesh's rows). The fabric-primary in mesh1 admits `delete-node:<path>.old` of a mesh2 node from the
+/// record it holds of the parked predecessor (read from the replace's frames its drive read), fenced
+/// to that exact birth, although its own view never names `<path>.old`; mesh2's primary executes the
+/// delete and writes the Deleted row at `<path>.old`; the fabric-primary writes no row of mesh2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_a_peer_mesh_parked_predecessor_is_admitted_from_the_fabric_primary_held_record() {
     let (estate, birth_build) = two_mesh_estate("deleting_a_peer_mesh_parked_predecessor_is_admitted_from_the_fabric_primary_held_record").await;
@@ -491,8 +490,8 @@ async fn deleting_a_peer_mesh_parked_predecessor_is_admitted_from_the_fabric_pri
 /// provider control"). mesh2's new primary did not run the replace and its view does not name
 /// `<path>.old`; it resolves the exact parked birth the action is fenced to from what it holds of that
 /// birth (its membership's parked digest, else its durable runtime row of it), ends it with the
-/// provider's Exited proof and publishes NodeDeleted for it; the fabric-primary writes the Deleted row
-/// at `<path>.old`.
+/// provider's Exited proof and publishes NodeDeleted for it, and, as mesh2's primary, writes the
+/// Deleted row at `<path>.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth() {
     let estate = Estate::bootstrap(owner("deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth"), "fabric1", "mesh1").await;
@@ -617,15 +616,15 @@ async fn delete_parked_and_assert(estate: &Estate, birth_build: &str, parked: &P
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact old birth");
     assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("delete-node:{old_name}"));
     assert!(end(terminate) <= start(deleted[0]), "NodeDeleted follows the exit proof: {terminate} vs {}", deleted[0]);
-    // The fabric-primary's Deleted row at `<path>.old`, written from the record it holds.
+    // The Deleted row at `<path>.old`, written by the mesh's primary that executes the delete (R13).
     let dispatched = dispatch(&spans, birth_build, &attempt).unwrap();
-    let fabric_primary = s(&dispatched["attributes"]["node"]);
+    let executor = s(&dispatched["attributes"]["executor"]);
     let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == old_name.as_str()).collect();
     assert_eq!(rows.len(), 1, "one Deleted row at {old_name}: {rows:?}");
     assert_eq!(
         (s(&rows[0]["attributes"]["node"]), s(&rows[0]["attributes"]["node_id"]), s(&rows[0]["attributes"]["outcome"])),
-        (fabric_primary.clone(), s(&before["node_id"]), "row-deleted".to_string()),
-        "the fabric-primary writes the Deleted row of the exact old node: {}",
+        (executor.clone(), s(&before["node_id"]), "row-deleted".to_string()),
+        "the mesh's primary executing the delete writes the Deleted row of the exact old node: {}",
         rows[0]
     );
     estate.artifact("deleted-row.json", &json!({"row": rows[0], "node_deleted": deleted[0], "terminate": terminate, "dispatch": dispatched}));
