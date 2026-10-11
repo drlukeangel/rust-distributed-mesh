@@ -977,8 +977,16 @@ impl RecoverySubmitter {
 /// The silence-status memo of the mesh primary's tick: what it last put per node.
 type WrittenSilence = HashMap<NodeId, (Option<IncarnationId>, Option<NodeStatus>)>;
 
-/// The mesh primary's per-birth bookkeeping speaks only for the births it still watches.
-fn retire_unwatched(_watched: &BTreeMap<String, Node>, _offline: &mut HashSet<(NodeId, IncarnationId)>, _verdicts: &mut HashMap<(NodeId, IncarnationId), Inspected>, _written: &mut WrittenSilence) {}
+/// The mesh primary's per-birth bookkeeping speaks only for the births it still watches: a birth
+/// whose node left the view (deleted, or recovered under a new node.id at its path.name) or whose
+/// node the view now holds at another incarnation (superseded) leaves the TRUE OFFLINE set; a
+/// verdict lives only while its birth is TRUE OFFLINE; the silence memo only while its node is
+/// watched. Run every tick, after the tick's writes, so nothing of a gone birth outlives one tick.
+fn retire_unwatched(watched: &BTreeMap<String, Node>, offline: &mut HashSet<(NodeId, IncarnationId)>, verdicts: &mut HashMap<(NodeId, IncarnationId), Inspected>, written: &mut WrittenSilence) {
+    offline.retain(|(node_id, incarnation)| watched.get(node_id.as_str()).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)));
+    verdicts.retain(|birth, _| offline.contains(birth));
+    written.retain(|node_id, _| watched.contains_key(node_id.as_str()));
+}
 
 /// How a followed recovery Build ended: its terminal frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4505,7 +4513,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     write(id, Some(NodeStatus::Dead), &mut written).await;
                 }
                 for id in &report.returned {
-                    records.offline.lock().unwrap().retain(|(n, _)| n.as_str() != id);
                     write(id, None, &mut written).await;
                 }
                 retire_unwatched(&watched, &mut records.offline.lock().unwrap(), &mut verdicts.lock().unwrap(), &mut written);
