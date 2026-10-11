@@ -10,8 +10,11 @@
 //!    none of the history.
 //! 5. A birth stopped (silent, its runtime alive) is held: nothing is reopened.
 //! 6. An admin that missed a Build while stopped catches up to the pointer.
-//! 7. A birth killed (its exact runtime exited) is proven drift: the fabric authority opens the
-//!    next attempt of the same Build, once; the pointer does not move; the attempt converges.
+//! 7. A member killed (its exact runtime exited) is node recovery (node-recovery.md): its
+//!    mesh-primary proves the exit and submits the recovery, which is the next attempt of the same
+//!    Build, once: node.delete of the exited birth, then node.create at the same path.name with a new
+//!    node.id over the inherited data dir and endpoint key. The pointer does not move; the attempt
+//!    converges; the fabric-primary opens no drift attempt for the member.
 //! 8. A restart changes no topology: it is an attempt of the accepted Build, under the same id.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
@@ -125,12 +128,13 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     wait_for("the paused admin holds the pointer", Duration::from_secs(30), || async { (pointer_at(&estate, &quiet_base).await == r4.as_str()).then_some(()) }).await;
     estate.settled_shape(&[("mesh1", 3, 4)], Duration::from_secs(30)).await;
 
-    // 7. A killed birth is proven drift: the next attempt of the same Build, once.
+    // 7. A killed member is its mesh-primary's node recovery: the next attempt of the same Build, once.
     let (_, before) = estate.get(&format!("/api/builds?id={r4}")).await;
     let attempts_before = before["attempt"].as_u64().unwrap();
     let lost = estate.node("mesh1.rpc.2").await;
+    let mesh_primary = estate.nodes().await.into_iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh1's primary")["name"].as_str().unwrap().to_string();
     estate.kill_node("mesh1.rpc.2").await;
-    let back = wait_for("mesh1.rpc.2 is reborn", Duration::from_secs(60), || async {
+    let back = wait_for("mesh1.rpc.2 is recovered", crate::node_recovery_due(), || async {
         let n = estate.node_opt("mesh1.rpc.2").await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != lost["incarnation_id"]).then_some(n)
     })
@@ -140,7 +144,9 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     estate.settled_shape(&[("mesh1", 3, 4)], Duration::from_secs(30)).await;
     let (_, after) = estate.get(&format!("/api/builds?id={r4}")).await;
     assert_eq!((after["state"].as_str(), after["attempt"].as_u64()), (Some("complete"), Some(attempts_before + 1)), "one more attempt of the same Build: {after}");
+    assert_eq!(after["reason"], "recovery", "the attempt is the recovery: {after}");
     assert_ne!(back["node_id"], lost["node_id"], "a lost birth's path gets a new logical node");
+    assert_eq!(back["endpoint_id"], lost["endpoint_id"], "over the inherited data dir and its endpoint key");
 
     // 8. A restart is an attempt of the accepted Build, under the same id.
     let restarted_from = estate.node("mesh1.rpc.1").await;
@@ -161,26 +167,44 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let drift = named(&spans, "rdm.node_admin.build.update.via-proven-drift");
     // 5: nothing while the stopped birth was only silent.
     assert!(drift.iter().all(|sp| at(sp) < quiet_from || at(sp) > quiet_until), "a silent, live birth opened a repair: {drift:?}");
-    // 7: exactly one repair, of the accepted Build, as its next attempt.
-    assert_eq!(drift.len(), 1, "{drift:?}");
-    let d = &drift[0]["attributes"];
-    assert_eq!(d["build_id"], r4.as_str());
-    assert_eq!(d["attempt"], (attempts_before + 1).to_string());
-    assert_eq!(d["scope"], "mesh1.rpc_node: 3 present of 4 accepted (exited: mesh1.rpc.2)");
-    assert_eq!(d["reason"], "proven-drift");
+    // 7: the fabric-primary opens no drift attempt for a member: its mesh-primary recovers it.
+    assert!(drift.is_empty(), "a killed member is node recovery, never the fabric-primary's drift: {drift:?}");
+    let attempt = (attempts_before + 1).to_string();
+    let submit = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node"] == "mesh1.rpc.2" && sp["attributes"]["node_id"] == lost["node_id"])
+        .unwrap_or_else(|| panic!("mesh1's primary submitted the recovery of the killed birth"));
+    let sa = &submit["attributes"];
+    assert_eq!(sa["submitter"], mesh_primary.as_str(), "the member's own mesh-primary submits: {submit}");
+    assert_eq!(sa["incarnation_id"], lost["incarnation_id"], "keyed on the exact exited birth: {submit}");
+    assert_eq!((sa["build_id"].as_str(), sa["attempt"].as_str()), (Some(r4.as_str()), Some(attempt.as_str())), "the recovery is the accepted Build's next attempt: {submit}");
+    assert_eq!(sa["outcome"], format!("complete: attempt {attempt}"), "the submit followed the recovery to its terminal: {submit}");
+    // The fabric-primary's door admitted it: one mesh, so its primary holds the fabric seat too and
+    // opens the attempt in process, under the submit.
+    let opened = named(&spans, "rdm.node_admin.build.update.via-recovery")
+        .into_iter()
+        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["attempt"] == attempt.as_str() && sp["attributes"]["node"] == "mesh1.rpc.2")
+        .unwrap_or_else(|| panic!("the fabric-primary's door opened the recovery attempt of {r4}"));
+    assert_eq!(opened["attributes"]["outcome"], "admitted", "{opened}");
+    assert_eq!(opened["parent_span_id"], submit["span_id"], "the door's span is the submit's child: {opened}");
     let ran = named(&spans, "rdm.node_admin.build.update.via-reconcile");
     let repaired = ran
         .iter()
-        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "proven-drift" && sp["attributes"]["outcome"] == "converged")
-        .unwrap_or_else(|| panic!("the repair attempt of {r4} converged: {ran:?}"));
-    assert_eq!(repaired["attributes"]["attempt"], (attempts_before + 1).to_string());
-    // The repair attempt's context is the fabric-primary's own drift span: its reconcile is that span's child.
-    assert_eq!(repaired["parent_span_id"], drift[0]["span_id"], "the repair's reconcile is the child of the span that proved the drift: {repaired}");
-    assert_eq!(repaired["trace_id"], drift[0]["trace_id"]);
+        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "recovery" && sp["attributes"]["outcome"] == "converged")
+        .unwrap_or_else(|| panic!("the recovery attempt of {r4} converged: {ran:?}"));
+    assert_eq!(repaired["attributes"]["attempt"], attempt.as_str());
+    assert_eq!(repaired["attributes"]["operations"], "recover-node:mesh1.rpc.2", "one recovery operation: {repaired}");
+    // The recovery attempt's context is the door's span that admitted it: its reconcile is that span's child.
+    assert_eq!(repaired["parent_span_id"], opened["span_id"], "the recovery's reconcile is the child of the span that admitted it: {repaired}");
+    assert_eq!(repaired["trace_id"], submit["trace_id"]);
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == lost["node_id"]).collect();
+    assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
+    assert_eq!(deleted[0]["attributes"]["incarnation_id"], lost["incarnation_id"], "named by the exact exited birth");
     assert!(
-        named(&spans, "rdm.node_admin.node.create.via-build").iter().any(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["node"] == "mesh1.rpc.2"),
-        "the repair created mesh1.rpc.2 under the same Build"
+        named(&spans, "rdm.node_admin.node.create.via-build").iter().any(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["attempt"] == attempt.as_str() && sp["attributes"]["node"] == "mesh1.rpc.2"),
+        "the recovery created mesh1.rpc.2 under the same Build"
     );
+    estate.record_trace_url(submit["trace_id"].as_str().unwrap_or(""));
     // 8: the restart ran as an attempt of the same Build.
     let restart = ran
         .iter()

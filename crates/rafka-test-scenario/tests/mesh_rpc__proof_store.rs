@@ -6,9 +6,11 @@
 //!    mesh and incarnation.
 //! 2. A same-node restart keeps the store: the new incarnation of the same
 //!    logical node serves the value written before it.
-//! 3. A replacement does not inherit it: `path:` reaches the new logical node,
+//! 3. A killed node is recovered by its mesh-primary (node-recovery.md): a new logical node at
+//!    the same path.name over the inherited data dir and endpoint key, so it keeps the store.
+//! 4. A planned replacement (node-replace.md) does not inherit it: `path:` reaches the successor,
 //!    whose store is empty; `exact:<old>` never follows the replacement.
-//! 4. A key or value over its limit is refused by name, and writes nothing.
+//! 5. A key or value over its limit is refused by name, and writes nothing.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -23,7 +25,7 @@ fn owner() -> Owner {
         subfeature: "proof-store".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "the_proof_store_survives_a_restart_and_never_a_replacement".into(),
+        test: "the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replacement".into(),
     }
 }
 
@@ -39,7 +41,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
+async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replacement() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 2}]})).await;
     assert_eq!(status, 202, "{a}");
@@ -68,7 +70,7 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     landed_on(&other, &estate.node("mesh1.rpc.2").await, "get");
     assert_eq!(other["reply"]["result"], json!({"found": false}));
 
-    // 4. Limits, refused by name; nothing is written.
+    // 5. Limits, refused by name; nothing is written.
     let long_key = "k".repeat(257);
     let refused = estate.probe(&["put", "--target", &path, "--key", &long_key, "--value", "v"]);
     assert_eq!(refused["reply"]["result"], json!({"refused": "too-large", "field": "key", "limit": 256, "got": 257}), "{refused}");
@@ -90,13 +92,33 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     landed_on(&kept, &restarted, "get");
     assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the restarted node serves the old value: {kept}");
 
-    // 3. A replacement does not inherit it.
+    // 3. A killed node is recovered by its mesh-primary over its inherited data dir: a new logical
+    //    node at the same path.name, with the same endpoint key, that keeps the store.
+    let data_dir = estate.data_dir_of(NODE).await;
     estate.kill_node(NODE).await;
-    let replacement = wait_for("a new logical node holds the path", Duration::from_secs(120), || async {
+    let recovered = wait_for("the recovered node holds the path", crate::node_recovery_due(), || async {
         let n = estate.node_opt(NODE).await?;
         (n["status"] == "ready-for-traffic" && n["node_id"] != first["node_id"]).then_some(n)
     })
     .await;
+    assert_ne!(recovered["incarnation_id"], first["incarnation_id"], "recovery creates a new node.id and incarnation");
+    assert_eq!(recovered["endpoint_id"], first["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
+    assert_eq!(estate.data_dir_of(NODE).await, data_dir, "the inherited data dir");
+    let inherited = estate.probe(&["get", "--target", &path, "--key", "41"]);
+    landed_on(&inherited, &recovered, "get");
+    assert_eq!(inherited["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the recovered node serves the store it inherited: {inherited}");
+
+    // 4. A planned replacement does not inherit it: the successor's data dir is its own.
+    let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
+    let (status, r) = estate.post(&format!("/api/nodes/{NODE}/replace"), &json!({})).await;
+    assert_eq!(status, 202, "{r}");
+    estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
+    let replacement = wait_for("a new logical node holds the path", Duration::from_secs(60), || async {
+        let n = estate.node_opt(NODE).await?;
+        (n["status"] == "ready-for-traffic" && n["node_id"] != recovered["node_id"]).then_some(n)
+    })
+    .await;
+    assert_ne!(replacement["endpoint_id"], recovered["endpoint_id"], "a planned replacement is a new node with a new endpoint key");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
@@ -105,7 +127,7 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     // path, and Unknown for an id nobody ever saw.
     let other = "path:mesh1.rpc.2";
     let gone = wait_for("mesh1.rpc.2 holds the old birth's departure", Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", other, "--query", &exact_first]);
+        let r = estate.probe(&["resolve", "--target", other, "--query", &exact_recovered]);
         (r["reply"]["resolution"] == "gone").then_some(r)
     })
     .await;
@@ -114,7 +136,7 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     // published, and it is published after the replacement is ready: the admin's view is
     // current-only once the departure has been heard, so the probe's own resolver can only say
     // the old id is nothing it knows.
-    let old = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
+    let old = estate.probe(&["get", "--target", &exact_recovered, "--key", "41"]);
     // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
     let holder = estate.probe(&["resolve", "--target", other, "--query", &format!("path:{NODE}")]);
@@ -136,5 +158,15 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     assert!(on(&first["incarnation_id"], "compare-and-swap", "mismatch"));
     assert!(on(&first["incarnation_id"], "put", "too-large"));
     assert!(on(&restarted["incarnation_id"], "get", "value"), "the restarted birth served the kept value");
+    assert!(on(&recovered["incarnation_id"], "get", "value"), "the recovered birth served the inherited value");
+    // 3: the mesh-primary proved the killed birth's exit and submitted its recovery, keyed on that
+    // exact birth, and followed it to its terminal.
+    let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node"] == NODE && sp["attributes"]["node_id"] == first["node_id"])
+        .expect("the mesh-primary's recovery submit for the killed birth");
+    assert_eq!(recovery["attributes"]["incarnation_id"], first["incarnation_id"], "keyed on the exact exited birth: {recovery}");
+    assert_eq!(recovery["attributes"]["outcome"], format!("complete: attempt {}", recovery["attributes"]["attempt"].as_str().unwrap_or_default()), "{recovery}");
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     assert!(on(&replacement["incarnation_id"], "get", "absent"), "the replacement served an empty store");
 }
