@@ -208,7 +208,7 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
 
 /// CONTRACT: a node created at a `path.name` seeds its config from the previous row there (a
 /// `Deleted` row): config belongs to the role, not the process (ops-naming "Node data"). When the
-/// fabric-primary's own view first holds the new birth it claims the birth's row at the
+/// fabric-primary's own view first holds the new birth it writes the birth's row at the
 /// `path.name` from that held record: the new node id and its status, the config the `Deleted` row
 /// kept. One `via-node-row` span names it.
 #[test]
@@ -333,10 +333,10 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_gets_its_row_at_once() {
 /// data": "writes the whole row from that held record"), so the row follows its own view, never the
 /// executor's `Complete`: a birth that enters the view only after the create completed (a peer
 /// mesh's birth reaches the fabric-primary through the forwarded aggregate, after the create's
-/// last frame) still claims its row, seeded from the `Deleted` row at its `path.name`. One
+/// last frame) still gets its row, seeded from the `Deleted` row at its `path.name`. One
 /// `via-node-row` span, at the view install, names it.
 #[test]
-fn a_birth_the_view_holds_only_after_the_create_completed_claims_its_row_seeded() {
+fn a_birth_the_view_holds_only_after_the_create_completed_gets_its_row_seeded() {
     let cap = capture();
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -361,10 +361,10 @@ fn a_birth_the_view_holds_only_after_the_create_completed_claims_its_row_seeded(
 
 /// CONTRACT: the store is read only to rebuild after a seat handover (ops-naming "Node data"), and
 /// that rebuild never overwrites a row a node already holds: an admin that takes the
-/// fabric-primary seat claims the row of every member its view holds, and the row of a member
+/// fabric-primary seat writes the row of every member its view holds, and the row of a member
 /// that already holds its name stays exactly as written (a config the node has not applied yet is
-/// not wiped by the new holder's view). A member with no row claims one. One `via-node-row` span
-/// per member: `row-held-by-node` for the held row, `row-claimed` for the new one.
+/// not wiped by the new holder's view). A member with no row gets one. One `via-node-row` span
+/// per member: `row-held-by-node` for the held row, `row-written` for the new one.
 #[test]
 fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
     let cap = capture();
@@ -398,7 +398,7 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let outcome = |name: &str| spans.iter().filter(|s| s["attributes"]["subject"] == name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
     assert_eq!(outcome("mesh1.rpc.1"), vec!["row-held-by-node"], "{spans:#?}");
-    assert_eq!(outcome("mesh1.admin.2"), vec!["row-claimed"], "{spans:#?}");
+    assert_eq!(outcome("mesh1.admin.2"), vec!["row-written"], "{spans:#?}");
 }
 
 /// CONTRACT: a node lets go only of its own row: a release of a `path.name` by another node leaves
@@ -426,9 +426,9 @@ fn a_node_lets_go_only_of_its_own_row() {
 /// predecessor's row (node-replace.md: the predecessor stays parked as `<name>.old`; its delete is a
 /// later step of the recipe), and the successor created at the `path.name` seeds its config from the
 /// `.old` row (ops-naming "Node data": "a Deleted row, or the `<name>.old` row"; node-rpc-envelope.md
-/// "Meta and config": name may change only to/from name.old, insert-and-fail). At the executor's
-/// `RenamePredecessor` the fabric-primary claims `<path>.old` for the predecessor from the record it
-/// held at the replace's `DrainNode` and releases `<path>`; the successor entering its view claims
+/// "Meta and config": name may change only to/from name.old). At the executor's
+/// `RenamePredecessor` the fabric-primary writes `<path>.old` for the predecessor from the record it
+/// held at the replace's `DrainNode` and releases `<path>`; the successor entering its view gets
 /// `<path>` seeded from the `.old` row. No row says `Deleted`: the replace deletes nothing.
 #[test]
 fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
@@ -479,9 +479,9 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
 /// CONTRACT: the recovery of a proven-terminal birth (the replace operation's `NodeDeleting` branch)
 /// moves the predecessor's row to `<path.name>.old` and its departure leaves a `Deleted` row there,
 /// and the successor created at the `path.name` seeds its config from the `.old` row. At the
-/// executor's `RenamePredecessor` the fabric-primary claims `<path>.old` for the predecessor from the
+/// executor's `RenamePredecessor` the fabric-primary writes `<path>.old` for the predecessor from the
 /// record it held at `NodeDeleting` and releases `<path>`; at `NodeDeleted` it writes the `.old` row
-/// `Deleted`, its config kept; the successor entering its view claims `<path>` seeded from the `.old`
+/// `Deleted`, its config kept; the successor entering its view gets `<path>` seeded from the `.old`
 /// row.
 #[test]
 fn a_recovered_nodes_row_moves_to_old_ends_deleted_and_its_successor_is_seeded_from_it() {
@@ -613,13 +613,13 @@ fn a_rename_the_seat_holder_never_saw_announced_moves_the_row_from_the_old_name_
     assert_eq!((a["node_id"].as_str(), a["outcome"].as_str()), (Some(pred.as_str()), Some("renamed")), "{a:#?}");
 }
 
-/// CONTRACT: the fabric-primary claims a birth's row when its view holds the birth for the first
+/// CONTRACT: the fabric-primary writes a birth's row when its view holds the birth for the first
 /// time in its seat (ops-naming "Node data": the row is written once, from the held record), never
 /// again on a later view install. A birth that left the view (a departure the projection dropped)
 /// and is put back by a forwarded copy of a peer mesh's view (gossip.md §3.2 forwarded grace) is
 /// the same birth, not a new arrival: one `via-node-row` span for it, the row written once.
 #[test]
-fn a_birth_that_leaves_the_view_and_returns_is_claimed_once() {
+fn a_birth_that_leaves_the_view_and_returns_is_written_once() {
     let cap = capture();
     let (row, born) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -638,8 +638,8 @@ fn a_birth_that_leaves_the_view_and_returns_is_claimed_once() {
     assert_eq!(row.map(|r| r.node_id), Some(born.clone()), "the birth holds its row");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let claims: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
-    assert_eq!(claims.len(), 1, "one claim for one birth in one seat tenure: {claims:#?}");
-    assert_eq!(claims[0]["attributes"]["outcome"], "row-claimed", "{claims:#?}");
+    assert_eq!(claims.len(), 1, "one row write for one birth in one seat tenure: {claims:#?}");
+    assert_eq!(claims[0]["attributes"]["outcome"], "row-written", "{claims:#?}");
 }
 
 /// The receipts an earlier attempt of the replace of `mesh1.rpc.1` wrote (`mesh1.admin.2` ran it up

@@ -13,20 +13,20 @@
 //!   still found and live in every view then, while by `NodeDeleted` its departure may already
 //!   have left the view.
 //! - A birth the fabric-primary's own view holds for the first time (`Records::install_projected`):
-//!   its row is claimed at its `path.name` (insert-and-fail) from that held record, its config
-//!   seeded from the previous row at that `path.name`. A birth of a peer mesh reaches the
-//!   fabric-primary's view through the forwarded aggregate, after its create's last frame, so the
-//!   row follows the view, never the create's frames. An admin that takes the seat claims every
-//!   member's row; a row a node already holds is never overwritten.
+//!   its row is written at its `path.name` from that held record, a blind put, its config seeded
+//!   from the previous row at that `path.name`. A birth of a peer mesh reaches the fabric-primary's
+//!   view through the forwarded aggregate, after its create's last frame, so the row follows the
+//!   view, never the create's frames. An admin that takes the seat writes every member's row; a row
+//!   a node already holds is never overwritten.
 //!
-//! A replace's successor takes the `path.name` over only after its predecessor lets go of it
-//! (ops-naming "The name is claimed by insert-and-fail"): the predecessor's row moves to
-//! `<path>.old` at the executor's `RenamePredecessor`, and the successor's claim follows that move
-//! whichever reaches this admin first. A successor the view holds before the move waits on it
-//! (`awaits-rename`), and the move, once made, claims the path.name for the node the view holds there.
+//! The node owns its name, no one else (R12): the row follows the name the fabric-primary's view
+//! holds for a node and never decides who may hold one. Nothing here refuses or delays a row
+//! because another node's row is at its `path.name`. A replace's `RenamePredecessor` writes the
+//! predecessor's row at `<path>.old` and lets go of `<path>` only where the predecessor's own row
+//! is still there; a successor its view holds first has its row at `<path>` already.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeStatus, PathName};
-use crate::storage::{Claimed, NodeRow, NodesStorage};
+use crate::storage::{NodeRow, NodesStorage};
 use crate::topology::Topology;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -43,7 +43,7 @@ pub struct NodeRows {
     /// `NodeDeleted` writes it.
     announced: Mutex<HashMap<String, Node>>,
     /// The births this admin's views have held in its current fabric-primary seat (`None` outside
-    /// a seat): each is claimed once, when a view first holds it, and a later view install that
+    /// a seat): each row is written once, when a view first holds it, and a later view install that
     /// holds it again is not an arrival.
     held: Mutex<Option<HashSet<(NodeId, IncarnationId)>>>,
     /// The record of each parked predecessor a replace left at `<path>.old`, by that `.old` path, from
@@ -121,7 +121,7 @@ impl NodeRows {
 
     /// A replace's `RenamePredecessor`: the predecessor's row moves from `name` to `<name>.old`, from
     /// the record held at the operation's first step (or the view now, for a fabric-primary that took
-    /// the seat since), insert-and-fail on the `.old` key, then `name` is released for the successor.
+    /// the seat since), a blind put at the `.old` key, then the predecessor lets go of `name`.
     /// `subject` is the predecessor the rename's receipt names: a held record of any other node is not
     /// the predecessor's.
     async fn moved_to_old(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName, subject: Option<&NodeId>) {
@@ -165,7 +165,6 @@ impl NodeRows {
         let (outcome, detail) = match &r {
             Ok(Moved::Renamed) => ("renamed", None),
             Ok(Moved::AlreadyMoved) => ("already-moved", Some(format!("{me}: the replace of {name} ({}) reached RenamePredecessor again: the predecessor holds {to} and no longer holds {name}; nothing is written", record.node_id))),
-            Err(RenameRefused::NameHeld(e)) => ("name-held", Some(format!("{me}: the replace of {name} ({}) to {to}: {e}", record.node_id))),
             Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
             Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
         };
@@ -177,18 +176,6 @@ impl NodeRows {
         if r.is_ok() {
             self.parked_old.lock().unwrap().insert(to.clone(), parked_record(&record, &to));
         }
-        if r == Ok(Moved::Renamed) {
-            tracing::Instrument::instrument(self.successor_at(view, name, &record), span).await;
-        }
-    }
-
-    /// The predecessor let go of `name`: a successor the view already holds there (it entered the
-    /// view before this move, and its claim waited on it) takes the name over now, seeded from the
-    /// `.old` row, through the one claim every birth takes.
-    async fn successor_at(&self, view: &RwLock<Topology>, name: &PathName, predecessor: &Node) {
-        let now = view.read().await.clone();
-        let Some(successor) = now.nodes.iter().find(|n| &n.name == name && n.node_id != predecessor.node_id && n.incarnation_id.is_some()).cloned() else { return };
-        self.claim_arrivals(&now, vec![successor]).await;
     }
 
     /// `NodeDeleted`: the row with status `Deleted`, the record and config kept, a blind put.
@@ -239,12 +226,12 @@ impl NodeRows {
         }
     }
 
-    /// The births of `now`, the view being installed over `prev`, whose rows this admin claims:
+    /// The births of `now`, the view being installed over `prev`, whose rows this admin writes:
     /// none unless `now` names it the fabric-primary; every member when `prev` did not (the seat was
     /// just taken: the rebuild after a handover, which never overwrites a row a node holds); else
     /// each member birth this seat's views have not held before. A birth is an arrival once per
     /// seat: one the view dropped and holds again (a forwarded copy of a peer mesh's view put it
-    /// back) was claimed when it first arrived. Read under the view lock, so of two installs each
+    /// back) was written when it first arrived. Read under the view lock, so of two installs each
     /// sees the arrivals its own change made.
     pub fn arrivals(&self, prev: &Topology, now: &Topology) -> Vec<Node> {
         let births = |t: &Topology| t.members().filter_map(|n| n.incarnation_id.clone().map(|inc| (n.node_id.clone(), inc))).collect::<HashSet<_>>();
@@ -264,9 +251,9 @@ impl NodeRows {
         now.members().filter(|n| n.incarnation_id.clone().is_some_and(|inc| seat.insert((n.node_id.clone(), inc)))).cloned().collect()
     }
 
-    /// Claim the row of each birth in `arrivals`, the fabric-primary's view `now` having first held
+    /// Write the row of each birth in `arrivals`, the fabric-primary's view `now` having first held
     /// it; a birth whose row is seeded from a previous row is told that config.
-    pub async fn claim_arrivals(&self, now: &Topology, arrivals: Vec<Node>) {
+    pub async fn write_arrivals(&self, now: &Topology, arrivals: Vec<Node>) {
         for birth in arrivals {
             let span = tracing::info_span!(
                 "rdm.node_admin.node.create.via-node-row",
@@ -280,7 +267,7 @@ impl NodeRows {
                 detail = tracing::field::Empty,
                 "otel.kind" = "internal",
             );
-            if let Some(row) = tracing::Instrument::instrument(self.claim(&birth, &span), span.clone()).await {
+            if let Some(row) = tracing::Instrument::instrument(self.write_row(&birth, &span), span.clone()).await {
                 self.tell(now, &birth, row, &span);
             }
         }
@@ -288,7 +275,7 @@ impl NodeRows {
 
     /// Tell a seeded birth its config (ops-naming "Node data": the node applies it and carries it in
     /// its next digest) through the fabric-primary's config door, which writes the record and calls
-    /// the birth through its mesh-primary. On its own task, under the claim's span: the view install
+    /// the birth through its mesh-primary. On its own task, under the row write's span: the view install
     /// that found the birth never waits on a call to it (the join door installs the view before it
     /// answers the joiner).
     fn tell(&self, now: &Topology, birth: &Node, row: NodeRow, span: &tracing::Span) {
@@ -308,32 +295,39 @@ impl NodeRows {
         ));
     }
 
-    /// The birth's row at its `path.name`, claimed from the record the view holds (ops-naming "Node
-    /// data": "writes the whole row from that held record"), its config seeded from the previous
-    /// row at that `path.name` (a `Deleted` row), read through the `path.name` key ("from the
-    /// fabric-primary's held record or a point read through the `path.name` index"). A row the
-    /// same node holds already is left as it is.
-    async fn claim(&self, birth: &Node, span: &tracing::Span) -> Option<NodeRow> {
+    /// The birth's row at its `path.name`, written from the record the view holds (ops-naming "Node
+    /// data": "writes the whole row from that held record"), a blind put of the `path.name` key: the
+    /// row follows the node's name and never decides who may hold one. Its config is seeded from the
+    /// previous row at that `path.name` ("a Deleted row, or the `<name>.old` row"), read through the
+    /// `path.name` key ("from the fabric-primary's held record or a point read through the
+    /// `path.name` index"): another node's row there, whatever its status (a `Deleted` row, or the
+    /// row of a replace's predecessor the view held there before its rename was handled), else the
+    /// `<name>.old` row a replace moved the predecessor's row to. A row the same node holds already
+    /// is left as it is.
+    async fn write_row(&self, birth: &Node, span: &tracing::Span) -> Option<NodeRow> {
         let (me, name) = (&self.me, &birth.name);
         let previous = match self.storage.node_row_at(name).await {
             Ok(p) => p,
             Err(e) => {
                 let detail = format!("{me}: the previous row at {name} could not be read for the birth {}: {e}", birth.node_id);
                 span.record("outcome", "row-unreadable").record("detail", detail.as_str());
-                span.in_scope(|| tracing::info!("node.create: no row claimed"));
+                span.in_scope(|| tracing::info!("node.create: no row written"));
                 return None;
             }
         };
-        // The previous row at the path.name: a `Deleted` row there, or, when the key is free, the
-        // `<name>.old` row a replace moved the predecessor's row to.
+        if previous.as_ref().is_some_and(|p| p.node_id == birth.node_id) {
+            span.record("outcome", "row-held-by-node");
+            span.in_scope(|| tracing::info!("node.create: the node already holds its row; nothing is written"));
+            return None;
+        }
         let seed = match previous {
-            Some(p) => Some(p).filter(|p| p.status == NodeStatus::Deleted && p.node_id != birth.node_id),
+            Some(p) => Some(p),
             None => match self.storage.node_row_at(&name.renamed()).await {
                 Ok(old) => old.filter(|p| p.node_id != birth.node_id),
                 Err(e) => {
                     let detail = format!("{me}: the .old row at {} could not be read for the birth {}: {e}", name.renamed(), birth.node_id);
                     span.record("outcome", "row-unreadable").record("detail", detail.as_str());
-                    span.in_scope(|| tracing::info!("node.create: no row claimed"));
+                    span.in_scope(|| tracing::info!("node.create: no row written"));
                     return None;
                 }
             },
@@ -344,33 +338,11 @@ impl NodeRows {
         }
         span.record("keys", config.len() as u64);
         let row = NodeRow { name: name.clone(), node_id: birth.node_id.clone(), status: birth.status, config };
-        match self.storage.claim_node_row(&row).await {
-            Ok(Ok(Claimed::Written)) => {
-                span.record("outcome", if seed.is_some() { "row-seeded" } else { "row-claimed" });
-                span.in_scope(|| tracing::info!("node.create: the birth holds the row at its path.name"));
+        match self.storage.put_node_row(&row).await {
+            Ok(()) => {
+                span.record("outcome", if seed.is_some() { "row-seeded" } else { "row-written" });
+                span.in_scope(|| tracing::info!("node.create: the birth's row is at its path.name"));
                 seed.map(|_| row)
-            }
-            Ok(Ok(Claimed::HeldByNode)) => {
-                span.record("outcome", "row-held-by-node");
-                span.in_scope(|| tracing::info!("node.create: the node already holds its row; nothing is written"));
-                None
-            }
-            Ok(Err(held)) => {
-                // The name's holder is the predecessor of the replace at this path.name that this
-                // admin drives: the birth is its successor, and it takes the name at the
-                // predecessor's `RenamePredecessor` move (`moved_to_old`), never before.
-                let operation = format!("replace-node:{name}");
-                let replacing = self.announced.lock().unwrap().get(&operation).is_some_and(|p| p.node_id == held.by);
-                if replacing {
-                    let detail = format!("{me}: the birth {} at {name} waits for {}, the predecessor of {operation}, to let go of the name: the RenamePredecessor move claims it", birth.node_id, held.by);
-                    span.record("outcome", "awaits-rename").record("detail", detail.as_str());
-                    span.in_scope(|| tracing::info!("node.create: the replace's predecessor holds the name until its rename"));
-                    return None;
-                }
-                let detail = format!("{me}: the birth {} at {name} claimed a held name: {held}", birth.node_id);
-                span.record("outcome", "name-held").record("detail", detail.as_str());
-                span.in_scope(|| tracing::info!("node.create: the name is held"));
-                None
             }
             Err(e) => {
                 let detail = format!("{me}: nodes.storage refused the row of {name} ({}): {e}", birth.node_id);
@@ -387,17 +359,15 @@ impl NodeRows {
 pub enum RenameRefused {
     /// The body differs from what RDM holds in a field RDM owns (a live node's name among them).
     RdmOwned(rafka_node_admin_client::MetaFieldIsRdmOwned),
-    /// The new name is held by another node, parked or live.
-    NameHeld(rafka_node_admin_client::NameHeld),
     /// The rename could not be decided or written: why, whole.
     Unwritten(String),
 }
 
 impl NodeRows {
     /// `node.update` of a stopped node's name (to or from its `.old` form): the body is checked
-    /// against what RDM holds, then the new name is claimed for the node, insert-and-fail on its
-    /// key, then the old key is released. Whether the node is stopped is the held record's
-    /// (`parked`), never the caller's.
+    /// against what RDM holds, then the node's row follows its name: written at the new key, then
+    /// the old key released. Whether the node is stopped is the held record's (`parked`), never the
+    /// caller's. Who may hold the new name is not decided here: the node owns its name.
     pub async fn rename(&self, me: &PathName, view: &RwLock<Topology>, held: &rafka_node_admin_client::NodeMeta, body: &rafka_node_admin_client::NodeMeta) -> Result<(), RenameRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-rename",
@@ -413,7 +383,6 @@ impl NodeRows {
         let (outcome, detail) = match &r {
             Ok(()) => ("renamed", None),
             Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
-            Err(RenameRefused::NameHeld(e)) => ("name-held", Some(format!("{me}: the rename of {} ({}) to {}: {e}", held.name, held.node_id, body.name))),
             Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
         };
         span.record("outcome", outcome);
@@ -434,23 +403,23 @@ impl NodeRows {
         self.move_row(me, &record, &held.name, &body.name).await.map(|_| ())
     }
 
-    /// The node's row moves from `from` to `to`: the new name is claimed for the node from its held
-    /// `record` (insert-and-fail, `NameHeld` naming another holder), then the node lets go of the old
-    /// key (only its own row there goes). The one writer of a rename: `node.update` and a replace's
+    /// The node's row moves from `from` to `to`: written at `to` from its held `record` (a blind
+    /// put; a row the node holds there already is left as it is), then the node lets go of `from`
+    /// (only its own row there goes). The one writer of a rename: `node.update` and a replace's
     /// `RenamePredecessor` both move here.
     async fn move_row(&self, me: &PathName, record: &Node, from: &PathName, to: &PathName) -> Result<Moved, RenameRefused> {
         if from == to {
             return Ok(Moved::Renamed);
         }
-        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
-        let claimed = match self.storage.claim_node_row(&row).await {
-            Ok(Ok(c)) => c,
-            Ok(Err(name_held)) => return Err(RenameRefused::NameHeld(name_held)),
-            Err(e) => return Err(RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {to} for {}: {e}", record.node_id))),
-        };
+        let there = self.storage.node_row_at(to).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read for the rename of {} from {from}: {e}", record.node_id)))?;
+        let held_there = there.is_some_and(|r| r.node_id == record.node_id);
+        if !held_there {
+            let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
+            self.storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?;
+        }
         // The new name is the node's: it lets go of the old key.
         let released = self.storage.release_node_row(from, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))?;
-        Ok(if claimed == Claimed::HeldByNode && !released { Moved::AlreadyMoved } else { Moved::Renamed })
+        Ok(if held_there && !released { Moved::AlreadyMoved } else { Moved::Renamed })
     }
 }
 
