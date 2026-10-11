@@ -3091,8 +3091,8 @@ impl Running {
 
     async fn leave_with(self, parked: bool) {
         // A leaving admin hands its committed Build facts to the neighbours before it says
-        // anything. A seat it held moved before its leave (TakeSeats, TakeFabricPrimary), and that
-        // moved record is what ends its Build authority.
+        // anything. Its Build authority is what its fabric seat record says: a seat moved by
+        // TakeSeats or TakeFabricPrimary ended it at that record; a fabric shutdown freezes the drive.
         self.builds.hand_over_facts("leaving", None).await;
         self.executor.abort();
         self.hierarchy.abort();
