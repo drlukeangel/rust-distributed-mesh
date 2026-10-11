@@ -6,7 +6,6 @@
 //! of wall clock, so this cell lives in a process of its own.
 
 use opentelemetry::trace::TraceContextExt;
-use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
 use rafka_node_rpc::CallOptions;
 use rafka_node_rpc_contract::forward::FORWARD_REPLY_RESERVE;
 use rafka_node_rpc_contract::outcome::{NotSentReason, RpcOutcome};
@@ -15,7 +14,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::rig::*;
 
-fn spans() -> InMemorySpanExporter {
+fn spans() -> crate::common::Spans {
     crate::common::spans_exporter()
 }
 

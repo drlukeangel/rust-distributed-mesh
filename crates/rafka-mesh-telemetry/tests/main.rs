@@ -5,3 +5,4 @@
 mod own_process;
 mod collector_outage;
 mod runtime_watchdog;
+mod span_end_nonblocking;
