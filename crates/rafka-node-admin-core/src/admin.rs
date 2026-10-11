@@ -567,6 +567,21 @@ impl crate::fabric_handover::WonClaims for AdminClaims {
     }
 }
 
+impl Records {
+    /// The birth `incarnation` of `node_id`, recorded at `from`, holds the row its mesh-primary moved
+    /// to `to` (`node.update`, R13): its launch record moves with the row.
+    pub fn rename_birth(&self, from: &PathName, node_id: &NodeId, incarnation: &IncarnationId, to: &PathName) {
+        let _ = node_id;
+        let mut nodes = self.nodes.lock().unwrap();
+        if nodes.get(from).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
+            if let Some(mut n) = nodes.remove(from) {
+                n.name = to.clone();
+                nodes.insert(to.clone(), n);
+            }
+        }
+    }
+}
+
 /// What an election takes beside the nodes: the seat records this admin holds, and the births
 /// proven gone. A birth is proven gone when its runtime was found exited, when its departure was
 /// heard, or when a later birth announced that it replaced it (`supersedes`). Silence, an
@@ -5953,6 +5968,37 @@ mod tests {
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         let n = t.node(&admin.node.name).expect("held");
         assert_eq!(n.listeners, vec![("control".to_string(), "127.0.0.1:41777".parse().unwrap())]);
+    }
+
+    /// CONTRACT (R13; node-rpc-envelope.md "Meta and config": a stopped node is sent nothing and reads its
+    /// name in its join answer): a parked birth whose row its mesh-primary moved to `mesh1.rpc.1.old`
+    /// is listed by this admin's view at the row's name on every projection, while the book's held
+    /// stopped digest keeps the name the node last published (R-JN1's last accepted name). What must
+    /// NOT happen: the next projection from the book putting the node back at its digest's name, so a
+    /// start by the row's name finds nothing.
+    #[test]
+    fn a_parked_birth_renamed_by_its_row_is_listed_at_the_rows_name_on_every_projection() {
+        let book = DigestBook::default();
+        let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(held.clone());
+        let stop = rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "stop-node:mesh1.rpc.1".into(),
+            node_id: held.node.node_id.clone(),
+            incarnation: held.node.incarnation.clone(),
+            name: held.node.name.clone(),
+            event_at_rafka_ms: 1,
+        };
+        assert!(book.stopped(stop));
+        let records = Records::default();
+        let to: PathName = "mesh1.rpc.1.old".parse().unwrap();
+        records.rename_birth(&held.node.name, &held.node.node_id, &held.node.incarnation, &to);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        let n = t.node(&to).unwrap_or_else(|| panic!("the parked birth is listed at its row's name: {:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>()));
+        assert_eq!((n.node_id.clone(), n.incarnation_id.clone(), n.status, n.parked), (held.node.node_id.clone(), Some(held.node.incarnation.clone()), NodeStatus::Leaving, true));
+        assert!(t.node(&held.node.name).is_none(), "nothing is listed at the name the row moved from");
+        assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()], "the held stopped digest keeps the name the node last published");
     }
 
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
