@@ -14,7 +14,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{accepted_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, Admitted, LeaveKey, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER};
+use rafka_node_admin_core::mesh_leave::{accepted_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, owner_resume, Admitted, LeaveKey, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
 use serde_json::{json, Value};
@@ -424,4 +424,87 @@ fn an_incomplete_tier_is_refused_not_ready_naming_the_births_without_an_exited_r
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     let refused = named("rdm.node_admin.mesh.reject.via-incomplete-handoff");
     assert!(refused.iter().any(|s| s["attributes"]["without_exit"].as_str().is_some_and(|w| w.contains(FAILING) && w.contains(OTHER_ADMIN))), "{refused:?}");
+}
+
+/// CONTRACT: a fabric-primary that resumes the leave after the final primary exited, before
+/// `MeshLeft` was recorded, finishes it from the Build's receipts and calls nothing. Attempt 1 runs
+/// to the end of the final primary's stop: both sides record the roster, the member workflows record
+/// the exit manifest, and the owner's stop of the final primary records its exact `TerminateRuntime`
+/// receipt, then `MeshLeft` is never recorded (the owner is lost). The resumed owner reads, from its
+/// own Build facts, the roster accepted at admission (with the final primary it names), the final
+/// primary's Exited receipt and the `OtherMembersExited` manifest, and holds the complete proof set
+/// that permits `MeshLeft` (mesh-leave.md, "Completion proof": one exact Exited receipt for every
+/// accepted roster birth, the final primary included).
+#[test]
+fn an_owner_resuming_after_the_final_primary_exited_records_mesh_left_from_the_receipts() {
+    let cap = capture();
+    let data_root = std::env::temp_dir().join(format!("mesh-leave-final-exited-{}", NodeId::mint()));
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 43_000 + i as u32))).collect();
+    let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(), ..Default::default() };
+    let me = RosterBirth::of(records.iter().find(|n| n.name.to_string() == FINAL).unwrap()).unwrap();
+    let final_runtime = RuntimeProof::of(&handles[FINAL].fact().unwrap());
+    let view = View::default();
+
+    let (roster, resume, trace_id) = cap.run(async {
+        let builds = WireBuilds(MemoryBuildStateAdapter::new());
+        let build_id = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .await
+            .unwrap();
+        let mesh_id = MeshId::mint();
+        let outer = operation(&mesh_id);
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 1, operation: outer.clone() };
+        let joins = Joins::default();
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            executable: "/nonexistent/rafka-rpc-node".into(),
+            seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
+            launcher: rafka_mesh_entity::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            env: BTreeMap::new(),
+            data_root: data_root.clone(),
+            mesh_issuer: None,
+        };
+        let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let root = tracing::info_span!("cell.mesh-leave-final-exited", build_id = %build_id, operation = %outer);
+        let trace_id = {
+            use opentelemetry::trace::TraceContextExt as _;
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            root.context().span().span_context().trace_id().to_string()
+        };
+        let _in_root = root.enter();
+        let roster = accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
+        let mp = accepted_roster(&builds, &key, STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
+        members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, |mut n: Node| {
+            let (pipeline, handles, build_id, outer) = (&pipeline, &handles, &build_id, &outer);
+            async move {
+                let name = n.name.to_string();
+                pipeline.shutdown_member(build_id, 1, outer, &mut n, &handles[&name]).await.map_err(|e| e.to_string())
+            }
+        })
+        .await
+        .expect("every other member exits");
+        // The owner's stop of the final primary (lead_leave step 5); the owner is lost before MeshLeft.
+        let mut last = records.iter().find(|n| n.name.to_string() == FINAL).cloned().unwrap();
+        pipeline.shutdown_member(&build_id, 1, &outer, &mut last, &handles[FINAL]).await.expect("the final primary exits");
+        // The resumed owner reads its own Build facts.
+        let steps = builds.read_build(&build_id).await.unwrap().steps;
+        (roster, owner_resume(&steps, &outer), trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("final-exited");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    let _ = std::fs::remove_dir_all(&data_root);
+
+    let resume = resume.unwrap_or_else(|e| panic!("the resume reads the receipts: {e}"));
+    let all = resume.mesh_left_manifest().unwrap_or_else(|| panic!("the final primary's exit is proven: the resume holds the MeshLeft proof set, not {resume:?}"));
+    assert_eq!(first_mismatch(all, &roster, &me, true), None, "MeshLeft covers every accepted birth, the final primary included");
+    assert_eq!(births(&all.receipts), BTreeSet::from([FAILING.to_string(), EXITING.to_string(), OTHER_ADMIN.to_string(), FINAL.to_string()]));
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    let resumed = named("rdm.node_admin.mesh.resolve.via-recorded-final-exit");
+    assert!(resumed.iter().any(|s| s["attributes"]["receipts"] == "4" && s["attributes"]["roster"] == "4" && s["attributes"]["final_primary"].as_str().is_some_and(|f| f.contains(FINAL))), "{resumed:?}");
 }

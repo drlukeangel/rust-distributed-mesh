@@ -186,6 +186,35 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[Rost
     held
 }
 
+/// Where the fabric-primary's outer workflow `operation` resumes, read from its own Build facts
+/// (`steps`) before it calls anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnerResume {
+    /// The `MeshLeft` receipt is recorded: the departure is the record.
+    Left,
+    /// Nothing recorded settles the leave: the owner leads it (admission, `LeaveMesh`, the
+    /// handoff, the final primary's stop).
+    Lead,
+}
+
+impl OwnerResume {
+    /// The complete proof set this resume records as `MeshLeft` without calling the mesh, when it
+    /// holds one.
+    pub fn mesh_left_manifest(&self) -> Option<&ExitManifest> {
+        match self {
+            OwnerResume::Left | OwnerResume::Lead => None,
+        }
+    }
+}
+
+/// [`OwnerResume`] for `operation` over `steps`.
+pub fn owner_resume(steps: &[BuildStepReceipt], operation: &str) -> Result<OwnerResume, String> {
+    if steps.iter().any(|r| r.operation == operation && r.step == STEP_MESH_LEFT && r.outcome == StepOutcome::Complete) {
+        return Ok(OwnerResume::Left);
+    }
+    Ok(OwnerResume::Lead)
+}
+
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
 /// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
