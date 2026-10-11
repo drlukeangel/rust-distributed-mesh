@@ -170,6 +170,23 @@ mod tests {
         assert!(!wire.contains("[`FORWARD_REPLY_RESERVE`]") && wire.contains("`FORWARD_REPLY_RESERVE`"), "the wire page names the const without an intra-doc link");
     }
 
+    /// Whether `text` names a source line: `<file>.rs:<digit>`.
+    fn names_a_line(text: &str) -> Option<&str> {
+        text.lines().find(|l| l.match_indices(".rs:").any(|(i, _)| l[i + 4..].starts_with(|c: char| c.is_ascii_digit())))
+    }
+
+    #[test]
+    fn the_wire_frames_and_statuses_pages_name_no_source_line() {
+        let root = rafka_mesh_audit::workspace_root();
+        let pages = pages(&root).unwrap();
+        for p in ["wire.md", "frames.md", "statuses.md"] {
+            assert_eq!(names_a_line(page(&pages, p)), None, "{p} changes only when a wire body or a status changes, so it names no source line");
+        }
+        for p in ["spans.md", "config.md"] {
+            assert!(names_a_line(page(&pages, p)).is_some(), "{p} keeps each site's file:line");
+        }
+    }
+
     #[test]
     fn two_runs_over_one_tree_write_the_same_bytes() {
         let root = rafka_mesh_audit::workspace_root();
@@ -211,8 +228,7 @@ mod tests {
         for (variant, serde) in [("Pending", "pending"), ("ReadyForTraffic", "ready-for-traffic"), ("PendingReconnect", "pending-reconnect"), ("Deleted", "deleted")] {
             assert!(node_status.contains(&format!("**`{variant}`** | `{serde}`")), "NodeStatus::{variant} is `{serde}` on the page:\n{node_status}");
         }
-        let site = line_of(&root, "crates/rafka-mesh-transport/src/membership.rs", "pub const MESH_READY_FOR_TRAFFIC:");
-        assert!(statuses.contains(&format!("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `{site}` |")), "the mesh status string const is listed with its value and site {site}");
+        assert!(statuses.contains("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rafka-mesh-transport/src/membership.rs` |"), "the mesh status string const is listed with its value and its file");
     }
 
     #[test]
@@ -233,7 +249,6 @@ mod tests {
         let before = pages(&copy.0).unwrap();
         const STATUS: &str = "crates/rafka-node-rpc-contract/src/status.rs";
         const APPENDED: &str = "    /// Appended by the docgen cell.\n    DocgenAppended {\n        /// Its one field.\n        appended: u64,\n    },\n";
-        let mut at_line = 0;
         copy.edit(STATUS, |s| {
             let start = s.find("pub enum StatusReply {").expect("StatusReply is declared");
             let mut depth = 0usize;
@@ -250,7 +265,6 @@ mod tests {
                     })
                     .expect("StatusReply closes")
                     .0;
-            at_line = s[..close].matches('\n').count() + 1;
             format!("{}{APPENDED}{}", &s[..close], &s[close..])
         });
         let after = pages(&copy.0).unwrap();
@@ -258,25 +272,10 @@ mod tests {
         let mut expected = variant_rows(b, "StatusReply");
         expected.push((expected.len().to_string(), "DocgenAppended".into()));
         assert_eq!(variant_rows(a, "StatusReply"), expected, "the appended variant is the last row, at the next position");
-        // Every status.rs site at or below the insertion moves down by the inserted lines; with
-        // that applied, the page differs only by StatusReply's count line and the two new rows.
-        let shift = APPENDED.matches('\n').count();
-        let moved = |line: &str| {
-            let mut out = String::new();
-            let mut rest = line;
-            while let Some(at) = rest.find(&format!("{STATUS}:")) {
-                let digits_at = at + STATUS.len() + 1;
-                let digits: String = rest[digits_at..].chars().take_while(char::is_ascii_digit).collect();
-                let n: usize = digits.parse().unwrap();
-                out.push_str(&rest[..digits_at]);
-                out.push_str(&(if n >= at_line { n + shift } else { n }).to_string());
-                rest = &rest[digits_at + digits.len()..];
-            }
-            out + rest
-        };
-        let b_moved: Vec<String> = b.lines().map(moved).collect();
-        let gone: Vec<&str> = b_moved.iter().map(String::as_str).filter(|l| !a.lines().any(|x| x == *l)).collect();
-        let added: Vec<&str> = a.lines().filter(|l| !b_moved.iter().any(|x| x == l)).collect();
+        // The wire page names no source line, so the inserted lines move nothing else: the page
+        // differs only by StatusReply's count line and the two new rows.
+        let gone: Vec<&str> = b.lines().filter(|l| !a.lines().any(|x| x == *l)).collect();
+        let added: Vec<&str> = a.lines().filter(|l| !b.lines().any(|x| x == *l)).collect();
         assert_eq!(gone.len(), 1, "only StatusReply's variant count line changed: {gone:?}");
         assert!(gone[0].contains(&format!("{} variants", expected.len() - 1)), "{gone:?}");
         assert_eq!(added.len(), 3, "the count line, the variant row and its field row: {added:?}");
