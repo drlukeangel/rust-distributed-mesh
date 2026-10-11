@@ -1904,6 +1904,19 @@ impl crate::node_self::Session for AdminSession {
             Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} could not join through {}: unreached: {why}", auth.node.name) }),
         };
         crate::rafka_time::adopt_join_answer(&join_step, &self.rafka_time, &name, &joined);
+        // The row's name and config the join handed are held on this admin's digest and by its
+        // membership before it re-enters its topic or says anything (R-JN1).
+        {
+            let mut d = self.digest.lock().unwrap();
+            if let Some(n) = &joined.control.name {
+                self.membership.set_name(n.clone());
+                d.node.name = n.clone();
+            }
+            if let Some(c) = &joined.control.config {
+                self.membership.set_config(c.clone());
+                d.config = c.clone();
+            }
+        }
         take_entry_control(&joined, &self.accepted, &*self.builds, &self.entry_floor).await;
         if let Some(sd) = joined.control.shutdown.clone() {
             let _ = self.shutdown.learn(sd, "start", &joined.served_by).await;
@@ -2011,7 +2024,7 @@ impl EntryState {
         // answering admin holds of the Build the pointer names is the floor a joiner's own copy
         // of that Build's attempt facts must reach before it is Ready.
         let build = e.accepted.current(&*e.builds).await.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
-        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build, rafka_time_ms, member_cert: Vec::new() };
+        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
         Ok(crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) })
     }
 }
@@ -2621,7 +2634,8 @@ impl AdminRunner {
             endpoint_id: record.endpoint_id.clone().ok_or_else(|| format!("{} has no known endpoint id", record.name))?,
             runtime: handle.fact().ok_or_else(|| format!("{}: the handle names no exact runtime to verify its rejoin against", record.name))?,
             data_dir: record.data_dir.clone().ok_or_else(|| format!("{} has no known data dir", record.name))?,
-            last_accepted_name: None,
+            // The name this authority last accepted for this exact birth: its held stopped digest's (R-JN1).
+            last_accepted_name: admitted.as_ref().map(|d| d.node.name.clone()),
         })
     }
 
@@ -2676,7 +2690,7 @@ impl AdminRunner {
             endpoint_id: record.endpoint_id.clone().ok_or_else(|| format!("{} has no known endpoint id", record.name))?,
             runtime: handle.fact().ok_or_else(|| format!("{}: the handle names no exact runtime to verify its rejoin against", record.name))?,
             data_dir: record.data_dir.clone().or_else(|| admitted.as_ref().and_then(|d| d.data_dir.clone())).ok_or_else(|| format!("{} has no known data dir", record.name))?,
-            last_accepted_name: None,
+            last_accepted_name: admitted.as_ref().map(|d| d.node.name.clone()),
         })
     }
 
@@ -3659,6 +3673,17 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("membership: {e}"))?;
+    // The row's name and config a launched admin's join handed: held before it publishes anything
+    // (R-JN1); at a first start the name is its create spec's, verified by the join.
+    let handed: Option<(Option<PathName>, Option<BTreeMap<String, String>>)> = pulled.as_ref().map(|a| (a.control.name.clone(), a.control.config.clone()));
+    if let Some((n, c)) = &handed {
+        if let Some(n) = n {
+            membership.set_name(n.clone());
+        }
+        if let Some(c) = c {
+            membership.set_config(c.clone());
+        }
+    }
     drop(step);
     // An admin that made no `JoinNode` and is no Day-0 root (a restart, or a recovery started with
     // a seed) holds no rafka-time yet: it reads it from the first node it reaches, before it
@@ -4133,7 +4158,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         fabric_id: cfg.fabric_id.clone(),
         node: MeshNode {
             node_id: node_id.clone(),
-            name: name.clone(),
+            name: handed.as_ref().and_then(|(n, _)| n.clone()).unwrap_or_else(|| name.clone()),
             endpoint_id: EndpointId(key.public().to_string()),
             // The mesh endpoint as bound (a rebind may have moved it).
             transport_addr: mesh_addr,
@@ -4150,7 +4175,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         digest_seq: 0,
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
-        config: BTreeMap::new(),
+        config: handed.as_ref().and_then(|(_, c)| c.clone()).unwrap_or_default(),
         load: None,
         gossip: None,
         data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
@@ -4280,6 +4305,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             known: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
             primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
             issuer: issuer.clone(),
+            row: Arc::new({
+                let rows = nodes_storage.clone();
+                move |name: PathName| {
+                    let rows = rows.clone();
+                    Box::pin(async move { rows.node_row_at(&name).await.map_err(|e| e.to_string()) })
+                }
+            }),
         });
         let _ = join_slot.set(door);
         // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
@@ -5902,7 +5934,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new() },
+                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
                 })
@@ -5912,6 +5944,7 @@ mod tests {
             }),
             known: view_projector(topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone()),
             primary: Arc::new(|| None),
+            row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(crate::certs::CertIssuer::no_certs({
                 let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);

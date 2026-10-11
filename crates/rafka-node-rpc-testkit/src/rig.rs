@@ -256,7 +256,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
                 Box::pin(async move {
                     Ok(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new() },
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
                 })
@@ -265,6 +265,13 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| None),
             issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::new(signer, rafka_time.clone())),
+            row: Arc::new({
+                let rows = rows.clone();
+                move |name| {
+                    let row = rows.lock().unwrap().get(&name).cloned();
+                    Box::pin(async move { Ok(row) })
+                }
+            }),
         })
     };
     if takes_joins {

@@ -184,7 +184,7 @@ impl DeploymentProvider for Fleet {
             let digest = fake_node_digest(spec, handle.fact());
             tokio::spawn(async move {
                 for _ in 0..500 {
-                    if joins.standing(&digest) == rafka_node_admin_core::join::Standing::Deployed {
+                    if matches!(joins.standing(&digest), rafka_node_admin_core::join::Standing::Deployed { .. }) {
                         joins.report(&digest);
                         return;
                     }
