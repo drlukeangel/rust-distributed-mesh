@@ -172,6 +172,12 @@ impl SourceVersion {
         self.version
     }
 
+    /// Whether observing `full` would bump the version: it is a different topology from the last
+    /// one observed, or none was observed yet. Nothing moves.
+    pub fn would_bump(&self, full: &Full) -> bool {
+        self.last.as_ref().is_none_or(|l| !l.same_topology(full))
+    }
+
     /// The version of the last topology observed, 0 before any.
     pub fn version(&self) -> u64 {
         self.version
