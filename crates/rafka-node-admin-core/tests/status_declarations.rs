@@ -214,6 +214,40 @@ async fn authority_is_the_peer_and_the_seat_never_the_request() {
     assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "fabric-primary of mesh2".into() } });
 }
 
+/// CONTRACT: nothing inside the mesh checks who is calling (node-rpc.md §14; node-rpc-envelope.md,
+/// Status: "Nothing inside the mesh checks who is calling"): a declaration from an endpoint this
+/// authority's view holds no birth for is decided for the subject the request names, on the
+/// receiver's own seat. The direction refusals stay, decided by the subject and the seat: a subject
+/// the view does not hold is `SubjectUnknown`, a subject of a mesh this admin is not the primary of
+/// is `ReceiverNotPrimary`, and a birth the view no longer holds is `RejectedStaleIncarnation`.
+/// What must NOT happen: a refusal naming the caller (`SenderNotSubject`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declaration_from_an_endpoint_the_authority_never_heard_of_is_decided_for_its_subject() {
+    let (rig, b) = rig().await;
+    let (rpc1, admin2) = (&b["rpc1"], &b["admin2"]);
+    // A fresh endpoint key, in no birth of the view.
+    let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
+    assert!(rig.topology.read().await.births().all(|n| n.endpoint_id != stranger.node.endpoint_id), "the stranger is in no birth of the view");
+    // A member's declaration is decided for that member: Applied, on its row first.
+    assert_eq!(reply(&call(&rig, &stranger, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    let row = rig.storage.node_declared().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    assert_eq!((row.state, row.name.clone()), (NodeState::ReadyForTraffic, rpc1.node.name.clone()), "the row is the subject's, at its own path.name");
+    // A node-admin's declaration reaches the fabric seat this admin holds.
+    assert_eq!(reply(&call(&rig, &stranger, &declare(admin2, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
+    // A mesh's declaration reaches the fabric-primary for a mesh it holds.
+    let m2 = StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: MeshState::ReadyForTraffic };
+    assert_eq!(reply(&call(&rig, &stranger, &m2).await), StatusReply::Applied);
+    // The direction refusals stay.
+    assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
+    let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
+    assert_eq!(reply(&call(&rig, &stranger, &unknown_mesh).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a mesh the fabric-primary does not hold");
+    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Leaving };
+    assert_eq!(reply(&call(&rig, &stranger, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
+    let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
+    rig.topology.write().await.nodes.push(foreign.node.clone());
+    assert_eq!(reply(&call(&rig, &stranger, &declare(&foreign, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     let (rig, b) = rig().await;
