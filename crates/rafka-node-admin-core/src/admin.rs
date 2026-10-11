@@ -2858,8 +2858,8 @@ impl AdminRunner {
     }
 
     /// `drain-node:<path>` / `stop-node:<path>` (node-drain.md, node-stop.md): the exact birth `from` at
-    /// `node`, fenced by incarnation, through its one half of the shutdown leg. A drain leaves the
-    /// process running; a stop ends with the provider's Exited proof and publishes no departure.
+    /// `node`, fenced by incarnation. A drain leaves the process running; a stop parks it, its
+    /// process alive (node-stop.md: no runtime Exited receipt), and publishes no departure.
     async fn standalone(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId, stop: bool) -> Result<(), String> {
         let op = if stop { "stop-node" } else { "drain-node" };
         let seen = self.topology.read().await.node(node).cloned();
