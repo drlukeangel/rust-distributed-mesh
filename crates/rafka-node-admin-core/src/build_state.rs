@@ -551,6 +551,27 @@ pub trait BuildStateAdapter: Send + Sync {
     /// attached to the run, never a fact, never durable. A state with no call attached to its runs
     /// has nobody to tell.
     async fn note_blocked(&self, _build_id: &BuildId, _attempt: u32, _operation: &str, _step: &str, _reason: &str) {}
+    /// The Build and attempt whose `recover-node:<path>` operation completed for the exited birth
+    /// `(node_id, incarnation)`, from every Build's step receipts in the log (a forgotten Build's
+    /// receipts included: forgetting leaves the views, never the receipts). The first such attempt.
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+        Ok(recovery_in(&self.facts().await?, path, node_id, incarnation))
+    }
+}
+
+/// [`BuildStateAdapter::recovery_of`] over `facts`: the first `Complete` receipt of
+/// `recover-node:<path>` whose output names the exited birth (the shape `complete_for_birth` writes).
+fn recovery_in(facts: &[BuildFact], path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, u32)> {
+    let operation = format!("recover-node:{path}");
+    let (node_id, incarnation) = (serde_json::to_value(node_id).ok()?, serde_json::to_value(incarnation).ok()?);
+    facts.iter().find_map(|f| match f {
+        BuildFact::Step(s)
+            if s.operation == operation && s.step == "Complete" && s.outcome == StepOutcome::Complete && s.output.as_ref().is_some_and(|o| o.get("node_id") == Some(&node_id) && o.get("incarnation") == Some(&incarnation)) =>
+        {
+            Some((s.build_id.clone(), s.attempt))
+        }
+        _ => None,
+    })
 }
 
 /// What an opened attempt carries, for a refusal: its reason, its action and who opened it.
@@ -768,6 +789,10 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         Ok(self.log.lock().unwrap().facts.clone())
     }
 
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+        Ok(recovery_in(&self.log.lock().unwrap().facts, path, node_id, incarnation))
+    }
+
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.log.lock().unwrap().facts.push(BuildFact::Forget { build_id: build_id.clone() });
         Ok(())
@@ -899,6 +924,10 @@ impl BuildStateAdapter for FileJournal {
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         Ok(self.log.lock().unwrap().facts.clone())
+    }
+
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+        Ok(recovery_in(&self.log.lock().unwrap().facts, path, node_id, incarnation))
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {

@@ -326,6 +326,16 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         let r = async {
             self.authority(route).await?;
+            // Keyed on the exited birth across the Build log: a recovery already applied is answered
+            // as applied whatever Build is accepted or in flight now (a later topology Build holds
+            // none of its receipts), and nothing is opened.
+            if let Some((build_id, attempt)) = self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)? {
+                outer.in_scope(|| {
+                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id, attempt, node = %path, node_id = %node_id, incarnation_id = %incarnation.0)
+                        .in_scope(|| tracing::info!("the exited birth was recovered by this attempt: nothing is opened"))
+                });
+                return Ok(Recovery::AlreadyApplied(Opened { build_id, attempt }));
+            }
             let current = match self.current_settled().await {
                 Err(Refusal::BuildInProgress(held)) => {
                     outer.in_scope(|| {
@@ -345,13 +355,6 @@ impl ControlPlane {
                 let reject = BuildReject::NodeAdminNotNodeRecovered { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
-            }
-            if let Some(attempt) = crate::accepted::recovered_at(&current, &path, &node_id, &incarnation) {
-                outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %current.build_id, attempt, node = %path, node_id = %node_id, incarnation_id = %incarnation.0)
-                        .in_scope(|| tracing::info!("the exited birth was recovered by this attempt: nothing is opened"))
-                });
-                return Ok(Recovery::AlreadyApplied(Opened { build_id: current.build_id.clone(), attempt }));
             }
             let node_name = path.to_string();
             let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() };
