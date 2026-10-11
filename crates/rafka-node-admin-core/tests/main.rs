@@ -65,6 +65,7 @@ mod provider_policy;
 mod readiness_gates;
 mod receipt_refusal;
 mod recovery_admission;
+mod restart_hold_from_facts;
 mod seat_transfer_step;
 mod status_declarations;
 mod topology_read;
