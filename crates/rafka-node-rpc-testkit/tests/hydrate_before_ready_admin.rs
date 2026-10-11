@@ -49,6 +49,7 @@ async fn until_ready(running: &rafka_node_admin_core::admin::Running) {
 #[tokio::test]
 async fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state() {
     let spans = Spans::default();
+    crate::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let dir = std::env::temp_dir().join(format!("hydrate-day0-{}", rafka_mesh_entity::NodeId::mint()));
     let hydrator = TestHydrator::new(Mode::Local);
@@ -88,6 +89,7 @@ async fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_unti
     use rafka_node_rpc_testkit::hydrate_probe::{PullServer, Row};
 
     let spans = Spans::default();
+    crate::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let root_dir = std::env::temp_dir().join(format!("hydrate-pair-a-{}", NodeId::mint()));
     let joiner_dir = std::env::temp_dir().join(format!("hydrate-pair-b-{}", NodeId::mint()));
