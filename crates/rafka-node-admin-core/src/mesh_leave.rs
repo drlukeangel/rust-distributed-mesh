@@ -987,6 +987,22 @@ mod tests {
         assert_eq!(runs.incomplete(&key), Some(third), "a resend is owned by its sender");
     }
 
+    /// CONTRACT: `leave-mesh` admission at the leaving primary is keyed on the natural key
+    /// `(mesh_id, Leaving)` (node-rpc-envelope.md, "Status": "Idempotency is the natural key ...
+    /// `(mesh_id, state)`"), never on the attempt: a `leave-mesh` of a later attempt of the Build
+    /// that reaches the primary while the member workflows of an earlier attempt run is the same
+    /// leave, answered `AlreadyApplied` (`Running`), and starts no second set of member workflows.
+    /// What must NOT happen: `Start` for it, a second run beside the first stopping the same members.
+    #[test]
+    fn a_leave_mesh_of_a_later_attempt_while_the_members_run_joins_the_run_under_way() {
+        let runs = LeaveRuns::default();
+        let first = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let later = LeaveKey { attempt: 2, ..first.clone() };
+        let (owner1, owner2) = (NodeId::mint(), NodeId::mint());
+        assert_eq!(runs.admit(&first, &owner1), LeaveAdmission::Start, "the first leave-mesh starts the member workflows");
+        assert_eq!(runs.admit(&later, &owner2), LeaveAdmission::Running, "a later attempt's leave-mesh while the member workflows run is the same leave (mesh_id, Leaving)");
+    }
+
     /// CONTRACT: an open leave the leaving primary reports incomplete ends at once with the named
     /// reason (the owner's wait resolves now, never on a deadline), and a later handoff for the same
     /// leave does not overwrite that outcome.
