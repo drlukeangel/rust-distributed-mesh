@@ -193,7 +193,7 @@ fn role_dropped(job: Job, epoch: u64, current: Option<u64>) {
     tracing::info_span!(
         "rdm.mesh.membership.reject.via-forwarder-role-dropped",
         node = %me,
-        kind,
+        kind = %kind,
         decided_in_epoch = epoch,
         current_epoch = %current,
         frames = frames.len(),
@@ -483,8 +483,11 @@ mod tests {
     /// is no longer its mesh's primary puts nothing into the mesh. The full v10 is on the channel
     /// before the role drops; the delta v10 to v11 and a carried frame queued behind it are not.
     /// Taking the role again sends the full of the new term, behind nothing of the old one.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test]
     async fn a_forward_queued_before_the_role_dropped_is_never_sent() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = Spans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
         let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());
@@ -505,6 +508,13 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (0, 12)], "nothing queued before the role dropped reaches the channel");
+        let dropped = spans.named("rdm.mesh.membership.reject.via-forwarder-role-dropped").await;
+        let named: Vec<(String, String, String, String)> = dropped.iter().map(|f| (f["kind"].clone(), f["decided_in_epoch"].clone(), f["current_epoch"].clone(), f["sources"].clone())).collect();
+        assert_eq!(
+            named,
+            vec![("forwarded".to_string(), "1".to_string(), "3".to_string(), format!("mesh1:{p}@11")), ("carried".to_string(), "1".to_string(), "3".to_string(), String::new())],
+            "each dropped entry is named with the term it was decided in and the term that dropped it"
+        );
     }
 
     /// CONTRACT: a node that does not hold the role decides nothing: a source moving, a seat full
