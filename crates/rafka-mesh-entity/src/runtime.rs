@@ -243,7 +243,8 @@ impl RuntimeFact {
         let tmp = dir.join(format!("{RUNTIME_FILE}.tmp"));
         let body = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, dir.join(RUNTIME_FILE)).map_err(|e| format!("{RUNTIME_FILE}: {e}"))
+        let path = dir.join(RUNTIME_FILE);
+        std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// `dir`'s runtime record: `None` when none is written; a record that cannot be read or parsed
