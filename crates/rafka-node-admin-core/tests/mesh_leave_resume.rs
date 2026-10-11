@@ -14,7 +14,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{accepted_roster, accepted_row, admitted_of, amend_roster, amended_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{accepted_roster, accepted_row, admission_roster, admitted_of, amend_roster, amended_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
 use serde_json::{json, Value};
@@ -293,13 +293,13 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
         // Attempt 1: both sides capture the roster at admission; the ordinary tier is incomplete.
         let fp1 = accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
         let mp1 = accepted_roster(&builds, &key(1), STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
-        let first = members_exited(&builds, &key(1), FINAL, &mp1, &me, final_runtime.clone(), &records, shutdown(1)).await;
+        let first = members_exited(&builds, &key(1), FINAL, &mp1, &me, final_runtime.clone(), &records, &[], shutdown(1)).await;
 
         // Attempt 2 reads the view the first one left.
         let records2: Vec<Node> = records.iter().map(|n| view.0.lock().unwrap().get(&n.name.to_string()).cloned().unwrap_or_else(|| n.clone())).collect();
         let fp2 = accepted_roster(&builds, &key(2), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records2)).await.unwrap();
         let mp2 = accepted_roster(&builds, &key(2), STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records2)).await.unwrap();
-        let second = members_exited(&builds, &key(2), FINAL, &mp2, &me, final_runtime.clone(), &records2, shutdown(2)).await;
+        let second = members_exited(&builds, &key(2), FINAL, &mp2, &me, final_runtime.clone(), &records2, &[], shutdown(2)).await;
         (first, fp1, fp2, mp1, mp2, second, records2, trace_id)
     });
     let spans = cap.spans();
@@ -394,7 +394,7 @@ fn an_incomplete_tier_is_refused_not_ready_naming_the_births_without_an_exited_r
         let _in_root = root.enter();
         let roster = accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
         let mp = accepted_roster(&builds, &key, STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
-        let tier = members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, |mut n: Node| {
+        let tier = members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, &[], |mut n: Node| {
             let (pipeline, handles, build_id, outer) = (&pipeline, &handles, &build_id, &outer);
             async move {
                 let name = n.name.to_string();
@@ -475,7 +475,7 @@ fn an_owner_resuming_after_the_final_primary_exited_records_mesh_left_from_the_r
         let _in_root = root.enter();
         let roster = accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
         let mp = accepted_roster(&builds, &key, STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
-        members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, |mut n: Node| {
+        members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, &[], |mut n: Node| {
             let (pipeline, handles, build_id, outer) = (&pipeline, &handles, &build_id, &outer);
             async move {
                 let name = n.name.to_string();
@@ -581,7 +581,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         // Attempt 1: both sides capture the roster; the ordinary tier is incomplete; the primary is lost.
         accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
         let mp1 = accepted_roster(&builds, &key(1), STEP_LEAVING_ROSTER, FINAL, &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
-        let first = members_exited(&builds, &key(1), FINAL, &mp1, &lost, lost_runtime.clone(), &records, shutdown(1)).await;
+        let first = members_exited(&builds, &key(1), FINAL, &mp1, &lost, lost_runtime.clone(), &records, &[], shutdown(1)).await;
         assert!(first.is_err(), "attempt 1's ordinary tier is incomplete");
 
         // The resume, attempt 2: the lost primary's exact Exited first, then the amendment.
@@ -596,7 +596,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         let leaving = accepted_row(&steps, &outer, STEP_LEAVING_ROSTER).unwrap().unwrap().roster;
         let mp2 = amended_roster(&leaving, &steps, &outer).unwrap();
         let records2: Vec<Node> = records.iter().map(|n| view.0.lock().unwrap().get(&n.name.to_string()).cloned().unwrap_or_else(|| n.clone())).collect();
-        let manifest = members_exited(&builds, &key(2), OTHER_ADMIN, &mp2, &survivor, survivor_runtime.clone(), &records2, shutdown(2)).await.expect("the amended primary's member workflows complete");
+        let manifest = members_exited(&builds, &key(2), OTHER_ADMIN, &mp2, &survivor, survivor_runtime.clone(), &records2, &[], shutdown(2)).await.expect("the amended primary's member workflows complete");
         let facts = builds.facts().await.unwrap();
         let verdict = handoff_verdict(&facts, &key(2), &admitted, &manifest_reference(&build_id.0, 2, &outer, false));
         // A stale hand-off: the same receipts, naming the predecessor as final primary.
@@ -765,4 +765,67 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
     }
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     assert_eq!(named("rdm.node_admin.mesh.update.via-roster-amended").iter().filter(|s| s["attributes"]["outcome"] == "applied").count(), 2);
+}
+
+/// CONTRACT: the amended final primary admits `LeaveMesh` from the owner's Build facts when gossip has
+/// not yet brought it the amendment (R11 step 4; mesh-leave.md, "Resume after the primary's loss",
+/// step 3: gossip is never authority). The fabric-primary recorded the lost primary's exact Exited
+/// and `RosterAmended { mesh2.admin.1 -> mesh2.admin.2 }` in its own Build facts; `mesh2.admin.2`'s
+/// own facts hold only the roster captured in attempt 1. Its admission reads the owner's facts: the
+/// roster admits it, and the lost primary's exit receipt read from the owner keeps it out of the
+/// node-admin tier, so no member workflow runs and the manifest covers both primaries.
+#[test]
+fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_brings_the_amendment() {
+    let cap = capture();
+    let records: Vec<Node> = [OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 46_000 + i as u32))).collect();
+    let birth = |name: &str| RosterBirth::of(records.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();
+    let (lost, survivor) = (birth(FINAL), birth(OTHER_ADMIN));
+    let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[FINAL].fact().unwrap()), RuntimeProof::of(&handles[OTHER_ADMIN].fact().unwrap()));
+    let ran: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let (out, trace_id) = cap.run(async {
+        let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
+        let build_id = BuildId::mint();
+        let mesh_id = MeshId::mint();
+        let outer = operation(&mesh_id);
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        for b in [&owner, &own] {
+            b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+            accepted_roster(b, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
+            accepted_roster(b, &key(1), STEP_LEAVING_ROSTER, FINAL, &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
+        }
+        let root = tracing::info_span!("cell.mesh-leave-owner-amendment", build_id = %build_id, operation = %outer);
+        let trace_id = trace_id(&root);
+        let _in_root = root.enter();
+        // The fabric-primary's resume, in its own facts only: gossip has not delivered it.
+        record_predecessor_exit(&owner, &key(2), "mesh1.admin.1", &exited(&lost, &lost_runtime)).await.expect("the lost primary's exact exit is recorded");
+        amend_roster(&owner, &key(2), "mesh1.admin.1", &RosterAmended { predecessor: lost.clone(), final_primary: survivor.clone(), final_runtime: survivor_runtime.clone() }).await.expect("the amendment is recorded");
+        // mesh2.admin.2 admits LeaveMesh.
+        let steps = own.read_build(&build_id).await.unwrap().steps;
+        let leaving = accepted_row(&steps, &outer, STEP_LEAVING_ROSTER).unwrap().unwrap().roster;
+        let owner_facts = owner.facts().await.unwrap();
+        let (roster, known) = admission_roster(&leaving, &steps, &outer, &survivor, || async { Ok(owner_facts) }).await.expect("the admission reads");
+        let manifest = members_exited(&own, &key(2), OTHER_ADMIN, &roster, &survivor, survivor_runtime.clone(), &records, &known, |n: Node| {
+            let ran = &ran;
+            async move {
+                ran.lock().unwrap().push(n.name.to_string());
+                Err::<TerminalReceipt, String>(format!("{} is run again", n.name))
+            }
+        })
+        .await;
+        (manifest, trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("owner_amendment");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    let manifest = out.unwrap_or_else(|e| panic!("the amended primary admits the leave from the owner's facts: {e}"));
+    assert!(ran.lock().unwrap().is_empty(), "no member workflow runs: the lost primary's exit receipt is read from the owner: {:?}", ran.lock().unwrap());
+    assert_eq!(manifest.final_primary, survivor, "the manifest names the amended primary");
+    assert_eq!(sorted(manifest.roster.clone()), sorted(vec![lost.clone(), survivor.clone()]), "the roster covers both primaries");
+    assert_eq!(births(&manifest.receipts), BTreeSet::from([FINAL.to_string()]), "the lost primary's exit receipt is in the manifest");
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    assert!(named("rdm.node_admin.mesh.resolve.via-owner-build-facts").iter().any(|s| s["attributes"]["amendments"] == "1" && s["attributes"]["me"].as_str().is_some_and(|m| m.contains(OTHER_ADMIN))), "the admission read the owner's Build facts");
+    assert!(named("rdm.node_admin.mesh.resolve.via-retained-receipts").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "1" && s["attributes"]["remaining"] == "0"));
 }
