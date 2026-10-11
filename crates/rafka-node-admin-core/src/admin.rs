@@ -3814,7 +3814,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         } else {
             let mut contacts = Vec::new();
             for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
-                contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None });
+                contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, transition: None, ready: false, data_dir: None, admin_api_base: None });
             }
             crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN, &boot)
                 .await
@@ -4005,7 +4005,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let desired = accepted.current(&*builds_dyn).await.map(|b| b.topology);
         for r in nodes_storage.contacts().await.map_err(storage_err)? {
             if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
-                let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None };
+                let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, transition: None, ready: false, data_dir: None, admin_api_base: None };
                 records.publish(m.as_node(NodeStatus::PendingReconnect, policy.provider));
             }
         }
@@ -4014,7 +4014,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // in this admin's view as the maker knew it, until membership or the sweep says more. A fabric
     // primary this admin becomes then never plans from an empty view.
     if let Some(("maker", map)) = entry_map.as_ref().map(|(src, m)| (*src, m)) {
-        for n in map.iter().filter(|n| n.node_id != node_id && n.settled) {
+        for n in map.iter().filter(|n| n.node_id != node_id && n.transition.is_none()) {
             records.publish(n.as_node(if n.ready { NodeStatus::ReadyForTraffic } else { NodeStatus::PendingReconnect }, policy.provider));
         }
     }
@@ -4531,11 +4531,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             // The entry read has told this admin what the mesh knows of its seats (or no one could).
             records.set_entering(false);
             // A reply proves a live exact birth: the view holds it (until membership speaks for
-            // it). A node that did not answer stays in the map as not yet reached.
+            // it), settled as ReadyForTraffic, in transition as its source held it (a Leaving
+            // member that answers is alive and still leaving). A settled node that did not answer
+            // stays in the map as not yet reached; one in transition is left to its own last digest
+            // (a stopped member's terminal Leaving is a departure, never silence the tick watches).
             for n in &report.reached {
-                records.publish(n.as_node(NodeStatus::ReadyForTraffic, provider_kind));
+                records.publish(n.as_node(n.transition.unwrap_or(NodeStatus::ReadyForTraffic), provider_kind));
             }
-            for (n, _) in &report.not_reached {
+            for (n, _) in report.not_reached.iter().filter(|(n, _)| n.transition.is_none()) {
                 records.publish(n.as_node(NodeStatus::PendingReconnect, provider_kind));
             }
             // A node not reached is unheard, so the mesh-primary's tick watches it: its tickle, then

@@ -34,9 +34,10 @@ pub(crate) struct MapNode {
     pub endpoint_id: EndpointId,
     pub transport_addr: SocketAddr,
     pub incarnation: IncarnationId,
-    /// The birth is not in a lifecycle transition (being born, restarted, drained or leaving):
-    /// only a settled birth is expected to answer a Ping.
-    pub settled: bool,
+    /// The lifecycle transition the source held the birth in (being born, drained or leaving), or
+    /// `None` for a settled birth. Every birth of the own mesh is pinged on entry; the status is
+    /// what the view learns of a birth in transition that answers, never `ReadyForTraffic`.
+    pub transition: Option<crate::model::NodeStatus>,
     /// What the source knew: a birth the source holds ready is ready, anything else settled is
     /// not yet reached.
     pub ready: bool,
@@ -57,8 +58,9 @@ impl MapNode {
     }
 
     /// The birth as the view holds it until membership speaks for it: `status` is what the map
-    /// knows (`ReadyForTraffic` for a birth that answered a Ping, `PendingReconnect` for one not
-    /// yet reached; never `Dead`).
+    /// knows (`ReadyForTraffic` for a settled birth that answered a Ping, the transition its source
+    /// held for one in transition that answered, `PendingReconnect` for a settled one not yet
+    /// reached; never `Dead`).
     pub(crate) fn as_node(&self, status: crate::model::NodeStatus, provider: crate::model::ProviderKind) -> crate::model::Node {
         let mut node = crate::model::Node::allocated(self.name.clone());
         node.node_id = self.node_id.clone();
@@ -86,11 +88,11 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &ra
         .filter(|d| &d.fabric_id == fabric)
         .map(|d| {
             // A digest says what the node last reported, not that it is alive: whoever answered
-            // heard it at an age the digest does not carry. Every settled birth is therefore not
-            // yet reached (the sweep's ping, or its own digest, says more), never ready.
-            let settled = d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic;
+            // heard it at an age the digest does not carry. Every birth is therefore not yet
+            // reached (the sweep's ping, or its own digest, says more), never ready.
+            let transition = (d.status != rafka_mesh_entity::MemberStatus::ReadyForTraffic).then(|| crate::admin::node_status(d.status));
             MapNode {
-                settled,
+                transition,
                 ready: false,
                 data_dir: d.data_dir.clone(),
                 admin_api_base: d.admin_api_base.clone(),
@@ -113,7 +115,7 @@ pub(crate) fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<Ma
         .flat_map(|m| m.nodes.iter())
         .filter_map(|n| {
             Some(MapNode {
-                settled: true,
+                transition: None,
                 ready: false,
                 data_dir: None,
                 admin_api_base: None,
@@ -143,7 +145,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
     match source {
         TopologySource::DurableMap(rows) => Ok(rows
             .iter()
-            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), settled: true, ready: false, data_dir: None, admin_api_base: None })
+            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), transition: None, ready: false, data_dir: None, admin_api_base: None })
             .collect()),
         TopologySource::LocalNode { node, client, membership, me, me_id, time } => {
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
@@ -202,7 +204,7 @@ async fn ping(ctx: &EntryCtx, n: &MapNode) -> Result<(), String> {
 /// The births of the own-mesh map the entry pings, in path order: the candidates for the local
 /// node and the sweep's targets (node-admin-lifecycle.md §4.2).
 pub(crate) fn sweep_targets(map: &[MapNode]) -> Vec<MapNode> {
-    map.iter().filter(|n| n.settled).cloned().collect()
+    map.to_vec()
 }
 
 /// Enter the existing mesh of `ctx.me` from `held`, the topology its source gave: connect to a
@@ -297,7 +299,7 @@ mod tests {
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:1".parse().unwrap(),
             incarnation: IncarnationId::mint(),
-            settled: status == MemberStatus::ReadyForTraffic,
+            transition: (status != MemberStatus::ReadyForTraffic).then(|| crate::admin::node_status(status)),
             ready: false,
             data_dir: None,
             admin_api_base: None,
