@@ -941,6 +941,9 @@ struct Replacing<'a> {
     build_id: &'a BuildId,
     predecessor: &'a Node,
     handle: &'a DeploymentHandle,
+    /// Its exact terminal proof (TerminateRuntime) is already committed: a predecessor that was not
+    /// parked by its `stopped` reply is renamed only on that proof, so it is ended before its rename.
+    terminated: bool,
 }
 
 /// A step that failed.
@@ -1327,8 +1330,9 @@ impl DeploymentPipeline<'_> {
         // container provider's network exists per fabric: nothing per node.
         self.step(run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
         // A replacement: the successor now has its identity, key and directory. The predecessor, parked
-        // by its stop, is ended with the provider's exact terminal proof, and its storage handed over
-        // into that directory before the successor's process exists.
+        // by its stop, is ended with the provider's exact terminal proof (one never parked was ended
+        // before its rename), and its storage handed over into that directory before the successor's
+        // process exists.
         if let Some(replacing) = replacing {
             self.end_and_hand_over(run, replacing, &data_dir).await?;
         }
@@ -1768,7 +1772,7 @@ impl DeploymentPipeline<'_> {
                 self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
                 return Ok(());
             }
-            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.expect("a stop that terminates yields the provider's receipt")
+            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.1.expect("a stop that terminates yields the provider's receipt")
         };
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is.
@@ -1907,14 +1911,16 @@ impl DeploymentPipeline<'_> {
     /// `NodeStopped` from that matching reply, then the provider's stop and inspection of the exact
     /// runtime: only its `Exited` is terminal proof.
     pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        let terminal = self.stop_steps_with(run, node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?;
+        let (_, terminal) = self.stop_steps_with(run, node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?;
         Ok(terminal.expect("a stop that terminates yields the provider's receipt"))
     }
 
     /// [`Self::stop_steps`]; `proof` says what the wait step must have seen to complete (a standalone
     /// stop fails it by name unless stop-node was admitted and the birth's `stopped` reply received).
-    /// `end` says what follows: the process parks, or the provider ends it.
-    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
+    /// `end` says what follows: the process parks, or the provider ends it. Answers what the wait
+    /// step completed with (`Received`: the birth is parked by its `stopped` reply) and, when the
+    /// provider ended it, the terminal receipt.
+    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<(Completion, Option<TerminalReceipt>), PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
@@ -1929,7 +1935,7 @@ impl DeploymentPipeline<'_> {
                 Ok(self.observer.send_command(node, NodeCommand::Stop, &ctx).await)
             })
             .await?;
-        let _: Completion = self
+        let left: Completion = self
             .step(run, RetireStep::AwaitNodeLeft.name(), async {
                 if !admission.admitted() {
                     // A command the birth never held has no left reply to follow (node-stop.md): a
@@ -1955,8 +1961,8 @@ impl DeploymentPipeline<'_> {
             })
             .await?;
         match end {
-            StopEnd::Park { .. } => Ok(None),
-            StopEnd::Terminate { .. } => Ok(Some(self.terminate_step(run, node, handle).await?)),
+            StopEnd::Park { .. } => Ok((left, None)),
+            StopEnd::Terminate { .. } => Ok((left, Some(self.terminate_step(run, node, handle).await?))),
         }
     }
 
@@ -2068,6 +2074,10 @@ impl DeploymentPipeline<'_> {
     ///   -> NodeDeleted -> ReleaseStorage -> Complete
     /// ```
     ///
+    /// A predecessor that is not parked by its `stopped` reply (it did not admit stop-node, or the
+    /// provider already proves it terminal) is renamed only on its exit proof: TerminateRuntime
+    /// moves before RenamePredecessor and runs once (node-update.md, "Rename precondition").
+    ///
     /// The old identity's `NodeDeleted` is published after the successor is admitted and ready, and
     /// never before: a replace is not a delete followed by a spawn. `before_ready` is the successor's
     /// `ApplyMeshPending` work (a mesh's first admin); `after_ready` commits the successor's lifecycle
@@ -2109,14 +2119,26 @@ impl DeploymentPipeline<'_> {
         // The recipe's first step (node-replace.md 1): the complete stop leaves the predecessor parked,
         // and the stop's departure (`NodeStopped`) drops it from every book, before it gives up its
         // name and before anything of the successor exists.
+        let mut parked = false;
         if !matches!(self.provider.inspect(&req.handle).await, DeploymentStatus::Exited { .. }) {
             self.seat_transfer_step(&mut run, &old).await?;
             self.drain_steps(&mut run, &mut old, &req.handle).await?;
             // The complete stop (node-stop.md): once stop-node is admitted, `stopped` received or the
-            // step fails by name; a predecessor that never admitted it parked nothing, published no
-            // departure, and is retired by its exact runtime after the successor is ready.
-            self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::StoppedIfAdmitted, StopEnd::Park { publish_stopped: true }).await?;
+            // step fails by name; a predecessor that never admitted it parked nothing and published
+            // no departure.
+            let (left, _) = self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::StoppedIfAdmitted, StopEnd::Park { publish_stopped: true }).await?;
+            parked = left == Completion::Received;
         }
+        // The rename precondition (node-update.md): the node is not ready-for-traffic and holds no
+        // connection. A predecessor parked by its `stopped` reply meets it as it is; one that was
+        // never stopped (it did not admit stop-node, or the provider already proves it terminal) is
+        // renamed only on the provider's exact terminal proof, so it is ended first.
+        let proof = if parked {
+            "stopped"
+        } else {
+            self.terminate_step(&mut run, &old, &req.handle).await?;
+            "exited"
+        };
         let to = format!("{name}.old");
         self.step(&mut run, ReplaceStep::RenamePredecessor.name(), async {
             tracing::info_span!(
@@ -2128,6 +2150,7 @@ impl DeploymentPipeline<'_> {
                 incarnation_id = %birth.0,
                 from = %name,
                 to = %to,
+                proof,
             )
             .in_scope(|| tracing::info!("the predecessor gives up its path.name: the successor is created at it"));
             self.sink.rename_predecessor(name, &old.node_id, &birth);
@@ -2135,7 +2158,7 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, held_runtimes: req.held_runtimes.clone() };
-        let replacing = Replacing { build_id: &req.build_id, predecessor: &old, handle: &req.handle };
+        let replacing = Replacing { build_id: &req.build_id, predecessor: &old, handle: &req.handle, terminated: !parked };
         let mut created = self.create_to_ready(&mut run, &creq, before_ready, Some(&replacing), None).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
@@ -2261,11 +2284,14 @@ impl DeploymentPipeline<'_> {
         Ok(created)
     }
 
-    /// The predecessor, parked since its stop (or proven terminal already), is ended with the
-    /// provider's exact terminal proof, and its storage goes into the successor's directory: after the
-    /// successor's identity exists and before its process does.
+    /// The predecessor, parked since its stop, is ended with the provider's exact terminal proof (one
+    /// that was never stopped was ended before its rename, and is not ended again), and its storage
+    /// goes into the successor's directory: after the successor's identity exists and before its
+    /// process does.
     async fn end_and_hand_over(&self, run: &mut Run<'_>, replacing: &Replacing<'_>, successor_dir: &std::path::Path) -> Result<(), PipelineError> {
-        self.terminate_step(run, replacing.predecessor, replacing.handle).await?;
+        if !replacing.terminated {
+            self.terminate_step(run, replacing.predecessor, replacing.handle).await?;
+        }
         self.step(run, ReplaceStep::HandoffStorage.name(), async { self.hand_over_storage(replacing, successor_dir).await }).await
     }
 
