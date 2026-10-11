@@ -957,7 +957,6 @@ pub struct RecoverRequest {
 struct Recovering<'a> {
     build_id: &'a BuildId,
     predecessor: &'a Node,
-    handle: &'a DeploymentHandle,
 }
 
 /// A step that failed.
@@ -1365,11 +1364,11 @@ impl DeploymentPipeline<'_> {
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
-        // A recovery: the successor now has its identity, key and directory. The proven-terminal
-        // predecessor is ended with the provider's exact terminal proof, and its storage handed over
+        // A recovery: the successor now has its identity, key and directory. The predecessor, ended
+        // with the provider's exact terminal proof before the create began, hands its storage over
         // into that directory before the successor's process exists.
         if let Some(recovering) = recovering {
-            self.end_and_hand_over(run, recovering, &data_dir).await?;
+            self.step(run, ReplaceStep::HandoffStorage.name(), async { self.hand_over_storage(recovering, &data_dir).await }).await?;
         }
         let launch = Launch {
             fabric: self.template.fabric.clone(),
@@ -2174,9 +2173,10 @@ impl DeploymentPipeline<'_> {
     /// replace gossip frame.").
     ///
     /// A predecessor the provider already proves terminal is the recovery of an exited node
-    /// (node-recovery.md): it is sent nothing, and the operation runs NodeDeleting -> RenamePredecessor
-    /// -> AllocateIdentity -> PrepareStorage -> PrepareNetwork -> TerminateRuntime -> HandoffStorage ->
-    /// DeployRuntime -> ... -> WaitForNodeReady -> NodeDeleted -> ReleaseStorage -> Complete.
+    /// (node-recovery.md): it is sent nothing, and the operation is node.delete of the exited instance,
+    /// then node.create: NodeDeleting -> RenamePredecessor -> TerminateRuntime -> NodeDeleted (its
+    /// Deleted row at `<path>.old`) -> AllocateIdentity -> PrepareStorage -> PrepareNetwork ->
+    /// HandoffStorage -> DeployRuntime -> ... -> WaitForNodeReady -> ReleaseStorage -> Complete.
     ///
     /// `before_ready` is the successor's `ApplyMeshPending` work (a mesh's first admin); `after_ready`
     /// commits the successor's lifecycle transition once it is ready.
@@ -2253,19 +2253,27 @@ impl DeploymentPipeline<'_> {
             Ok(op.clone())
         })
         .await?;
+        if exited {
+            // node.delete of the exited instance, then node.create (node-recovery.md "Steps"): the
+            // provider's exact terminal proof, then the old identity's departure and its Deleted row
+            // at `<path>.old`, before anything of the successor exists. The row is written while this
+            // executor is the writer of the mesh's rows: a mesh's only admin, replaced by the
+            // fabric-primary as the acting primary of a mesh with no primary, hands the mesh's seat
+            // to its successor at the successor's readiness, and from then on that successor writes
+            // the mesh's rows (R13). The storage is released only after the successor took it over.
+            self.terminate_step(&mut run, &old, &req.handle).await?;
+            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
+            let parked = Node { name: name.renamed(), ..old.clone() };
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&parked, op)).await?;
+            self.lifecycle.deleted(&op).await;
+        }
         // node-replace.md 3: node.create at the freed name, a new node.id, incarnation and directory.
         let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, held_runtimes: req.held_runtimes.clone() };
-        let recovering = Recovering { build_id: &req.build_id, predecessor: &old, handle: &req.handle };
+        let recovering = Recovering { build_id: &req.build_id, predecessor: &old };
         let mut created = self.create_to_ready(&mut run, &creq, before_ready, exited.then_some(&recovering), None).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
         if exited {
-            // The recovery's departure of the old identity: the provider's inspection is the proof,
-            // and the successor is admitted and ready.
-            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let parked = Node { name: name.renamed(), ..old.clone() };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&parked, op.clone())).await?;
-            self.lifecycle.deleted(&op).await;
             self.release_storage_step(&mut run, &req.build_id, &old).await?;
         }
         self.step(&mut run, CreateStep::Complete.name(), async {
@@ -2387,14 +2395,8 @@ impl DeploymentPipeline<'_> {
         Ok(created)
     }
 
-    /// The recovered predecessor, proven terminal already, is ended with the provider's exact terminal
-    /// proof, and its storage goes into the successor's directory: after the successor's identity
-    /// exists and before its process does.
-    async fn end_and_hand_over(&self, run: &mut Run<'_>, recovering: &Recovering<'_>, successor_dir: &std::path::Path) -> Result<(), PipelineError> {
-        self.terminate_step(run, recovering.predecessor, recovering.handle).await?;
-        self.step(run, ReplaceStep::HandoffStorage.name(), async { self.hand_over_storage(recovering, successor_dir).await }).await
-    }
-
+    /// The recovered predecessor's storage goes into the successor's directory: after the successor's
+    /// identity exists and before its process does.
     /// The top-level directories of every directory that holds this path's storage (the predecessor's,
     /// and a successor an earlier attempt of this operation left behind) move into the successor's
     /// directory. Files (the identity, the transport key, the runtime record) never move. What the

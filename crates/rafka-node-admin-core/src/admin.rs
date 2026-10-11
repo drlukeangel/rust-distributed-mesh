@@ -2350,8 +2350,9 @@ impl AdminRunner {
                 FenceOutcome::Alive | FenceOutcome::Held => return Ok(()),
                 // Nothing proves the path free: the create fails, naming what could not be read.
                 FenceOutcome::RecordsUnreadable { reason } => return Err(format!("{node}: the runtimes recorded at this path cannot be read, so no birth is created over them: {reason}")),
-                // A birth the provider proves terminal is replaced, not deleted before a spawn: the
-                // old identity's departure is published after its successor is ready.
+                // A birth the provider proves terminal is replaced at its path: the old identity is
+                // deleted (its terminal proof, NodeDeleted, its Deleted row), then the successor is
+                // created (node-recovery.md "Steps").
                 FenceOutcome::Clear { gone: Some(prev) } => match prev.incarnation_id {
                     Some(birth) => return self.replace(build_id, attempt, node, &birth).await,
                     None => {}
