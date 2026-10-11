@@ -410,9 +410,12 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         records.set_rows(Arc::new(NodeRows::new(me.clone(), me_id, topology.clone(), n_store.clone())));
         let (successor, fresh) = (node("mesh1.rpc.2", false, false), node("mesh1.rpc.3", false, false));
         let (succ, fresh_id) = (successor.node_id.clone(), fresh.node_id.clone());
+        // N takes mesh1's seat (and the fabric seat P held with it): the mesh-primary writes its
+        // mesh's rows (R13), so the rebuild is the mesh seat's.
         let after = {
             let mut t = topology.read().await.clone();
             for n in t.nodes.iter_mut() {
+                n.is_primary = n.name == me;
                 n.is_fabric_primary = n.name == me;
             }
             t.nodes.push(successor);
