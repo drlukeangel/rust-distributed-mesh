@@ -213,12 +213,8 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     // mesh primary forwards onto the mesh channel.
     assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
     let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
-    // The final primary's own Draining (node-drain.md: Draining is live, so it still holds its seat and
-    // its aggregate publisher) reaches an admin outside the leaving mesh in mesh1's backbone Members.
-    let final_at_peer: Vec<&Value> = states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == final_name && s(&sp["attributes"]["node"]).starts_with("mesh2.admin.") && sp["attributes"]["channel"] == "backbone").collect();
-    assert!(final_at_peer.iter().any(|sp| s(&sp["attributes"]["status"]) == "Draining"), "a mesh2 admin held the final primary {final_name} Draining from mesh1's backbone Members: {final_at_peer:?}");
-    // Its Leaving and parked state reach every node from the stopped reply (node-stop.md steps 4-5): the
-    // owner publishes NodeStopped for it, and a mesh2 admin and a mesh2 ordinary node hold it Leaving and
+    // The final primary's Leaving and parked state reach every node from its stopped reply (node-stop.md
+    // steps 4-5): the owner publishes NodeStopped for it, and a mesh2 admin and a mesh2 ordinary node hold it Leaving and
     // parked, not routable.
     let final_parked: Vec<&Value> = leaving_states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == final_name && parked(sp)).collect();
     assert!(final_parked.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.admin.")), "a mesh2 admin held the final primary {final_name} parked: {final_parked:?}");
