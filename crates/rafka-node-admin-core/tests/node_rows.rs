@@ -143,7 +143,6 @@ impl Dispatcher for Script {
 struct Rig {
     env: Arc<DriveEnv>,
     storage: Arc<MemoryNodesStorage>,
-    records: Arc<Records>,
     build: BuildId,
 }
 
@@ -180,11 +179,7 @@ async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesSto
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         rows,
     });
-    Rig { env, storage, records, build: opened.build_id }
-}
-
-fn gone(name: &'static str) -> Act {
-    Act::View(Box::new(move |v: &mut Topology| v.nodes.retain(|n| n.name.to_string() != name)))
+    Rig { env, storage, build: opened.build_id }
 }
 
 /// The writer of `mesh1`'s rows, its primary `mesh1.admin.2`, over `storage`, its view the fixture
