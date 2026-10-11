@@ -188,6 +188,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             client: Some(root.node_rpc.client.clone()),
             commands: Arc::default(),
             authority: Arc::default(),
+            handover: Arc::default(),
         };
         let named = tokio::time::timeout(WRONG, async {
             loop {
