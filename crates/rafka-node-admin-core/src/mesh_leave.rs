@@ -121,23 +121,83 @@ pub fn first_mismatch(manifest: &ExitManifest, roster: &[RosterBirth], final_pri
     None
 }
 
-/// The accepted roster of the leave `key`, as recorded under `step` (`AcceptedRoster` at the
-/// fabric-primary, `LeavingRoster` at the leaving mesh-primary): `capture()` is the roster as this
-/// admin's view holds it now.
+/// The roster a leave's admission accepted, as its step receipt records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptedRoster {
+    /// Every accepted birth of the mesh, the final primary included.
+    pub roster: Vec<RosterBirth>,
+}
+
+/// The accepted roster of the leave `key` (mesh-leave.md step 1): captured once, at the first
+/// admission of the operation in its Build, and kept as its own step receipt under `step`
+/// (`AcceptedRoster` at the fabric-primary, `LeavingRoster` at the leaving mesh-primary). A resumed
+/// attempt reads that receipt and never recaptures: a birth that exited is no longer live, and the
+/// proof set must still cover it. With no receipt recorded, `capture()` (the roster as this admin's
+/// view holds it now) is recorded with one blind append and returned.
 pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, step: &str, executor: &str, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
-    let _ = (builds, step, executor);
-    let roster = capture()?;
-    tracing::info_span!("rdm.node_admin.mesh.resolve.via-accepted-roster", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, step, source = "captured", roster = roster.len())
-        .in_scope(|| tracing::info!("the roster of the leave is the view's"));
+    let build_id = BuildId(key.build_id.clone());
+    let view = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the {step} receipt of {}: {e}", key.operation))?;
+    let recorded = view.steps.iter().filter(|r| r.operation == key.operation && r.step == step && r.outcome == StepOutcome::Complete).min_by_key(|r| r.attempt);
+    let (roster, source, accepted_in) = match recorded {
+        Some(r) => {
+            let row: AcceptedRoster = r
+                .output
+                .clone()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .ok_or_else(|| format!("{executor}: the {step} receipt of {} (Build {build_id}, attempt {}) holds no readable roster: the accepted roster cannot be named", key.operation, r.attempt))?;
+            (row.roster, "receipt", r.attempt)
+        }
+        None => {
+            let roster = capture()?;
+            builds
+                .append_step_receipt(&BuildStepReceipt {
+                    build_id: build_id.clone(),
+                    attempt: key.attempt,
+                    operation: key.operation.clone(),
+                    step: step.to_string(),
+                    outcome: StepOutcome::Complete,
+                    output: serde_json::to_value(AcceptedRoster { roster: roster.clone() }).ok(),
+                    executor: Some(executor.to_string()),
+                })
+                .await
+                .map_err(|e| format!("{executor}: the {step} receipt of {} could not be recorded: {e}", key.operation))?;
+            (roster, "captured", key.attempt)
+        }
+    };
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-accepted-roster", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, step, source, accepted_in, roster = roster.len())
+        .in_scope(|| tracing::info!("the leave runs over the roster accepted at its admission"));
     Ok(roster)
 }
 
-/// The leaving mesh-primary's member workflows over `roster` (mesh-leave.md steps 3-4): every
-/// ordinary node in parallel, then, only once every one has its exact terminal receipt, every other
-/// node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited` step
-/// receipt of the accepted Build. `me` is the final primary (still running, its exact runtime
-/// `final_runtime`); `records` are the view's Node records of the mesh; `shutdown` is one member's
-/// drain/stop workflow and the provider's terminal receipt of its exact runtime.
+/// The exact Exited receipts the Build already holds for births of `roster`: each member workflow's
+/// `TerminateRuntime` step receipt under `<operation>/<path>`, from any attempt, whose terminal
+/// receipt names that exact birth.
+pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[RosterBirth]) -> BTreeMap<(String, String), TerminalReceipt> {
+    let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+    let mut held = BTreeMap::new();
+    for b in roster {
+        let member = member_operation(operation, &b.node);
+        let receipt = steps
+            .iter()
+            .filter(|r| r.operation == member && r.step == terminate && r.outcome == StepOutcome::Complete)
+            .filter_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<TerminalReceipt>(v).ok()))
+            .find(|t| t.node_id == b.node_id && t.incarnation_id == b.incarnation_id);
+        if let Some(t) = receipt {
+            held.insert((b.node_id.clone(), b.incarnation_id.clone()), t);
+        }
+    }
+    held
+}
+
+/// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
+/// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
+/// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
+/// step receipt of the accepted Build. A member whose exact Exited receipt the Build already holds
+/// (a successful child of an earlier, incomplete run) keeps it and is not run again; a failed or
+/// unrunnable member leaves its tier incomplete. `me` is the final primary (still running, its exact
+/// runtime `final_runtime`); `records` are the view's Node records of the mesh, of any status;
+/// `shutdown` is one member's drain/stop workflow and the provider's terminal receipt of its exact
+/// runtime.
 #[allow(clippy::too_many_arguments)]
 pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], shutdown: F) -> Result<ExitManifest, String>
 where
@@ -145,13 +205,34 @@ where
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
 {
     use tracing::Instrument;
-    let others: Vec<Node> = records.iter().filter(|n| n.status.is_live() && n.node_id.to_string() != me.node_id).cloned().collect();
-    let (admins, ordinary): (Vec<Node>, Vec<Node>) = others.into_iter().partition(|n| n.kind == NodeKind::NodeAdmin);
+    if !roster.contains(me) {
+        return Err(format!("{executor} ({} {}) is not a birth of the roster accepted for {}: no member is stopped", me.node, me.incarnation_id, key.operation));
+    }
+    let build_id = BuildId(key.build_id.clone());
+    let steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {}: {e}", key.operation))?.steps;
+    let held = exit_receipts(&steps, &key.operation, roster);
     let mut receipts: Vec<TerminalReceipt> = Vec::new();
-    for (tier, members) in [("ordinary-nodes", ordinary), ("node-admins", admins)] {
+    let mut remaining: Vec<&RosterBirth> = Vec::new();
+    for b in roster.iter().filter(|b| *b != me) {
+        match held.get(&(b.node_id.clone(), b.incarnation_id.clone())) {
+            Some(t) => receipts.push(t.clone()),
+            None => remaining.push(b),
+        }
+    }
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-retained-receipts", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, roster = roster.len(), retained = receipts.len(), remaining = remaining.len(), retained_births = %receipts.iter().map(|t| t.node.as_str()).collect::<Vec<_>>().join(","))
+        .in_scope(|| tracing::info!("members with an exact Exited receipt keep it; only the rest run"));
+    let is_admin = |b: &RosterBirth| b.node.parse::<crate::model::PathName>().is_ok_and(|p| p.kind == NodeKind::NodeAdmin);
+    for (tier, admins) in [("ordinary-nodes", false), ("node-admins", true)] {
+        let mut failed = Vec::new();
+        let mut members: Vec<Node> = Vec::new();
+        for b in remaining.iter().filter(|b| is_admin(b) == admins) {
+            match records.iter().find(|n| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id)) {
+                Some(n) => members.push(n.clone()),
+                None => failed.push(format!("{} {}: this view holds no record of the accepted birth, so its workflow cannot run and it has no Exited receipt", b.node, b.incarnation_id)),
+            }
+        }
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-leave-tier", tier, members = members.len(), mesh_id = %key.mesh_id, operation = %key.operation, attempt = key.attempt, outcome = tracing::field::Empty);
         let outcomes = join_all(members.iter().cloned().map(&shutdown)).instrument(span.clone()).await;
-        let mut failed = Vec::new();
         for (n, r) in members.iter().zip(outcomes) {
             match r {
                 Ok(t) => receipts.push(t),
@@ -160,7 +241,7 @@ where
         }
         span.record("outcome", if failed.is_empty() { "complete" } else { "incomplete" });
         if !failed.is_empty() {
-            return Err(format!("tier {tier} is incomplete, the next tier does not start: {}", failed.join("; ")));
+            return Err(format!("tier {tier} is incomplete, the next tier does not start; members with an Exited receipt keep it for the next run: {}", failed.join("; ")));
         }
     }
     let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.to_vec(), final_primary: me.clone(), final_runtime: Some(final_runtime), receipts };
