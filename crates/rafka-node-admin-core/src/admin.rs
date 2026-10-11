@@ -297,6 +297,9 @@ pub struct Records {
     /// The fabric-primary's writer of node rows: a birth its view holds for the first time claims
     /// its row at its `path.name` (`crate::node_rows`). Set once at start.
     rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
+    /// Where this admin's mesh's status rows live, read when this admin takes its mesh's seat
+    /// (`crate::status_rpc::SeatFold`). Set once at start.
+    status: std::sync::OnceLock<crate::status_rpc::SeatFold>,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -339,6 +342,12 @@ impl Records {
     /// The writer of node rows the installed views feed (set once, at start).
     pub fn set_rows(&self, rows: Arc<crate::node_rows::NodeRows>) {
         let _ = self.rows.set(rows);
+    }
+
+    /// The status rows of `mesh` this admin (born as `me`) folds when it takes `mesh`'s seat (set
+    /// once, at start).
+    pub fn set_status(&self, storage: Arc<dyn crate::status_storage::StatusStorage>, mesh: String, me: NodeId) {
+        let _ = self.status.set(crate::status_rpc::SeatFold::new(storage, mesh, me));
     }
 
     /// The tick a waiter arms on to see the view change.

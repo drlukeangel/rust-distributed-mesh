@@ -68,6 +68,21 @@ impl Declared {
     }
 }
 
+/// The status rows of this admin's own mesh, which it folds into what it applied when it takes
+/// the mesh's seat.
+pub struct SeatFold {
+    storage: Arc<dyn crate::status_storage::StatusStorage>,
+    mesh: String,
+    me: NodeId,
+}
+
+impl SeatFold {
+    /// The rows of `mesh` in `storage`, folded by the admin born as `me`.
+    pub fn new(storage: Arc<dyn crate::status_storage::StatusStorage>, mesh: String, me: NodeId) -> Self {
+        Self { storage, mesh, me }
+    }
+}
+
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
 pub struct StatusAuthority {
