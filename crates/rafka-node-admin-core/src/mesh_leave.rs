@@ -220,37 +220,40 @@ pub fn owner_resume(steps: &[BuildStepReceipt], operation: &str) -> Result<Owner
     if steps.iter().any(|r| r.operation == operation && r.step == STEP_MESH_LEFT && r.outcome == StepOutcome::Complete) {
         return Ok(OwnerResume::Left);
     }
-    let Some(row) = accepted_row(steps, operation, STEP_ACCEPTED_ROSTER).transpose()? else {
+    let Some(admitted) = admitted_of(steps, operation).transpose()? else {
         return Ok(OwnerResume::Lead);
     };
-    let last = &row.final_primary;
+    let last = &admitted.final_primary;
     let Some(terminal) = exit_receipts(steps, operation, std::slice::from_ref(last)).remove(&(last.node_id.clone(), last.incarnation_id.clone())) else {
+        return Ok(OwnerResume::Lead);
+    };
+    // The final primary's exit with no exit manifest naming it as final primary is a primary lost
+    // mid-leave, never a stop by this owner: the resume amends the roster (mesh-leave.md, "Resume
+    // after the primary's loss").
+    let Some(manifest_row) = steps
+        .iter()
+        .filter(|r| r.operation == operation && r.step == STEP_OTHER_MEMBERS_EXITED && r.outcome == StepOutcome::Complete)
+        .filter(|r| r.output.clone().and_then(|v| serde_json::from_value::<ExitManifest>(v).ok()).is_some_and(|m| &m.final_primary == last))
+        .max_by_key(|r| r.attempt)
+    else {
         return Ok(OwnerResume::Lead);
     };
     // The final primary's exact exit is recorded: the rest of the proof is in this log or nowhere.
     let named = format!("{} {}", last.node, last.incarnation_id);
-    if terminal.runtime != row.final_runtime {
-        return Err(format!("{operation}: the final primary {named}'s Exited receipt names the runtime {:?}, not the one accepted at admission {:?}", terminal.runtime, row.final_runtime));
+    if terminal.runtime.as_ref() != Some(&admitted.final_runtime) {
+        return Err(format!("{operation}: the final primary {named}'s Exited receipt names the runtime {:?}, not the one admitted for it {:?}", terminal.runtime, admitted.final_runtime));
     }
-    let manifest: ExitManifest = steps
-        .iter()
-        .filter(|r| r.operation == operation && r.step == STEP_OTHER_MEMBERS_EXITED && r.outcome == StepOutcome::Complete)
-        .max_by_key(|r| r.attempt)
-        .ok_or_else(|| format!("{operation}: the final primary {named}'s exit is proven (TerminateRuntime under {}), but no {STEP_OTHER_MEMBERS_EXITED} manifest is held in this Build's facts: MeshLeft cannot be recorded", member_operation(operation, &last.node)))?
-        .output
-        .clone()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .ok_or_else(|| format!("{operation}: the {STEP_OTHER_MEMBERS_EXITED} manifest held in this Build's facts does not decode: MeshLeft cannot be recorded"))?;
-    if manifest.final_runtime != row.final_runtime {
-        return Err(format!("{operation}: the {STEP_OTHER_MEMBERS_EXITED} manifest names the final runtime {:?}, not the one accepted at admission {:?}", manifest.final_runtime, row.final_runtime));
+    let manifest: ExitManifest = manifest_row.output.clone().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| format!("{operation}: the {STEP_OTHER_MEMBERS_EXITED} manifest held in this Build's facts does not decode: MeshLeft cannot be recorded"))?;
+    if manifest.final_runtime.as_ref() != Some(&admitted.final_runtime) {
+        return Err(format!("{operation}: the {STEP_OTHER_MEMBERS_EXITED} manifest names the final runtime {:?}, not the one admitted for it {:?}", manifest.final_runtime, admitted.final_runtime));
     }
     let mut all = manifest;
     all.final_runtime = None;
     all.receipts.push(terminal);
-    if let Some((field, expected, reported)) = first_mismatch(&all, &row.roster, last, true) {
+    if let Some((field, expected, reported)) = first_mismatch(&all, &admitted.roster, last, true) {
         return Err(format!("{operation}: the recorded proof set is not complete: {field}: expected {expected}, reported {reported}"));
     }
-    tracing::info_span!("rdm.node_admin.mesh.resolve.via-recorded-final-exit", operation = %operation, final_primary = %named, receipts = all.receipts.len(), roster = row.roster.len())
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-recorded-final-exit", operation = %operation, final_primary = %named, receipts = all.receipts.len(), roster = admitted.roster.len(), amendments = admitted.amendments.len())
         .in_scope(|| tracing::info!("the final primary's exact exit and every other member's are recorded: MeshLeft is recorded from the receipts, nothing is called"));
     Ok(OwnerResume::FinalExited(all))
 }
@@ -286,26 +289,167 @@ pub enum Amended {
     AlreadyApplied,
 }
 
+/// Every `RosterAmended` receipt recorded for `operation` in `steps`, decoded, each once.
+fn amendment_rows(steps: &[BuildStepReceipt], operation: &str) -> Result<Vec<RosterAmended>, String> {
+    let mut rows: Vec<RosterAmended> = Vec::new();
+    for r in steps.iter().filter(|r| r.operation == operation && r.step == STEP_ROSTER_AMENDED && r.outcome == StepOutcome::Complete) {
+        let a: RosterAmended = r.output.clone().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| format!("the {STEP_ROSTER_AMENDED} receipt of {operation} (attempt {}) does not decode: the amended roster cannot be named", r.attempt))?;
+        if !rows.contains(&a) {
+            rows.push(a);
+        }
+    }
+    Ok(rows)
+}
+
+/// The amendment chain of `operation` from the admitted final primary `first`: each amendment
+/// replaces the final primary the one before it named. Two amendments for one predecessor are
+/// refused by name; they are never recorded (`amend_roster`).
+fn amendment_chain(first: &RosterBirth, steps: &[BuildStepReceipt], operation: &str) -> Result<Vec<RosterAmended>, String> {
+    let rows = amendment_rows(steps, operation)?;
+    let mut chain: Vec<RosterAmended> = Vec::new();
+    let mut current = first.clone();
+    while let Some(next) = rows.iter().find(|a| a.predecessor == current) {
+        if let Some(other) = rows.iter().find(|a| a.predecessor == current && *a != next) {
+            return Err(format!("{operation}: two {STEP_ROSTER_AMENDED} receipts replace {} {}: {} {} and {} {}", current.node, current.incarnation_id, next.final_primary.node, next.final_primary.incarnation_id, other.final_primary.node, other.final_primary.incarnation_id));
+        }
+        if chain.len() >= rows.len() {
+            return Err(format!("{operation}: the {STEP_ROSTER_AMENDED} receipts form a loop at {} {}", current.node, current.incarnation_id));
+        }
+        chain.push(next.clone());
+        current = next.final_primary.clone();
+    }
+    Ok(chain)
+}
+
 /// What the fabric-primary admitted for `operation`, read from `steps`: the `AcceptedRoster` row
-/// extended by every `RosterAmended` receipt. `None` when no roster is recorded.
-pub fn admitted_of(_steps: &[BuildStepReceipt], _operation: &str) -> Option<Result<Admitted, String>> {
-    None
+/// extended by every `RosterAmended` receipt (mesh-leave.md, "Resume after the primary's loss";
+/// node-rpc-envelope.md, mesh-leave manifest): the roster is the accepted one plus every amended
+/// birth, the final primary and its runtime are the last amendment's, else the admitted ones.
+/// `None` when no roster is recorded.
+pub fn admitted_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Result<Admitted, String>> {
+    let row = accepted_row(steps, operation, STEP_ACCEPTED_ROSTER)?;
+    Some(row.and_then(|row| {
+        let final_runtime = row.final_runtime.clone().ok_or_else(|| format!("the {STEP_ACCEPTED_ROSTER} receipt of {operation} names no final runtime"))?;
+        let chain = amendment_chain(&row.final_primary, steps, operation)?;
+        let mut roster = row.roster;
+        for a in &chain {
+            if !roster.contains(&a.final_primary) {
+                roster.push(a.final_primary.clone());
+            }
+        }
+        let (final_primary, final_runtime) = chain.last().map(|a| (a.final_primary.clone(), a.final_runtime.clone())).unwrap_or((row.final_primary, final_runtime));
+        Ok(Admitted { roster, final_primary, final_runtime, amendments: chain })
+    }))
 }
 
-/// Record the lost final primary's exact provider Exited as its roster receipt.
-pub async fn record_predecessor_exit(_builds: &dyn BuildStateAdapter, key: &LeaveKey, _executor: &str, _terminal: &TerminalReceipt) -> Result<(), String> {
-    Err(format!("{}: a predecessor's exit receipt is not built", key.operation))
+/// The span of a resume refused because the lost final primary `predecessor` is silent but not
+/// proven exited (R-D1: unheard is not dead).
+pub fn span_unproven(key: &LeaveKey, predecessor: &RosterBirth, reason: &str) {
+    tracing::info_span!("rdm.node_admin.mesh.reject.via-unproven-primary", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, predecessor = %format!("{} {}", predecessor.node, predecessor.incarnation_id), reason = %reason)
+        .in_scope(|| tracing::info!("the lost final primary is not proven exited: the resume is refused and nothing is amended"));
 }
 
-/// Record `amendment` under `key`'s operation.
-pub async fn amend_roster(_builds: &dyn BuildStateAdapter, key: &LeaveKey, _executor: &str, _amendment: &RosterAmended) -> Result<Amended, String> {
-    Err(format!("{}: RosterAmended is not built", key.operation))
+/// Record the lost final primary's exact provider Exited `terminal` as its roster receipt (step 1 of
+/// the resume): the `TerminateRuntime` step receipt of its member operation, which every reader of
+/// exit receipts (`exit_receipts`) takes. `terminal` must name the current final primary's exact
+/// birth and the runtime admitted (or amended) for it; anything else proves nothing and is refused.
+pub async fn record_predecessor_exit(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, terminal: &TerminalReceipt) -> Result<(), String> {
+    let build_id = BuildId(key.build_id.clone());
+    let operation = key.operation.as_str();
+    let steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}"))?.steps;
+    let admitted = admitted_of(&steps, operation).ok_or_else(|| format!("{operation}: no {STEP_ACCEPTED_ROSTER} receipt is recorded: there is no final primary to replace"))??;
+    let lost = &admitted.final_primary;
+    if terminal.node_id != lost.node_id || terminal.incarnation_id != lost.incarnation_id {
+        return Err(format!("{operation}: the Exited receipt names {} {}, not the final primary {} {}", terminal.node, terminal.incarnation_id, lost.node, lost.incarnation_id));
+    }
+    if terminal.runtime.as_ref() != Some(&admitted.final_runtime) {
+        return Err(format!("{operation}: the Exited receipt of {} {} names the runtime {:?}, not the one admitted for it {:?}: it proves nothing", lost.node, lost.incarnation_id, terminal.runtime, admitted.final_runtime));
+    }
+    if exit_receipts(&steps, operation, std::slice::from_ref(lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
+        return Ok(());
+    }
+    builds
+        .append_step_receipt(&BuildStepReceipt {
+            build_id,
+            attempt: key.attempt,
+            operation: member_operation(operation, &lost.node),
+            step: crate::deployment::pipeline::RetireStep::TerminateRuntime.name().to_string(),
+            outcome: StepOutcome::Complete,
+            output: serde_json::to_value(terminal).ok(),
+            executor: Some(executor.to_string()),
+        })
+        .await
+        .map_err(|e| format!("{operation}: the Exited receipt of {} {} could not be recorded: {e}", lost.node, lost.incarnation_id))?;
+    tracing::info_span!("rdm.node_admin.mesh.update.via-predecessor-exit-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %operation, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), exit_code = terminal.exit_code.map(|c| c.to_string()).unwrap_or_default())
+        .in_scope(|| tracing::info!("the lost final primary's exact exit is recorded as its roster receipt"));
+    Ok(())
 }
 
-/// The roster a leaving primary runs over: `roster` (its `LeavingRoster`) extended by every
-/// amendment recorded in `steps`.
-pub fn amended_roster(roster: &[RosterBirth], _steps: &[BuildStepReceipt], _operation: &str) -> Result<Vec<RosterBirth>, String> {
-    Ok(roster.to_vec())
+/// Record `amendment` under `key`'s operation (step 2 of the resume), only after the predecessor's
+/// exact Exited receipt is recorded for that birth and runtime. The identical amendment replays
+/// `AlreadyApplied`; a second amendment for the same predecessor is refused by name; an amendment
+/// of a birth that is not the current final primary, or that names an exited birth, is refused.
+pub async fn amend_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, amendment: &RosterAmended) -> Result<Amended, String> {
+    let build_id = BuildId(key.build_id.clone());
+    let operation = key.operation.as_str();
+    let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
+    let (pred, next) = (named(&amendment.predecessor), named(&amendment.final_primary));
+    let span = |outcome: &str| {
+        tracing::info_span!("rdm.node_admin.mesh.update.via-roster-amended", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %operation, predecessor = %pred, final_primary = %next, outcome)
+            .in_scope(|| tracing::info!("the roster amendment admits the new final primary"));
+    };
+    let steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}"))?.steps;
+    if amendment_rows(&steps, operation)?.contains(amendment) {
+        span("already-applied");
+        return Ok(Amended::AlreadyApplied);
+    }
+    if let Some(held) = amendment_rows(&steps, operation)?.into_iter().find(|a| a.predecessor == amendment.predecessor) {
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-second-amendment", mesh_id = %key.mesh_id, operation = %operation, predecessor = %pred, held = %named(&held.final_primary), asked = %next)
+            .in_scope(|| tracing::info!("a second amendment for the same predecessor is refused"));
+        return Err(format!("{operation}: a second amendment for the same predecessor {pred} is refused: {STEP_ROSTER_AMENDED} already names {} as its replacement, not {next}", named(&held.final_primary)));
+    }
+    let admitted = admitted_of(&steps, operation).ok_or_else(|| format!("{operation}: no {STEP_ACCEPTED_ROSTER} receipt is recorded: there is no final primary to replace"))??;
+    if amendment.predecessor != admitted.final_primary {
+        return Err(format!("{operation}: the amendment replaces {pred}, but the final primary is {}", named(&admitted.final_primary)));
+    }
+    let exits = exit_receipts(&steps, operation, &[amendment.predecessor.clone(), amendment.final_primary.clone()]);
+    match exits.get(&(amendment.predecessor.node_id.clone(), amendment.predecessor.incarnation_id.clone())) {
+        Some(t) if t.runtime.as_ref() == Some(&admitted.final_runtime) => {}
+        held => {
+            let reason = format!("{operation}: no exact Exited receipt of the final primary {pred} is recorded ({}): {STEP_ROSTER_AMENDED} is written only after it, and a silent primary is not proven exited", if held.is_some() { "the one held names another runtime" } else { "none held" });
+            span_unproven(key, &amendment.predecessor, &reason);
+            return Err(reason);
+        }
+    }
+    if amendment.final_primary == amendment.predecessor || exits.contains_key(&(amendment.final_primary.node_id.clone(), amendment.final_primary.incarnation_id.clone())) || admitted.amendments.iter().any(|a| a.predecessor == amendment.final_primary) {
+        return Err(format!("{operation}: the amendment names {next} as final primary, a birth that has exited"));
+    }
+    builds
+        .append_step_receipt(&BuildStepReceipt {
+            build_id,
+            attempt: key.attempt,
+            operation: operation.to_string(),
+            step: STEP_ROSTER_AMENDED.into(),
+            outcome: StepOutcome::Complete,
+            output: serde_json::to_value(amendment).ok(),
+            executor: Some(executor.to_string()),
+        })
+        .await
+        .map_err(|e| format!("{operation}: the {STEP_ROSTER_AMENDED} receipt could not be recorded: {e}"))?;
+    span("applied");
+    Ok(Amended::Applied)
+}
+
+/// The roster a leaving primary runs over: `roster` (its `LeavingRoster`, captured once) extended by
+/// the new final primary of every amendment recorded in `steps`.
+pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operation: &str) -> Result<Vec<RosterBirth>, String> {
+    let mut out = roster.to_vec();
+    for a in amendment_rows(steps, operation)? {
+        if !out.contains(&a.final_primary) {
+            out.push(a.final_primary);
+        }
+    }
+    Ok(out)
 }
 
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
@@ -443,6 +587,14 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
         Some(m) => m,
         None => return unmatched("receipt_manifest", "a readable exit manifest".into(), format!("{receipt_manifest}: its output does not decode")),
     };
+    // A stale hand-off after an amendment: it names a replaced primary, or omits an amended birth.
+    let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
+    if let Some(a) = admitted.amendments.iter().find(|a| a.predecessor == manifest.final_primary) {
+        return unmatched("final_primary", format!("{} ({STEP_ROSTER_AMENDED} replaced {} with it)", named(&admitted.final_primary), named(&a.predecessor)), format!("{}, the predecessor {STEP_ROSTER_AMENDED} replaced", named(&manifest.final_primary)));
+    }
+    if let Some(a) = admitted.amendments.iter().find(|a| !manifest.roster.contains(&a.final_primary)) {
+        return unmatched("roster_amendment", format!("{} in the roster ({STEP_ROSTER_AMENDED} for {})", named(&a.final_primary), named(&a.predecessor)), "a roster that omits it".into());
+    }
     if let Some((field, expected, reported)) = first_mismatch(&manifest, &admitted.roster, &admitted.final_primary, false) {
         return unmatched(&field, expected, reported);
     }

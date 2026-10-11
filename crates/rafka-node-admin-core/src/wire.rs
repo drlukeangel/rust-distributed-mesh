@@ -18,7 +18,7 @@ use crate::build::{BuildId, FabricDesired, MeshDesired};
 use crate::build_state::{AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, AttemptOpened, StepOutcome};
 use crate::deployment::pipeline::Bound;
 use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, RetireStep, StorageDisposition, TerminalReceipt};
-use crate::mesh_leave::ExitManifest;
+use crate::mesh_leave::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::{FabricRecord, FabricShutdown};
@@ -280,6 +280,7 @@ pub(crate) enum WireOutput {
     Terminal(TerminalReceipt),
     ExitManifest(ExitManifest),
     SeatTransfer(WireSeatTransfer),
+    RosterAmended(RosterAmended),
 }
 
 /// The SeatTransfer step's receipt (`fabric_handover::SeatTransferOutcome`), positional.
@@ -446,6 +447,7 @@ enum Produces {
     Terminal,
     ExitManifest,
     SeatTransfer,
+    RosterAmended,
 }
 
 fn produces(step: &str) -> Option<Produces> {
@@ -482,6 +484,8 @@ fn produces(step: &str) -> Option<Produces> {
     } else if [crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED, crate::mesh_leave::STEP_MESH_LEFT, crate::mesh_leave::STEP_ACCEPTED_ROSTER, crate::mesh_leave::STEP_LEAVING_ROSTER].contains(&step) {
         // The accepted roster rides the exit-manifest shape: an exit manifest with no receipts yet.
         Produces::ExitManifest
+    } else if step == crate::mesh_leave::STEP_ROSTER_AMENDED {
+        Produces::RosterAmended
     } else {
         return None;
     })
@@ -544,6 +548,7 @@ fn output_to_wire(step: &str, v: &serde_json::Value) -> Result<WireOutput, Strin
         Produces::Terminal => WireOutput::Terminal(typed(v)?),
         Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
         Produces::SeatTransfer => WireOutput::SeatTransfer((&typed::<crate::fabric_handover::SeatTransferOutcome>(v)?).into()),
+        Produces::RosterAmended => WireOutput::RosterAmended(typed(v)?),
     })
 }
 
@@ -580,6 +585,7 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
         WireOutput::Terminal(t) => json(&t),
         WireOutput::ExitManifest(m) => json(&m),
         WireOutput::SeatTransfer(o) => json(&crate::fabric_handover::SeatTransferOutcome::from(o)),
+        WireOutput::RosterAmended(a) => json(&a),
     }
 }
 
