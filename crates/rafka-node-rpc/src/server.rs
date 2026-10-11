@@ -723,18 +723,21 @@ impl NodeRpcServer {
 impl ProtocolHandler for NodeRpcServer {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
-        // The moment the handshake completed here: matched against the caller's `dialed` /
-        // `dial-deadline` line for the same peer, it says which side a slow connect waited on.
-        tracing::info!(step = "accepted", peer = %peer.fmt_short(), connection = connection.stable_id(), "a node rpc connection was accepted");
-        // Once per accepted connection, never per stream: the peer's live birth, as this
-        // process resolves it now, is Direct Connected from this node (connections.md §10).
-        if let Some(inbound) = &self.inner.inbound {
-            if let Some(node) = inbound.resolver.by_endpoint(&peer) {
-                inbound.observer.direct_accepted(&node);
-            }
-        }
         let id = connection.stable_id();
-        self.inner.connections.lock().unwrap().insert(id, connection.clone());
+        // The moment the handshake completed here, as its own span (it ends once the connection is
+        // held, before its streams are served): matched by `peer` against the caller's `dialed` /
+        // `dial-deadline` line, it says which side a slow connect waited on.
+        tracing::info_span!("rdm.node_rpc.connection.create.via-accept", peer = %peer.fmt_short(), connection = id).in_scope(|| {
+            tracing::info!(step = "accepted", "a node rpc connection was accepted");
+            // Once per accepted connection, never per stream: the peer's live birth, as this
+            // process resolves it now, is Direct Connected from this node (connections.md §10).
+            if let Some(inbound) = &self.inner.inbound {
+                if let Some(node) = inbound.resolver.by_endpoint(&peer) {
+                    inbound.observer.direct_accepted(&node);
+                }
+            }
+            self.inner.connections.lock().unwrap().insert(id, connection.clone());
+        });
         while let Ok((send, recv)) = connection.accept_bi().await {
             tokio::spawn(self.clone().invocation(peer, send, recv));
         }
