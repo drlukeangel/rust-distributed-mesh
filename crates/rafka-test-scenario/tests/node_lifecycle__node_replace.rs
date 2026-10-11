@@ -319,6 +319,21 @@ async fn a_planned_replace_admits_the_successor_before_the_old_identity_is_delet
         .unwrap_or_else(|| panic!("the executor's view never named the predecessor {old_name}"));
     let deleted_step = step_span(&spans, &birth_build, &attempt, NODE, "NodeDeleted").expect("NodeDeleted ran");
     assert!(start(held_old) < start(deleted_step), "the view named the predecessor {old_name} before its NodeDeleted: {held_old}");
+    // The node's row (ops-naming "Node data": "a Deleted row, or the <name>.old row"): at the
+    // executor's RenamePredecessor the fabric-primary moves the predecessor's row to `<path>.old`,
+    // its NodeDeleted writes the Deleted row there, and the successor's row at the path.name is
+    // claimed seeded from the .old row.
+    let moved: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-rename").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
+    assert_eq!(moved.len(), 1, "one move of the predecessor's row: {moved:?}");
+    assert_eq!((s(&moved[0]["attributes"]["from"]), s(&moved[0]["attributes"]["to"]), s(&moved[0]["attributes"]["outcome"])), (NODE.to_string(), old_name.clone(), "renamed".to_string()), "{}", moved[0]);
+    let old_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == old_name.as_str()).collect();
+    assert_eq!(old_deleted.len(), 1, "one Deleted row at {old_name}: {old_deleted:?}");
+    assert_eq!((s(&old_deleted[0]["attributes"]["outcome"]), s(&old_deleted[0]["attributes"]["node_id"])), ("row-deleted".to_string(), s(&before["node_id"])), "{}", old_deleted[0]);
+    let seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == NODE && sp["attributes"]["node_id"] == after["node_id"]).collect();
+    assert_eq!(seeded.len(), 1, "the successor claims its row once: {seeded:?}");
+    assert_eq!((s(&seeded[0]["attributes"]["outcome"]), s(&seeded[0]["attributes"]["seeded_from"])), ("row-seeded".to_string(), s(&before["node_id"])), "{}", seeded[0]);
+    assert!(start(moved[0]) < start(seeded[0]), "the predecessor's row moved before the successor claimed the path.name");
+    estate.artifact("node-rows.json", &json!({"moved": moved[0], "deleted": old_deleted[0], "seeded": seeded[0]}));
     let op = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE).expect("the node operation span");
     estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
     let settled = estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;

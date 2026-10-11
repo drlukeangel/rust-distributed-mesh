@@ -59,14 +59,60 @@ impl NodeRows {
         let Some((verb, path)) = operation.split_once(':') else { return };
         let Ok(name) = path.parse::<PathName>() else { return };
         match (verb, step) {
-            ("retire-node", "NodeDeleting") => {
+            ("retire-node" | "replace-node", "NodeDeleting") => {
                 if let Some(n) = held_at(view, &name).await {
                     self.announced.lock().unwrap().insert(operation.to_string(), n);
                 }
             }
             ("retire-node", "NodeDeleted") => self.deleted(me, view, operation, &name).await,
+            // A replace: the predecessor gives up its path.name (its row moves to `<path>.old`), and
+            // its departure is written there.
+            ("replace-node", "RenamePredecessor") => self.moved_to_old(me, view, operation, &name).await,
+            ("replace-node", "NodeDeleted") => self.deleted(me, view, operation, &name.renamed()).await,
             _ => {}
         }
+    }
+
+    /// A replace's `RenamePredecessor`: the predecessor's row moves from `name` to `<name>.old`, from
+    /// the record held at its `NodeDeleting` (or the view now, for a fabric-primary that took the
+    /// seat since), insert-and-fail on the `.old` key, then `name` is released for the successor.
+    async fn moved_to_old(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName) {
+        let to = name.renamed();
+        let announced = self.announced.lock().unwrap().get(operation).cloned();
+        let record = match announced {
+            Some(n) => Some(n),
+            None => held_at(view, name).await,
+        };
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-rename",
+            node = %me,
+            node_id = tracing::field::Empty,
+            from = %name,
+            to = %to,
+            operation,
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            "otel.kind" = "internal",
+        );
+        let Some(record) = record else {
+            let detail = format!("{me}: the replace of {name} reached RenamePredecessor and this fabric-primary holds no record of the predecessor; no row is moved");
+            span.record("outcome", "no-held-record").record("detail", detail.as_str());
+            span.in_scope(|| tracing::info!("node.replace: no row moved"));
+            return;
+        };
+        span.record("node_id", record.node_id.as_str());
+        let r = tracing::Instrument::instrument(self.move_row(me, &record, name, &to), span.clone()).await;
+        let (outcome, detail) = match &r {
+            Ok(()) => ("renamed", None),
+            Err(RenameRefused::NameHeld(e)) => ("name-held", Some(format!("{me}: the replace of {name} ({}) to {to}: {e}", record.node_id))),
+            Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
+            Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
+        };
+        span.record("outcome", outcome);
+        if let Some(d) = &detail {
+            span.record("detail", d.as_str());
+        }
+        span.in_scope(|| tracing::info!("node.replace: the predecessor's row moved"));
     }
 
     /// `NodeDeleted`: the row with status `Deleted`, the record and config kept, a blind put.
@@ -188,7 +234,20 @@ impl NodeRows {
                 return None;
             }
         };
-        let seed = previous.filter(|p| p.status == NodeStatus::Deleted && p.node_id != birth.node_id);
+        // The previous row at the path.name: a `Deleted` row there, or, when the key is free, the
+        // `<name>.old` row a replace moved the predecessor's row to.
+        let seed = match previous {
+            Some(p) => Some(p).filter(|p| p.status == NodeStatus::Deleted && p.node_id != birth.node_id),
+            None => match self.storage.node_row_at(&name.renamed()).await {
+                Ok(old) => old.filter(|p| p.node_id != birth.node_id),
+                Err(e) => {
+                    let detail = format!("{me}: the .old row at {} could not be read for the birth {}: {e}", name.renamed(), birth.node_id);
+                    span.record("outcome", "row-unreadable").record("detail", detail.as_str());
+                    span.in_scope(|| tracing::info!("node.create: no row claimed"));
+                    return None;
+                }
+            },
+        };
         let config = seed.as_ref().map_or_else(|| birth.config.clone(), |p| p.config.clone());
         if let Some(p) = &seed {
             span.record("seeded_from", p.node_id.as_str());
@@ -271,20 +330,24 @@ impl NodeRows {
             return Err(RenameRefused::Unwritten(format!("{me}: node {} is not in the fabric-primary's view; its name cannot be changed", held.node_id)));
         };
         body.check_put(held, record.parked).map_err(RenameRefused::RdmOwned)?;
-        if body.name == held.name {
+        self.move_row(me, &record, &held.name, &body.name).await
+    }
+
+    /// The node's row moves from `from` to `to`: the new name is claimed for the node from its held
+    /// `record` (insert-and-fail, `NameHeld` naming another holder), then the old key is released.
+    /// The one writer of a rename: `node.update` and a replace's `RenamePredecessor` both move here.
+    async fn move_row(&self, me: &PathName, record: &Node, from: &PathName, to: &PathName) -> Result<(), RenameRefused> {
+        if from == to {
             return Ok(());
         }
-        let row = NodeRow { name: body.name.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
+        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
         match self.storage.claim_node_row(&row).await {
             Ok(Ok(_)) => {}
             Ok(Err(name_held)) => return Err(RenameRefused::NameHeld(name_held)),
-            Err(e) => return Err(RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {} for {}: {e}", body.name, record.node_id))),
+            Err(e) => return Err(RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {to} for {}: {e}", record.node_id))),
         }
         // The new name is the node's: the old key is let go.
-        self.storage
-            .remove_node_row(&held.name)
-            .await
-            .map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {} and nodes.storage refused the release of {}: {e}", record.node_id, body.name, held.name)))
+        self.storage.remove_node_row(from).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))
     }
 }
 
