@@ -4375,7 +4375,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             // named per birth. The tick never waits on either.
             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
             let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
-            let mut tickle = crate::offline::OfflineTickle::new();
+            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string());
             let floor = rafka_mesh_transport::membership::staleness_floor();
             let mut written: WrittenSilence = HashMap::new();
             loop {
