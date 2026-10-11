@@ -87,20 +87,6 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         assert_eq!(s(&own["id"]), fabric_id, "{} names the Fabric by the same id", admin["name"]);
     }
 
-    // Evidence: each birth's ready span names the ids the views show.
-    let spans = estate.spans();
-    for n in &nodes {
-        let ready = named(&spans, "rdm.mesh.node.update.via-ready")
-            .into_iter()
-            .find(|sp| sp["attributes"]["node"] == n["name"] && sp["attributes"]["incarnation_id"] == n["incarnation_id"])
-            .unwrap_or_else(|| panic!("{} reports ready", n["name"]));
-        let a = &ready["attributes"];
-        assert_eq!(a["id_format"], "crockford60");
-        assert_eq!(s(&a["node_id"]), s(&n["node_id"]));
-        assert_eq!(s(&a["fabric_id"]), fabric_id);
-        assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
-    }
-
     // Restart keeps NodeId, FabricId and the incarnation: the process is stopped and started.
     let before = nodes.iter().find(|n| n["name"] == "mesh2.rpc.2").unwrap().clone();
     let (status, a) = estate.post("/api/nodes/mesh2.rpc.2/restart", &json!({})).await;
@@ -113,13 +99,6 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
-    let spans = estate.spans();
-    let reborn = named(&spans, "rdm.mesh.node.update.via-ready")
-        .into_iter()
-        .find(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"])
-        .expect("the restarted birth reports ready");
-    assert_eq!(s(&reborn["attributes"]["fabric_id"]), fabric_id, "restart keeps the fabric id");
-    assert_eq!(s(&reborn["attributes"]["node_id"]), s(&before["node_id"]));
 
     // A second restart of the same node is a later attempt of the same Build: the first
     // restart's finished run hands it nothing, so it restarts the node again.
@@ -135,17 +114,6 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
     let restart_build = s(&again["build_id"]);
-    wait_for("each restart ran its own StartNode, none reused", Duration::from_secs(30), || async {
-        let ran = named(&estate.spans(), "rdm.node_admin.deployment.update.via-step")
-            .into_iter()
-            .filter(|sp| {
-                let at = &sp["attributes"];
-                s(&at["build_id"]) == restart_build && at["node"] == "mesh2.rpc.2" && at["step"] == "StartNode" && at["outcome"] == "complete"
-            })
-            .count();
-        (ran >= 2).then_some(())
-    })
-    .await;
 
     // Replacement of a node: removed, then created again at the same path.
     let replaced = node_ids["mesh1.rpc.2"].clone();
@@ -172,4 +140,36 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let (_, fabric) = estate.get("/api/fabric").await;
     estate.admin = s(&fabric["admin_api_base"]);
     estate.stop().await;
+
+    // The span evidence is read only now: every process flushes its spans on exit (`Estate::stop`),
+    // and a span read mid-run can still sit in its process's export batch.
+    // Evidence: each birth's ready span names the ids the views show.
+    let spans = estate.spans();
+    for n in &nodes {
+        let ready = named(&spans, "rdm.mesh.node.update.via-ready")
+            .into_iter()
+            .find(|sp| sp["attributes"]["node"] == n["name"] && sp["attributes"]["incarnation_id"] == n["incarnation_id"])
+            .unwrap_or_else(|| panic!("{} reports ready", n["name"]));
+        let a = &ready["attributes"];
+        assert_eq!(a["id_format"], "crockford60");
+        assert_eq!(s(&a["node_id"]), s(&n["node_id"]));
+        assert_eq!(s(&a["fabric_id"]), fabric_id);
+        assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
+    }
+
+    let reborn = named(&spans, "rdm.mesh.node.update.via-ready")
+        .into_iter()
+        .find(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"])
+        .expect("the restarted birth reports ready");
+    assert_eq!(s(&reborn["attributes"]["fabric_id"]), fabric_id, "restart keeps the fabric id");
+    assert_eq!(s(&reborn["attributes"]["node_id"]), s(&before["node_id"]));
+    // A second restart of the same node ran its own StartNode: none reused.
+    let ran = named(&spans, "rdm.node_admin.deployment.update.via-step")
+        .into_iter()
+        .filter(|sp| {
+            let at = &sp["attributes"];
+            s(&at["build_id"]) == restart_build && at["node"] == "mesh2.rpc.2" && at["step"] == "StartNode" && at["outcome"] == "complete"
+        })
+        .count();
+    assert!(ran >= 2, "each restart ran its own StartNode, none reused: {ran} complete StartNode steps under {restart_build}");
 }
