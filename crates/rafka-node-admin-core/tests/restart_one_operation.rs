@@ -53,10 +53,12 @@ impl DeploymentProvider for Running {
 }
 
 /// The live birth: it admits the drain and the stop, answers both, parks, and answers the start
-/// `Started`. Every command and every completion wait is recorded with the operation it carried.
+/// `Started`; or (`refuses_stop`) it refuses the stop by name and so never parks. Every command and
+/// every completion wait is recorded with the operation it carried.
 #[derive(Default)]
 struct Parks {
     sent: Mutex<Vec<String>>,
+    refuses_stop: bool,
 }
 
 #[async_trait::async_trait]
@@ -65,6 +67,7 @@ impl NodeObserver for Parks {
         self.sent.lock().unwrap().push(format!("{cmd:?} {} to {}", ctx.operation, node.name));
         match cmd {
             NodeCommand::Start => CommandAdmission::Started,
+            NodeCommand::Stop if self.refuses_stop => CommandAdmission::Refused { reply: "RejectedStaleIncarnation".into() },
             _ => CommandAdmission::Admitted,
         }
     }
@@ -247,4 +250,79 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
     eprintln!("span {} trace_id={} span_id={}", pipelines[0].name, pipelines[0].span_context.trace_id(), pipelines[0].span_context.span_id());
     assert!(steps.iter().all(|s| s.parent_span_id == pipelines[0].span_context.span_id()), "every step is a child of the one restart pipeline span");
     assert_eq!(steps.iter().map(|s| attr(s, "step")).collect::<Vec<_>>(), order, "the step spans are the receipts, in order");
+}
+
+/// CONTRACT (node-restart.md: the restart composes "the entire node.stop"; node-stop.md "Completion:
+/// The matching node.stopped on the stop stream and the recorded stop receipt"): a restart whose
+/// stop the live birth refuses by name has no `stopped` to follow, so its stop is not complete: the
+/// restart fails at `AwaitNodeLeft`, naming the refusal, and runs nothing after it. Must NOT happen:
+/// the restart taking the refused stop as done and sending `start-node` to a birth that never
+/// parked, or receipting a `Complete`.
+#[tokio::test]
+async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() {
+    let builds = MemoryBuildStateAdapter::new();
+    let build_id = BuildId::mint();
+    builds
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+        .await
+        .unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    let name: PathName = NODE.parse().unwrap();
+    let incarnation = IncarnationId::mint();
+    let mut node = Node::allocated(name.clone());
+    node.node_id = NodeId::mint();
+    node.incarnation_id = Some(incarnation.clone());
+    node.provider = Some(ProviderKind::Process);
+    node.status = NodeStatus::ReadyForTraffic;
+    node.endpoint_id = Some(EndpointId("i143-3093-endpoint".into()));
+    node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
+    let template = LaunchTemplate {
+        fabric: "fabric1".into(),
+        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        executable: "/nonexistent/restart-one-op".into(),
+        seeds: vec![],
+        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        env: Default::default(),
+        data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
+        store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
+        mesh_issuer: None,
+    };
+    let (provider, observer, events, joins) = (Running::default(), Parks { refuses_stop: true, ..Parks::default() }, Events::default(), rafka_node_admin_core::join::Joins::default());
+    let pipeline = DeploymentPipeline {
+        provider: &provider,
+        joins: &joins,
+        observer: &observer,
+        sink: &Discard,
+        lifecycle: &events,
+        builds: &builds,
+        template: &template,
+        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
+    };
+    let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-3093-restart".into()) };
+    let deployed = rafka_node_admin_core::join::Deployed {
+        name: name.clone(),
+        node_id: node.node_id.clone(),
+        incarnation,
+        supersedes: None,
+        endpoint_id: node.endpoint_id.clone().unwrap(),
+        runtime: handle.fact().expect("the handle names its exact runtime"),
+        data_dir: node.data_dir.clone().unwrap(),
+        last_accepted_name: Some(name.clone()),
+        held: true,
+    };
+    let out = pipeline.restart(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
+
+    let view = builds.read_build(&build_id).await.unwrap();
+    let receipts: Vec<(String, bool)> = view.steps.iter().map(|s| (s.step.clone(), s.outcome == rafka_node_admin_core::build_state::StepOutcome::Complete)).collect();
+    let sent = observer.sent.lock().unwrap().clone();
+    assert!(!sent.iter().any(|c| c.starts_with("Start ")), "no start-node to a birth that never parked: {sent:?} (receipts {receipts:?})");
+    let err = out.expect_err("a restart whose stop was refused is not complete");
+    assert_eq!(err.step, "AwaitNodeLeft", "{err:?}");
+    assert!(err.reason.contains("RejectedStaleIncarnation"), "the failure names the refusal: {err:?}");
+    assert_eq!(
+        receipts,
+        [("NodeRestarting", true), ("DrainNode", true), ("AwaitNodeDrained", true), ("StopNode", true), ("AwaitNodeLeft", false)].map(|(s, ok)| (s.to_string(), ok)),
+        "the restart stops at its stop's wait, Failed, and receipts nothing after it"
+    );
+    assert_eq!(*provider.terminated.lock().unwrap(), Vec::<String>::new(), "a failed restart asks the provider for no exit either");
 }
