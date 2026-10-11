@@ -71,7 +71,7 @@ async fn source_reconnect_failures_grow_log_keep_two_current_members() {
     // The source, its carrier's edge and its own Proxy to the destination (the previous birth's
     // facts), then the destination made unreachable: a key nobody serves, a port nobody listens on.
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&data_dir).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&data_dir).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
     writer.hydrate().await.unwrap();

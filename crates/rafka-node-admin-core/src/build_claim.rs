@@ -57,8 +57,8 @@ pub struct AttemptContexts {
 
 impl AttemptContexts {
     /// The record under `<own_data_dir>/attempt-context/`.
-    pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self { backing: Backing::Files(FileRecords::open(own_data_dir, CONTEXT_DIR)?) })
+    pub async fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
+        Ok(Self { backing: Backing::Files(FileRecords::open(own_data_dir, CONTEXT_DIR).await?) })
     }
 
     /// A record held in memory only: a fixture whose admin has no data dir.

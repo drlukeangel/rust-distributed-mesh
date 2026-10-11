@@ -613,6 +613,66 @@ mod tests {
         }
     }
 
+    /// CONTRACT (node-replace.md 2): a replace's `RenamePredecessor` receipt names the exact old
+    /// birth (its output is the `LifecycleOp` of the predecessor) and travels the Build topic like
+    /// every other committed output: the fabric-primary's append of it succeeds, so its live `Step`
+    /// frame is made (`FramedBuilds` frames a receipt only after the append returned), and a peer
+    /// folds the same receipt with the same old birth.
+    #[test]
+    fn a_replace_rename_receipt_naming_the_old_birth_travels_the_build_topic() {
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: "bld-1".into(),
+            attempt: 2,
+            operation: "replace-node:mesh1.rpc.1".into(),
+            node_id: rafka_mesh_entity::NodeId::mint(),
+            incarnation: rafka_mesh_entity::IncarnationId::mint(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            event_at_rafka_ms: 7,
+        };
+        let receipt = BuildStepReceipt {
+            build_id: BuildId("bld-1".into()),
+            attempt: 2,
+            operation: op.operation.clone(),
+            step: crate::deployment::pipeline::ReplaceStep::RenamePredecessor.name().into(),
+            outcome: crate::build_state::StepOutcome::Complete,
+            output: Some(serde_json::to_value(&op).unwrap()),
+            executor: Some("mesh1.admin.1".into()),
+        };
+        let bytes = match encode(vec![BuildFact::Step(receipt.clone())]) {
+            Ok(b) => b,
+            Err(e) => panic!("the rename receipt must have a wire shape: {e}"),
+        };
+        let back = BuildMessage::from_bytes(&bytes).unwrap().facts;
+        assert_eq!(back, vec![BuildFact::Step(receipt)], "a peer folds the same receipt");
+        let BuildFact::Step(s) = &back[0] else { unreachable!() };
+        let named: rafka_mesh_entity::LifecycleOp = serde_json::from_value(s.output.clone().unwrap()).unwrap();
+        assert_eq!((named.node_id, named.incarnation), (op.node_id, op.incarnation), "the receipt names the exact old birth");
+    }
+
+    /// CONTRACT (node-drain.md, node-stop.md, node-start.md): a standalone drain, stop or start ends
+    /// with a `Complete` receipt naming the exact birth it completed for; that receipt travels the
+    /// Build topic, so the fabric-primary that plans from its facts sees the operation finished for
+    /// that birth, and its live frame is made on the executor.
+    #[test]
+    fn a_standalone_operations_complete_receipt_naming_its_birth_travels_the_build_topic() {
+        for birth in [serde_json::json!({ "node_id": "abcd1234efgh", "incarnation": "6b524ec73d8ed68d9ddb82e123610cb4" }), serde_json::json!({ "node_id": "abcd1234efgh", "incarnation": null })] {
+            let receipt = BuildStepReceipt {
+                build_id: BuildId("bld-1".into()),
+                attempt: 3,
+                operation: "stop-node:mesh1.rpc.2".into(),
+                step: crate::deployment::pipeline::RetireStep::Complete.name().into(),
+                outcome: crate::build_state::StepOutcome::Complete,
+                output: Some(birth),
+                executor: Some("mesh1.admin.1".into()),
+            };
+            let bytes = match encode(vec![BuildFact::Step(receipt.clone())]) {
+                Ok(b) => b,
+                Err(e) => panic!("the Complete receipt naming its birth must have a wire shape: {e}"),
+            };
+            assert_eq!(BuildMessage::from_bytes(&bytes).unwrap().facts, vec![BuildFact::Step(receipt)], "a peer folds the same receipt, its birth word for word");
+        }
+    }
+
     /// CONTRACT (R-A2 item 2): the fence waits for the decision in flight (it commits wholly
     /// before the fence returns), and every decision after it is refused by name.
     #[tokio::test]

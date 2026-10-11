@@ -110,8 +110,8 @@ impl DeploymentProvider for Provider {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        None
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(None)
     }
 }
 
@@ -126,8 +126,8 @@ impl PathProbe for Probe {
     async fn inspect(&self, node: &Node) -> Result<DeploymentStatus, String> {
         self.0.of(node.node_id.as_str()).map(|r| r.status).ok_or_else(|| format!("{} has no runtime in this world", node.name))
     }
-    async fn recorded(&self, path: &PathName) -> Vec<(String, DeploymentStatus)> {
-        self.0.runtimes.lock().unwrap().values().filter(|r| r.path == path.to_string()).map(|r| (format!("pid {}", r.pid), r.status.clone())).collect()
+    async fn recorded(&self, path: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String> {
+        Ok(self.0.runtimes.lock().unwrap().values().filter(|r| r.path == path.to_string()).map(|r| (format!("pid {}", r.pid), r.status.clone())).collect())
     }
 }
 
@@ -363,7 +363,7 @@ impl Estate {
                 gate: Arc::new(OpenGate),
                 departure: Arc::new(crate::loopback::Proofs::default()),
                 verdicts: Arc::new(crate::loopback::NoVerdicts),
-                rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+                rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, self.view.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
             });
             if let Some(current) = self.accepted.current(&*self.builds).await {
                 if matches!(current.state, BuildState::Pending | BuildState::Running) {

@@ -122,14 +122,15 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
     assert_eq!(deleting.len(), 1, "one pre-notice for one retirement: {deleting:?}");
     assert_eq!(deleted.len(), 1, "one departure for one retirement: {deleted:?}");
-    // The node's row (ops-naming "Node data", the delete point): the fabric-primary writes it with
-    // status Deleted at the executor's NodeDeleted, from the record it held at the NodeDeleting; the
-    // node born after it at the same path.name claims the row there, seeded from the Deleted row.
+    // The node's row (ops-naming "Node data", the delete point; R13): the mesh's primary, which
+    // executes the delete, writes it with status Deleted at its NodeDeleted from the exact record it
+    // acted on; the node born after it at the same path.name claims the row there at its create,
+    // seeded from the Deleted row.
     let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == VICTIM).collect();
     assert_eq!(row_deleted.len(), 1, "one Deleted row for one delete: {row_deleted:?}");
     let a = &row_deleted[0]["attributes"];
-    assert_eq!((s(&a["outcome"]), s(&a["node_id"]), s(&a["held_from"])), ("row-deleted".to_string(), victim_id.clone(), "node-deleting".to_string()), "{a}");
-    let row_seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node_id"] == newcomer2["node_id"]).collect();
+    assert_eq!((s(&a["outcome"]), s(&a["node_id"]), s(&a["node"])), ("row-deleted".to_string(), victim_id.clone(), "mesh2.admin.1".to_string()), "{a}");
+    let row_seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node_id"] == newcomer2["node_id"] && sp["attributes"]["moment"] == "claim").collect();
     assert_eq!(row_seeded.len(), 1, "the newcomer at {VICTIM} claims its row once: {row_seeded:?}");
     let a = &row_seeded[0]["attributes"];
     assert_eq!((s(&a["outcome"]), s(&a["seeded_from"])), ("row-seeded".to_string(), victim_id.clone()), "{a}");

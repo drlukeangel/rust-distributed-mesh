@@ -243,13 +243,20 @@ impl RuntimeFact {
         let tmp = dir.join(format!("{RUNTIME_FILE}.tmp"));
         let body = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, dir.join(RUNTIME_FILE)).map_err(|e| format!("{RUNTIME_FILE}: {e}"))
+        let path = dir.join(RUNTIME_FILE);
+        std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// `dir`'s runtime record, if one is written.
+    /// `dir`'s runtime record: `None` when none is written; a record that cannot be read or parsed
+    /// is an error naming the file, never "no record".
     pub fn read_record(dir: &Path) -> Option<Result<Self, String>> {
-        let raw = std::fs::read(dir.join(RUNTIME_FILE)).ok()?;
-        Some(serde_json::from_slice(&raw).map_err(|e| format!("{RUNTIME_FILE}: {e}")))
+        let path = dir.join(RUNTIME_FILE);
+        let raw = match std::fs::read(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => return Some(Err(format!("{}: {e}", path.display()))),
+        };
+        Some(serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", path.display())))
     }
 }
 
@@ -362,6 +369,16 @@ mod tests {
         assert_eq!(f.domain_fingerprint().len(), 12);
         assert_ne!(f.locator_fingerprint(), container(&"c".repeat(64)).locator_fingerprint());
     }
+
+    /// CONTRACT: a record that cannot be read is an error naming the file, never "no record".
+    #[test]
+    fn an_unreadable_record_is_an_error_naming_the_file() {
+        let dir = std::env::temp_dir().join(format!("rafka-runtime-unreadable-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(RUNTIME_FILE)).unwrap();
+        let read = RuntimeFact::read_record(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(&read, Some(Err(e)) if e.contains(&dir.join(RUNTIME_FILE).display().to_string())), "{read:?}");
+    }
 }
 
 /// The immutable id of the container this process runs in: the container runtime mounts the
@@ -427,15 +444,28 @@ impl ExitRecord {
 
     /// The exit code `dir` proves for exactly this `deployment_id` and `incarnation`: `None` when
     /// no record is written or the record is another birth's.
-    pub fn proven_code(dir: &Path, deployment_id: &str, incarnation: &str) -> Option<i32> {
-        let raw = std::fs::read(dir.join(EXIT_FILE)).ok()?;
-        let r: Self = serde_json::from_slice(&raw).ok()?;
-        (r.deployment_id == deployment_id && r.incarnation == incarnation).then_some(r.code)
+    /// `Ok(None)` when no record is written, or it is another birth's; a record that cannot be
+    /// read or parsed is an error naming the file, never an unknown code.
+    pub fn proven_code(dir: &Path, deployment_id: &str, incarnation: &str) -> Result<Option<i32>, String> {
+        let path = dir.join(EXIT_FILE);
+        let raw = match std::fs::read(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        let r: Self = serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok((r.deployment_id == deployment_id && r.incarnation == incarnation).then_some(r.code))
     }
 
     /// Remove `dir`'s exit record (a new birth in the data dir starts without its predecessor's).
-    pub fn clear(dir: &Path) {
-        let _ = std::fs::remove_file(dir.join(EXIT_FILE));
+    /// A record that cannot be removed is an error naming the file.
+    pub fn clear(dir: &Path) -> Result<(), String> {
+        let path = dir.join(EXIT_FILE);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
     }
 }
 
@@ -481,13 +511,13 @@ mod exit_record_tests {
     fn an_exit_record_proves_its_own_birth_and_no_other() {
         let dir = std::env::temp_dir().join(format!("rafka-exit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), None);
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(None));
         ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "gossip refused".into() }.write(&dir).unwrap();
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Some(4));
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-b", "inc-a"), None, "another deployment's record proves nothing");
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-b"), None, "another incarnation's record proves nothing");
-        ExitRecord::clear(&dir);
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), None);
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(Some(4)));
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-b", "inc-a"), Ok(None), "another deployment's record proves nothing");
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-b"), Ok(None), "another incarnation's record proves nothing");
+        ExitRecord::clear(&dir).unwrap();
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

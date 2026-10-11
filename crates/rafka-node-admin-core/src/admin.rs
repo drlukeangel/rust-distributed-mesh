@@ -187,19 +187,30 @@ impl AdminConfig {
 }
 
 /// The node's transport key in its data dir (minted on first use).
-fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey, String> {
-    std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
-    let path = data_dir.join("node-key");
-    if let Ok(h) = std::fs::read_to_string(&path) {
-        let bytes: [u8; 32] = hex::decode(h.trim())
-            .map_err(|e| format!("{}: {e}", path.display()))?
-            .try_into()
-            .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
-        return Ok(SecretKey::from_bytes(&bytes));
-    }
-    let k = SecretKey::generate();
-    std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(k)
+/// The node key in `data_dir`, minted and written there when none is: read and written on the
+/// blocking pool (`record_store::blocking_io`), so no worker thread waits on the disk.
+pub(crate) async fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey, String> {
+    let data_dir = data_dir.to_path_buf();
+    crate::record_store::blocking_io(move || {
+        std::fs::create_dir_all(&data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
+        let path = data_dir.join("node-key");
+        // A key never written is minted; one that cannot be read is an error, never replaced.
+        match std::fs::read_to_string(&path) {
+            Ok(h) => {
+                let bytes: [u8; 32] = hex::decode(h.trim())
+                    .map_err(|e| format!("{}: {e}", path.display()))?
+                    .try_into()
+                    .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
+                return Ok(SecretKey::from_bytes(&bytes));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+        let k = SecretKey::generate();
+        std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(k)
+    })
+    .await
 }
 
 /// The local OS clock, for a read that measures time elapsed since a local event (a tickle
@@ -280,8 +291,9 @@ pub struct Records {
     heard_ready: Mutex<BTreeSet<String>>,
     /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
     view_tick: tokio::sync::watch::Sender<u64>,
-    /// The fabric-primary's writer of node rows: a birth its view holds for the first time claims
-    /// its row at its `path.name` (`crate::node_rows`). Set once at start.
+    /// The writer of the node rows of each mesh this admin writes for (`crate::node_rows`): the
+    /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
+    /// that no create of it claimed. Set once at start.
     rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
 }
 
@@ -462,7 +474,7 @@ impl Records {
                 tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node = %old.name, node_id = %old.node_id, status = ?old.status)
                     .in_scope(|| tracing::info!("the view names a replaced predecessor under its .old path"));
             }
-            // The births the fabric-primary's view holds for the first time: their rows are claimed
+            // The births the fabric-primary's view holds for the first time: their rows are written
             // from this held record once the view is installed (`crate::node_rows`).
             let arrivals = self.rows.get().map(|rows| rows.arrivals(&held, &t)).unwrap_or_default();
             *held = t.clone();
@@ -471,7 +483,7 @@ impl Records {
             self.wake.poke();
             self.view_changed.notify_one();
             if let (Some(rows), false) = (self.rows.get(), arrivals.is_empty()) {
-                rows.claim_arrivals(&t, arrivals).await;
+                rows.write_arrivals(&t, arrivals).await;
             }
         }
         t
@@ -534,6 +546,9 @@ impl TopologySink for Records {
             nodes.remove(name);
         }
         self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
+    }
+    fn node_rows(&self) -> Option<Arc<crate::node_rows::NodeRows>> {
+        self.rows.get().cloned()
     }
 }
 
@@ -918,7 +933,7 @@ pub async fn exit_proof_of(
     // else proves nothing.
     let handle = crate::deployment::provider::adopt(provider, &fact).map_err(|e| format!("the provider refused to adopt its runtime: {e}"))?;
     let inspected = provider.inspect(&handle).await;
-    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0);
+    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0).await.map_err(|e| format!("its exit record cannot be read: {e}"))?;
     match status {
         crate::deployment::provider::DeploymentStatus::Exited { code } => {
             let source = match (&inspected, code) {
@@ -1514,7 +1529,7 @@ pub async fn reconcile_drift(
         authority = %authority.name,
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
-        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover" }).unwrap_or("none"),
+        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete" }).unwrap_or("none"),
         exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
         exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
     );
@@ -2333,6 +2348,8 @@ impl AdminRunner {
                 // The member is alive (it answers) or held (its exact runtime still runs):
                 // nothing to create. Silence never authorizes a replacement.
                 FenceOutcome::Alive | FenceOutcome::Held => return Ok(()),
+                // Nothing proves the path free: the create fails, naming what could not be read.
+                FenceOutcome::RecordsUnreadable { reason } => return Err(format!("{node}: the runtimes recorded at this path cannot be read, so no birth is created over them: {reason}")),
                 // A birth the provider proves terminal is replaced, not deleted before a spawn: the
                 // old identity's departure is published after its successor is ready.
                 FenceOutcome::Clear { gone: Some(prev) } => match prev.incarnation_id {
@@ -2393,7 +2410,11 @@ impl AdminRunner {
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = crate::deployment::pipeline::ReplaceRequest { build_id: build_id.clone(), attempt, predecessor, handle, spec: spec_for(node.kind), held_runtimes };
         let created = self.pipeline(&template).replace(&req, before_ready, |ready| async move { self.bring_into_traffic(&ready).await }).await.map_err(|e| e.to_string())?;
-        self.after_exit(&req.predecessor, crate::deployment::pipeline::RetireKind::Removal);
+        // A recovered predecessor's exit is proven; a replaced one is parked at `<path>.old`, its
+        // process alive: nothing is retired about its paths or its birth.
+        if matches!(self.provider.inspect(&req.handle).await, crate::deployment::provider::DeploymentStatus::Exited { .. }) {
+            self.after_exit(&req.predecessor, crate::deployment::pipeline::RetireKind::Removal);
+        }
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
     }
@@ -2536,6 +2557,60 @@ impl AdminRunner {
         Ok(())
     }
 
+    /// `delete-node:<path>.old` (node-decommission.md): the parked birth `from` a replacement left at
+    /// `node`, fenced by incarnation, ended with the provider's exact Exited proof and deleted
+    /// (`DeploymentPipeline::delete_parked`); what follows its proven exit follows.
+    async fn delete_parked(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId) -> Result<(), String> {
+        let seen = self.topology.read().await.node(node).cloned();
+        let (record, handle) = match seen {
+            Some(n) if n.incarnation_id.as_ref() == Some(from) => self.handle_for(&n).await?,
+            Some(n) => return Err(format!("delete-node:{node} is fenced to birth {}, the view holds {} at that path", from.0, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("none"))),
+            None => {
+                let launched = self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from));
+                match launched {
+                    Some(h) => h,
+                    None => {
+                        let birth = self.parked_birth_by_incarnation(node, from).await?;
+                        self.handle_for(&birth).await?
+                    }
+                }
+            }
+        };
+        let template = self.template_for(node.kind, &node.mesh).await?;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind: RetireKind::Removal };
+        self.pipeline(&template).delete_parked(&req).await.map_err(|e| e.to_string())?;
+        self.after_exit(&record, RetireKind::Removal);
+        self.handles.lock().unwrap().remove(node);
+        Ok(())
+    }
+
+    /// The exact parked birth `from` that a delete of `node` (`<path>.old`) is fenced to, for an admin
+    /// whose view does not name `node` and which did not run the replace (the mesh's primary changed
+    /// since): the birth as its membership holds it parked, or else its durable runtime row (every
+    /// admin keeps one per birth it heard, `runtime_rows_task`). The record is named `node`; its
+    /// runtime is then adopted from the same sources by [`Self::handle_for`].
+    async fn parked_birth_by_incarnation(&self, node: &PathName, from: &IncarnationId) -> Result<Node, String> {
+        let mut birth = Node::allocated(node.clone());
+        birth.incarnation_id = Some(from.clone());
+        birth.parked = true;
+        birth.status = NodeStatus::Leaving;
+        if let Some(d) = self.book.parked().into_iter().find(|d| &d.node.incarnation == from) {
+            birth.node_id = d.node.node_id.clone();
+            birth.endpoint_id = Some(d.node.endpoint_id.clone());
+            birth.transport_addr = Some(d.node.transport_addr);
+            birth.data_dir = d.data_dir.clone();
+            return Ok(birth);
+        }
+        let Some(store) = self.records.contacts.get() else {
+            return Err(format!("delete-node:{node}: birth {} is not in this admin's view or membership, and this admin has no nodes store to read its runtime row from", from.0));
+        };
+        let rows = store.runtimes().await.map_err(|e| format!("delete-node:{node}: birth {} is not in this admin's view or membership, and its runtime rows could not be read: {e}", from.0))?;
+        let row = rows.into_iter().find(|r| &r.incarnation_id == from).ok_or_else(|| format!("delete-node:{node}: birth {} is not in this admin's view or membership, and this admin holds no runtime row of it", from.0))?;
+        birth.node_id = row.node_id;
+        birth.data_dir = row.data_dir;
+        Ok(birth)
+    }
+
     /// What this admin holds for the start of the parked `record`: the deployment its `JoinNode` is
     /// verified against, as the birth was admitted.
     fn deployed_for(&self, record: &Node, handle: &DeploymentHandle) -> Result<crate::join::Deployed, String> {
@@ -2639,13 +2714,13 @@ impl AdminRunner {
             Some(crate::accepted::AttemptAction::Replace { path: p, from_incarnation }) if p == path => from_incarnation.clone(),
             other => return Err(refuse(format!("the Build's action is {other:?}, not a replace of this path"))),
         };
-        // A replacement an earlier attempt began receipted the exact birth it replaces: its node id names
-        // the directory.
+        // A replacement an earlier attempt began receipted the exact birth it replaces (a recovery's
+        // NodeDeleting, the RenamePredecessor of either): its node id names the directory.
         let operation = format!("replace-node:{path}");
         let named: Option<NodeId> = build
             .steps
             .iter()
-            .filter(|s| s.operation == operation && s.step == "NodeDeleting" && s.outcome == crate::build_state::StepOutcome::Complete)
+            .filter(|s| s.operation == operation && matches!(s.step.as_str(), "NodeDeleting" | "RenamePredecessor") && s.outcome == crate::build_state::StepOutcome::Complete)
             .filter_map(|s| s.output.clone())
             .filter_map(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v).ok())
             .find(|op| op.incarnation == from)
@@ -2653,19 +2728,16 @@ impl AdminRunner {
         let (dir, node_id) = match named {
             Some(id) => {
                 let dir = self.template.data_root.join(format!("{path}-{id}"));
-                if !dir.exists() {
+                let look = dir.clone();
+                let exists = crate::record_store::blocking_io(move || look.try_exists()).await.map_err(|e| refuse(format!("{}: {e}", dir.display())))?;
+                if !exists {
                     return Err(refuse(format!("{} does not exist", dir.display())));
                 }
                 (dir, id)
             }
             None => {
                 let prefix = format!("{path}-");
-                let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&self.template.data_root)
-                    .map_err(|e| refuse(format!("{}: {e}", self.template.data_root.display())))?
-                    .flatten()
-                    .filter(|d| d.file_name().to_string_lossy().starts_with(&prefix))
-                    .map(|d| d.path())
-                    .collect();
+                let dirs = crate::fence::recorded_dirs(&self.template.data_root, path).await.map_err(refuse)?;
                 let dir = match dirs.as_slice() {
                     [one] => one.clone(),
                     [] => return Err(refuse(format!("no data dir {prefix}* under {}", self.template.data_root.display()))),
@@ -2680,9 +2752,8 @@ impl AdminRunner {
                 (dir, node_id)
             }
         };
-        let fact = match rafka_mesh_entity::RuntimeFact::read_record(&dir) {
-            Some(Ok(f)) => f,
-            Some(Err(e)) => return Err(refuse(format!("{}: {e}", dir.display()))),
+        let fact = match crate::fence::runtime_record(&dir).await.map_err(refuse)? {
+            Some(f) => f,
             None => return Err(refuse(format!("{} holds no runtime record", dir.display()))),
         };
         if let Some(store) = self.records.contacts.get() {
@@ -2768,16 +2839,16 @@ impl crate::fence::PathProbe for AdminRunner {
         let (_, h) = self.handle_for(node).await?;
         Ok(self.provider.inspect(&h).await)
     }
-    async fn recorded(&self, path: &PathName) -> Vec<(String, crate::deployment::provider::DeploymentStatus)> {
+    async fn recorded(&self, path: &PathName) -> Result<Vec<(String, crate::deployment::provider::DeploymentStatus)>, String> {
         let mut out = Vec::new();
-        let Ok(dirs) = std::fs::read_dir(&self.template.data_root) else { return out };
-        let prefix = format!("{path}-");
-        for d in dirs.flatten().filter(|d| d.file_name().to_string_lossy().starts_with(&prefix)) {
-            let Some(Ok(fact)) = rafka_mesh_entity::RuntimeFact::read_record(&d.path()) else { continue };
+        for dir in crate::fence::recorded_dirs(&self.template.data_root, path).await? {
+            // A data dir that holds no runtime record holds no runtime.
+            let Some(fact) = crate::fence::runtime_record(&dir).await? else { continue };
+            // A record of another provider or control domain names no runtime this provider runs.
             let Ok(h) = crate::deployment::provider::adopt(&*self.provider, &fact) else { continue };
-            out.push((d.path().display().to_string(), self.provider.inspect(&h).await));
+            out.push((dir.display().to_string(), self.provider.inspect(&h).await));
         }
-        out
+        Ok(out)
     }
 }
 
@@ -2858,6 +2929,10 @@ impl AdminRunner {
                 // node-recovery.md names the operation's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %node_id, incarnation_id = %from_incarnation.0);
                 self.recover(build_id, attempt, node, node_id, from_incarnation).instrument(span).await
+            }
+            BuildOperation::DeleteNode { node, from_incarnation } => {
+                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
+                self.delete_parked(build_id, attempt, node, from_incarnation).instrument(span).await
             }
             BuildOperation::RetireNode { node } => {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
@@ -3231,12 +3306,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // refused here, by name, before it touches anything.
     let signer = std::mem::take(&mut wiring.certs).resolve().map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?;
     let issuer = Arc::new(crate::certs::CertIssuer::new(signer, rafka_time.clone()));
-    let step = if cfg.data_dir.join("node-key").exists() {
+    let key_file = cfg.data_dir.join("node-key");
+    let key_held = crate::record_store::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
+    let step = if key_held {
         tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-identity-loaded")
     } else {
         tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-identity-minted")
     };
-    let key = load_or_mint_key(&cfg.data_dir)?;
+    let key = load_or_mint_key(&cfg.data_dir).await?;
     drop(step);
     let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display());
     // The node-admin storage boundaries, in its own data dir. An admin that finds its own row in
@@ -3245,14 +3322,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let storage_err = |e: crate::record_store::StorageError| e.to_string();
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(
         wiring.fabric_storage.take(),
-        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?),
+        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).await.map_err(storage_err)?),
     );
-    let mesh_storage: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).map_err(storage_err)?);
-    let nodes_storage: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let mesh_storage: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
+    let nodes_storage: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
     let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
-        Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).map_err(storage_err)?);
-    let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).map_err(|e| e.to_string())?);
-    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir).map_err(storage_err)?);
+        Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
+    let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).await.map_err(|e| e.to_string())?);
+    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir).await.map_err(storage_err)?);
     let restart = match (&cfg.launch, nodes_storage.own().await.map_err(storage_err)?) {
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
@@ -3805,7 +3882,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
     let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
     let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone())));
-    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
     *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage).await?;
     {
         let records_for_ids = records.clone();
@@ -3974,8 +4051,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
             verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
             rows: {
-                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
+                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
                 records.set_rows(rows.clone());
+                let held = rows.clone();
+                let _ = control.parked_old.set(Arc::new(move |old: &PathName| held.parked_at(old)));
                 rows
             },
         });
@@ -3995,7 +4074,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             // a host process stays a process (it then cannot be failed over by a container admin,
             // which refuses Ready by name).
             let in_container = (prepared.provider.kind() == ProviderKind::Container && rafka_mesh_entity::runtime::this_container_id().is_some()).then(|| prepared.provider.control_domain());
-            let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).map_err(|e| e.to_string())?;
+            let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).await.map_err(|e| e.to_string())?;
             let f = a.fact().clone();
             adoption = Some(a);
             f
@@ -4112,11 +4191,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         })
     };
     if let Some(a) = adoption {
-        a.publish(|f, dir| {
+        let digest = digest.clone();
+        a.publish(move |f, dir| {
             let mut d = digest.lock().unwrap();
             d.node.runtime = Some(f.clone());
             d.data_dir = Some(dir);
         })
+        .await
         .map_err(|e| e.to_string())?;
     }
     let _ = entry.set(EntryState {
@@ -4369,7 +4450,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     .collect();
                 let mut blocked = authority_blockers(&held, &*provider);
                 if let Some(dir) = &day0 {
-                    blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
+                    match adoption_missing(dir).await {
+                        Ok(missing) => blocked.extend(missing.into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}"))),
+                        Err(e) => blocked.push(format!("{me}: its own adoption receipts cannot be read: {e}")),
+                    }
                 }
                 if entering_existing_mesh && sweep_slot_gate.get().is_none() {
                     blocked.push(format!("{me}: the own-mesh sweep on entering the mesh has not finished"));
@@ -5095,7 +5179,6 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
             tracing::info!(error = %e, "control API stopped");
         }
     }));
-    let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
     Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert })
 }
 
@@ -5155,6 +5238,21 @@ mod tests {
         let (outcome, r) = settle(follow(&mut frames(vec![RecoveryFrame::Progress])).await);
         assert_eq!(outcome, "the recovery's stream ended before its terminal frame");
         assert!(r.is_err());
+    }
+
+    /// CONTRACT: loading the node key from the data dir never waits on the disk on a runtime
+    /// worker: it runs on the blocking pool (`record_store::blocking_io`), as every store read
+    /// does. The admin loads it inside its boot, on the runtime. The cell loads a key whose file
+    /// holds the read: the runtime's only thread keeps running, and the load answers that key.
+    #[test]
+    fn loading_the_node_key_waits_on_the_disk_off_the_runtime_thread() {
+        let d = crate::record_store::tempdir("node-key-offload");
+        let key = SecretKey::generate();
+        let fifo = d.join("node-key");
+        let dir = d.clone();
+        let (ran, loaded) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, hex::encode(key.to_bytes()).into_bytes(), Box::pin(async move { load_or_mint_key(&dir).await.map(|k| k.to_bytes()) }));
+        assert!(ran, "the runtime thread ran while the key's read waited on the disk");
+        assert_eq!(loaded, Ok(key.to_bytes()));
     }
 
     fn fabric1() -> FabricId {

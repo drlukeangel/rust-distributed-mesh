@@ -457,14 +457,11 @@ impl NodesStorage for RefusingRows {
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.0.remove_contact(node_id).await
     }
-    async fn put_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+    async fn put_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<(), rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the write".into() })
     }
     async fn node_row_at(&self, name: &rafka_node_admin_core::model::PathName) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
         self.0.node_row_at(name).await
-    }
-    async fn claim_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<rafka_node_admin_core::storage::Claimed, rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
-        Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the claim".into() })
     }
     async fn release_node_row(&self, name: &rafka_node_admin_core::model::PathName, _holder: &rafka_node_admin_core::model::NodeId) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
@@ -758,6 +755,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         rig.nodes
             .put_node_row(&rafka_node_admin_core::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone() })
             .await
+            .unwrap()
             .unwrap();
         let node = serve_node(&newcomer).await;
         let resolver = Arc::new(StaticResolver::new());
@@ -766,7 +764,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
         let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))));
         let records = rafka_node_admin_core::admin::Records::default();
-        records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.nodes.clone()).with_configs(configs)));
+        records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone()).with_configs(configs)));
         let mut t = rig.topology.read().await.clone();
         t.nodes.push(newcomer.node.clone());
         records.install_projected(&rig.topology, || t).await;

@@ -107,6 +107,9 @@ impl BuildDoor {
             BuildChange::ReconcileFabric { fabric, meshes } => topology(TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: fabric.clone(), meshes: meshes.iter().map(counts).collect() } }).await,
             BuildChange::ReconcileMesh { mesh } => topology(TopologyChange::ReconcileMesh { desired: counts(mesh) }).await,
             BuildChange::AddNode { mesh, node_kind } => topology(TopologyChange::AddNode { mesh: mesh.clone(), node_kind: *node_kind }).await,
+            // The parked predecessor a replacement left at `<path>.old` is deleted by the next attempt of
+            // the accepted Build, fenced to its exact birth: the topology never names that path.
+            BuildChange::RemoveNode { node } if node.old => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Delete, node.clone(), ActionKind::Delete, None).await,
             BuildChange::RemoveNode { node } => topology(TopologyChange::RemoveNode { node: node.clone() }).await,
             BuildChange::CreateMesh { mesh } => topology(TopologyChange::CreateMesh { desired: counts(mesh) }).await,
             BuildChange::RemoveMesh { mesh } => topology(TopologyChange::RemoveMesh { mesh: mesh.clone() }).await,

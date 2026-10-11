@@ -231,10 +231,11 @@ impl Looker {
             Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
         };
         let inspected = self.provider.inspect(&handle).await;
-        match crate::deployment::provider::exit_proof(inspected, &fact, digest.data_dir.as_deref().map(std::path::Path::new), &inc.0) {
-            crate::deployment::provider::DeploymentStatus::Exited { code } => Finding::Exited { code },
-            crate::deployment::provider::DeploymentStatus::Running => Finding::Running,
-            other => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
+        match crate::deployment::provider::exit_proof(inspected, &fact, digest.data_dir.as_deref().map(std::path::Path::new), &inc.0).await {
+            Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Finding::Exited { code },
+            Ok(crate::deployment::provider::DeploymentStatus::Running) => Finding::Running,
+            Ok(other) => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
+            Err(e) => Finding::Unproven { reason: format!("its exit record cannot be read: {e}") },
         }
     }
 }

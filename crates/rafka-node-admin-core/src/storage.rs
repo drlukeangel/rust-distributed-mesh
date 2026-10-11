@@ -74,8 +74,8 @@ pub struct FileMeshStorage(FileRecords);
 
 impl FileMeshStorage {
     /// Open the store under the admin's own data directory.
-    pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self(FileRecords::open(own_data_dir, "meshes")?))
+    pub async fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
+        Ok(Self(FileRecords::open(own_data_dir, "meshes").await?))
     }
 }
 
@@ -145,9 +145,11 @@ impl RuntimeRow {
     }
 }
 
-/// The record of the node at one `path.name`: which node holds the name now, its status and its
-/// config. The fabric-primary is its only writer and writes it whole, a blind put of the record it
-/// holds. A `Deleted` row keeps the config for the next node created at the same `path.name`.
+/// The record of the node at one `path.name`: the node its fabric-primary's view holds there, its
+/// status and its config. The fabric-primary is its only writer and writes it whole, a blind put of
+/// the record it holds; the row follows the node's name and never decides who may hold one (the
+/// node owns its name). A `Deleted` row keeps the config for the next node created at the same
+/// `path.name`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRow {
     /// The node's `path.name`: the row's key.
@@ -180,38 +182,25 @@ pub trait NodesStorage: Send + Sync {
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
     /// Forget the contact `node_id`.
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError>;
-    /// Keep `row` as the record at its `path.name` (a blind put of its own key).
-    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError>;
+    /// Save `row` as the record at its `path.name`. The claim of the name is here, inside the
+    /// adapter, and nowhere else (R13): insert-and-fail on the `path.name` key, decided by the store
+    /// in one step against every other row write. The key is free when no row is there, the row
+    /// there is the same node's, or it is another node's `Deleted` row: `row` is put (a blind put of
+    /// the whole row). Any other row holds the name: `NameHeld` naming its node, and nothing is written.
+    async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError>;
     /// The record at `name`: a point read through the `path.name` key; `None` when none was ever written.
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
-    /// Claim `row.name` for `row.node_id`: insert-and-fail on the `path.name` key, decided by the
-    /// store in one step, never a read then a write by the caller. A row of the same node already
-    /// there satisfies the claim and is left exactly as it is ([`Claimed::HeldByNode`]: a claim
-    /// never overwrites what its node holds). The key is free when no row is there or the row there
-    /// is another node's `Deleted` row: `row` is kept ([`Claimed::Written`]). Any other row holds
-    /// the name and the claim is refused [`NameHeld`] naming its node.
-    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError>;
     /// `holder` lets go of the key `name`: its row goes when it is `holder`'s, decided by the store
     /// in one step against every other row write; a row of another node there (the name was
     /// released before and claimed since) is left as it is. Returns whether `holder`'s row went.
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError>;
 }
 
-/// What a claim that was not refused did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Claimed {
-    /// The key was free: the claimed row is kept there.
-    Written,
-    /// The same node already holds the key: nothing was written, its row stands as it was.
-    HeldByNode,
-}
-
-/// What a claim of `row`'s name meets in `held`, the row at that key.
-fn claim_against(held: Option<&NodeRow>, row: &NodeRow) -> Result<Claimed, NameHeld> {
+/// What a save of `row` meets in `held`, the row at its key: free, or held by another node.
+fn claim_against(held: Option<&NodeRow>, row: &NodeRow) -> Result<(), NameHeld> {
     match held {
-        Some(h) if h.node_id == row.node_id => Ok(Claimed::HeldByNode),
-        Some(h) if h.status != crate::model::NodeStatus::Deleted => Err(NameHeld { name: row.name.clone(), by: h.node_id.clone() }),
-        _ => Ok(Claimed::Written),
+        Some(h) if h.node_id != row.node_id && h.status != crate::model::NodeStatus::Deleted => Err(NameHeld { name: row.name.clone(), by: h.node_id.clone() }),
+        _ => Ok(()),
     }
 }
 
@@ -254,20 +243,17 @@ impl NodesStorage for MemoryNodesStorage {
         self.contacts.lock().unwrap().remove(node_id);
         Ok(())
     }
-    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
-        self.rows.lock().unwrap().insert(row.name.to_string(), row.clone());
-        Ok(())
-    }
-    async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        Ok(self.rows.lock().unwrap().get(&name.to_string()).cloned())
-    }
-    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
+    async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
+        // The internal index is the map's key: the look and the insert are one step under its lock.
         let mut rows = self.rows.lock().unwrap();
         let claimed = claim_against(rows.get(&row.name.to_string()), row);
-        if claimed == Ok(Claimed::Written) {
+        if claimed.is_ok() {
             rows.insert(row.name.to_string(), row.clone());
         }
         Ok(claimed)
+    }
+    async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
+        Ok(self.rows.lock().unwrap().get(&name.to_string()).cloned())
     }
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let mut rows = self.rows.lock().unwrap();
@@ -291,15 +277,21 @@ pub struct FileNodesStorage {
     contacts: FileRecords,
     runtimes: FileRecords,
     rows: FileRecords,
-    /// Every write of a row is one at a time, so a claim's look at the key and its write are one
-    /// step against every other write of this store (the fabric-primary is the rows' one writer).
+    /// Every write of a row is one at a time, so a save's or a release's look at the key and its
+    /// write are one step against every other write of this store.
     row_writes: tokio::sync::Mutex<()>,
 }
 
 impl FileNodesStorage {
     /// Open the store under the admin's own data directory.
-    pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")?, rows: FileRecords::open(own_data_dir, "nodes/rows")?, row_writes: tokio::sync::Mutex::new(()) })
+    pub async fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
+        Ok(Self {
+            own: FileRecords::open(own_data_dir, "nodes").await?,
+            contacts: FileRecords::open(own_data_dir, "nodes/contacts").await?,
+            runtimes: FileRecords::open(own_data_dir, "nodes/runtimes").await?,
+            rows: FileRecords::open(own_data_dir, "nodes/rows").await?,
+            row_writes: tokio::sync::Mutex::new(()),
+        })
     }
 }
 
@@ -329,21 +321,19 @@ impl NodesStorage for FileNodesStorage {
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError> {
         self.contacts.remove(node_id.as_str()).await
     }
-    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
-        let _one = self.row_writes.lock().await;
-        self.rows.write(&row.name.to_string(), ROW_FORMAT, row).await
-    }
-    async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        self.rows.read(&name.to_string(), ROW_FORMAT).await
-    }
-    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
+    async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
+        // One row write at a time: the look at the key and the write are one step against every
+        // other write of this store.
         let _one = self.row_writes.lock().await;
         let key = row.name.to_string();
         let claimed = claim_against(self.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.as_ref(), row);
-        if claimed == Ok(Claimed::Written) {
+        if claimed.is_ok() {
             self.rows.write(&key, ROW_FORMAT, row).await?;
         }
         Ok(claimed)
+    }
+    async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
+        self.rows.read(&name.to_string(), ROW_FORMAT).await
     }
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let _one = self.row_writes.lock().await;
@@ -417,8 +407,8 @@ pub struct FileConnectionsStorage(FileRecords, std::path::PathBuf, tokio::sync::
 
 impl FileConnectionsStorage {
     /// Open the store under the admin's own data directory.
-    pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        let records = FileRecords::open(own_data_dir, "connections")?;
+    pub async fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
+        let records = FileRecords::open(own_data_dir, "connections").await?;
         Ok(Self(records, own_data_dir.join("connections").join("history.jsonl"), tokio::sync::Mutex::new(())))
     }
 
@@ -454,7 +444,8 @@ impl ConnectionsStorage for FileConnectionsStorage {
         self.append_history_line(fact).await
     }
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {
-        match std::fs::read_to_string(&self.1) {
+        let path = self.1.clone();
+        match crate::record_store::blocking_io(move || std::fs::read_to_string(&path)).await {
             Ok(text) => text
                 .lines()
                 .filter(|l| !l.trim().is_empty())
@@ -524,8 +515,8 @@ mod tests {
         };
         let mem = (MemoryMeshStorage::default(), MemoryNodesStorage::default(), MemoryConnectionsStorage::default());
         check(&mem.0, &mem.1, &mem.2, true).await;
-        check(&FileMeshStorage::open(&d).unwrap(), &FileNodesStorage::open(&d).unwrap(), &FileConnectionsStorage::open(&d).unwrap(), true).await;
-        let (m, n, c) = (FileMeshStorage::open(&d).unwrap(), FileNodesStorage::open(&d).unwrap(), FileConnectionsStorage::open(&d).unwrap());
+        check(&FileMeshStorage::open(&d).await.unwrap(), &FileNodesStorage::open(&d).await.unwrap(), &FileConnectionsStorage::open(&d).await.unwrap(), true).await;
+        let (m, n, c) = (FileMeshStorage::open(&d).await.unwrap(), FileNodesStorage::open(&d).await.unwrap(), FileConnectionsStorage::open(&d).await.unwrap());
         check(&m, &n, &c, false).await;
         n.remove_contact(&peer.node_id).await.unwrap();
         c.remove_connection(&down.index()).await.unwrap();
@@ -546,11 +537,11 @@ mod tests {
             data_dir: Some("/tmp/x".into()),
         };
         let (a, b) = (row("i1"), row("i2"));
-        let n = FileNodesStorage::open(&d).unwrap();
+        let n = FileNodesStorage::open(&d).await.unwrap();
         n.put_runtime(&a).await.unwrap();
         n.put_runtime(&b).await.unwrap();
         n.put_runtime(&a).await.unwrap();
-        let mut held = FileNodesStorage::open(&d).unwrap().runtimes().await.unwrap();
+        let mut held = FileNodesStorage::open(&d).await.unwrap().runtimes().await.unwrap();
         held.sort_by_key(|r| r.incarnation_id.0.clone());
         assert_eq!(held, [a.clone(), b.clone()], "two births, two rows; a repeated put is the same row");
         std::fs::write(d.join("nodes/runtimes").join(format!("{}.json", a.key())), br#"{"format":"node-runtime/9","record":{}}"#).unwrap();
@@ -569,38 +560,14 @@ mod tests {
     /// The same, for the record file `<key>.json` under the store's `dir`, written `bytes`.
     fn runtime_runs_while_a_file_is_read<T: Send + 'static>(dir: &str, key: &str, bytes: Vec<u8>, op: impl FnOnce(std::sync::Arc<FileNodesStorage>) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static) -> (bool, T) {
         let d = crate::record_store::tempdir("rows-offload");
-        let store = std::sync::Arc::new(FileNodesStorage::open(&d).unwrap());
         let fifo = d.join(dir).join(format!("{key}.json"));
-        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
-        let (word_tx, word_rx) = std::sync::mpsc::channel::<()>();
-        let writer = std::thread::spawn(move || {
-            use std::io::Write as _;
-            // Blocks until the read has the FIFO open: the read is waiting from here on.
-            let mut f = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
-            let heard = word_rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
-            f.write_all(&bytes).unwrap();
-            heard
-        });
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let out = rt.block_on(async move {
-            let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
-            // The read and its start signal are one poll: this task resumes only once that poll returns.
-            let read = tokio::spawn(async move {
-                let _ = started_tx.send(());
-                op(store).await
-            });
-            started_rx.await.unwrap();
-            let _ = word_tx.send(());
-            read.await.unwrap()
-        });
-        (writer.join().unwrap(), out)
+        crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { op(std::sync::Arc::new(FileNodesStorage::open(&d).await.unwrap())).await }))
     }
 
     /// CONTRACT: a point read of a node row never waits on the disk on a runtime worker (the
     /// defect class that froze node-admins on 10-08: a worker blocked on the disk): it runs on the
-    /// blocking pool, as the row's write does (`record_store::blocking_io`). The claim runs inline
-    /// on every view install, the join door's among them, and its read of the key is the same read.
+    /// blocking pool, as the row's write does (`record_store::blocking_io`). The row write runs
+    /// inline on every view install, the join door's among them, after this read of the key.
     /// The cell: a row file that is a FIFO holds the read until a writer comes; the runtime's only
     /// thread keeps running meanwhile, and the read answers the row.
     #[test]
@@ -610,18 +577,6 @@ mod tests {
         let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
         assert!(ran, "the runtime thread ran while the row read waited on the disk");
         assert_eq!(read, Ok(Some(row)));
-    }
-
-    /// CONTRACT: a claim's look at the key is that same read off the runtime thread, under the
-    /// store's async row-write lock (no worker blocks on it): a claim of a name another node holds
-    /// answers `NameHeld` while the runtime keeps running.
-    #[test]
-    fn a_claims_read_of_the_key_waits_on_the_disk_off_the_runtime_thread() {
-        let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() };
-        let claim = NodeRow { node_id: NodeId::mint(), ..held.clone() };
-        let (ran, claimed) = runtime_runs_while_a_row_is_read(held.clone(), move |s| Box::pin(async move { s.claim_node_row(&claim).await }));
-        assert!(ran, "the runtime thread ran while the claim's read waited on the disk");
-        assert_eq!(claimed, Ok(Err(NameHeld { name: held.name.clone(), by: held.node_id.clone() })));
     }
 
     /// CONTRACT: a list of a store's records (`FileRecords::list`: the directory read and every
@@ -635,5 +590,51 @@ mod tests {
         let (ran, listed) = runtime_runs_while_a_file_is_read("nodes/runtimes", &row.key(), bytes, move |s| Box::pin(async move { s.runtimes().await }));
         assert!(ran, "the runtime thread ran while the list waited on the disk");
         assert_eq!(listed, Ok(vec![row]));
+    }
+
+    /// CONTRACT: a read of the connections raw log (`history.jsonl`) never waits on the disk on a
+    /// runtime worker: it runs on the blocking pool, as the log's append does. The cell reads the
+    /// log while its file holds the read: the runtime's only thread keeps running, and the read
+    /// answers the logged fact.
+    #[test]
+    fn a_read_of_the_connections_history_waits_on_the_disk_off_the_runtime_thread() {
+        let d = crate::record_store::tempdir("history-offload");
+        let logged = fact(ConnectionState::Connected);
+        let mut line = serde_json::to_vec(&logged).unwrap();
+        line.push(b'\n');
+        let fifo = d.join("connections").join("history.jsonl");
+        let (ran, history) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { FileConnectionsStorage::open(&d).await.unwrap().history().await }));
+        assert!(ran, "the runtime thread ran while the history read waited on the disk");
+        assert_eq!(history, Ok(vec![logged]));
+    }
+
+    /// CONTRACT: the nodes store's adapter is where a name is claimed (R13; ops-naming "Node data":
+    /// "claims the new name by insert-and-fail inside the store adapter ... `NameHeld { by: node.id }`
+    /// refuses a held name, and nothing is written"). Two saves of rows of two different nodes at one
+    /// `path.name`: the second is refused and the first node's row stands. A save of the same node's row
+    /// there (its status moves, its Deleted row) is a put, and another node's `Deleted` row holds no
+    /// name: a save over it is a put. The memory store (its internal index) and the file store each
+    /// run their own check.
+    #[tokio::test]
+    async fn a_second_nodes_row_at_a_held_name_is_refused_by_the_adapter_and_nothing_is_written() {
+        let d = crate::record_store::tempdir("storage-claim");
+        let name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]) };
+        let check = async |n: &dyn NodesStorage, store: &str| {
+            let (first, second) = (NodeId::mint(), NodeId::mint());
+            let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");
+            assert_eq!(n.put_node_row(&held).await, Ok(Ok(())), "{store}: a free key takes the row");
+            let refused = n.put_node_row(&row(&second, crate::model::NodeStatus::Pending, "silver")).await;
+            assert_eq!(refused, Ok(Err(NameHeld { name: name.clone(), by: first.clone() })), "{store}: another node's live row holds {name}");
+            assert_eq!(n.node_row_at(&name).await.unwrap(), Some(held.clone()), "{store}: nothing is written by a refused save");
+            let deleted = row(&first, crate::model::NodeStatus::Deleted, "gold");
+            assert_eq!(n.put_node_row(&deleted).await, Ok(Ok(())), "{store}: the holder's own row is a put");
+            let next = row(&second, crate::model::NodeStatus::Pending, "gold");
+            assert_eq!(n.put_node_row(&next).await, Ok(Ok(())), "{store}: a Deleted row holds no name");
+            assert_eq!(n.node_row_at(&name).await.unwrap(), Some(next), "{store}: the save over a Deleted row is written");
+        };
+        check(&MemoryNodesStorage::default(), "memory").await;
+        check(&FileNodesStorage::open(&d).await.unwrap(), "file").await;
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -132,8 +132,8 @@ impl DeploymentProvider for Up {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        None
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(None)
     }
 }
 
@@ -213,7 +213,7 @@ async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint() })
 }
@@ -239,7 +239,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint() })
 }

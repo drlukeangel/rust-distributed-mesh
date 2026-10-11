@@ -371,15 +371,21 @@ pub struct FileFabricStorage {
 impl FileFabricStorage {
     /// Open the store under the admin's own data directory; a directory holding a retired record is
     /// refused by name.
-    pub fn open(own_data_dir: &Path) -> Result<Self, FabricStorageError> {
-        let records = crate::record_store::FileRecords::open(own_data_dir, FABRIC_DIR)?;
-        if records.holds(RETIRED_RECORD_KEY) {
+    pub async fn open(own_data_dir: &Path) -> Result<Self, FabricStorageError> {
+        let records = crate::record_store::FileRecords::open(own_data_dir, FABRIC_DIR).await?;
+        if records.holds(RETIRED_RECORD_KEY).await? {
             return Err(FabricStorageError::Unrecognised {
                 file: own_data_dir.join(FABRIC_DIR).join("fabric.json").display().to_string(),
                 reason: format!("the whole-record format fabric-record/1 is retired; this build reads {IDENTITY_FORMAT} and {POINTER_FORMAT} rows"),
             });
         }
-        Ok(Self { records, pointers: crate::record_store::FileRecords::open(own_data_dir, POINTERS_DIR)?, seats: crate::record_store::FileRecords::open(own_data_dir, SEATS_DIR)?, handovers: crate::record_store::FileRecords::open(own_data_dir, HANDOVERS_DIR)?, transfers: crate::record_store::FileRecords::open(own_data_dir, TRANSFERS_DIR)? })
+        Ok(Self {
+            records,
+            pointers: crate::record_store::FileRecords::open(own_data_dir, POINTERS_DIR).await?,
+            seats: crate::record_store::FileRecords::open(own_data_dir, SEATS_DIR).await?,
+            handovers: crate::record_store::FileRecords::open(own_data_dir, HANDOVERS_DIR).await?,
+            transfers: crate::record_store::FileRecords::open(own_data_dir, TRANSFERS_DIR).await?,
+        })
     }
 }
 
@@ -437,7 +443,7 @@ mod tests {
     async fn a_held_shutdown_is_never_replaced_or_removed() {
         for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, {
             let d = tempdir();
-            Box::new(FileFabricStorage::open(&d).unwrap())
+            Box::new(FileFabricStorage::open(&d).await.unwrap())
         }] {
             assert_eq!(s.shutdown().await.unwrap(), None);
             assert_eq!(s.put_shutdown(&shutdown()).await.unwrap(), shutdown());
@@ -459,7 +465,7 @@ mod tests {
     #[tokio::test]
     async fn the_seat_records_that_stand_are_the_superseding_ones_whatever_the_write_order() {
         use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&tempdir()).unwrap())] {
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&tempdir()).await.unwrap())] {
             assert!(s.seats().await.unwrap().is_empty());
             for row in [
                 seat_row(FabricPrimary, "mesh1", "100000000000", 3),
@@ -477,8 +483,8 @@ mod tests {
             assert!(standing.contains(&seat_row(MeshPrimary, "mesh2", "200000000000", 2)));
         }
         let d = tempdir();
-        FileFabricStorage::open(&d).unwrap().put_seat(&seat_row(FabricPrimary, "mesh1", "100000000000", 7)).await.unwrap();
-        assert_eq!(FileFabricStorage::open(&d).unwrap().seats().await.unwrap(), vec![seat_row(FabricPrimary, "mesh1", "100000000000", 7)]);
+        FileFabricStorage::open(&d).await.unwrap().put_seat(&seat_row(FabricPrimary, "mesh1", "100000000000", 7)).await.unwrap();
+        assert_eq!(FileFabricStorage::open(&d).await.unwrap().seats().await.unwrap(), vec![seat_row(FabricPrimary, "mesh1", "100000000000", 7)]);
     }
 
     fn handover_row(operation: &str, stage: HandoverStage) -> HandoverRow {
@@ -493,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn the_handover_rows_that_stand_are_the_furthest_stage_whatever_the_write_order() {
         let d = tempdir();
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&d).unwrap())] {
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&d).await.unwrap())] {
             assert!(s.handovers().await.unwrap().is_empty());
             for row in [
                 handover_row("fabric-primary-handover:a", HandoverStage::Confirmed { committed_epoch: 8 }),
@@ -509,10 +515,10 @@ mod tests {
                 vec![handover_row("fabric-primary-handover:a", HandoverStage::Confirmed { committed_epoch: 8 }), handover_row("fabric-primary-handover:b", HandoverStage::Committed { committed_epoch: 8 })]
             );
         }
-        assert_eq!(FileFabricStorage::open(&d).unwrap().handovers().await.unwrap().len(), 2, "a reopened store reads the rows back");
+        assert_eq!(FileFabricStorage::open(&d).await.unwrap().handovers().await.unwrap().len(), 2, "a reopened store reads the rows back");
         let f = d.join(FABRIC_DIR).join("handovers").join("fabric-primary-handover_a-sent.json");
         std::fs::write(&f, br#"{"format":"fabric-handover/9","record":{}}"#).unwrap();
-        assert!(matches!(FileFabricStorage::open(&d).unwrap().handovers().await, Err(FabricStorageError::Unrecognised { .. })), "an unknown format is refused by name");
+        assert!(matches!(FileFabricStorage::open(&d).await.unwrap().handovers().await, Err(FabricStorageError::Unrecognised { .. })), "an unknown format is refused by name");
     }
 
     /// CONTRACT: the committed-stage row of a handover is stored in this exact shape (format
@@ -520,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn a_handover_row_is_stored_in_the_fabric_handover_one_shape() {
         let d = tempdir();
-        let s = FileFabricStorage::open(&d).unwrap();
+        let s = FileFabricStorage::open(&d).await.unwrap();
         s.put_handover(&handover_row("fabric-primary-handover:m1", HandoverStage::Committed { committed_epoch: 8 })).await.unwrap();
         let text = std::fs::read_to_string(d.join(FABRIC_DIR).join("handovers").join("fabric-primary-handover_m1-committed.json")).unwrap();
         let expected = r#"{"format":"fabric-handover/1","record":{"operation":"fabric-primary-handover:m1","fabric":"fabric1","incumbent":{"mesh":"mesh1","node_id":"100000000000","incarnation":"i1"},"successor":{"mesh":"mesh2","node_id":"200000000000","incarnation":"i2"},"expected_epoch":7,"stage":{"Committed":{"committed_epoch":8}}}}"#;
@@ -546,10 +552,10 @@ mod tests {
             seats: vec![rafka_mesh_entity::seat::transfer::CommittedSeat::of(MeshPrimary, &n(4)), rafka_mesh_entity::seat::transfer::CommittedSeat::of(FabricPrimary, &n(8))],
         };
         let d = tempdir();
-        let s = FileFabricStorage::open(&d).unwrap();
+        let s = FileFabricStorage::open(&d).await.unwrap();
         s.put_seat(&seat_row(MeshPrimary, "mesh1", "100000000000", 3)).await.unwrap();
         s.put_seat_transfer(&row).await.unwrap();
-        let reopened = FileFabricStorage::open(&d).unwrap();
+        let reopened = FileFabricStorage::open(&d).await.unwrap();
         assert_eq!(reopened.seat_transfers().await.unwrap(), vec![row.clone()]);
         let standing = reopened.seats().await.unwrap();
         assert!(standing.contains(&SeatRow { seat: MeshPrimary, holder: n(4) }) && standing.contains(&SeatRow { seat: FabricPrimary, holder: n(8) }), "{standing:?}");
@@ -562,13 +568,13 @@ mod tests {
     #[tokio::test]
     async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
         let d = tempdir();
-        let s = FileFabricStorage::open(&d).unwrap();
+        let s = FileFabricStorage::open(&d).await.unwrap();
         let fabric = FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: Some(crate::build::BuildId("bld-2".into())) };
         s.put_identity(&FabricIdentity { fabric_id: fabric.fabric_id.clone(), name: fabric.name.clone() }).await.unwrap();
         s.put_pointer(&FabricPointer { build_id: crate::build::BuildId("bld-2".into()), submitted_at_ms: 20 }).await.unwrap();
         s.put_pointer(&FabricPointer { build_id: crate::build::BuildId("bld-1".into()), submitted_at_ms: 10 }).await.unwrap();
         s.put_shutdown(&shutdown()).await.unwrap();
-        let reopened = FileFabricStorage::open(&d).unwrap();
+        let reopened = FileFabricStorage::open(&d).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(fabric));
         assert_eq!(reopened.shutdown().await.unwrap(), Some(shutdown()));
         std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), br#"{"format":"fabric-shutdown/9","record":{}}"#).unwrap();
@@ -582,13 +588,13 @@ mod tests {
         let d = tempdir();
         std::fs::create_dir_all(d.join(FABRIC_DIR)).unwrap();
         std::fs::write(d.join(FABRIC_DIR).join("fabric.json"), br#"{"format":"fabric-record/1","record":{}}"#).unwrap();
-        let err = FileFabricStorage::open(&d).unwrap_err();
+        let err = FileFabricStorage::open(&d).await.unwrap_err();
         assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("fabric.json") && reason.contains("fabric-record/1")), "{err}");
     }
 
     #[tokio::test]
     async fn the_identity_is_held_once_for_both_stores() {
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&tempdir()).unwrap())] {
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&tempdir()).await.unwrap())] {
             let first = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             let other = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric2".into() };
             assert_eq!(s.put_identity(&first).await.unwrap(), first);
