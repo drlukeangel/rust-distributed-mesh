@@ -6169,6 +6169,84 @@ mod tests {
         }
     }
 
+    /// CONTRACT (gossip.md `NodeDeleting`: keyed `(kind, build_id, attempt, operation)`, "the fact
+    /// rides `Members.in_flight` until the operation completes", and `Members.in_flight` is "while
+    /// the operation is claimed and has no completed receipt (derived from Build facts each round)";
+    /// node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that workflow:
+    /// its Build ends Failed, and the mesh-primary's next tick finds the member still proven exited
+    /// and submits the recovery"): a removal's `NodeDeleting` overlay, opened from its attempt's
+    /// receipt, closes when that attempt's verdict is `Failed` (one
+    /// `rdm.mesh.membership.update.via-deleting-closed-by-facts` span naming the attempt), and the
+    /// mesh primary's next tick then submits the recovery of the member whose exact runtime the
+    /// failed workflow left exited: the exit-proof row is put and one `via-node-recovery` submit is
+    /// made. Must NOT happen: the overlay held after its attempt failed, so the tick refuses the
+    /// member `via-exit-inside-workflow` for a workflow that is over and the member is never put back.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_failed_removal_attempts_target_is_recovered_by_the_next_tick() {
+        use crate::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-failed-removal").unwrap();
+        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        member.node.runtime = Some(fact.clone());
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: "bld-failed-removal".into(),
+            attempt: 2,
+            operation: "replace-node:mesh2.rpc.1".into(),
+            node_id: member.node.node_id.clone(),
+            incarnation: member.node.incarnation.clone(),
+            name: member.node.name.clone(),
+            event_at_rafka_ms: 1,
+        };
+        let build = crate::build::BuildId(op.build_id.clone());
+        let mut facts = vec![
+            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2"), submitted_change: None, submitted_at_ms: 1 }),
+            BuildFact::Step(BuildStepReceipt { build_id: build.clone(), attempt: 2, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&op).unwrap()), executor: None }),
+        ];
+        let capture = crate::span_capture::Capture::new("i143-3068-failed-removal-recovered");
+        let mut named = NamedSteps::new();
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            overlays_from_facts(&facts, &book, &mut named);
+        }
+        assert_eq!(book.in_flight(), vec![op.clone()], "the removal's NodeDeleting receipt opens its overlay");
+        // The attempt's verdict: the workflow failed (the member's runtime exited under it).
+        facts.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: build.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "TerminateRuntime: the member exited under the replace".into() } }));
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            overlays_from_facts(&facts, &book, &mut named);
+        }
+        assert_eq!(book.in_flight(), Vec::<rafka_mesh_entity::LifecycleOp>::new(), "the failed attempt's overlay leaves Members.in_flight: its operation is no longer claimed by that attempt");
+        let closed = capture.named("rdm.mesh.membership.update.via-deleting-closed-by-facts");
+        assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
+        let a = &closed[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("operation"), attr("build_id"), attr("attempt"), attr("by")), ("replace-node:mesh2.rpc.1".to_string(), "bld-failed-removal".to_string(), "2".to_string(), "attempt-failed".to_string()), "the attempt the facts ended: {a:?}");
+        eprintln!("span rdm.mesh.membership.update.via-deleting-closed-by-facts trace_id={} {a:?}", closed[0].trace_id);
+        // A late copy of the closed attempt's overlay (a frame, an aggregate) is applied once, not again.
+        assert!(!book.deleting(op.clone()), "the closed overlay is not opened again by a copy of it");
+        // The mesh primary's next tick: the member's exact runtime is proven exited.
+        let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
+        crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
+        let (recovery, status, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let outcome = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+        };
+        assert_eq!(outcome, Inspected::Exited(Some(137), "provider"), "the provider proved the exact runtime exited");
+        let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
+        assert!(rejects.is_empty(), "no workflow holds the member: its failed attempt is over: {rejects:?}");
+        assert!(status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap().is_some(), "the exit-proof row is put");
+        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+        assert_eq!(submits.len(), 1, "the recovery is submitted: {submits:?}");
+        eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {:?}", submits[0].trace_id, submits[0].attributes);
+    }
+
     /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
     /// births, those known only by a durable runtime row included; CLAUDE.md: an error state names
     /// what failed and where): when the tick's read of the durable runtime rows is refused, the
