@@ -19,7 +19,7 @@ use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
 use rafka_mesh_entity::{MeshId, NodeId};
-use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{MeshDeleteRound, StatusReply, StatusRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -716,7 +716,7 @@ impl HandoffVerdict {
         match self {
             HandoffVerdict::Accept(_) => None,
             HandoffVerdict::Unmatched { field, expected, reported } => Some(StatusReply::RejectedUnmatchedCompletion { field: field.clone(), expected: expected.clone(), reported: reported.clone() }),
-            HandoffVerdict::Incomplete { reason, .. } => Some(StatusReply::NotReady { reason: reason.clone() }),
+            HandoffVerdict::Incomplete { reason, without_exit } => Some(StatusReply::incomplete_manifest(without_exit, reason)),
         }
     }
 }
@@ -739,7 +739,7 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
         let named = if without_exit.is_empty() { "none (every other birth exited, but no exit manifest is recorded)".to_string() } else { without_exit.join(", ") };
         let reason = format!("{operation} (build {}, attempt {attempt}): the member workflows are incomplete: {receipt_manifest} names no Complete {STEP_OTHER_MEMBERS_EXITED} receipt among the {} facts read; roster births without an exact Exited receipt: {named}", key.build_id, facts.len());
         tracing::info_span!("rdm.node_admin.mesh.reject.via-incomplete-handoff", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt, operation = %operation, roster = admitted.roster.len(), exited = held.len(), without_exit = %named)
-            .in_scope(|| tracing::info!("the leaving primary's member workflows are incomplete: the handoff is refused not-ready and the open leave ends"));
+            .in_scope(|| tracing::info!("the leaving primary's member workflows are incomplete: the handoff is refused by name as an incomplete manifest and the open leave ends"));
         return HandoffVerdict::Incomplete { reason, without_exit };
     };
     let manifest: ExitManifest = match receipt.output.clone().and_then(|v| serde_json::from_value(v).ok()) {
@@ -794,6 +794,57 @@ pub struct LeaveKey {
     pub operation: String,
 }
 
+impl LeaveKey {
+    /// The round this key names, as a round refusal carries it (its mesh id is the call's own).
+    pub fn round(&self) -> MeshDeleteRound {
+        MeshDeleteRound { build_id: self.build_id.clone(), attempt: self.attempt, operation: self.operation.clone() }
+    }
+}
+
+/// How the round a `leave-mesh` or `mesh-leave` offers for a mesh stands against the round held for
+/// it (node-rpc-envelope.md, "Mesh delete command pair": the workflow identity is `(mesh_id,
+/// build_id, attempt, operation)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundOrder {
+    /// The round held.
+    Same,
+    /// A later attempt of the round held: the same Build and operation.
+    Later,
+    /// An earlier attempt of the round held: stale.
+    Earlier,
+    /// Another Build or operation: conflicting.
+    Other,
+}
+
+/// Where `offered` stands against `held`, both rounds of one mesh.
+pub fn round_order(held: &LeaveKey, offered: &LeaveKey) -> RoundOrder {
+    if held.build_id != offered.build_id || held.operation != offered.operation {
+        return RoundOrder::Other;
+    }
+    match offered.attempt.cmp(&held.attempt) {
+        std::cmp::Ordering::Equal => RoundOrder::Same,
+        std::cmp::Ordering::Greater => RoundOrder::Later,
+        std::cmp::Ordering::Less => RoundOrder::Earlier,
+    }
+}
+
+/// The refusal of the round `offered` by `call` (`leave-mesh` at the leaving mesh-primary,
+/// `mesh-leave` at the fabric-primary) against the round `held` for its mesh: `RejectedStaleRound`
+/// for an earlier attempt of the round held, `RejectedConflictingRound` for any other round it does
+/// not admit. Its reject span names the call and both rounds. Nothing is admitted.
+pub fn refuse_round(call: &'static str, held: &LeaveKey, offered: &LeaveKey) -> StatusReply {
+    let (h, o) = (held.round(), offered.round());
+    if round_order(held, offered) == RoundOrder::Earlier {
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-stale-round", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
+            .in_scope(|| tracing::info!("the call names an earlier attempt of the round held for the mesh: it is refused by name and nothing is admitted"));
+        StatusReply::RejectedStaleRound { held: h, offered: o }
+    } else {
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-conflicting-round", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
+            .in_scope(|| tracing::info!("the call names a round of the mesh that is not the one held nor an attempt it admits: it is refused by name and nothing is admitted"));
+        StatusReply::RejectedConflictingRound { held: h, offered: o }
+    }
+}
+
 /// What the fabric-primary captured at admission.
 #[derive(Debug, Clone)]
 pub struct Admitted {
@@ -834,23 +885,24 @@ impl LeaveBook {
         self.open.lock().unwrap().get(key).map(|o| o.admitted.clone())
     }
 
-    /// What admission captured for the round a `MeshLeave` names, or the reply that refuses it: the
-    /// round must be an open leave of this owner.
+    /// What admission captured for the round a `MeshLeave` names, or the reply that refuses it. Only
+    /// a round this owner holds open is admitted; any other round of a mesh it holds a leave open for
+    /// is refused by name against that round ([`refuse_round`]: an earlier attempt is stale, a later
+    /// attempt it never opened or another Build conflicts); a mesh it holds no leave open for names
+    /// no open command.
     pub fn admitted_for(&self, key: &LeaveKey) -> Result<Admitted, StatusReply> {
-        if let Some(admitted) = self.admitted(key) {
-            return Ok(admitted);
+        let open = self.open.lock().unwrap();
+        if let Some(o) = open.get(key) {
+            return Ok(o.admitted.clone());
         }
-        let open = self.open_for(&key.mesh_id);
-        Err(StatusReply::RejectedUnmatchedCompletion {
-            field: "operation".into(),
-            expected: if open.is_empty() { "an open shutdown of this mesh".into() } else { open.iter().map(|(b, a, o)| format!("{o} (build {b}, attempt {a})")).collect::<Vec<_>>().join(", ") },
-            reported: format!("{} (build {}, attempt {})", key.operation, key.build_id, key.attempt),
-        })
-    }
-
-    /// The open leaves of `mesh_id`: `(build_id, attempt, operation)` of each.
-    pub fn open_for(&self, mesh_id: &MeshId) -> Vec<(String, u32, String)> {
-        self.open.lock().unwrap().keys().filter(|k| &k.mesh_id == mesh_id).map(|k| (k.build_id.clone(), k.attempt, k.operation.clone())).collect()
+        // The round held for the mesh: its open leave of the call's Build and operation, else its
+        // latest open attempt.
+        let held = open.keys().filter(|k| k.mesh_id == key.mesh_id).max_by_key(|k| (k.build_id == key.build_id && k.operation == key.operation, k.attempt)).cloned();
+        drop(open);
+        match held {
+            Some(held) => Err(refuse_round("mesh-leave", &held, key)),
+            None => Err(StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: format!("an open leave of mesh {}", key.mesh_id), reported: key.round().to_string() }),
+        }
     }
 
     /// A validated handoff for `key`: whether it was the first outcome of the leave.
@@ -898,14 +950,17 @@ enum LeaveRun {
 /// What a `leave-mesh` admission does for the leave of its mesh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeaveAdmission {
-    /// No run is held, or the one held exited under another key: the member workflows run for this
-    /// sender under its key (a run under a later attempt resumes from the receipts).
+    /// No run is held, or the one held exited under an earlier attempt of the same round: the
+    /// member workflows run for this sender under its key (a run under a later attempt resumes from
+    /// the receipts).
     Start,
     /// The member workflows are running: their handoff goes to this sender, under its key.
     Running,
     /// The manifest is recorded under this key: the handoff is what repeats, to this sender.
     Resend(ExitManifest),
-    /// The `leave-mesh` is refused by this reply; nothing is admitted and the leave held is unchanged.
+    /// The `leave-mesh` names an earlier attempt of the round held (`RejectedStaleRound`) or another
+    /// Build or operation (`RejectedConflictingRound`): nothing is admitted and the leave held, its
+    /// round and its sender, is unchanged.
     Refused(StatusReply),
 }
 
@@ -955,10 +1010,19 @@ pub enum LeaveRunEnd {
 pub struct LeaveRuns(Mutex<HashMap<MeshId, LeaveRun>>);
 
 impl LeaveRuns {
-    /// `leave-mesh` for `key` from `sender`.
+    /// `leave-mesh` for `key` from `sender`. The round held for the mesh decides it: the same round
+    /// or a later attempt of it is the same leave; an earlier attempt or another Build or operation
+    /// is refused by name against the round held ([`refuse_round`]) and changes nothing.
     pub fn admit(&self, key: &LeaveKey, sender: &NodeId) -> LeaveAdmission {
         let mut runs = self.0.lock().unwrap();
-        match runs.get(&key.mesh_id).cloned() {
+        let held = runs.get(&key.mesh_id).cloned();
+        if let Some(LeaveRun::Running { key: h, .. } | LeaveRun::Exited { key: h, .. }) = &held {
+            if matches!(round_order(h, key), RoundOrder::Earlier | RoundOrder::Other) {
+                drop(runs);
+                return LeaveAdmission::Refused(refuse_round("leave-mesh", h, key));
+            }
+        }
+        match held {
             Some(LeaveRun::Running { .. }) => {
                 runs.insert(key.mesh_id.clone(), LeaveRun::Running { key: key.clone(), owner: sender.clone() });
                 LeaveAdmission::Running

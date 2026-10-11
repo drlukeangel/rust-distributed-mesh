@@ -34,6 +34,15 @@ fn runtime() -> RuntimeProof {
     RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() }
 }
 
+/// The cell's spans, written to `target/cells/mesh_delete_round/<cell>/spans.json`; its trace id and
+/// that path are printed.
+fn keep(cell: &str, trace_id: &str, spans: &[Value]) {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cells/mesh_delete_round").join(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(spans).unwrap()).unwrap();
+    println!("cell={cell} trace_id={trace_id} spans={}", dir.join("spans.json").display());
+}
+
 /// The reject spans named `name` in the cell's own trace, with the round each names.
 fn refusals(spans: &[Value], trace_id: &str, name: &str) -> Vec<Value> {
     spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id).cloned().collect()
@@ -83,7 +92,6 @@ fn a_leave_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_th
         .await;
         (out, trace_id)
     });
-    println!("trace_id={trace_id}");
     assert_eq!(
         running,
         vec![
@@ -97,6 +105,7 @@ fn a_leave_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_th
     assert_eq!(end, LeaveRunEnd::Exited { key: held.clone(), owner: owner.clone(), manifest: manifest.clone() }, "the run ends under the round held, its handoff to that round's sender");
     assert_eq!(exited, vec![LeaveAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }), LeaveAdmission::Resend(manifest)], "after the manifest, an earlier attempt is still stale and the round held resends");
     let spans = cap.spans();
+    keep("leave_mesh_round", &trace_id, &spans);
     let stale_spans = refusals(&spans, &trace_id, STALE);
     let conflicting_spans = refusals(&spans, &trace_id, CONFLICTING);
     let named = |k: &LeaveKey| (k.build_id.clone(), k.attempt.to_string(), k.operation.clone());
@@ -142,7 +151,6 @@ fn a_mesh_leave_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_na
         .await;
         (out, trace_id)
     });
-    println!("trace_id={trace_id}");
     assert_eq!(
         refused,
         vec![
@@ -156,6 +164,7 @@ fn a_mesh_leave_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_na
     assert!(matches!(&unknown, Err(StatusReply::RejectedUnmatchedCompletion { field, reported, .. }) if field == "command" && reported.contains(&elsewhere.build_id)), "a mesh with no open leave names no open command: {unknown:?}");
     assert!(handoff.borrow().is_none(), "a refused round ends nothing: the open leave still waits for its handoff");
     let spans = cap.spans();
+    keep("mesh_leave_round", &trace_id, &spans);
     let named = |k: &LeaveKey| (k.build_id.clone(), k.attempt.to_string(), k.operation.clone());
     let expect = |offered: &LeaveKey| {
         let (h, o) = (named(&held), named(offered));

@@ -401,8 +401,9 @@ impl AdminRunner {
                     // leave-mesh, or the Build's next attempt, runs only the members without one.
                     tracing::info!(error = %reason, "the member workflows are incomplete: the owner is told now");
                     // The owner learns it inside the call: mesh-leave with no recorded manifest,
-                    // which it refuses not-ready naming the births without an Exited receipt and
-                    // ends its open leave with. No mesh-leave gossip runs: this is no handoff.
+                    // which it refuses by name (RejectedIncompleteManifest, the births without an
+                    // Exited receipt named) and ends its open leave with. No mesh-leave gossip runs:
+                    // this is no handoff.
                     self.call_mesh_leave(&key, &owner, "incomplete", 0).await;
                 }
                 crate::mesh_leave::LeaveRunEnd::Forgotten => tracing::info!("this leave's run is no longer held: the handoff waits for a repeated leave-mesh"),
@@ -562,14 +563,15 @@ impl AdminRunner {
         };
         let manifest = match verdict {
             crate::mesh_leave::HandoffVerdict::Accept(m) => m,
-            crate::mesh_leave::HandoffVerdict::Incomplete { reason, without_exit } => {
-                // The leaving primary recorded no manifest: the open leave ends now with the
-                // births named, and this attempt ends inside the call.
-                tracing::Span::current().record("without_exit", without_exit.join(", ").as_str());
-                self.leaves.incomplete(&key, reason.clone());
-                return StatusReply::NotReady { reason };
+            refused => {
+                if let crate::mesh_leave::HandoffVerdict::Incomplete { reason, without_exit } = &refused {
+                    // The leaving primary recorded no manifest: the open leave ends now with the
+                    // births named, and this attempt ends inside the call.
+                    tracing::Span::current().record("without_exit", without_exit.join(", ").as_str());
+                    self.leaves.incomplete(&key, reason.clone());
+                }
+                return refused.refusal().expect("a verdict other than Accept refuses");
             }
-            refused => return refused.refusal().expect("a verdict other than Accept refuses"),
         };
         if self.leaves.resolve(&key, manifest) {
             StatusReply::Applied

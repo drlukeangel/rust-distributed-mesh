@@ -370,6 +370,15 @@ impl TakeSeatsCall {
     }
 }
 
+/// The detail of a refused epoch overflow: who refused, the seat and the epoch that cannot advance.
+fn overflow_detail(me: &PathName, seat: &WireSeat, epoch: u64) -> String {
+    let mesh = match seat {
+        WireSeat::MeshPrimary { mesh } => format!(" of {mesh}"),
+        WireSeat::FabricPrimary => String::new(),
+    };
+    format!("{me}: the {}{mesh} seat is at epoch {epoch}, the largest a seat epoch holds; it cannot advance, so no transfer commits", seat.name())
+}
+
 fn births(b: &HandoverBirth) -> String {
     format!("{}:{}:{}", b.mesh, b.node_id, b.incarnation.0)
 }
@@ -568,8 +577,9 @@ impl HandoverDoor {
             let detail = format!("the leadership calculation without {} seats {}", payload.incumbent.mesh, selected.map(|n| n.name.to_string()).unwrap_or_else(|| "nobody".into()));
             return refuse("not-eligible", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
         }
+        // Epoch overflow cannot commit and is refused by name (node-rpc-envelope.md, op 0x21).
         let Some(committed) = payload.expected_epoch.checked_add(1) else {
-            return refuse("not-ready", "the seat epoch cannot advance".into(), Reply::NotReady { reason: format!("{}: the fabric seat epoch {} cannot advance", self.me, payload.expected_epoch) });
+            return refuse("epoch-overflow", overflow_detail(&self.me, &WireSeat::FabricPrimary, payload.expected_epoch), Reply::RejectedEpochOverflow { seat: WireSeat::FabricPrimary, epoch: payload.expected_epoch });
         };
         let holder = SeatHolder { mesh: payload.successor.mesh.clone(), node_id: payload.successor.node_id.clone(), incarnation: payload.successor.incarnation.clone(), epoch: committed };
         // The record is durable with or before the seat commit, and held only once the seat is.
@@ -703,8 +713,9 @@ impl HandoverDoor {
                 return if *c == committed { Reply::AlreadyApplied } else { refuse("stale-epoch", format!("the confirmed transfer is at epoch {c}"), Reply::RejectedStaleEpoch { expected: *c, current: committed }) };
             }
         }
+        // The transfer this completion names cannot have committed past an epoch at its maximum.
         let Some(next) = payload.expected_epoch.checked_add(1) else {
-            return refuse("not-ready", "the seat epoch cannot advance".into(), Reply::NotReady { reason: format!("{}: the fabric seat epoch {} cannot advance", self.me, payload.expected_epoch) });
+            return refuse("epoch-overflow", overflow_detail(&self.me, &WireSeat::FabricPrimary, payload.expected_epoch), Reply::RejectedEpochOverflow { seat: WireSeat::FabricPrimary, epoch: payload.expected_epoch });
         };
         if committed != next {
             return refuse("stale-epoch", format!("the transfer commits epoch {next}"), Reply::RejectedStaleEpoch { expected: next, current: committed });
@@ -818,8 +829,10 @@ impl HandoverDoor {
             if h.epoch != e.expected_epoch {
                 return refuse("stale-seat", format!("the {} seat is at epoch {}", e.seat.name(), h.epoch), Reply::RejectedStaleSeat { seat: e.seat.clone(), expected: e.expected_epoch, current: h.epoch });
             }
+            // The row moves each seat at its next epoch: a seat at its maximum cannot move, and
+            // nothing is cut off or written for a transfer that cannot commit.
             let Some(next) = h.epoch.checked_add(1) else {
-                return refuse("not-ready", format!("the {} seat epoch cannot advance", e.seat.name()), Reply::NotReady { reason: format!("{}: the {} seat epoch {} cannot advance", self.me, e.seat.name(), h.epoch) });
+                return refuse("epoch-overflow", overflow_detail(&self.me, &e.seat, h.epoch), Reply::RejectedEpochOverflow { seat: e.seat.clone(), epoch: h.epoch });
             };
             committed.push(CommittedSeat { seat: e.seat.clone(), holder: t.successor.clone(), epoch: next });
         }

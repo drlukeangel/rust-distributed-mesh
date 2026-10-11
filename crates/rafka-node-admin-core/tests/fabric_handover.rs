@@ -1156,7 +1156,11 @@ fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
         let replies = tracing::Instrument::instrument(epoch_overflow(op, seats_op), root).await;
         (replies, trace_id)
     });
-    println!("trace_id={trace_id}");
+    let spans = cap.spans();
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cells/fabric_handover/epoch_overflow");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     let max = WireSeat::FabricPrimary;
     let mesh1 = WireSeat::MeshPrimary { mesh: "mesh1".into() };
     assert_eq!(
@@ -1168,7 +1172,6 @@ fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
         ],
         "each call naming a seat at u64::MAX is refused by name"
     );
-    let spans = cap.spans();
     let ours = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     let refused = ours(REJECTED);
     for (call, side) in [("take", "successor"), ("taken", "incumbent")] {
