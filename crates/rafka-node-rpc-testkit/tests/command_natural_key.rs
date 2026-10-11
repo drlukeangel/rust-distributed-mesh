@@ -513,3 +513,47 @@ fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_ru
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
+
+/// CONTRACT: `node.drain` observes the eligible in-flight work under the drain bound
+/// (node-drain.md step 3; Receipt: `Established { in_flight }`, or at the drain bound
+/// `Deadline { last_in_flight }`). A call that never finishes ends the drain at the bound with
+/// `Deadline` naming the count it last observed, never zero. The process keeps running and the
+/// birth stays Draining (node-drain.md: no connection cut, exit or Leaving is implied). A deadline
+/// is not drained: the commander is owed no `node-drained`, and a later `DrainNode` of the birth is
+/// the same drain, `AlreadyApplied`, with no drain of its own. What must NOT happen: a drain loop
+/// that never ends while the call is held.
+#[test]
+fn a_drain_with_work_that_never_finishes_ends_at_the_drain_bound_with_a_deadline_receipt() {
+    let cell = "a_drain_with_work_that_never_finishes_ends_at_the_drain_bound_with_a_deadline_receipt";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        // This process's drain bound.
+        std::env::set_var("RDM_DRAIN_DEADLINE_MS", "500");
+        let birth = std::sync::Arc::new(Birth::up("drain-bound").await);
+        let held = birth.hold_one_call().await;
+        let drained = birth.open_drain(1);
+
+        assert_eq!(birth.call(&birth.drain(1)).await, StatusReply::Applied, "the drain is admitted");
+        // The held call never finishes on its own: the drain ends at its bound.
+        let deadline = |f: &std::collections::BTreeMap<String, String>| f.get("receipt").map(String::as_str) == Some("deadline");
+        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-drain-node", deadline))
+            .await
+            .expect("the drain ends at its bound with a Deadline receipt while the held call is in flight");
+        let drain = spans_named(&spans, "rdm.node_admin.status.update.via-drain-node");
+        assert_eq!(drain.len(), 1, "one drain task: {drain:?}");
+        assert_eq!(drain[0].get("in_flight").map(String::as_str), Some("1"), "the Deadline receipt names the one call it last observed in flight, never zero: {drain:?}");
+        assert_eq!(*birth.running.status.lock().unwrap(), MemberStatus::Draining, "a drain at its bound leaves the birth Draining: no Leaving is implied");
+
+        // A deadline is not drained: no node-drained, and a later DrainNode is the same drain.
+        assert_eq!(birth.call(&birth.drain(2)).await, StatusReply::AlreadyApplied, "a DrainNode after the drain ended at its bound is the same natural key (node_id, incarnation, Draining)");
+        birth.pull.release();
+        held.await.unwrap();
+        assert!(!*drained.borrow(), "a drain that ended at its bound owes its commander no node-drained");
+        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 1, "the later DrainNode runs no drain of its own");
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
