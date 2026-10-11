@@ -580,15 +580,38 @@ pub enum StatusReply {
     },
 }
 
+/// The most bytes of a node's `path.name` a config refusal carries.
+pub const MAX_REFUSAL_NODE_BYTES: usize = 128;
+/// The most bytes of the reply or call-end name a `ConfigNotApplied` carries.
+pub const MAX_REFUSAL_ANSWERED_BYTES: usize = 64;
+/// The most bytes of detail a config refusal carries: what is left of the reply bound after the
+/// variant (one byte), the other fields at their budgets and a two-byte length prefix on each string.
+pub const MAX_REFUSAL_REASON_BYTES: usize = 1024 - 1 - (2 + MAX_REFUSAL_NODE_BYTES) - (2 + MAX_REFUSAL_ANSWERED_BYTES) - 2;
+
+/// `s` cut to at most `max` bytes at a character boundary; a cut detail ends with `…` so the reader
+/// knows it was cut.
+fn within(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max - '…'.len_utf8();
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
 impl StatusReply {
-    /// `ConfigRowRefused` for `node`, the store's refusal `reason`.
+    /// `ConfigRowRefused` for `node`, the store's refusal `reason`, each within its budget so the
+    /// reply always fits the Status reply bound.
     pub fn config_row_refused(node: &str, reason: &str) -> Self {
-        Self::ConfigRowRefused { node: node.into(), reason: reason.into() }
+        Self::ConfigRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
-    /// `ConfigNotApplied` for `node`: the birth `answered` (a reply or call-end name), and why.
+    /// `ConfigNotApplied` for `node`: the birth `answered` (a reply or call-end name), and why, each
+    /// within its budget so the reply always fits the Status reply bound.
     pub fn config_not_applied(node: &str, answered: &str, reason: &str) -> Self {
-        Self::ConfigNotApplied { node: node.into(), answered: answered.into(), reason: reason.into() }
+        Self::ConfigNotApplied { node: within(node, MAX_REFUSAL_NODE_BYTES), answered: within(answered, MAX_REFUSAL_ANSWERED_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
     /// The reply's name as it appears in spans and evidence.
