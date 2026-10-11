@@ -361,7 +361,7 @@ async fn configs_door(rig: &Rig, node: &ServedNode) {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
     let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.authority.configure.clone())));
+    let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.authority.configure.clone(), Default::default())));
 }
 
 fn exact(b: &Birth) -> rafka_node_admin_client::ExactBirth {
@@ -535,7 +535,7 @@ async fn door_at(key: &SecretKey, node: &ServedNode) -> rafka_node_admin_core::n
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())
+    rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default(), Default::default())
 }
 
 /// CONTRACT (ops-naming "Node data" :78-79, fabric-node-lifecycle §4.3: the mesh-primary of a node's
@@ -859,7 +859,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         resolver.insert(node.resolved.clone());
         let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
-        let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())));
+        let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default(), Default::default())));
         let records = rafka_node_admin_core::admin::Records::default();
         records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone()).with_configs(configs)));
         let mut t = rig.topology.read().await.clone();
@@ -909,13 +909,24 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         resolver.insert(node.resolved.clone());
         let ep = rafka_node_rpc::endpoint::bind(m2admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
-        let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())));
+        let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default(), Default::default())));
         let records = rafka_node_admin_core::admin::Records::default();
         records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(m2admin.node.name.clone(), m2admin.node.node_id.clone(), rig.topology.clone(), mp_rows.clone()).with_configs(configs)));
         let mut t = rig.topology.read().await.clone();
         t.nodes.push(newcomer.node.clone());
         records.install_projected(&rig.topology, || t).await;
         tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("mesh2's primary told the birth its seeded config");
+        // The birth hears the call before mesh2's primary reads its answer: the door's tell runs on
+        // its own task, so the cell keeps its runtime until that door's span has ended with the
+        // answer, or the runtime's end would cancel it mid-call.
+        let answered = || cap.spans("rdm.node_admin.node.update.via-config").iter().any(|(_, a)| a.get("subject").map(String::as_str) == Some("mesh2.rpc.2") && a.contains_key("outcome"));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !answered() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("mesh2's primary's config door answered");
         assert_eq!(
             node.seen.lock().unwrap().clone(),
             vec![StatusRequest::ApplyNodeConfig { node_id: newcomer.node.node_id.clone(), incarnation: newcomer.node.incarnation_id.clone().unwrap(), config: seeded.clone() }],

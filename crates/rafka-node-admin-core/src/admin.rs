@@ -3878,7 +3878,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
     let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
     let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
-    let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone())));
+    // The record the writer of this admin's mesh rows holds, shared with its config door: a config
+    // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
+    let written = Arc::new(crate::node_rows::WrittenRows::default());
+    let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone())));
     let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
     *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage).await?;
     {
@@ -4048,7 +4051,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
             verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
             rows: {
-                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
+                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()).with_written(written.clone()));
                 records.set_rows(rows.clone());
                 let held = rows.clone();
                 let _ = control.parked_old.set(Arc::new(move |old: &PathName| held.parked_at(old)));

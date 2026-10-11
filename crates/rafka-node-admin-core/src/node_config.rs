@@ -23,15 +23,19 @@ pub struct NodeConfigs {
     client: Arc<NodeRpcClient>,
     own: crate::status_rpc::Configure,
     one_at_a_time: tokio::sync::Mutex<()>,
+    /// The record this admin's writer of its mesh's rows holds (`crate::node_rows::WrittenRows`):
+    /// each row the door puts is held there, so the node's next row carries the config put.
+    written: Arc<crate::node_rows::WrittenRows>,
 }
 
 /// The slot an admin fills once its node-RPC client exists.
 pub type NodeConfigsSlot = Arc<std::sync::OnceLock<Arc<NodeConfigs>>>;
 
 impl NodeConfigs {
-    /// The door over `client`; `own` holds this admin's config when it is the subject.
-    pub fn new(client: Arc<NodeRpcClient>, own: crate::status_rpc::Configure) -> Self {
-        Self { client, own, one_at_a_time: tokio::sync::Mutex::new(()) }
+    /// The door over `client`; `own` holds this admin's config when it is the subject; `written` is
+    /// the record the writer of this admin's mesh rows holds (`NodeRows::with_written`).
+    pub fn new(client: Arc<NodeRpcClient>, own: crate::status_rpc::Configure, written: Arc<crate::node_rows::WrittenRows>) -> Self {
+        Self { client, own, one_at_a_time: tokio::sync::Mutex::new(()), written }
     }
 
     /// Serve an `UpdateNodeConfig` at the admin `me` (born as `me_id`) deciding over `view`, writing to `storage`. One
@@ -86,7 +90,10 @@ impl NodeConfigs {
         let _one = self.one_at_a_time.lock().await;
         let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
         let refused = match storage.put_node_row(&row).await {
-            Ok(Ok(())) => None,
+            Ok(Ok(())) => {
+                self.written.hold(&row);
+                None
+            }
             Ok(Err(held)) => Some(format!("{me}: nodes.storage refused the row of {node_id}: {held}")),
             Err(e) => Some(format!("{me}: nodes.storage refused the row of {node_id}: {e}")),
         };

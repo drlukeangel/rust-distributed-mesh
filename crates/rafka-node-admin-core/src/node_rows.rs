@@ -63,6 +63,40 @@ pub struct NodeRows {
     /// from the replace's `RenamePredecessor` until its `NodeDeleted`: the fabric-primary's held
     /// record of a node no view names, which admits its `node.delete`.
     parked_old: Mutex<HashMap<PathName, Node>>,
+    /// This writer's record of each node's row: what it last wrote for the node, or found the node
+    /// holding at a claim. A later row of the node takes its config from here, never from a record
+    /// that does not carry it.
+    written: Arc<WrittenRows>,
+}
+
+/// A writer's record of the rows it holds authoritatively (fabric-node-lifecycle.md "A rewrite is
+/// lossless for every field its writer knows"): per node, the row the writer last put for it (a
+/// claim, an arrival, a rename, a config put, a Deleted row) or found the node holding at a claim.
+/// The writer of a mesh's rows and its config door share one record, so a config put through the
+/// door is what the node's next row (its `<path>.old` move, its `Deleted` row) carries. It is fed by
+/// this writer's own puts, and by the point read a claim or an arrival makes of the row at the
+/// node's `path.name` (R13: rebuild after a seat change reads the mesh's own rows): a row the node
+/// already holds is held as found. Nothing on the move or `Deleted` write path reads the store: those
+/// rows are written from this record. A `Deleted` row stays held for its node: a rerun of the delete
+/// writes the same row.
+#[derive(Debug, Default)]
+pub struct WrittenRows(Mutex<HashMap<NodeId, NodeRow>>);
+
+impl WrittenRows {
+    /// Hold `row` as the writer's record of its node.
+    pub fn hold(&self, row: &NodeRow) {
+        self.0.lock().unwrap().insert(row.node_id.clone(), row.clone());
+    }
+
+    /// The node let go of its row (a withdrawn claim): the writer holds no record of it.
+    pub fn forget(&self, node_id: &NodeId) {
+        self.0.lock().unwrap().remove(node_id);
+    }
+
+    /// The config the writer holds for `node_id`, if it holds a record of it.
+    pub fn config_of(&self, node_id: &NodeId) -> Option<BTreeMap<String, String>> {
+        self.0.lock().unwrap().get(node_id).map(|r| r.config.clone())
+    }
 }
 
 /// Why the writer refused a row.
@@ -122,7 +156,22 @@ impl NodeRows {
     /// The writer of the admin `me`, born as `me_id`, deciding over its view `view`, writing to
     /// `storage`, its nodes store.
     pub fn new(me: PathName, me_id: NodeId, view: Arc<RwLock<Topology>>, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, me_id, view, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(BTreeMap::new()), parked_old: Mutex::new(HashMap::new()) }
+        Self { me, me_id, view, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(BTreeMap::new()), parked_old: Mutex::new(HashMap::new()), written: Arc::new(WrittenRows::default()) }
+    }
+
+    /// Share `written`, the record the config door holds its puts in, as this writer's record.
+    pub fn with_written(mut self, written: Arc<WrittenRows>) -> Self {
+        self.written = written;
+        self
+    }
+
+    /// The config of the row `record`'s node is written with: the one this writer holds for it,
+    /// else the record's own; and which of the two it is (`writer-record`, `executor-record`).
+    fn known_config(&self, record: &Node) -> (BTreeMap<String, String>, &'static str) {
+        match self.written.config_of(&record.node_id) {
+            Some(config) => (config, "writer-record"),
+            None => (record.config.clone(), "executor-record"),
+        }
     }
 
     /// Tell each birth whose row is seeded its config through `configs`, the config door.
@@ -217,6 +266,9 @@ impl NodeRows {
             Err(e) => Err(e),
             Ok(()) => self.storage.release_node_row(name, node_id).await.map_err(|e| RowRefused::Unwritten(format!("{}: nodes.storage refused the release of {name} by {node_id}: {e}", self.me))),
         };
+        if let Ok(true) = r {
+            self.written.forget(node_id);
+        }
         match &r {
             Ok(true) => span.record("outcome", "withdrawn"),
             Ok(false) => span.record("outcome", "not-held").record("detail", format!("{}: {node_id} holds no row at {name}; nothing is released", self.me).as_str()),
@@ -280,17 +332,23 @@ impl NodeRows {
             subject = %name,
             operation,
             node_id = %record.node_id,
-            keys = record.config.len() as u64,
+            keys = tracing::field::Empty,
+            config_from = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
+        let (config, config_from) = self.known_config(record);
+        span.record("keys", config.len() as u64).record("config_from", config_from);
         let r = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, name).await?;
-                let row = NodeRow { name: name.clone(), node_id: record.node_id.clone(), status: NodeStatus::Deleted, config: record.config.clone() };
+                let row = NodeRow { name: name.clone(), node_id: record.node_id.clone(), status: NodeStatus::Deleted, config };
                 match self.storage.put_node_row(&row).await {
-                    Ok(Ok(())) => Ok(()),
+                    Ok(Ok(())) => {
+                        self.written.hold(&row);
+                        Ok(())
+                    }
                     Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
                     Err(e) => Err(RowRefused::Unwritten(format!("{}: nodes.storage refused the Deleted row of {name} ({}): {e}", self.me, record.node_id))),
                 }
@@ -313,6 +371,7 @@ impl NodeRows {
         let me = &self.me;
         let previous = self.storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
         if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id) {
+            self.written.hold(p);
             return Ok(Claimed::HeldByNode(p.clone()));
         }
         let seed = match previous {
@@ -327,6 +386,7 @@ impl NodeRows {
         let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config };
         match self.storage.put_node_row(&row).await {
             Ok(Ok(())) => {
+                self.written.hold(&row);
                 Ok(Claimed::Written { row, seeded_from: seed.map(|p| p.node_id) })
             }
             Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
@@ -542,8 +602,10 @@ impl NodeRows {
         let there = self.storage.node_row_at(to).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read for the rename of {} from {from}: {e}", record.node_id)))?;
         let held_there = there.is_some_and(|r| r.node_id == record.node_id);
         if !held_there {
-            let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
+            let (config, _) = self.known_config(record);
+            let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config };
             self.storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
+            self.written.hold(&row);
         }
         // The new name is the node's: it lets go of the old key.
         let released = self.storage.release_node_row(from, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))?;
