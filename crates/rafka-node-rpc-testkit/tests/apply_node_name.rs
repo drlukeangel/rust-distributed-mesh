@@ -44,6 +44,7 @@ fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_
             seeds: vec![admin.seed.clone()],
             launcher: Some(admin.launcher.clone()),
             data_dir: dir.clone(),
+            store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
         };
