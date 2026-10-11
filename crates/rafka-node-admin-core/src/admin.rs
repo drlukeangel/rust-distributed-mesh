@@ -6314,7 +6314,7 @@ mod tests {
             let view = view_now();
             let holds_seat = view.holds_mesh_seat("mesh2", &successor.node.node_id);
             let watched = watched_births(&view, &successor.node.node_id, "mesh2", &[]);
-            let silent = watched.values().map(|n| SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), marked_at_ms: None }).collect();
+            let silent = watched.values().map(|n| SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), incarnation: n.incarnation_id.clone(), marked_at_ms: None }).collect();
             let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
             let report = tickle
                 .tick(

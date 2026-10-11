@@ -18,6 +18,9 @@ use std::collections::{HashMap, HashSet};
 pub(crate) struct SilentNode {
     pub node_id: String,
     pub path: String,
+    /// The exact birth's incarnation, as the watched record holds it (`None` for a record that holds
+    /// none yet).
+    pub incarnation: Option<crate::model::IncarnationId>,
     /// The mark, on this admin's local clock (ms): the instant this admin's digest book holds the
     /// birth went unheard past the staleness floor ([`silent_set`]). `None` for a birth the book holds
     /// no receipt of (a birth only a durable runtime row names), whose silence is first seen at the
@@ -39,7 +42,7 @@ pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model:
                 .get_at(n.node_id.as_str(), now)
                 .filter(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && *unheard >= floor)
                 .map(|(_, unheard)| now_ms.saturating_sub((unheard - floor).as_millis() as u64));
-            SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), marked_at_ms }
+            SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), incarnation: n.incarnation_id.clone(), marked_at_ms }
         })
         .collect()
 }
@@ -395,7 +398,7 @@ pub(crate) mod tests {
     const PROBE_DELAY: u64 = FLOOR / 2;
 
     fn silent(id: &str) -> Vec<SilentNode> {
-        vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), marked_at_ms: None }]
+        vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: None, marked_at_ms: None }]
     }
 
     async fn tick(t: &mut OfflineTickle, now: u64, seat: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict) -> OfflineTickReport {
@@ -509,6 +512,68 @@ pub(crate) mod tests {
         }
     }
 
+    mod ladder {
+        //! The tickle ladder beside the loop (node-recovery.md "Detection and proof": "The
+        //! mesh-primary runs one loop for its own members, on every gossip interval"; step 2: "Half
+        //! a floor after the mark it makes one QUIC connect"), under paused time: a direct connect to
+        //! an exited runtime spends a known time, and the clock moves only while every task waits.
+        use super::*;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+        use tokio::time::{sleep, Instant};
+
+        /// What a direct connect to an exited runtime spends at the gate's cadence: the dial ends at
+        /// the QUIC idle timeout, the 3 s staleness floor (production's ends at the 10 s call budget).
+        const DIAL: Duration = Duration::from_secs(3);
+
+        fn marked(id: &str) -> SilentNode {
+            SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: Some(crate::model::IncarnationId(format!("inc-of-{id}"))), marked_at_ms: Some(0) }
+        }
+
+        /// CONTRACT (node-recovery.md step 2, per member, and the one loop on every gossip interval):
+        /// two members marked at the same instant each get their direct connect half a floor after the
+        /// mark, at once, and the pass that starts them waits on neither connect. Their outcomes
+        /// are folded by a later tick: both rounds ended with no path, so both hold-downs open on the
+        /// clock of the tick that started them. Must NOT happen: the second member's connect waiting
+        /// for the first one's to end (3 s late at the gate's cadence, a whole 10 s call budget at
+        /// production's), or a pass that lasts as long as the ladders it starts.
+        #[tokio::test(start_paused = true)]
+        async fn members_marked_together_are_each_tickled_half_a_floor_after_the_mark_at_once() {
+            let start = Instant::now();
+            let connects: Arc<Mutex<Vec<(String, Duration)>>> = Arc::default();
+            let mut t = OfflineTickle::new();
+            let tick = async |t: &mut OfflineTickle, now: u64| {
+                t.tick(
+                    now,
+                    true,
+                    vec![marked("a"), marked("b")],
+                    |_| true,
+                    PROBE_DELAY,
+                    FLOOR,
+                    |id| {
+                        let connects = connects.clone();
+                        async move {
+                            connects.lock().unwrap().push((id, start.elapsed()));
+                            sleep(DIAL).await;
+                            Err::<(), String>("the dial to the exited runtime ended at the idle timeout".into())
+                        }
+                    },
+                    |_| async { no_path() },
+                    |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                )
+                .await
+            };
+            let started = tick(&mut t, PROBE_DELAY).await;
+            let pass = start.elapsed();
+            sleep(DIAL).await;
+            assert_eq!(*connects.lock().unwrap(), vec![("a".to_string(), Duration::ZERO), ("b".to_string(), Duration::ZERO)], "both direct connects at half a floor after the mark, at once");
+            assert_eq!(pass, Duration::ZERO, "the pass waits on no connect");
+            assert_eq!(started.tickled, vec!["a".to_string(), "b".to_string()]);
+            tick(&mut t, PROBE_DELAY + DIAL.as_millis() as u64).await;
+            assert!(t.is_in_hold_down("a") && t.is_in_hold_down("b"), "both rounds ended with no path: both hold-downs are open");
+        }
+    }
+
     mod via_peer {
         //! The tickle's via-peer step runs the seat watch's ladder (node-recovery.md step 2, ruling
         //! R-SW1), under paused time: a probe's wait is its budget, and the clock moves only when
@@ -596,7 +661,7 @@ pub(crate) mod tests {
             let ended = Arc::new(AtomicUsize::new(0));
             let mut t = OfflineTickle::new();
             let id = b.0.to_string();
-            let set = || vec![SilentNode { node_id: b.0.to_string(), path: "mesh1.rpc.1".into(), marked_at_ms: None }];
+            let set = || vec![SilentNode { node_id: b.0.to_string(), path: "mesh1.rpc.1".into(), incarnation: Some(b.1.clone()), marked_at_ms: None }];
             let direct_failed = AtomicBool::new(false);
             let round = async |t: &mut OfflineTickle, now: u64| {
                 t.tick(
@@ -658,7 +723,7 @@ pub(crate) mod tests {
     /// sighting (a window that grows by the time between the mark and the tick that saw it).
     #[tokio::test]
     async fn the_one_tickle_is_made_half_a_floor_after_the_mark_not_after_the_tick_that_first_saw_it() {
-        let marked = |id: &str| vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), marked_at_ms: Some(0) }];
+        let marked = |id: &str| vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: None, marked_at_ms: Some(0) }];
         let mut t = OfflineTickle::new();
         assert!(tick(&mut t, 700, true, marked("a"), false, no_path()).await.tickled.is_empty(), "listed 700 ms after its mark: no tickle yet");
         let r = tick(&mut t, PROBE_DELAY, true, marked("a"), false, no_path()).await;
