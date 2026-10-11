@@ -1,7 +1,7 @@
 //! The transport diagnostic sink (R-QH1): the iroh and noq handshake, path and packet lines of
 //! this process, and the node's own dial, accept and bind lines, in one file of the node's own
 //! log directory, `<RDM_DATA_DIR>/transport-diag.log` (a process with no data directory writes
-//! it in `RDM_EVIDENCE_DIR`). A red gate keeps every node directory's log files, so both ends of
+//! its own `<service>.<pid>-<pid ns>.transport-diag.log` in `RDM_EVIDENCE_DIR`, beside its span files). A red gate keeps every node directory's log files, so both ends of
 //! a failed handshake are kept together.
 //!
 //! It exists only in an evidence run: a process given `RDM_EVIDENCE_DIR` (the test estate sets it
@@ -58,14 +58,19 @@ pub(crate) const DIRECTIVES: &[&str] = &[
     "noq_udp=debug",
 ];
 
-/// The diagnostic file, in an evidence run (`evidence`, `RDM_EVIDENCE_DIR`, set): in the node's own
-/// log directory (`data_dir`, `RDM_DATA_DIR`), else in the evidence directory. Outside an evidence
-/// run there is none, and the sink is not installed. `process` is this process's tag
-/// ([`crate::process_tag`]).
-pub(crate) fn file_path(data_dir: Option<&str>, evidence: Option<&str>, _service: &str, _process: &str) -> Option<std::path::PathBuf> {
+/// The diagnostic file, in an evidence run (`evidence`, `RDM_EVIDENCE_DIR`, set): [`TRANSPORT_DIAG_FILE`]
+/// in the node's own log directory (`data_dir`, `RDM_DATA_DIR`). A process with no node log
+/// directory (the probe) writes beside its span files in the evidence directory, which every probe
+/// of the run shares, so its file is its own and named as they are:
+/// `<service>.<process>.transport-diag.log`, `process` being this process's tag ([`crate::process_tag`]).
+/// Outside an evidence run there is none, and the sink is not installed.
+pub(crate) fn file_path(data_dir: Option<&str>, evidence: Option<&str>, service: &str, process: &str) -> Option<std::path::PathBuf> {
     let some = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
     let evidence = some(evidence)?;
-    Some(some(data_dir).unwrap_or(evidence).join(TRANSPORT_DIAG_FILE))
+    Some(match some(data_dir) {
+        Some(dir) => dir.join(TRANSPORT_DIAG_FILE),
+        None => evidence.join(format!("{service}.{process}.{TRANSPORT_DIAG_FILE}")),
+    })
 }
 
 /// The filter of the formatted lines: [`DIRECTIVES`] and nothing else, whatever RUST_LOG says.
