@@ -2353,7 +2353,10 @@ impl DeploymentPipeline<'_> {
                     observed_at_ms = exit.observed_at_ms,
                 )
                 .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
-                Ok(op.clone())
+                // The exited birth's row goes Deleted at its path.name, its config kept, inside the
+                // step and before node.deleted: the create below claims the name over it and seeds
+                // the new node's config from it (node-recovery.md "Retained").
+                self.deleted_row(&old, op.clone()).await
             })
             .await?;
         self.lifecycle.deleted(&op).await;

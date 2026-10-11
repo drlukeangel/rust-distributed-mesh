@@ -2447,7 +2447,10 @@ impl AdminRunner {
         if self.provider.inspect(&handle).await == crate::deployment::provider::DeploymentStatus::Running {
             return Err(format!("recover-node:{node}: birth {node_id} at {} still runs: it is not exited and is not recovered", from.0));
         }
-        let template = self.config_seed_from_deleted_row(node).await?;
+        // The launch is the kind's template, as every create's: the new node's config is seeded
+        // from the exited birth's Deleted row by the create's name claim (`NodeRows::claim`) and told
+        // to it when its row is written at its arrival (`NodeRows::write_arrivals`).
+        let template = self.template_for(node.kind, &node.mesh).await?;
         // A node-admin's recovery is a node-admin birth whose maker is this mesh-primary (the
         // template's seed): it is handed the durable runtime rows before it runs, as every admin
         // birth is.
@@ -2461,13 +2464,6 @@ impl AdminRunner {
         // The path's handle is the new node's: the exited birth's leaves with it.
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
-    }
-
-    /// The launch of a recovered node. node-recovery.md: "Its config is seeded from the Deleted row at
-    /// that path.name" — that seeding is i143.e12.s41's (#3068); until it lands the launch is the
-    /// kind's template, as every create's.
-    async fn config_seed_from_deleted_row(&self, node: &PathName) -> Result<LaunchTemplate, String> {
-        self.template_for(node.kind, &node.mesh).await
     }
 
     /// node-recovery.md "Delete fences the old instance before the new join": the exited birth's
