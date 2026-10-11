@@ -11,7 +11,6 @@
 //! The detectors are `rafka_test_scenario::wedge`: they judge a cut by the consequences it leaves,
 //! never by the injector's success and never by a duration.
 
-use opentelemetry::trace::TracerProvider as _;
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, PreCommit, RequestFinished};
 use rafka_node_rpc_contract::ping::Ping;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -21,7 +20,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Layer as _;
 
 fn acceptance_dir(layer: &str, cell: &str) -> PathBuf {
     match std::env::var("I143_ACCEPTANCE_DIR") {
@@ -34,11 +32,12 @@ fn acceptance_dir(layer: &str, cell: &str) -> PathBuf {
 // UNIT: the detector refuses every wedge that lacks a consequence, by name.
 // ---------------------------------------------------------------------------------------------
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher, so the spans are
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher, so the spans are
 /// exactly the ones the detector emitted for this cell.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
@@ -46,21 +45,17 @@ struct Capture {
 fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2782-{cell}");
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2782")).with_filter(tracing_subscriber::filter::filter_fn(|m| m.name().starts_with("rdm.")));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
 impl Capture {
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
-        self.exporter
-            .get_finished_spans()
-            .unwrap()
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let finished = self.exporter.get_finished_spans().unwrap();
+        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
+        finished
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();

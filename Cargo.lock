@@ -3481,7 +3481,6 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "libc",
- "opentelemetry",
  "opentelemetry_sdk",
  "rafka-chaos",
  "rafka-mesh-entity",
@@ -3497,7 +3496,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "yaml_serde",
 ]
