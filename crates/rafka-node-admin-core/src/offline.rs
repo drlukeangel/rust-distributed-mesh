@@ -64,20 +64,35 @@ pub fn tickle_round_at_default_budget() -> std::time::Duration {
 
 /// The mesh-primary's recovery tick (node-recovery.md "Detection and proof": "The mesh-primary runs
 /// one loop for its own members, on every gossip interval, never on a timer of its own"): the loop
-/// runs a pass, then waits here for the next one.
+/// runs a pass, then waits here for the next one. Passes start on the grid of the gossip interval
+/// laid from the cadence's start, whatever a pass spends: the next pass is one interval after the
+/// previous one STARTED, never one interval after it ended.
+///
+/// A pass that runs past a grid point ([`tokio::time::MissedTickBehavior::Skip`]) is followed by the
+/// one pass it owes at once, then the passes return to the same grid; the ticks it ran past are not
+/// run back to back (`Burst`: passes that would read the same view an instant apart), and the grid
+/// does not move to the late pass (`Delay`: one interval after the late pass, which is the interval
+/// plus the pass's own work again).
 pub(crate) struct Cadence {
-    period: std::time::Duration,
+    ticks: tokio::time::Interval,
 }
 
 impl Cadence {
-    /// The cadence at `period`, the gossip interval.
-    pub(crate) fn every(period: std::time::Duration) -> Self {
-        Self { period }
+    /// The cadence at `period`, the gossip interval; the first pass is the caller's own, and the
+    /// first wait ends one interval after this call. A zero period has no interval to run on and is
+    /// refused by name.
+    pub(crate) fn every(period: std::time::Duration) -> Result<Self, String> {
+        if period.is_zero() {
+            return Err("the gossip interval (RDM_GOSSIP_INTERVAL_MS) is 0 ms: the mesh-primary's recovery tick runs on every gossip interval, and a zero interval has none".to_string());
+        }
+        let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        Ok(Self { ticks })
     }
 
     /// Wait for the next pass.
     pub(crate) async fn next(&mut self) {
-        tokio::time::sleep(self.period).await;
+        self.ticks.tick().await;
     }
 }
 
@@ -449,7 +464,7 @@ pub(crate) mod tests {
         /// the instant each pass started, measured from the loop's start.
         async fn pass_starts(work: &[Duration]) -> Vec<Duration> {
             let start = Instant::now();
-            let mut cadence = Cadence::every(INTERVAL);
+            let mut cadence = Cadence::every(INTERVAL).expect("a non-zero interval");
             let mut starts = Vec::new();
             for spent in work {
                 starts.push(start.elapsed());
@@ -471,6 +486,14 @@ pub(crate) mod tests {
         async fn the_recovery_tick_starts_every_pass_on_the_gossip_interval_grid() {
             let w = Duration::from_millis(100);
             assert_eq!(pass_starts(&[w, w, w]).await, ms(&[0, 500, 1000]), "each pass starts one interval after the previous one started");
+        }
+
+        /// CONTRACT: a zero gossip interval is refused by name, never a loop that spins or a
+        /// panic inside the timer.
+        #[tokio::test(start_paused = true)]
+        async fn a_zero_gossip_interval_is_refused_by_name() {
+            let refused = Cadence::every(Duration::ZERO).err().expect("a zero interval is refused");
+            assert!(refused.contains("RDM_GOSSIP_INTERVAL_MS") && refused.contains("0 ms"), "{refused}");
         }
 
         /// CONTRACT (a late tick does not burst, and the grid holds): a pass that spends 1200 ms, past

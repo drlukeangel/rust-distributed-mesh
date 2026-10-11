@@ -5001,7 +5001,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
         };
         let park = park_gate.clone();
-        let mut cadence = crate::offline::Cadence::every(gossip_interval());
+        let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
         tasks.push(tokio::spawn(async move {
             // The births whose inspection or submitted recovery is in flight, and the last verdict
             // named per birth. The tick never waits on either.
