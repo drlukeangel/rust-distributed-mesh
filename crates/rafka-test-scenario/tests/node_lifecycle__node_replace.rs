@@ -355,6 +355,68 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     estate.shutdown().await;
 }
 
+/// CONTRACT (node-recovery.md "Failure and receipts": the mesh-primary is the submitter that submits
+/// again; sequence step 1: keyed on the exited birth, a repeat answers AlreadyApplied or
+/// BuildInProgress, never a second recovery; node-rpc-envelope.md "Caller execution and
+/// certainty": a later attempt resumes from the recorded receipts, never from step 1): a member's
+/// data dir loses its node-key and the member is killed. Its recovery's node.delete completes (the
+/// exited birth departs, node.deleted once) and its node.create refuses by name at PrepareStorage,
+/// so the attempt ends Failed. The key is put back. The mesh-primary submits the same exited birth
+/// again on a later tick, though no view holds that birth any longer: a later attempt of the same
+/// Build runs only the create and the update, and the path comes back as a new node over the same
+/// data dir and endpoint key. Must NOT happen: the failed recovery left for good (nothing at the
+/// path), a second node.delete of the exited birth, a Build minted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes() {
+    let (estate, birth_build) = estate("a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes").await;
+    const NODE: &str = "mesh1.rpc.2";
+    let before = estate.node(NODE).await;
+    let data_dir = estate.data_dir_of(NODE).await;
+    let key_path = Path::new(&data_dir).join("node-key");
+    let key = std::fs::read(&key_path).unwrap_or_else(|e| panic!("{NODE}'s node-key in {data_dir}: {e}"));
+    std::fs::remove_file(&key_path).unwrap();
+    estate.kill_node(NODE).await;
+
+    let submits = |spans: &[Value]| -> Vec<Value> { named(spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
+    let failed = wait_for("the recovery's create fails at PrepareStorage", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")) }).await;
+    let failed_attempt: u64 = s(&failed["attributes"]["attempt"]).parse().expect("the failed submit names its attempt");
+    let outcome = s(&failed["attributes"]["outcome"]);
+    assert!(outcome.contains(&format!("create-node:{NODE} step PrepareStorage")) && outcome.contains("node-key is missing"), "the create refused the dir with no key by name: {failed}");
+    assert_eq!(s(&failed["attributes"]["build_id"]), birth_build, "{failed}");
+    std::fs::write(&key_path, &key).unwrap();
+
+    let after = wait_for(&format!("{NODE} ready as a new node after its recovery failed"), Duration::from_secs(60), || async {
+        let n = estate.node_opt(NODE).await?;
+        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
+    })
+    .await;
+    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
+    assert_eq!(estate.data_dir_of(NODE).await, data_dir, "the same data dir");
+    let done = wait_for("the completed submit of the exited birth is exported", Duration::from_secs(60), || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("complete")) }).await;
+    assert_eq!(s(&done["attributes"]["build_id"]), birth_build, "the same Build, no Build minted: {done}");
+    assert_eq!(done["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {done}");
+    let attempt: u64 = s(&done["attributes"]["attempt"]).parse().expect("the completed submit names its attempt");
+    assert!(attempt > failed_attempt, "a later attempt than the failed one: {done}");
+    assert_eq!(s(&done["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{done}");
+    assert!(s(&done["attributes"]["after_failed_attempt"]).parse::<u64>().is_ok_and(|a| a >= failed_attempt && a < attempt), "the submit follows a Failed one of the same birth: {done}");
+
+    let (_, build) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    let steps = build["steps"].as_array().cloned().unwrap_or_default();
+    let deleted: Vec<&Value> = steps.iter().filter(|r| r["operation"] == format!("retire-node:{NODE}").as_str() && r["step"] == "NodeDeleted").collect();
+    assert_eq!(deleted.len(), 1, "one node.delete of the exited birth, never again: {deleted:?}");
+    assert!(steps.iter().all(|r| !(r["operation"] == format!("retire-node:{NODE}").as_str() && r["attempt"] == json!(attempt))), "the completing attempt deletes nothing");
+    let spans = wait_for("the completing attempt's reconcile span is exported", Duration::from_secs(30), || async {
+        let spans = estate.spans();
+        reconcile_span(&spans, &birth_build, &attempt.to_string()).is_some().then_some(spans)
+    })
+    .await;
+    let reconcile = reconcile_span(&spans, &birth_build, &attempt.to_string()).expect("the attempt's reconcile span");
+    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("create-node:{NODE},update-node:{NODE}"), "only what was left: {reconcile}");
+    estate.record_trace_url(done["trace_id"].as_str().unwrap_or(""));
+    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
+    estate.shutdown().await;
+}
+
 /// The fence spans of the exited birth `old` (node-recovery.md "Delete fences the old instance
 /// before the new join"): its resolver entry and the direct paths of its endpoint key retired.
 fn exit_fences<'a>(spans: &'a [Value], old: &Value) -> Vec<&'a Value> {
