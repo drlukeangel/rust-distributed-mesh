@@ -824,7 +824,7 @@ fn held_births(book: &DigestBook, fabric: &FabricId, me: &NodeId) -> Vec<MeshDig
 /// fact is the digest's (when it is of this birth) or the row's, adopted in this provider's control
 /// domain and inspected, and only the runtime's own terminal status counts. `Ok` carries the exit
 /// code and where it came from; `Err` names why nothing is proven.
-pub(crate) async fn exit_proof_of(
+pub async fn exit_proof_of(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     held_row: &Option<(MeshDigest, Duration)>,
     row: Option<&crate::storage::RuntimeRow>,
@@ -991,6 +991,45 @@ fn disposition_name(d: rafka_node_rpc_contract::build::Disposition) -> &'static 
 
 /// The silence-status memo of the mesh primary's tick: what it last put per node.
 type WrittenSilence = HashMap<NodeId, (Option<IncarnationId>, Option<NodeStatus>)>;
+
+/// The births the durable runtime rows name at a path `view` holds nothing at: a birth this admin
+/// never heard and never launched, at a path the accepted Build names (`planned`), whose departure
+/// is not held (a departed birth's row is history). Each stands in the map as `PendingReconnect`,
+/// to be inspected like any unheard birth: only an exited runtime counts. One birth per path.
+pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], planned: &dyn Fn(&PathName) -> bool, departed: &dyn Fn(&str) -> bool) -> Vec<Node> {
+    let mut births: Vec<Node> = Vec::new();
+    for row in durable {
+        if view.node(&row.name).is_none() && !births.iter().any(|n| n.name == row.name) && planned(&row.name) && !departed(row.node_id.as_str()) {
+            let mut n = Node::allocated(row.name.clone());
+            n.node_id = row.node_id.clone();
+            n.incarnation_id = Some(row.incarnation_id.clone());
+            n.status = NodeStatus::PendingReconnect;
+            births.push(n);
+        }
+    }
+    births
+}
+
+/// What the mesh primary's tick watches, by node id: every silent (`PendingReconnect` or `Dead`)
+/// member of its view other than itself, of its own mesh or a node-admin of any mesh.
+pub fn watched_births(view: &Topology, me: &PathName, mesh: &str, durable: &[Node]) -> BTreeMap<String, Node> {
+    let _ = durable;
+    view.members()
+        .filter(|n| n.name != *me && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))
+        .filter(|n| n.mesh == mesh || n.kind == NodeKind::NodeAdmin)
+        .map(|n| (n.node_id.to_string(), n.clone()))
+        .collect()
+}
+
+/// The watched births the tick inspects for recovery (node-recovery.md): none unless this admin
+/// holds its mesh's primary seat; else every watched birth of its own mesh (its secondary
+/// node-admins included, mesh-recovery.md:8-9) held TRUE OFFLINE at its exact incarnation.
+pub fn recovery_due(holds_seat: bool, mesh: &str, watched: &BTreeMap<String, Node>, offline: &HashSet<(NodeId, IncarnationId)>) -> Vec<Node> {
+    if !holds_seat {
+        return Vec::new();
+    }
+    watched.values().filter(|n| n.mesh == mesh && n.incarnation_id.as_ref().is_some_and(|i| offline.contains(&(n.node_id.clone(), i.clone())))).cloned().collect()
+}
 
 /// The mesh primary's per-birth bookkeeping speaks only for the births it still watches: a birth
 /// whose node left the view (deleted, or recovered under a new node.id at its path.name) or whose
@@ -1188,16 +1227,7 @@ pub async fn reconcile_drift(
     // at a path its view holds nothing at (a sibling this admin never heard). Such a birth is not
     // reached, not dead: it is inspected like any unheard birth, and only an exited runtime counts.
     let mut map = t.clone();
-    for row in durable {
-        // A birth whose proven departure is held left on purpose: its row is history, not drift.
-        if map.node(&row.name).is_none() && current.topology.contains(&row.name) && !book.is_departed(row.node_id.as_str()) {
-            let mut n = Node::allocated(row.name.clone());
-            n.node_id = row.node_id.clone();
-            n.incarnation_id = Some(row.incarnation_id.clone());
-            n.status = NodeStatus::PendingReconnect;
-            map.nodes.push(n);
-        }
-    }
+    map.nodes.extend(durable_births(t, durable, &|p| current.topology.contains(p), &|id| book.is_departed(id)));
     let t = &map;
     // The births this authority may have to prove: the ones it no longer hears, and the node-admins
     // of a peer mesh whose rebirth the ladder decided (`crate::investigate`). A mesh this authority
@@ -4381,12 +4411,19 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             loop {
                 let view = topology.read().await.clone();
                 let holds_seat = view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me);
-                let watched: BTreeMap<String, Node> = view
-                    .members()
-                    .filter(|n| n.name != me && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))
-                    .filter(|n| n.mesh == mesh || n.kind == NodeKind::NodeAdmin)
-                    .map(|n| (n.node_id.to_string(), n.clone()))
-                    .collect();
+                // Every admin watches the same set, the seat holder or not, so a successor tickles on
+                // the window already running; the durable rows are read each tick (one point in time).
+                let durable = match recovery.nodes_storage.runtimes().await {
+                    Ok(rows) => {
+                        let planned = records.planned();
+                        durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
+                    }
+                    Err(e) => {
+                        tracing::info!(error = %e, "the durable runtime rows could not be read: this tick watches the view's births only");
+                        Vec::new()
+                    }
+                };
+                let watched = watched_births(&view, &me, &mesh, &durable);
                 let silent = watched.values().map(|n| crate::offline::SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string() }).collect();
                 let client = runner.node_rpc.as_ref().map(|r| r.client.clone());
                 // The tickle: ask the exact birth to reassert itself.
@@ -4509,12 +4546,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // (mesh-recovery.md:8-9); Exited is the proof, and the
                 // recovery is submitted keyed on the exited birth. Re-evaluated every tick while the
                 // member stays TRUE OFFLINE, so a recovery that failed is submitted again.
-                if holds_seat {
+                {
                     let offline = records.offline.lock().unwrap().clone();
-                    for n in watched.values().filter(|n| n.mesh == mesh) {
+                    for n in recovery_due(holds_seat, &mesh, &watched, &offline) {
                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                         let birth = (n.node_id.clone(), incarnation);
-                        if !offline.contains(&birth) || !in_flight.lock().unwrap().insert(birth.clone()) {
+                        if !in_flight.lock().unwrap().insert(birth.clone()) {
                             continue;
                         }
                         let (recovery, n, in_flight, verdicts) = (recovery.clone(), n.clone(), in_flight.clone(), verdicts.clone());

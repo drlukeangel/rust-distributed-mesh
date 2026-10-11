@@ -749,6 +749,73 @@ async fn a_durable_runtime_row_of_a_runtime_that_runs_opens_no_attempt() {
     assert_eq!(opened, None, "a silent member whose runtime runs is held, never replaced");
 }
 
+/// CONTRACT (mesh-recovery.md:8-9 "A lost member of a mesh with a live mesh-primary is node
+/// recovery, driven by that mesh-primary"; node-recovery.md): a secondary node-admin of a peer mesh
+/// that its mesh-primary never heard and never launched, known to it only by the durable runtime row
+/// its maker handed over, is watched by that mesh-primary's tick as a silent birth (`PendingReconnect`,
+/// the row's exact node id and incarnation); once TRUE OFFLINE it is due for recovery, the provider
+/// proves its exact runtime exited from the row, and the recovery submitted at the fabric-primary's
+/// door is the next attempt of the same Build, executed by that mesh-primary, with a new node.id at
+/// the path. The fabric-primary's drift, holding the same row, opens nothing. Must NOT happen: the
+/// birth watched by nobody (no recovery ever), or a proven-drift Replace from the fabric-primary.
+#[tokio::test]
+async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_its_mesh_primary() {
+    let e = estate().await;
+    let before = e.accepted.current(&*e.builds).await.unwrap();
+    let fp = e.fabric_primary().await;
+    let peer = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+    let mp: PathName = e.view.read().await.cohort_primary(peer, NodeKind::NodeAdmin).unwrap().name.clone();
+    let lost = e.view.read().await.cohort(peer, NodeKind::NodeAdmin).map(|n| n.name.to_string()).find(|n| *n != mp.to_string()).unwrap();
+    let old = e.node_id(&lost).await;
+    let row = {
+        let (d, _) = e.book.get(&old).unwrap();
+        rafka_node_admin_core::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
+    };
+    e.world.kill(&old);
+    // Nobody heard the lost admin: it is in no view and no membership book, only in the row.
+    let heard = DigestBook::default();
+    for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
+        heard.record(d);
+    }
+    {
+        let mut v = e.view.write().await;
+        v.nodes.retain(|n| n.name.to_string() != lost);
+        rafka_node_admin_core::election::resolve(&mut v.nodes);
+    }
+    let t = e.view.read().await.clone();
+    assert_eq!(t.cohort_primary(peer, NodeKind::NodeAdmin).map(|n| n.name.clone()), Some(mp.clone()), "the mesh keeps its live primary");
+
+    // The fabric-primary's drift folds the row and leaves the birth to that mesh-primary.
+    let me: PathName = fp.parse().unwrap();
+    let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut HashSet::new(), &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
+    assert_eq!(opened, None, "the fabric-primary opens nothing for a node-admin its mesh-primary recovers");
+
+    // The mesh-primary's tick: what it watches, from its view and its durable rows.
+    let accepted = e.accepted.current(&*e.builds).await.unwrap().topology;
+    let births = rafka_node_admin_core::admin::durable_births(&t, std::slice::from_ref(&row), &|p| accepted.contains(p), &|id| heard.is_departed(id));
+    let watched = rafka_node_admin_core::admin::watched_births(&t, &mp, peer, &births);
+    let w = watched.get(&old).unwrap_or_else(|| panic!("{mp}'s tick watches {lost}, known only by its durable row: watched {:?}", watched.values().map(|n| n.name.to_string()).collect::<Vec<_>>()));
+    assert_eq!((w.name.to_string(), w.incarnation_id.clone(), w.status), (lost.clone(), Some(row.incarnation_id.clone()), NodeStatus::PendingReconnect), "the row's exact birth, silent");
+    // TRUE OFFLINE (the tickle's verdict): due for recovery at the seat holder, and at nobody else.
+    let offline: HashSet<(NodeId, IncarnationId)> = [(row.node_id.clone(), row.incarnation_id.clone())].into();
+    let due: Vec<String> = rafka_node_admin_core::admin::recovery_due(true, peer, &watched, &offline).iter().map(|n| n.name.to_string()).collect();
+    assert_eq!(due, vec![lost.clone()], "{mp} inspects {lost} for recovery");
+    // The provider's exact-exit proof, from the row.
+    let proof = rafka_node_admin_core::admin::exit_proof_of(&e.provider, &None, Some(&row)).await;
+    assert!(proof.is_ok(), "the row's exact runtime is proven exited: {proof:?}");
+
+    // The submit at the fabric-primary's door, executed by the mesh-primary.
+    let submitted = e.door(e.builds.clone()).await.open_recovery("build.create", row.name.clone(), row.node_id.clone(), row.incarnation_id.clone()).await;
+    let Ok(rafka_node_admin_core::http::Recovery::Opened(o)) = submitted else { panic!("{lost}'s recovery was not opened: {:?}", submitted.map(|_| ()).map_err(|r| format!("{r:?}"))) };
+    assert_eq!((o.build_id.clone(), o.attempt), (before.build_id.clone(), before.attempt + 1), "the same Build, one more attempt");
+    e.converge().await;
+    assert_eq!(e.dispatch.dispatched.lock().unwrap().clone(), vec![(mp.to_string(), before.attempt + 1)], "executed by its mesh-primary");
+    assert_eq!(e.born(), vec![lost.clone()], "exactly the lost admin is recovered");
+    assert_ne!(e.node_id(&lost).await, old, "a new node.id");
+    e.holds_the_shape().await;
+}
+
 /// Two openers of one attempt number: the requested attempt (REST) and the proven-drift pass read the
 /// same settled Build, so both compute the next attempt as `k + 1`. The first append takes the number;
 /// the loser is told by name, never acknowledged for an attempt that carries someone else's action.
