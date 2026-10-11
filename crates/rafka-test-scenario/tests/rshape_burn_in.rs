@@ -2609,15 +2609,15 @@ async fn recovery_run(cell: &str, shape: Shape) {
     assert!(!spans_after.is_empty(), "the surviving admins claimed further attempts of {b0} after the executor's death");
     assert_eq!(spans_after[0]["attempt"].as_u64(), Some(later[0].0), "the first surviving claim is the attempt that follows the dead executor's: {spans_after:#?}");
     assert_ne!(spans_after[0]["executor"], executor_name.as_str(), "the first claim after the death is a survivor's");
-    // The dead admin's path.name is re-born by the same Build: a replace-node under b0 (a birth the reconciler proved exited), by a later attempt,
-    // executed by the admin cohort's executor (its mesh's surviving primary admin).
+    // The dead admin's path.name is re-born by the same Build: its mesh's surviving primary admin proves the exit and
+    // runs its node recovery, a recover-node under b0 by a later attempt (mesh-recovery.md:8-9).
     let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .filter(|c| c["attributes"]["build_id"] == b0.as_str() && c["attributes"]["node"] == executor_name.as_str() && start_ns(c) > kill_ns)
         .collect();
     assert!(!creates.is_empty(), "{executor_name} was re-born by node.create.via-build under {b0}");
     assert!(creates.iter().all(|c| u64::from(attempt_of(c)) > killed_at_attempt), "the re-birth is a later attempt than the dead executor's");
-    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).split(',').any(|op| op == format!("replace-node:{executor_name}") || op == format!("create-node:{executor_name}"))).map(|c| s(&c["executor"])).collect();
+    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).split(',').any(|op| op == format!("recover-node:{executor_name}"))).map(|c| s(&c["executor"])).collect();
     let survivor_name = s(&survivor["name"]);
     assert_eq!(rebirth_executors, BTreeSet::from([survivor_name.clone()]), "the dead admin's re-birth was planned and executed by its mesh's surviving primary admin {survivor_name} (the fabric-primary {fp_at_the_death} owns only a mesh that has none)");
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
