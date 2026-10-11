@@ -2503,10 +2503,9 @@ impl Membership {
         self.view.mesh_rx.lock().unwrap().held_version(mesh)
     }
 
-    /// This node's own Mesh's primary node-admin as this node's view holds it: the Ready
-    /// node-admin of the Mesh with the lowest NodeId, the election the node-admins make
-    /// (rafka-node-admin-core `election::elect`). The node tops up from it and from no other.
-    pub fn mesh_primary(&self) -> Option<MeshDigest> {
+    /// This node's own Mesh's current primary node-admin: the birth its held seat record names
+    /// ([`DigestBook::mesh_primary`]). The node tops up from it and from no other.
+    pub fn mesh_primary(&self) -> Result<MeshDigest, NoMeshPrimary> {
         self.book.mesh_primary(&self.view.mesh)
     }
 
@@ -2534,10 +2533,13 @@ impl Membership {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
         let node = self.view.node.clone();
-        let Some(primary) = self.mesh_primary() else {
-            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = "no-mesh-primary-held")
-                .in_scope(|| tracing::info!("no Ready node-admin of this Mesh is held: nothing to top up from"));
-            return;
+        let primary = match self.mesh_primary() {
+            Ok(primary) => primary,
+            Err(no) => {
+                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), seat_holder = %no.holder().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
+                    .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
+                return;
+            }
         };
         let names: Vec<String> = gaps.iter().map(|(m, _)| m.clone()).collect();
         match fetch(self.clone(), primary.clone(), names).await {
@@ -2606,6 +2608,60 @@ impl Membership {
     /// Join this mesh channel through more peers (its members, once known).
     pub async fn join_peers(&self, peers: Vec<EndpointAddr>) -> Result<usize> {
         self.mesh.join_peers(peers).await
+    }
+}
+
+/// Why a node cannot address its Mesh's current primary: each a distinct fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoMeshPrimary {
+    /// The node holds no seat record of the mesh.
+    NoSeatRecord {
+        /// The mesh whose record is not held.
+        mesh: String,
+    },
+    /// The record names a birth whose digest the node does not hold.
+    HolderNotHeld {
+        /// The record held.
+        holder: SeatHolder,
+        /// The birth of the same node the node holds instead, when it holds one.
+        held_incarnation: Option<IncarnationId>,
+        /// Whether the node holds the holder's node as departed.
+        departed: bool,
+    },
+    /// The record's birth is held as proven gone.
+    HolderGone {
+        /// The record held.
+        holder: SeatHolder,
+    },
+}
+
+impl NoMeshPrimary {
+    /// The span reason naming this fact.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::NoSeatRecord { .. } => "no-seat-record-held",
+            Self::HolderNotHeld { .. } => "seat-holder-not-held",
+            Self::HolderGone { .. } => "seat-holder-gone",
+        }
+    }
+
+    /// The seat record held, when one is.
+    pub fn holder(&self) -> Option<&SeatHolder> {
+        match self {
+            Self::NoSeatRecord { .. } => None,
+            Self::HolderNotHeld { holder, .. } | Self::HolderGone { holder } => Some(holder),
+        }
+    }
+}
+
+impl std::fmt::Display for NoMeshPrimary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSeatRecord { mesh } => write!(f, "no seat record of mesh {mesh} is held"),
+            Self::HolderNotHeld { holder, held_incarnation: Some(other), .. } => write!(f, "the seat record names {holder}; the node holds birth {} of that node instead", other.0),
+            Self::HolderNotHeld { holder, held_incarnation: None, departed } => write!(f, "the seat record names {holder}; no digest of that node is held{}", if *departed { " (held departed)" } else { "" }),
+            Self::HolderGone { holder } => write!(f, "the seat record names {holder}, a birth held as proven gone"),
+        }
     }
 }
 
@@ -3790,12 +3846,20 @@ impl DigestBook {
         self.inner.lock().unwrap().values().filter(|(_, _, heard)| *heard == Heard::Forwarded).map(|(d, _, _)| d.node.name.mesh.clone()).collect()
     }
 
-    /// `mesh`'s primary node-admin as this book holds it.
-    pub fn mesh_primary(&self, mesh: &str) -> Option<MeshDigest> {
-        self.current(self.staleness_floor())
-            .into_iter()
-            .filter(|d| d.node.name.mesh == mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic)
-            .min_by(|a, b| a.node.node_id.cmp(&b.node.node_id))
+    /// `mesh`'s current primary node-admin: the exact birth the held seat record names, the
+    /// canonical LeadershipView's answer as its holder announced it (`Frame::Seated`, an entry
+    /// read's seats), with that birth's latest digest. Its status and how long it has gone unheard
+    /// do not move the seat (only a new record or a proven loss does), so neither is read here.
+    pub fn mesh_primary(&self, mesh: &str) -> Result<MeshDigest, NoMeshPrimary> {
+        let holder = self.seats.mesh(mesh).ok_or_else(|| NoMeshPrimary::NoSeatRecord { mesh: mesh.to_string() })?;
+        if self.seats.gone().contains(&holder.incarnation) {
+            return Err(NoMeshPrimary::HolderGone { holder });
+        }
+        match self.get(&holder.node_id.to_string()) {
+            Some((d, _)) if d.node.incarnation == holder.incarnation => Ok(d),
+            Some((d, _)) => Err(NoMeshPrimary::HolderNotHeld { held_incarnation: Some(d.node.incarnation), departed: false, holder }),
+            None => Err(NoMeshPrimary::HolderNotHeld { held_incarnation: None, departed: self.is_departed(&holder.node_id.to_string()), holder }),
+        }
     }
 
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
@@ -4779,7 +4843,7 @@ mod tests {
         let book = DigestBook::default();
         let (_lower, holder) = two_admins(&book, Instant::now());
         book.seats.take(Seat::MeshPrimary, &seat_of(&holder, 3));
-        assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.name.to_string()), Some("mesh1.admin.1".into()));
+        assert_eq!(book.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.1".into()));
     }
 
     /// CONTRACT (R-EL1): a holder that is Draining keeps its seat, so the member still tops up from it.
@@ -4794,7 +4858,7 @@ mod tests {
         draining.emitted_at_rafka_ms += 1;
         assert!(book.record(draining));
         let _ = holder;
-        assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
+        assert_eq!(book.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
     }
 
     /// CONTRACT: the seat holder's digest aged past the staleness floor does not move the seat:
@@ -4805,6 +4869,32 @@ mod tests {
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
         let (lower, _higher) = two_admins(&book, long_ago);
         book.seats.take(Seat::MeshPrimary, &seat_of(&lower, 3));
-        assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
+        assert_eq!(book.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
+    }
+
+    /// CONTRACT: a node that cannot address its mesh's primary says which fact stops it, with the
+    /// record it holds: no record of its mesh, a record naming a birth it holds no digest of (or a
+    /// later birth of that node), and a record naming a birth held as proven gone.
+    #[test]
+    fn a_mesh_primary_that_cannot_be_addressed_names_why() {
+        let book = DigestBook::default();
+        assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::NoSeatRecord { mesh: "mesh1".into() });
+        let unheard = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 };
+        book.seats.take(Seat::MeshPrimary, &unheard);
+        assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderNotHeld { holder: unheard, held_incarnation: None, departed: false });
+
+        let book = DigestBook::default();
+        let (lower, _) = two_admins(&book, Instant::now());
+        let mut earlier = seat_of(&lower, 2);
+        earlier.incarnation = IncarnationId::mint();
+        book.seats.take(Seat::MeshPrimary, &earlier);
+        let err = book.mesh_primary("mesh1").unwrap_err();
+        assert_eq!((err.reason(), err.holder()), ("seat-holder-not-held", Some(&earlier)));
+        assert_eq!(err, NoMeshPrimary::HolderNotHeld { holder: earlier, held_incarnation: Some(lower.node.incarnation.clone()), departed: false });
+        let held = seat_of(&lower, 3);
+        book.seats.take(Seat::MeshPrimary, &held);
+        assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.node_id), Ok(lower.node.node_id.clone()));
+        book.seats.mark_gone(held.incarnation.clone());
+        assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderGone { holder: held });
     }
 }
