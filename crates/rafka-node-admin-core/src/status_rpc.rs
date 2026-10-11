@@ -503,7 +503,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// `ApplyNodeState` is not served: a drain is `drain-node` and a stop is `stop-node`.
 async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, configure: &Configure, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let (node_id, incarnation) = match req {
-        StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } => (node_id, incarnation),
+        StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } => (node_id, incarnation),
         _ => return None,
     };
     // A probe changes nothing: it asks this node to say it is here, so any fabric member other than
@@ -550,6 +550,16 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.name, sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state", "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("apply-node-state refused"));
             Some(StatusReply::RejectedInvalidNodeTransition { current })
+        }
+        StatusRequest::ApplyNodeConfig { config, .. } => {
+            // ops-naming "Node data": the node applies the config and carries it in its next digest.
+            let Some(configure) = configure.get() else {
+                return Some(StatusReply::NotReady { reason: format!("{}: its digest does not exist yet; the config is not held", me.name) });
+            };
+            configure(config.clone()).await;
+            tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.name, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the fabric-primary's config is held and rides this admin's digest"));
+            Some(StatusReply::Applied)
         }
         _ => None,
     }
