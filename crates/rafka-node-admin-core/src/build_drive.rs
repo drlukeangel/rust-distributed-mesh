@@ -302,6 +302,19 @@ impl Drive {
     fn clear_stall(&self) {
         self.state.lock().unwrap().stall = None;
     }
+
+    /// Whether this drive holds the `Complete` frame of the operation `key` from attempt `from` on: an
+    /// executor's stream reply (a `Step` frame goes out only once its receipt is durable on the
+    /// executor that wrote it) or a receipt read said the operation completed.
+    fn completed_since(&self, key: &str, from: u32) -> bool {
+        self.state.lock().unwrap().seen.iter().any(|k| {
+            let mut parts = k.splitn(4, '|');
+            matches!(
+                (parts.next(), parts.next().and_then(|a| a.parse::<u32>().ok()), parts.next(), parts.next()),
+                (Some("step"), Some(attempt), Some(operation), Some("Complete")) if attempt >= from && operation == key
+            )
+        })
+    }
 }
 
 /// What a caller reads from a drive.
@@ -475,12 +488,15 @@ fn node_of_key(key: &str) -> Option<PathName> {
     key.split_once(':').and_then(|(_, node)| parse_path(node))
 }
 
-/// What is left of `p` in view `t`: the plan, less every operation whose `Complete` receipt the
-/// Build's current run holds ([`BuildProjection::completed_in_run`]). What a run completed is read
-/// from the receipts, never from the view: a view that has not absorbed a completed operation yet
-/// still lists it, and it is not planned, claimed or dispatched again.
-fn left(p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
-    crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key())).collect()
+/// What is left of `p` in view `t`: the plan, less every operation the Build's current run (from
+/// [`BuildProjection::opened`]) completed, by its `Complete` receipt on this admin's log
+/// ([`BuildProjection::completed_in_run`]) or by the `Complete` frame an executor's stream reply
+/// carried to `drive` ([`Drive::completed_since`]). What a run completed is read from those, never
+/// from the view: a view that has not absorbed a completed operation yet still lists it, and it is
+/// not planned, claimed or dispatched again. The stream reply is the authority: a remote executor's
+/// receipt reaches this admin's log by the Build topic, and nothing waits for that copy.
+fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
+    crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_since(&op.key(), p.opened)).collect()
 }
 
 /// The node-admin of `mesh` the Build already carried across the R-D1 fence: an operation on it has a
@@ -489,7 +505,7 @@ fn left(p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
 /// the mesh's first recovering node-admin (mesh-investigation.md step 6: the restore runs on the SAME
 /// accepted Build), read from the Build's facts whichever drive dispatched it and whichever admin
 /// outside the mesh held its attempt.
-fn crossed_admin(p: &BuildProjection, mesh: &str) -> Option<PathName> {
+pub(crate) fn crossed_admin(p: &BuildProjection, mesh: &str) -> Option<PathName> {
     let holder = |attempt: u32| p.attempt_executors.get(&attempt).and_then(|e| parse_path(e));
     let own = p.attempt_executors.iter().filter(|(_, e)| parse_path(e).is_some_and(|e| e.mesh == mesh)).map(|(a, _)| *a).max().unwrap_or(0);
     let mut steps: Vec<&crate::build_state::BuildStepReceipt> = p.steps.iter().filter(|s| s.attempt > own).collect();
@@ -639,8 +655,8 @@ impl DriveEnv {
     /// an operation no admin executes in this view (it waits for its mesh's own seat, never for the
     /// run's executor); a cut run hands back to this admin, whose next claim re-reads the view and
     /// the investigation. `Err` names the fence on the first operation.
-    fn plan_dispatch(&self, p: &BuildProjection, t: &Topology, executor: &PathName) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
-        let ops = left(p, t);
+    fn plan_dispatch(&self, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
+        let ops = left(drive, p, t);
         if let Some(op) = ops.first().filter(|op| *executor == self.me && self.rebirth_admits(p, op)) {
             return Ok(RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| self.me.to_string()) });
         }
@@ -737,7 +753,7 @@ impl DriveEnv {
             }
             let plan = {
                 let t = self.topology.read().await.clone();
-                match self.plan_dispatch(&p, &t, &executor) {
+                match self.plan_dispatch(drive, &p, &t, &executor) {
                     Ok(plan) => plan,
                     Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f),
                 }
@@ -819,25 +835,23 @@ impl DriveEnv {
         let attempt = p.attempt + 1;
         let first = {
             let t = self.topology.read().await.clone();
-            left(p, &t).into_iter().next().map(|op| {
-                let placed = crate::executor::executor_for(&op, &t).is_some();
-                (op, placed)
-            })
+            left(drive, p, &t).into_iter().next()
         };
-        if let Some((op, f)) = first.as_ref().and_then(|(op, _)| self.fenced(p, op).map(|f| (op, f))) {
+        if let Some((op, f)) = first.as_ref().and_then(|op| self.fenced(p, op).map(|f| (op, f))) {
             return Err(self.stop_at_fence(drive, attempt, op, f));
         }
         // The mesh's first recovering node-admin under the investigation's rebirth verdict is this
-        // admin's to execute (R-D1). A run cut by this admin's own fence hands back here: this admin
-        // claims for itself only an operation its view names an executor for (an operation no admin
-        // executes waits for its mesh's own seat).
-        let rebirth = first.as_ref().is_some_and(|(op, _)| self.rebirth_admits(p, op));
-        let forced = if rebirth { Some(self.me.clone()) } else { forced.filter(|to| *to != self.me || first.as_ref().is_none_or(|(_, placed)| *placed)) };
+        // admin's to execute (R-D1). A run handed back to this admin (its own cut, or an executor whose
+        // view names this admin) is claimed for the admin this view names for what is left: an
+        // operation no admin executes waits for its mesh's own seat, and one another admin executes is
+        // claimed for that admin, never for this one to hand on unrun.
+        let rebirth = first.as_ref().is_some_and(|op| self.rebirth_admits(p, op));
+        let forced = if rebirth { Some(self.me.clone()) } else { forced.filter(|to| *to != self.me) };
         let lead = match forced {
             Some(to) => Some(to),
             None => {
                 let t = self.topology.read().await.clone();
-                let ops = left(p, &t);
+                let ops = left(drive, p, &t);
                 let lead = lead_for(&ops, &t);
                 // A mesh shutdown with no admin outside the mesh has no owner: no one executes it. The
                 // fabric-primary says so, once per Build, rather than leaving the Build to stall unnamed.
@@ -855,7 +869,7 @@ impl DriveEnv {
         let Some(lead) = lead else {
             // Named: the operation, its mesh, and the same-mesh admins the attempt waits for.
             let t = self.topology.read().await.clone();
-            let why = match left(p, &t).first() {
+            let why = match left(drive, p, &t).first() {
                 Some(op) => format!("{}: no admin can execute what is left of Build {id} in this view: {}", self.me, crate::executor::why_no_executor(op, &t)),
                 None => format!("{}: no admin can execute what is left of Build {id} in this view", self.me),
             };

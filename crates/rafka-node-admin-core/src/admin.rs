@@ -1555,8 +1555,6 @@ pub async fn reconcile_drift(
         }
     }
     let mut held_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();
-    // The ladder's release of a mesh's first recovering node-admin ends with the silence.
-    started.retain(|k| !(k.2.len() == 2 && k.2[0] == "recovery" && hold(&k.2[1]).is_none()));
     for n in candidates {
         // A birth the Build stopped on request is not drift: its `stop-node:<path>` operation completed
         // for this exact birth (node-stop.md: no bind, no JoinNode, no replacement), and the exit it
@@ -1594,8 +1592,9 @@ pub async fn reconcile_drift(
         // deleted from here, whatever the provider proves of its runtime. The one exception is the
         // ladder's own decision, for the mesh's first recovering node-admin; once that admin stands, the
         // mesh reconciles its ordinary nodes itself.
-        let recovery = (current.build_id.clone(), 0u32, vec!["recovery".to_string(), n.mesh.clone()]);
-        let first_recovering_admin = n.kind == NodeKind::NodeAdmin && decided(&n.mesh) && !started.contains(&recovery);
+        // Which node-admin of the mesh the decision already released is a fact of the accepted Build: the
+        // one an attempt held by an admin outside the mesh carried (`crate::build_drive::crossed_admin`).
+        let first_recovering_admin = n.kind == NodeKind::NodeAdmin && decided(&n.mesh) && crate::build_drive::crossed_admin(&current, &n.mesh).is_none_or(|crossed| crossed == n.name);
         let unheard_ms = if n.mesh != me.mesh && !first_recovering_admin { hold(&n.mesh) } else { None };
         // An ordinary member is recovered by its own mesh-primary (node-recovery.md: "The
         // mesh-primary is the reconciler for its own members"), never restarted or replaced from
@@ -1737,11 +1736,6 @@ pub async fn reconcile_drift(
         return None;
     }
     let opening = (current.build_id.clone(), attempt, key);
-    // A node-admin of a peer mesh opened on the ladder's decision is that mesh's first recovering
-    // node-admin: the decision releases no other from here until the mesh is heard again.
-    let release = first_exited
-        .filter(|(path, _)| path.kind == NodeKind::NodeAdmin && path.mesh != me.mesh && decided(&path.mesh))
-        .map(|(path, _)| (current.build_id.clone(), 0u32, vec!["recovery".to_string(), path.mesh.clone()]));
     // The same admission a submitted change takes, held to the attempt's durable write: the attempt
     // opens on the Build that is still the accepted one, still settled, at the same attempt, or
     // nothing opens, nothing of it is written and nothing is spent.
@@ -1757,9 +1751,6 @@ pub async fn reconcile_drift(
     started.retain(|k| !(k.0 == current.build_id && k.1 == 0 && k.2.len() == 3 && k.2[0] == "opened" && k.2[1] == ident));
     started.insert(opened_at);
     started.insert(opening);
-    if let Some(release) = release {
-        started.insert(release);
-    }
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-proven-drift",
         build_id = %current.build_id,
