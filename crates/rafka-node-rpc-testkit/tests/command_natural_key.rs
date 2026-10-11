@@ -557,3 +557,56 @@ fn a_drain_with_work_that_never_finishes_ends_at_the_drain_bound_with_a_deadline
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
+
+/// CONTRACT: a `StopNode` that reaches a parked birth while its start is under way is refused
+/// `NotReady` naming the start under way, as a `StartNode` that reaches a birth whose stop is under
+/// way is refused naming the stop: the start ends the birth's stopped cycle, so the receipt of the
+/// stop that parked it answers for a birth that is leaving Leaving. Once the start ends, the stop
+/// is decided on the cycle it ended in: the started birth is stopped afresh, on a drain of its own.
+/// What must NOT happen: `Stopped` with the parked cycle's receipt while the start goes on to make
+/// the birth live (its commander holding a stopped birth that is ready for traffic, and the
+/// mesh-primary's NodeStopped for it published after the start's node.joined).
+#[test]
+fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parked_cycles_receipt() {
+    let cell = "a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parked_cycles_receipt";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_hydrating("stop-during-start", Some(hydrator.clone())).await);
+        let stopped = birth.call(&birth.stop(1)).await;
+        assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
+
+        // The start runs until its hook, which holds until the cell lets it go.
+        let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
+        hydrator.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        birth.admin.deployed(&birth.launch, &birth.key);
+        let start = {
+            let birth = birth.clone();
+            tokio::spawn(async move { birth.call(&birth.start(2)).await })
+        };
+        started.notified().await;
+
+        // A stop of the birth while its start is under way.
+        let during = birth.call(&birth.stop(3)).await;
+        assert!(
+            matches!(&during, StatusReply::NotReady { reason } if reason.contains("start is under way")),
+            "a StopNode while the start is under way is refused naming the start, never answered with the parked cycle's receipt: {during:?}"
+        );
+
+        hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
+        resume.notify_one();
+        assert_eq!(start.await.unwrap(), StatusReply::Started);
+        birth.status_heard(MemberStatus::ReadyForTraffic).await;
+
+        // The started birth's stop is a stop of its own cycle.
+        let after = birth.call(&birth.stop(4)).await;
+        assert!(matches!(after, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "the started birth is stopped afresh: {after:?}");
+        assert!(birth.running.own.is_parked(), "the stop that answered Stopped left the birth parked");
+        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-stop-node").len(), 2, "one stop per cycle: the first cycle's and the started birth's");
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
