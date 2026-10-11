@@ -1135,9 +1135,10 @@ impl DeploymentPipeline<'_> {
             Ok(v) => (StepOutcome::Complete, serde_json::to_value(v).ok().filter(|v| !v.is_null())),
             Err(reason) => (StepOutcome::Failed { reason: reason.clone() }, None),
         };
-        // The receipt is the step's durable commit: a step whose receipt the Build state refuses
-        // (a fact with no wire shape, a fenced seat, an I/O failure) is not complete, and the run
-        // stops at it by name.
+        // The receipt is the step's durable commit: a step whose receipt the Build state does not
+        // write to the executor's own log (a fact with no wire shape, a fenced seat, a failed local
+        // write) is not complete, and the run stops at it by name. A failed broadcast after the
+        // local write is not a refusal: the Build state names it and the step is committed.
         let appended = self
             .builds
             .append_step_receipt(&BuildStepReceipt {
