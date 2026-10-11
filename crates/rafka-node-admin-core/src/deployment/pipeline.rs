@@ -1472,13 +1472,14 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         // Every create records this step: a mesh's first admin receives the fabric primary's
-        // Pending here; any other birth records that none was owed, so the Build facts say so.
+        // Pending here; any other birth (the admin created for an existing mesh included) records
+        // that none was owed, so the Build facts say so.
         let target = node.clone();
         let _: serde_json::Value = self
             .step(run, CreateStep::ApplyMeshPending.name(), async {
                 match &before_ready {
                     Some(hand_off) => hand_off(target).await.map(|()| serde_json::json!({"applied": "Pending"})),
-                    None => Ok(serde_json::json!({"applied": null, "reason": "not a mesh's first admin"})),
+                    None => Ok(serde_json::json!({"applied": null, "reason": "no Pending owed: not a new mesh's first admin"})),
                 }
             })
             .await?;
