@@ -146,34 +146,31 @@ fn run_with(transfer: Result<SeatTransferOutcome, String>, workflow: NodeCommand
     (r, observer.sent.into_inner().unwrap(), steps, trace_id)
 }
 
-/// CONTRACT: an executor of another mesh than the seat holder's (`OtherMesh`) cannot take its seats,
-/// so the SeatTransfer step fails by name (the holder's mesh) and the drain never starts: no
-/// drain-node is sent and no DrainNode step is receipted. A holder's refusal of TakeSeats fails the
-/// step the same way. A target that holds no seat transfers nothing and the drain goes on.
+/// CONTRACT: a refused seat transfer fails the SeatTransfer step by name and the drain never starts:
+/// no drain-node is sent and no DrainNode step is receipted (a fabric seat an executor of another
+/// mesh asks for is refused so by `take_seats`). A target that holds no seat, or holds only its own
+/// mesh's seat with no other admin in that mesh (`OtherMesh`), transfers nothing and the drain goes on.
 #[test]
-fn a_seat_transfer_the_executor_cannot_make_fails_the_step_by_name_and_drains_nothing() {
+fn a_refused_seat_transfer_fails_the_step_by_name_and_drains_nothing() {
     let seat_transfer = RetireStep::SeatTransfer.name();
     let failed = |steps: &[(String, StepOutcome)]| steps.iter().find(|(s, _)| s == seat_transfer).and_then(|(_, o)| match o {
         StepOutcome::Failed { reason } => Some(reason.clone()),
         _ => None,
     });
 
-    let (r, sent, steps, _) = drain_with(Ok(SeatTransferOutcome::OtherMesh { holder_mesh: "mesh1".into() }));
-    let e = r.expect_err("an executor of another mesh cannot take the holder's seats: the drain does not go on");
-    assert_eq!(e.step, seat_transfer, "{e}");
-    assert!(e.reason.contains(HOLDER) && e.reason.contains("mesh1") && e.reason.contains("mesh-leave"), "the failure names the holder, its mesh and the one way the seats leave it: {e}");
-    assert_eq!(failed(&steps).as_deref(), Some(e.reason.as_str()), "the SeatTransfer receipt is Failed with the same reason: {steps:?}");
+    let refusal = "mesh2.admin.1 cannot take the fabric seat of mesh1.admin.1: TakeSeats moves seats inside the holder's mesh (mesh1) only";
+    let (r, sent, steps, _) = drain_with(Err(refusal.into()));
+    let e = r.expect_err("a refused TakeSeats ends the drain");
+    assert_eq!((e.step, e.reason.as_str()), (seat_transfer, refusal), "{e}");
+    assert_eq!(failed(&steps).as_deref(), Some(refusal), "the SeatTransfer receipt is Failed with the same reason: {steps:?}");
     assert!(sent.is_empty(), "no drain-node is sent: {sent:?}");
     assert!(!steps.iter().any(|(s, _)| s == RetireStep::DrainNode.name()), "no DrainNode step: {steps:?}");
 
-    let (r, sent, steps, _) = drain_with(Err("mesh1.admin.1 refused take-seats: RejectedStaleSeat (seat mesh1 expected 3, current 4)".into()));
-    let e = r.expect_err("a refused TakeSeats ends the drain");
-    assert_eq!((e.step, failed(&steps).is_some()), (seat_transfer, true), "{e}: {steps:?}");
-    assert!(sent.is_empty() && !steps.iter().any(|(s, _)| s == RetireStep::DrainNode.name()), "{sent:?} {steps:?}");
-
-    let (_, sent, steps, _) = drain_with(Ok(SeatTransferOutcome::NotAHolder));
-    assert!(steps.iter().any(|(s, o)| s == seat_transfer && *o == StepOutcome::Complete), "{steps:?}");
-    assert_eq!(sent, vec![NodeCommand::Drain], "a target that holds no seat is drained");
+    for outcome in [SeatTransferOutcome::NotAHolder, SeatTransferOutcome::OtherMesh { holder_mesh: "mesh1".into() }] {
+        let (_, sent, steps, _) = drain_with(Ok(outcome.clone()));
+        assert!(steps.iter().any(|(s, o)| s == seat_transfer && *o == StepOutcome::Complete), "{outcome:?}: {steps:?}");
+        assert_eq!(sent, vec![NodeCommand::Drain], "{outcome:?}: the drain goes on");
+    }
 }
 
 /// CONTRACT (node-drain.md "Admission is not drain completion"; node-stop.md, the complete stop): a
