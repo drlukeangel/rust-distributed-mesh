@@ -423,6 +423,22 @@ impl ReplaceProgress {
     }
 }
 
+/// The attempt whose `recover-node:<path>` operation completed for the exited birth
+/// `(node_id, incarnation)`, read from `build`'s receipts: the operation's `Complete` receipt names
+/// the exited birth it recovered in its output, `{"node_id": .., "incarnation": ..}` (the shape
+/// `complete_for_birth` writes). `None` while no attempt recovered that birth.
+pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Option<u32> {
+    let operation = format!("recover-node:{path}");
+    let (node_id, incarnation) = (serde_json::to_value(node_id).ok()?, serde_json::to_value(incarnation).ok()?);
+    build
+        .steps
+        .iter()
+        .filter(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete)
+        .filter(|s| s.output.as_ref().is_some_and(|o| o.get("node_id") == Some(&node_id) && o.get("incarnation") == Some(&incarnation)))
+        .map(|s| s.attempt)
+        .min()
+}
+
 /// [`plan`] for `build`'s current attempt, given what its receipts say already ran.
 pub(crate) fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
     plan_with(&build.topology, observed, build.action.as_ref(), build.reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::of(build))
