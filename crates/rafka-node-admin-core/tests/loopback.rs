@@ -72,16 +72,25 @@ impl Dispatcher for Loopback {
 #[derive(Default)]
 pub struct Proofs {
     pub exited: Mutex<BTreeSet<String>>,
+    /// The executors a call of `proven` proved, as the product records an exit it proved.
+    pub recorded: Mutex<BTreeSet<String>>,
+    /// How many times `proven` was called.
+    pub calls: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl DepartureProof for Proofs {
     async fn proven(&self, executor: &PathName) -> Result<(), String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.exited.lock().unwrap().contains(&executor.to_string()) {
+            self.recorded.lock().unwrap().insert(executor.to_string());
             Ok(())
         } else {
             Err(format!("{executor}'s runtime is not proven exited"))
         }
+    }
+    async fn recorded(&self, executor: &PathName) -> bool {
+        self.recorded.lock().unwrap().contains(&executor.to_string())
     }
 }
 

@@ -78,6 +78,11 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     }
 }
 
+/// Why no admin executes `op` in view `t` (RED scaffold: names nothing yet).
+pub fn why_no_executor(op: &BuildOperation, _t: &Topology) -> String {
+    format!("{}: no admin can execute it in this view", op.key())
+}
+
 /// The mesh-primary that recovers node-admin `node` (node-recovery.md, mesh-recovery.md:8-9): its
 /// mesh's live primary admin, or, when `node` itself holds the seat, the admin its mesh seats in its
 /// place. `None` when no other live admin of the mesh is left: the mesh lost its mesh-primary, which
@@ -452,6 +457,45 @@ mod tests {
         crate::election::resolve(&mut alone.nodes);
         let fp = alone.fabric_primary().unwrap().name.clone();
         assert_eq!(executor_for(&BuildOperation::RetireNode { node: fp }, &alone), None);
+    }
+
+    /// CONTRACT (#3016; node-rpc-envelope.md TakeSeats: the executor is "the same-mesh successor
+    /// N"; R-A2: cross-mesh only when the whole cohort is proven lost): mesh2's seated admin is
+    /// proven exited and its other admin is held but silent (`PendingReconnect`, not proven gone).
+    /// No admin of mesh2 holds the seat yet, and the fabric primary of mesh1 executes nothing of
+    /// mesh2: the answer is `None` and the reason names the held admin. With every mesh2 admin
+    /// proven gone the fabric primary executes; a `Pending` admin is a birth, carried by the fabric
+    /// primary until it stands.
+    #[test]
+    fn a_mesh_whose_admin_is_held_but_not_seated_is_never_executed_by_the_fabric_primary() {
+        let mut t = mm(true);
+        let mut second = node("mesh2.admin.2", false, false);
+        second.status = NodeStatus::PendingReconnect;
+        t.nodes.push(second);
+        t.nodes.push(node("mesh2.rpc.1", true, false));
+        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
+            n.status = NodeStatus::Dead;
+            n.is_primary = false;
+        }
+        let ops = [BuildOperation::RestartNode { node: "mesh2.rpc.1".parse().unwrap() }, create("mesh2.rpc.2"), create("mesh2.admin.3"), BuildOperation::RetireNode { node: "mesh2.admin.1".parse().unwrap() }];
+        for op in &ops {
+            assert_eq!(executor_for(op, &t), None, "{op:?}: mesh2.admin.2 is held, not proven gone: never the fabric primary");
+            let why = why_no_executor(op, &t);
+            assert!(why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "{why}");
+        }
+        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
+            n.status = NodeStatus::Dead;
+        }
+        assert_eq!(who(&ops[0], &t), "mesh1.admin.1", "every mesh2 admin proven gone: the fabric primary");
+        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
+            n.status = NodeStatus::Pending;
+        }
+        assert_eq!(who(&ops[0], &t), "mesh1.admin.1", "a Pending admin is a birth the fabric primary carries");
+        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
+            n.status = NodeStatus::ReadyForTraffic;
+            n.is_primary = true;
+        }
+        assert_eq!(who(&ops[0], &t), "mesh2.admin.2", "once seated, the same-mesh successor executes");
     }
 
     fn shutdown(mesh: &str) -> BuildOperation {

@@ -289,6 +289,60 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
     );
 }
 
+/// CONTRACT (#3016; node-rpc-envelope.md TakeSeats: the executor is "the same-mesh successor N";
+/// "Executor departure proof, never silence, is required before claiming the next attempt for its
+/// successor"): mesh2's seated admin, the claimed executor, is lost and proven exited; mesh2's other
+/// admin is held but silent, not yet seated. The fabric-primary of mesh1 does not take mesh2's
+/// work: the drive stalls naming the held admin, every re-run uses the departure already recorded
+/// (no second call to the lost executor, no second proof), and once mesh2.admin.2 holds the seat
+/// the next attempt is claimed for it.
+#[tokio::test]
+async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_for_its_seat() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", true, false));
+    t.nodes.push(node("mesh2.admin.2", false, false));
+    t.nodes.push(node("mesh2.rpc.1", true, false));
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let r = rig_for(t, change, |ran, _| ran).await;
+    // Attempt 1 is mesh2.admin.1's; then it is lost, and the view shows its exit and mesh2.admin.2 silent.
+    assert!(matches!(r.env.door.claim("mesh2.admin.1", &r.build, 1).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
+    r.dispatch.lose("mesh2.admin.1");
+    r.proofs.exited.lock().unwrap().insert("mesh2.admin.1".into());
+    {
+        let mut v = r.env.topology.write().await;
+        for n in v.nodes.iter_mut() {
+            match n.name.to_string().as_str() {
+                "mesh2.admin.1" => {
+                    n.status = NodeStatus::Dead;
+                    n.is_primary = false;
+                }
+                "mesh2.admin.2" => n.status = NodeStatus::PendingReconnect,
+                _ => {}
+            }
+        }
+    }
+    let drive = Drive::detached(r.build.clone());
+    for pass in 0..3 {
+        match r.env.run(&drive).await {
+            DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "pass {pass}: {why}"),
+            other => panic!("pass {pass}: the fabric-primary never takes mesh2's work while mesh2.admin.2 is held: {other:?}"),
+        }
+    }
+    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 1, "the departure is proven once; every re-run reads it");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh2.admin.1")), "nothing is claimed while mesh2's seat is held");
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty() && r.ran.0.lock().unwrap().is_empty());
+    // mesh2.admin.2 is seated: the next attempt is its own.
+    for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
+        n.status = NodeStatus::ReadyForTraffic;
+        n.is_primary = true;
+    }
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh2.admin.2".to_string(), 2)], "attempt 2 is the same-mesh successor's");
+    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 1);
+}
+
 /// CONTRACT: an executor runs the first operation of the attempt the fabric-primary claimed for it
 /// whatever its own view says. The fabric-primary's view named `mesh1.admin.2` the executor; the view
 /// of `mesh1.admin.2` holds no mesh primary yet (it has not elected itself since the old one was
