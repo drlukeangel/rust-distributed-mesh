@@ -7126,6 +7126,145 @@ mod tests {
         assert!((&mut due).now_or_never().is_some(), "the gate opening makes the held rebuild due at once");
     }
 
+    /// A nodes store over `inner` that counts the node-row reads made through it, by `path.name` key
+    /// and by node id, and how many of them ran while `view`'s write lock was held.
+    struct ProbedRows {
+        inner: Arc<dyn crate::storage::NodesStorage>,
+        view: Arc<RwLock<Topology>>,
+        key_reads: std::sync::atomic::AtomicUsize,
+        id_reads: std::sync::atomic::AtomicUsize,
+        under_write_lock: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ProbedRows {
+        fn read(&self, by: &std::sync::atomic::AtomicUsize) {
+            by.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.view.try_read().is_err() {
+                self.under_write_lock.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn count(by: &std::sync::atomic::AtomicUsize) -> usize {
+            by.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for ProbedRows {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_runtime(row).await
+        }
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            self.inner.runtimes().await
+        }
+        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            self.inner.runtime(node_id, incarnation).await
+        }
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.inner.own().await
+        }
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_own(record).await
+        }
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.inner.contacts().await
+        }
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_contact(record).await
+        }
+        async fn remove_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_contact(record).await
+        }
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_row(row).await
+        }
+        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.read(&self.key_reads);
+            self.inner.node_row_at(name).await
+        }
+        async fn claim_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<crate::storage::Claimed, crate::storage::NameHeld>, crate::record_store::StorageError> {
+            self.inner.claim_node_row(row).await
+        }
+        async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.release_node_row(name, holder).await
+        }
+    }
+
+    /// `mesh1.rpc.1`, born `mesh1.rpc.1.new` and stopped there, its row moved twice by its mesh-primary
+    /// on the fabric's shared store root (to `mesh1.rpc.1`, then to `mesh1.rpc.1.old`: each move one
+    /// suffix toggled, the stopped node told nothing), and another admin's view over the same root,
+    /// whose row reads are probed.
+    async fn renamed_twice(cell: &str) -> (std::path::PathBuf, MeshDigest, Arc<ProbedRows>, Arc<RwLock<Topology>>, Arc<Records>, DigestBook) {
+        let d = crate::record_store::tempdir(cell);
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).unwrap();
+        let book = DigestBook::default();
+        let held = digest("mesh1.rpc.1.new", MemberStatus::ReadyForTraffic);
+        book.record(held.clone());
+        assert!(book.stopped(rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "stop-node:mesh1.rpc.1.new".into(),
+            node_id: held.node.node_id.clone(),
+            incarnation: held.node.incarnation.clone(),
+            name: held.node.name.clone(),
+            event_at_rafka_ms: 1,
+        }));
+        let mut record = Node::allocated(held.node.name.clone());
+        record.node_id = held.node.node_id.clone();
+        record.incarnation_id = Some(held.node.incarnation.clone());
+        record.status = NodeStatus::Leaving;
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new() };
+        assert_eq!(crate::storage::NodesStorage::claim_node_row(&primary, &row).await.unwrap(), Ok(crate::storage::Claimed::Written));
+        let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), held.node.name.base());
+        crate::node_rows::move_row(&primary, &me, &record, &held.node.name, &base).await.unwrap();
+        crate::node_rows::move_row(&primary, &me, &record, &base, &base.renamed()).await.unwrap();
+        let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
+        let probed = Arc::new(ProbedRows {
+            inner: Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).unwrap()),
+            view: view.clone(),
+            key_reads: Default::default(),
+            id_reads: Default::default(),
+            under_write_lock: Default::default(),
+        });
+        let records = Arc::new(Records::default());
+        let _ = records.contacts.set(probed.clone());
+        (d, held, probed, view, records, book)
+    }
+
+    /// CONTRACT (CLAUDE.md read rule: "id: only a lookup by id that cannot read the store's own key";
+    /// "add the index, never the scan"): a parked birth whose row was moved twice while it was stopped
+    /// (`mesh1.rpc.1.new` to `mesh1.rpc.1`, then to `mesh1.rpc.1.old`) is listed by another admin's
+    /// view at the row's current name, `mesh1.rpc.1.old`, read by the birth's node id through the
+    /// node row's id index: one read, no `path.name` key guessed. What must NOT happen: the birth
+    /// listed at a name it no longer holds, or its name found by trying the keys a move could reach.
+    #[tokio::test]
+    async fn a_parked_birth_renamed_twice_by_its_row_is_listed_at_the_rows_current_name_read_by_its_node_id() {
+        let (d, held, probed, view, records, book) = renamed_twice("row-name-twice").await;
+        view_projector("mesh1.admin.2".parse().unwrap(), view.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
+        let t = view.read().await.clone();
+        let names: Vec<String> = t.nodes.iter().map(|n| n.name.to_string()).collect();
+        let now = held.node.name.base().renamed();
+        assert!(t.node(&now).is_some_and(|n| n.node_id == held.node.node_id && n.parked), "the parked birth is listed at its row's current name: {names:?}");
+        assert!(t.node(&held.node.name).is_none() && t.node(&held.node.name.base()).is_none(), "nothing is listed at a name the row moved from: {names:?}");
+        assert_eq!((ProbedRows::count(&probed.key_reads), ProbedRows::count(&probed.id_reads)), (0, 1), "the birth's row is read once, by its node id, and no path.name key is tried");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// CONTRACT (no disk read under the view's write lock): the projection reads the rows of the
+    /// births that do not publish first, then takes the view's write lock and installs. Every row
+    /// read finds the view's lock free. What must NOT happen: a row read made while the view's write
+    /// lock is held, which holds every reader of the view (a parked admin's handlers, the router)
+    /// behind a disk read.
+    #[tokio::test]
+    async fn the_projection_reads_its_rows_before_it_takes_the_views_write_lock() {
+        let (d, _held, probed, view, records, book) = renamed_twice("row-name-lock").await;
+        view_projector("mesh1.admin.2".parse().unwrap(), view.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
+        let reads = ProbedRows::count(&probed.key_reads) + ProbedRows::count(&probed.id_reads);
+        assert!(reads >= 1, "the projection read the parked birth's row");
+        assert_eq!(ProbedRows::count(&probed.under_write_lock), 0, "none of the {reads} row reads ran under the view's write lock");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
     /// node's digest, only the stop overlay the mesh topology carries (`Members.in_flight`, read
     /// by `GetTopology`). Its view lists the node `Leaving` and parked from that overlay.
