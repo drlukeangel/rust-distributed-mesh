@@ -225,9 +225,11 @@ impl Pool {
                     let (tx, rx) = watch::channel(None);
                     dials.insert(key.clone(), Dial { cancel, outcome: rx.clone() });
                     let (pool, key) = (self.clone(), key.clone());
-                    // The one dial for `key`, under the call that started it: its steps (the superseded
-                    // paths retired, the connect) and how it ended, however many callers wait on it.
+                    // The one dial for `key`: its steps (the superseded paths retired, the connect) and
+                    // how it ended, however many callers wait on it. It can outlive the call that
+                    // started it (that caller's deadline), so it is its own span, following from that call.
                     let span = tracing::info_span!(
+                        parent: None,
                         "rdm.node_rpc.connection.create.via-dial",
                         peer = %key.peer.fmt_short(),
                         incarnation_id = %key.incarnation.0,
@@ -236,18 +238,16 @@ impl Pool {
                         outcome = tracing::field::Empty,
                         elapsed_ms = tracing::field::Empty,
                     );
-                    tokio::spawn(tracing::Instrument::instrument(
-                        async move {
-                            let started = Instant::now();
-                            let out = pool.run_dial(&key, spec, cancelled).await;
-                            let span = tracing::Span::current();
-                            span.record("outcome", match &out { Ok(_) => "connected".to_string(), Err(e) => format!("{e:?}") }.as_str());
-                            span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                            pool.inner.dials.lock().unwrap().remove(&key);
-                            let _ = tx.send(Some(out));
-                        },
-                        span,
-                    ));
+                    span.follows_from(tracing::Span::current());
+                    tokio::spawn(async move {
+                        let started = Instant::now();
+                        let out = tracing::Instrument::instrument(pool.run_dial(&key, spec, cancelled), span.clone()).await;
+                        span.record("outcome", match &out { Ok(_) => "connected".to_string(), Err(e) => format!("{e:?}") }.as_str());
+                        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                        drop(span);
+                        pool.inner.dials.lock().unwrap().remove(&key);
+                        let _ = tx.send(Some(out));
+                    });
                     rx
                 }
             }
