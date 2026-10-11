@@ -322,6 +322,10 @@ impl StatusAuthority {
             .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
     }
 
+    /// The declared-state rows of every birth this admin holds that `book` says is superseded: a
+    /// later incarnation of the node is held, or the node was deleted.
+    pub async fn retire_superseded(&self, _book: &rafka_mesh_transport::membership::DigestBook) {}
+
     /// A birth's completion call (`node-drained`, `node-left`) at the admin that commanded it: it
     /// resolves the open command it names, by `(build_id, attempt, operation, node_id,
     /// incarnation)`. The sender must be the subject. A completion with no open command is
@@ -728,5 +732,105 @@ mod tests {
         assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &crate::status_declare::DeclareWake::default()).await.is_none(), "an apply from a member is not the subject's to answer");
         assert!(self_subject(&admin, Some(&admin), &probe, &republish, &crate::status_declare::DeclareWake::default()).await.is_none(), "a node-admin is not its own sender");
         assert!(self_subject(&admin, None, &probe, &republish, &crate::status_declare::DeclareWake::default()).await.is_none(), "an unresolved peer is answered by no one");
+    }
+
+    fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rafka_mesh_entity::MeshDigest {
+        rafka_mesh_entity::MeshDigest {
+            fabric_id: FabricId::mint(),
+            node: rafka_mesh_entity::MeshNode {
+                node_id: n.node_id.clone(),
+                name: n.name.clone(),
+                endpoint_id: EndpointId(format!("key-{}", n.name)),
+                transport_addr: "127.0.0.1:41000".parse().unwrap(),
+                incarnation,
+                supersedes: None,
+                runtime: None,
+            },
+            status: rafka_mesh_entity::MemberStatus::ReadyForTraffic,
+            admin_api_base: None,
+            emitted_at_rafka_ms: 0,
+            digest_seq: 1,
+            mesh_id: None,
+            in_flight: None,
+            extra: BTreeMap::new(),
+            load: None,
+            gossip: None,
+            data_dir: None,
+        }
+    }
+
+    /// CONTRACT (#3051, node-recovery.md "Steps": node.delete of the exited instance, then node.create
+    /// with a new node.id; node-restart: a new incarnation of the same node.id): a birth's declared
+    /// state is a fact about that birth only. Once the book holds a later incarnation of the node, or
+    /// holds the node departed (node.deleted), the authority tombstones the old birth's declared-state
+    /// keys, blind, and forgets them; a birth the book still holds at the same incarnation (silent or
+    /// not) keeps its rows. Must NOT happen: an old birth's rows on disk forever, folded back on every
+    /// restart of the authority.
+    #[tokio::test]
+    async fn a_superseded_or_deleted_birth_leaves_no_declared_state_row_behind() {
+        let mut admin = node("mesh1.admin.1");
+        admin.mesh = "mesh1".into();
+        admin.kind = NodeKind::NodeAdmin;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let member = |name: &str| {
+            let mut n = node(name);
+            n.mesh = "mesh1".into();
+            n.kind = NodeKind::RpcNode;
+            n.endpoint_id = Some(EndpointId(format!("{name}-endpoint")));
+            n.transport_addr = Some("127.0.0.1:1".parse().unwrap());
+            n
+        };
+        let (restarted, deleted, standing) = (member("mesh1.rpc.1"), member("mesh1.rpc.2"), member("mesh1.rpc.3"));
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![admin.clone(), restarted.clone(), deleted.clone(), standing.clone()],
+        }));
+        let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+        let authority = StatusAuthority {
+            me: admin.name.clone(),
+            fabric_id: topology.read().await.fabric.id.clone(),
+            topology: topology.clone(),
+            declared: Arc::new(Mutex::new(Declared::default())),
+            status_storage: status.clone(),
+            mesh_ids: Arc::new(BTreeMap::new),
+            republish: Arc::new(OnceLock::new()),
+            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            own: Arc::new(OnceLock::new()),
+            leaver: Arc::new(OnceLock::new()),
+            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake: Default::default(),
+            rounds: Default::default(),
+        };
+        for n in [&restarted, &deleted, &standing] {
+            let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+            assert_eq!(authority.apply(Some(n.clone()), &declare).await, R::Applied, "{}", n.name);
+        }
+        let book = rafka_mesh_transport::membership::DigestBook::default();
+        // rpc.1 restarted: the book holds its next incarnation.
+        book.record(digest_of(&restarted, IncarnationId::mint()));
+        // rpc.2 deleted: its exact birth departed.
+        book.record(digest_of(&deleted, deleted.incarnation_id.clone().unwrap()));
+        book.depart(rafka_mesh_entity::LifecycleOp {
+            build_id: "build1".into(),
+            attempt: 1,
+            operation: "recover-node:mesh1.rpc.2".into(),
+            node_id: deleted.node_id.clone(),
+            incarnation: deleted.incarnation_id.clone().unwrap(),
+            name: deleted.name.clone(),
+            event_at_rafka_ms: 0,
+        });
+        // rpc.3 is held at the birth that declared (silent or not, it is not superseded).
+        book.record(digest_of(&standing, standing.incarnation_id.clone().unwrap()));
+        authority.retire_superseded(&book).await;
+        use crate::status_storage::StatusStorage as _;
+        let rows: Vec<String> = status.node_declared().await.unwrap().into_iter().map(|r| r.node_id.to_string()).collect();
+        assert_eq!(rows, vec![standing.node_id.to_string()], "only the birth the book still holds keeps its declared-state row");
+        let held = authority.declared.lock().unwrap().clone();
+        assert_eq!(held.node(&restarted.node_id, restarted.incarnation_id.as_ref().unwrap()), None, "the restarted node's old birth is forgotten");
+        assert_eq!(held.node(&deleted.node_id, deleted.incarnation_id.as_ref().unwrap()), None, "the deleted birth is forgotten");
+        assert_eq!(held.node(&standing.node_id, standing.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the held birth keeps its state");
+        assert_eq!(Declared::rehydrate(&*status).await.unwrap().nodes.len(), 1, "a restarted authority folds only the held birth back");
     }
 }
