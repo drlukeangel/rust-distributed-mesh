@@ -1065,17 +1065,19 @@ pub async fn reconcile_drift(
         })
         .map(|n| n.name.to_string())
         .collect();
-    // A removed Mesh whose shutdown holds no MeshLeft receipt while the view still holds a birth of
-    // it live (an incomplete leave leaves at least its final primary running): the workflow is
-    // incomplete (mesh-leave.md, "Failure/certainty behavior"). Its attempt carries no action; the
-    // planner plans the mesh's shutdown again, which resumes from the receipts.
+    // A removed Mesh whose shutdown is incomplete (mesh-leave.md, "Failure/certainty behavior"):
+    // no MeshLeft receipt, and either the view still holds a birth of it live (an incomplete leave
+    // leaves at least its final primary running) or the final primary's exact exit is recorded
+    // (the attempt failed after the owner's stop, before MeshLeft). Its attempt carries no action;
+    // the planner plans the mesh's shutdown again, which resumes from the receipts.
     surplus.extend(
         t.meshes
             .iter()
             .filter(|m| !current.topology.meshes.contains_key(&m.name) && hold(&m.name).is_none())
-            .filter(|m| t.members().any(|n| n.mesh == m.name && n.status.is_live()))
-            .filter_map(|m| m.id.as_ref().map(crate::mesh_leave::operation))
-            .filter(|op| !current.steps.iter().any(|st| &st.operation == op && st.step == crate::mesh_leave::STEP_MESH_LEFT && st.outcome == crate::build_state::StepOutcome::Complete)),
+            .filter_map(|m| m.id.as_ref().map(|id| (m, crate::mesh_leave::operation(id))))
+            .filter(|(_, op)| !current.steps.iter().any(|st| &st.operation == op && st.step == crate::mesh_leave::STEP_MESH_LEFT && st.outcome == crate::build_state::StepOutcome::Complete))
+            .filter(|(m, op)| t.members().any(|n| n.mesh == m.name && n.status.is_live()) || matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::FinalExited(_))))
+            .map(|(_, op)| op),
     );
     surplus.sort();
     if first_exited.is_none() && surplus.is_empty() {
