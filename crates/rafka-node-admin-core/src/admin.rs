@@ -5209,10 +5209,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // a peer mesh it stops hearing on the backbone is probed through its own members and reborn
     // only when one of them cannot reach its own node-admin. Its decision is what releases the
     // drift check below to replace that mesh's node-admins.
-    let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::RULED)));
+    let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::configured())));
     {
-        let (ladder, round) = (ladder.clone(), rafka_mesh_transport::membership::backbone_gossip_interval());
-        let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().peer_mesh(mesh, round)));
+        let ladder = ladder.clone();
+        let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().peer_mesh(mesh)));
     }
     {
         let held = connections.held();
@@ -5249,7 +5249,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         executor = park_gate.spawn(async move {
             let mut started = HashSet::new();
             let mut held = HashSet::new();
-            let round = rafka_mesh_transport::membership::backbone_gossip_interval();
             loop {
                 // A fabric shutdown freezes reconciliation: no Build attempt, no drift recovery, no
                 // rebirth from here on (fabric-mesh-lifecycle.md §11.1).
@@ -5265,7 +5264,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh, round).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                     // proven exited is not live there, and holds no seat.
                     if opened.is_some() {
