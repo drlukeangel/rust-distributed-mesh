@@ -3983,6 +3983,7 @@ impl DigestBook {
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
+        self.digests.send_modify(|v| *v += 1);
         true
     }
 
@@ -4039,6 +4040,7 @@ impl DigestBook {
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
+        self.digests.send_modify(|v| *v += 1);
         true
     }
 
@@ -4082,6 +4084,7 @@ impl DigestBook {
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
+        self.digests.send_modify(|v| *v += 1);
         true
     }
 
