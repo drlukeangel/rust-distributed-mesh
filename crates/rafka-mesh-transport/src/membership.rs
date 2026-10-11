@@ -1808,6 +1808,32 @@ impl View {
         Self { mesh: mesh.to_string(), node: node.to_string(), ..Self::default() }
     }
 
+    /// Hold a status frame if it is newer than the one held. A mesh status taken is a routing fact
+    /// on receipt (states.md "Routing"): its span names how many of the mesh's held births
+    /// application routing selects from now on.
+    fn take_status(&self, f: &Frame, fabric: &FabricId, via: &'static str) {
+        if !self.book.statuses.take(f, fabric) {
+            return;
+        }
+        if let Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } = f {
+            let births: Vec<MeshDigest> = self.book.all().into_iter().filter(|d| &d.node.name.mesh == mesh).collect();
+            let routable = births.iter().filter(|d| self.book.routable(d.node.node_id.as_str())).count();
+            tracing::info_span!(
+                "rdm.mesh.membership.update.via-mesh-status",
+                node = %self.node,
+                mesh = %mesh,
+                status = %status,
+                publisher = %publisher,
+                forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                changed_at_rafka_ms = *changed_at_rafka_ms,
+                via,
+                births_held = births.len(),
+                births_routable = routable,
+            )
+            .in_scope(|| tracing::info!("a mesh status is held: application routing selects the mesh's births only while it is ready-for-traffic"));
+        }
+    }
+
     /// Hold what `f` carries; the digests it carries (for their addresses). A snapshot frame is
     /// not taken here: see [`View::take_snapshot`].
     fn take(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
@@ -1974,7 +2000,7 @@ impl View {
                 Vec::new()
             }
             Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
-                self.book.statuses.take(f, fabric);
+                self.take_status(f, fabric, via);
                 Vec::new()
             }
             Frame::Seated { seat, holder } => {
@@ -2524,7 +2550,7 @@ impl Membership {
     /// Hold the statuses an entry pull answered.
     pub fn learn_statuses(&self, frames: &[Frame]) {
         for f in frames {
-            self.view.book.statuses.take(f, &self.fabric);
+            self.view.take_status(f, &self.fabric, "entry-answer");
         }
     }
 
