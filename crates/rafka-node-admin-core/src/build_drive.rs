@@ -152,9 +152,6 @@ struct DriveState {
     terminal: Option<BuildReply>,
     lost: Option<SeatLoss>,
     stall: Option<String>,
-    /// The peer meshes held unheard whose first recovering node-admin this drive dispatched under
-    /// the investigation's rebirth verdict (R-D1: only that one admin crosses the fence).
-    rebirths: HashSet<String>,
 }
 
 /// One Build's drive: the frames its callers read. The task that makes them is [`DriveEnv::run`].
@@ -304,14 +301,6 @@ impl Drive {
 
     fn clear_stall(&self) {
         self.state.lock().unwrap().stall = None;
-    }
-
-    fn rebirth_dispatched(&self, mesh: &str) -> bool {
-        self.state.lock().unwrap().rebirths.contains(mesh)
-    }
-
-    fn note_rebirth(&self, mesh: &str) {
-        self.state.lock().unwrap().rebirths.insert(mesh.to_string());
     }
 }
 
@@ -481,6 +470,36 @@ fn parse_path(s: &str) -> Option<PathName> {
     s.parse().ok()
 }
 
+/// The node an operation key names (`create-node:mesh2.admin.1`), when it names one.
+fn node_of_key(key: &str) -> Option<PathName> {
+    key.split_once(':').and_then(|(_, node)| parse_path(node))
+}
+
+/// What is left of `p` in view `t`: the plan, less every operation whose `Complete` receipt the
+/// Build's current run holds ([`BuildProjection::completed_in_run`]). What a run completed is read
+/// from the receipts, never from the view: a view that has not absorbed a completed operation yet
+/// still lists it, and it is not planned, claimed or dispatched again.
+fn left(p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
+    crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key())).collect()
+}
+
+/// The node-admin of `mesh` the Build already carried across the R-D1 fence: an operation on it has a
+/// step receipt in an attempt held by an admin outside `mesh`, later than the last attempt an admin of
+/// `mesh` held (a mesh that has executed its own work since stands on its own again). That admin is
+/// the mesh's first recovering node-admin (mesh-investigation.md step 6: the restore runs on the SAME
+/// accepted Build), read from the Build's facts whichever drive dispatched it and whichever admin
+/// outside the mesh held its attempt.
+fn crossed_admin(p: &BuildProjection, mesh: &str) -> Option<PathName> {
+    let holder = |attempt: u32| p.attempt_executors.get(&attempt).and_then(|e| parse_path(e));
+    let own = p.attempt_executors.iter().filter(|(_, e)| parse_path(e).is_some_and(|e| e.mesh == mesh)).map(|(a, _)| *a).max().unwrap_or(0);
+    let mut steps: Vec<&crate::build_state::BuildStepReceipt> = p.steps.iter().filter(|s| s.attempt > own).collect();
+    steps.sort_by_key(|s| s.attempt);
+    steps.into_iter().find_map(|s| {
+        let node = node_of_key(&s.operation).filter(|n| n.kind == NodeKind::NodeAdmin && n.mesh == mesh)?;
+        holder(s.attempt).filter(|h| h.mesh != mesh).map(|_| node)
+    })
+}
+
 enum Inner {
     Terminal(BuildReply),
     Refused(BuildReply),
@@ -577,19 +596,19 @@ impl DriveEnv {
     }
 
     /// The restore the investigation's rebirth verdict authorizes (R-D1; mesh-investigation.md steps
-    /// 5-6): `op` acts on a node-admin of a peer mesh held unheard whose rebirth is decided, and this
-    /// drive has dispatched no recovering node-admin of that mesh yet. The fabric-primary executes it,
-    /// whatever else the mesh's view holds (an admin held silent included): it is the mesh's first
-    /// recovering node-admin.
-    fn rebirth_admits(&self, drive: &Drive, op: &BuildOperation) -> bool {
-        self.unheard_peer(op).is_some_and(|(node, _, decided)| decided && node.kind == NodeKind::NodeAdmin && !drive.rebirth_dispatched(&node.mesh))
+    /// 5-6): `op` acts on a node-admin of a peer mesh held unheard whose rebirth is decided, and the
+    /// Build carried no other admin of that mesh across the fence ([`crossed_admin`]). The
+    /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
+    /// included): it is the mesh's first recovering node-admin.
+    fn rebirth_admits(&self, p: &BuildProjection, op: &BuildOperation) -> bool {
+        self.unheard_peer(op).is_some_and(|(node, _, decided)| decided && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
     }
 
     /// The fence on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
     /// except the mesh's first recovering node-admin once the investigation decided its rebirth
     /// ([`Self::rebirth_admits`]). `Some` names the fence.
-    fn fenced(&self, drive: &Drive, op: &BuildOperation) -> Option<(PathName, u64, bool)> {
-        if self.rebirth_admits(drive, op) {
+    fn fenced(&self, p: &BuildProjection, op: &BuildOperation) -> Option<(PathName, u64, bool)> {
+        if self.rebirth_admits(p, op) {
             return None;
         }
         self.unheard_peer(op)
@@ -613,25 +632,22 @@ impl DriveEnv {
         DriveEnd::Stalled(why)
     }
 
-    /// What this admin dispatches to `executor` for what is left of `p` in view `t`. The mesh's first
-    /// recovering node-admin under a rebirth verdict runs alone, on this admin (the fabric-primary),
-    /// and is noted so no second admin of that mesh crosses the fence. Otherwise the executor's run
+    /// What this admin dispatches to `executor` for what is left of `p` in view `t` ([`left`]). The
+    /// mesh's first recovering node-admin under a rebirth verdict runs alone, on this admin (the
+    /// fabric-primary); its receipts are what fence every other admin of that mesh. Otherwise the executor's run
     /// ([`run_of`]) is cut before the first operation on a peer mesh held unheard (R-D1) and before
     /// an operation no admin executes in this view (it waits for its mesh's own seat, never for the
     /// run's executor); a cut run hands back to this admin, whose next claim re-reads the view and
     /// the investigation. `Err` names the fence on the first operation.
-    fn plan_dispatch(&self, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
-        let ops = crate::accepted::plan_for_build(p, t).operations;
-        if let Some(op) = ops.first().filter(|op| *executor == self.me && self.rebirth_admits(drive, op)) {
-            if let Some(node) = op.node() {
-                drive.note_rebirth(&node.mesh);
-            }
+    fn plan_dispatch(&self, p: &BuildProjection, t: &Topology, executor: &PathName) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
+        let ops = left(p, t);
+        if let Some(op) = ops.first().filter(|op| *executor == self.me && self.rebirth_admits(p, op)) {
             return Ok(RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| self.me.to_string()) });
         }
         let mut plan = run_of(&ops, t, executor);
         let mut cut = None;
         for (i, op) in plan.operations.iter().enumerate() {
-            if let Some(f) = self.fenced(drive, op) {
+            if let Some(f) = self.fenced(p, op) {
                 if i == 0 {
                     return Err((op.clone(), f));
                 }
@@ -721,7 +737,7 @@ impl DriveEnv {
             }
             let plan = {
                 let t = self.topology.read().await.clone();
-                match self.plan_dispatch(drive, &p, &t, &executor) {
+                match self.plan_dispatch(&p, &t, &executor) {
                     Ok(plan) => plan,
                     Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f),
                 }
@@ -803,25 +819,25 @@ impl DriveEnv {
         let attempt = p.attempt + 1;
         let first = {
             let t = self.topology.read().await.clone();
-            crate::accepted::plan_for_build(p, &t).operations.into_iter().next().map(|op| {
+            left(p, &t).into_iter().next().map(|op| {
                 let placed = crate::executor::executor_for(&op, &t).is_some();
                 (op, placed)
             })
         };
-        if let Some((op, f)) = first.as_ref().and_then(|(op, _)| self.fenced(drive, op).map(|f| (op, f))) {
+        if let Some((op, f)) = first.as_ref().and_then(|(op, _)| self.fenced(p, op).map(|f| (op, f))) {
             return Err(self.stop_at_fence(drive, attempt, op, f));
         }
         // The mesh's first recovering node-admin under the investigation's rebirth verdict is this
         // admin's to execute (R-D1). A run cut by this admin's own fence hands back here: this admin
         // claims for itself only an operation its view names an executor for (an operation no admin
         // executes waits for its mesh's own seat).
-        let rebirth = first.as_ref().is_some_and(|(op, _)| self.rebirth_admits(drive, op));
+        let rebirth = first.as_ref().is_some_and(|(op, _)| self.rebirth_admits(p, op));
         let forced = if rebirth { Some(self.me.clone()) } else { forced.filter(|to| *to != self.me || first.as_ref().is_none_or(|(_, placed)| *placed)) };
         let lead = match forced {
             Some(to) => Some(to),
             None => {
                 let t = self.topology.read().await.clone();
-                let ops = crate::accepted::plan_for_build(p, &t).operations;
+                let ops = left(p, &t);
                 let lead = lead_for(&ops, &t);
                 // A mesh shutdown with no admin outside the mesh has no owner: no one executes it. The
                 // fabric-primary says so, once per Build, rather than leaving the Build to stall unnamed.
@@ -839,7 +855,7 @@ impl DriveEnv {
         let Some(lead) = lead else {
             // Named: the operation, its mesh, and the same-mesh admins the attempt waits for.
             let t = self.topology.read().await.clone();
-            let why = match crate::accepted::plan_for_build(p, &t).operations.first() {
+            let why = match left(p, &t).first() {
                 Some(op) => format!("{}: no admin can execute what is left of Build {id} in this view: {}", self.me, crate::executor::why_no_executor(op, &t)),
                 None => format!("{}: no admin can execute what is left of Build {id} in this view", self.me),
             };

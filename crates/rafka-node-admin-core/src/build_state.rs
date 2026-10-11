@@ -268,6 +268,11 @@ pub struct BuildProjection {
     /// admin a later attempt follows.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attempt_executors: BTreeMap<u32, String>,
+    /// The attempt the latest `Opened` fact opened (0 while none did: the first attempt follows the
+    /// acceptance): the first attempt of the Build's current run, which the attempts after it
+    /// continue by hand-off or take-over. A step receipt from it on is this run's.
+    #[serde(default)]
+    pub opened: u32,
 }
 
 impl BuildProjection {
@@ -284,6 +289,13 @@ impl BuildProjection {
     /// Whether `attempt` carried exactly `action`.
     pub fn carried(&self, attempt: u32, action: &AttemptAction) -> bool {
         self.attempt_actions.get(&attempt) == Some(action)
+    }
+
+    /// Whether the operation `key` completed in the Build's current run: its `Complete` receipt in an
+    /// attempt from [`Self::opened`] on. A plan read from a view that has not absorbed the operation
+    /// yet still lists it; the receipt says it is done.
+    pub fn completed_in_run(&self, key: &str) -> bool {
+        self.steps.iter().any(|s| s.attempt >= self.opened && s.operation == key && s.step == "Complete" && s.outcome == StepOutcome::Complete)
     }
 }
 
@@ -405,6 +417,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     action: None,
                     attempt_actions: BTreeMap::new(),
                     attempt_executors: BTreeMap::new(),
+                    opened: 0,
                 });
             }
             BuildFact::Opened(o) => {
@@ -421,6 +434,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                         p.executor = None;
                         p.reason = o.reason;
                         p.action = o.action.clone();
+                        p.opened = o.attempt;
                     }
                 }
             }

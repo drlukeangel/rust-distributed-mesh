@@ -463,6 +463,7 @@ async fn rebirth_rig() -> Rig {
 #[tokio::test]
 async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of_a_held_mesh() {
     let r = rebirth_rig().await;
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-second-drive");
     let first = Drive::detached(r.build.clone());
     match r.env.run(&first).await {
         DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2"), "the first drive stops at mesh2's second admin: {why}"),
@@ -483,6 +484,13 @@ async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of
     let end = r.env.run(&third).await;
     assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("create-node:mesh2.admin.2")), "a running attempt held by another admin admits no second admin either: {end:?}");
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "no second admin of mesh2 crossed the fence");
+    // Each drive names the fence on mesh2's second admin once, on its own span.
+    let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
+    assert_eq!(fenced.len(), 3, "{fenced:?}");
+    for (trace, a) in &fenced {
+        assert_eq!((a.get("target").map(String::as_str), a.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{a:?}");
+        eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={trace} {a:?}");
+    }
 }
 
 /// Commits each operation's receipt and, when `lands`, puts the created node in the view live, as a
@@ -551,6 +559,7 @@ async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_
 #[tokio::test]
 async fn a_run_handed_back_is_never_dispatched_again_for_an_operation_its_receipts_completed() {
     let r = held_successor_rig(false).await;
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-handed-back");
     let drive = Drive::detached(r.build.clone());
     let end = tokio::time::timeout(Duration::from_secs(2), r.env.run(&drive)).await;
     let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
@@ -560,6 +569,10 @@ async fn a_run_handed_back_is_never_dispatched_again_for_an_operation_its_receip
         Ok(DriveEnd::Stalled(why)) => assert!(why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "{why}"),
         other => panic!("the drive stalls naming mesh2's held admin: {other:?}"),
     }
+    let drives = capture.spans("rdm.node_admin.build.update.via-drive");
+    assert_eq!(drives.len(), 1, "{drives:?}");
+    assert_eq!((drives[0].1.get("dispatches").map(String::as_str), drives[0].1.get("outcome").map(String::as_str)), (Some("1"), Some("stalled")), "{:?}", drives[0].1);
+    eprintln!("span rdm.node_admin.build.update.via-drive trace_id={} {:?}", drives[0].0, drives[0].1);
 }
 
 /// CONTRACT: an executor runs the first operation of the attempt the fabric-primary claimed for it
