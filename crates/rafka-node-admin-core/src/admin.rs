@@ -528,6 +528,36 @@ impl TopologySink for Records {
     }
 }
 
+/// The executor an attempt's Won claim names: the claim fact this admin's Build log holds, else the
+/// one the fabric-primary's log holds (a claim the Build topic has not delivered here yet is read
+/// from the admin that decided it, `FetchBuildFacts`).
+struct AdminClaims {
+    builds: Arc<dyn BuildStateAdapter>,
+    topology: Arc<RwLock<Topology>>,
+    client: Arc<rafka_node_rpc::NodeRpcClient>,
+}
+
+#[async_trait::async_trait]
+impl crate::fabric_handover::WonClaims for AdminClaims {
+    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, String> {
+        let claim_in = |facts: &[crate::build_state::BuildFact]| {
+            facts.iter().find_map(|f| match f {
+                crate::build_state::BuildFact::Claim(c) if c.build_id.0 == build_id && c.attempt == attempt => Some(c.executor.clone()),
+                _ => None,
+            })
+        };
+        let local = self.builds.facts().await.map_err(|e| format!("this admin's Build log could not be read: {e}"))?;
+        if let Some(e) = claim_in(&local) {
+            return Ok(Some(e));
+        }
+        let Some(fp) = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone()) else { return Ok(None) };
+        let fetched = crate::build_facts_read::fetch_build_facts(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(fp.clone()), &crate::build::BuildId(build_id.to_string()))
+            .await
+            .map_err(|e| format!("the fabric-primary {fp}'s facts of Build {build_id} could not be read: {e}"))?;
+        Ok(claim_in(&fetched.facts))
+    }
+}
+
 /// What an election takes beside the nodes: the seat records this admin holds, and the births
 /// proven gone. A birth is proven gone when its runtime was found exited, when its departure was
 /// heard, or when a later birth announced that it replaced it (`supersedes`). Silence, an
@@ -3162,6 +3192,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
                 rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
                 for row in rows {
+                    // A record a seat transfer's own row already holds is durable: nothing more is written for it.
+                    if seats.is_durable(row.seat, &row.holder) {
+                        written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch));
+                        continue;
+                    }
                     if written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch)) {
                         if let Err(e) = storage.put_seat(&row).await {
                             written.remove(&(row.seat, row.holder.mesh.clone(), row.holder.epoch));
@@ -3470,6 +3505,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 })
             })
         },
+        claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
     });
     handover.restore().await?;
     let _ = handover_slot.set(handover.clone());

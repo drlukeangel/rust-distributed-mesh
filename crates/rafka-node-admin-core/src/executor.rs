@@ -75,7 +75,15 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
 /// The admin primary of `target`'s mesh once `target`'s birth is gone; `None` when no other admin
 /// of the mesh can hold the seat.
 fn mesh_successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
-    seated_once_gone(target, t).into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == target.mesh && n.is_primary && n.name != *target).map(|n| n.name)
+    seat_successor(target, t).map(|n| n.name)
+}
+
+/// The admin the election seats as `target`'s own mesh primary once `target`'s exact birth is gone:
+/// the same-mesh successor that executes a seat holder's drain, stop, restart or replace and takes
+/// its seats by TakeSeats (node-rpc-envelope.md, "TakeSeats: Build-driven seat transfer"). `None`
+/// when no other admin of the mesh can hold the seat.
+pub fn seat_successor(target: &PathName, t: &Topology) -> Option<crate::model::Node> {
+    seated_once_gone(target, t).into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == target.mesh && n.is_primary && n.name != *target)
 }
 
 /// The fabric primary the election seats once `target`'s birth is gone: the admin its own mesh

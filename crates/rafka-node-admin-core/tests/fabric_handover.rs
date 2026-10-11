@@ -776,22 +776,36 @@ async fn a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_b
 /// is the committed result; none means no transfer happened (the ordinary election seats it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_records() {
+    if crate::own_process::delegated(module_path!(), "an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_records") {
+        return;
+    }
+    let spans = capture();
     let f = seats_fabric().await;
     let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
     let p_inc = f.p.resolved.incarnation.clone();
-    // The transfer committed at P and its SeatedTogether reached N; then P's process is gone.
-    let Reply::SeatsCommitted { seats } = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", "drain-node:mesh1.admin.1")).await else { panic!("committed") };
-    let op = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "drain-node:mesh1.admin.1".into(), node_id: f.p.resolved.node_id.clone(), incarnation: p_inc.clone(), name: "mesh1.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
-    f.n.door.membership.seats().take_together(&op, &holder_of(&f.n, 4), &seats, false);
+    let op_key = "drain-node:mesh1.admin.1";
+    // The transfer committed at P (its reply is lost to N's step), then P's process is gone.
+    let Reply::SeatsCommitted { seats } = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op_key)).await else { panic!("committed") };
     let Seats { p, n, m, x } = f;
     let _ = p._router.shutdown().await;
-    n.door.membership.seats().mark_gone(p_inc);
-    let out = tokio::time::timeout(std::time::Duration::from_secs(30), n.door.take_seats(&p_node, "b1", 1, "drain-node:mesh1.admin.1")).await.expect("a proven-lost holder ends the wait");
+    // N's step sends the identical call, which nothing answers: it waits, never moving on silence.
+    let step = tokio::spawn({
+        let door = n.door.clone();
+        let p_node = p_node.clone();
+        async move { door.take_seats(&p_node, "b1", 1, op_key).await }
+    });
+    until("N's call to the gone holder is uncertain", || spans.named(SEATS_REJECTED).iter().any(|f| f["side"] == "executor" && f["reason"] == "uncertain")).await;
+    assert!(!step.is_finished(), "an uncertain call is never the end of the step");
+    // P's SeatedTogether reaches N, and P's birth is proven gone.
+    let op = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: op_key.into(), node_id: p_node.node_id.clone(), incarnation: p_inc.clone(), name: "mesh1.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
+    n.door.membership.seats().mark_gone(p_inc.clone());
+    n.door.membership.seats().take_together(&op, &holder_of(&n, 4), &seats, false);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), step).await.expect("a proven-lost holder ends the wait").unwrap();
     assert_eq!(out, Ok(SeatTransferOutcome::HeldRecords { seats: committed_to(&n, 4, 8) }));
-    // M, which heard no transfer, reads none: the ordinary election applies.
-    m.door.membership.seats().mark_gone(p_node.incarnation_id.clone().unwrap());
+    // M, which heard no transfer, holds none: the ordinary election applies.
+    m.door.membership.seats().mark_gone(p_inc);
     m.claims.0.lock().unwrap().insert(("b9".into(), 1), "mesh1.admin.3".into());
-    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, "drain-node:mesh1.admin.1")).await.expect("a proven-lost holder ends the wait");
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, op_key)).await.expect("a proven-lost holder ends the wait");
     assert_eq!(out, Ok(SeatTransferOutcome::NoTransfer));
     let _ = x;
 }
