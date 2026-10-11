@@ -636,7 +636,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
             NodeStatus::PendingReconnect
         };
         n.routable = n.status.is_live() && book.routable(d.node.node_id.as_str());
-        n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
+        n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
         // A node-admin's control API is its one listener: the view carries it, so whichever admin
         // restarts it keeps the address its launch was assigned.
@@ -678,7 +678,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         n.status = if records.is_exited(&d.node.node_id, &d.node.incarnation) { NodeStatus::Dead } else { NodeStatus::Leaving };
         n.parked = n.status == NodeStatus::Leaving;
         n.routable = false;
-        n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
+        n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
         if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
             n.listeners = vec![("control".to_string(), addr)];
@@ -710,7 +710,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         n.status = if records.is_exited(&op.node_id, &op.incarnation) { NodeStatus::Dead } else { NodeStatus::Leaving };
         n.parked = n.status == NodeStatus::Leaving;
         n.routable = false;
-        n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
+        n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone();
             n.data_dir = r.data_dir.clone();
