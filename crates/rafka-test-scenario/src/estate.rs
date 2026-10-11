@@ -1582,12 +1582,17 @@ mod spawn_tests {
     }
 }
 
+/// The transport diagnostic file every node writes in its data dir (`rafka_mesh_telemetry::TRANSPORT_DIAG_FILE`,
+/// pinned equal by `the_kept_transport_diag_file_is_the_one_nodes_write`).
+const TRANSPORT_DIAG_FILE: &str = "transport-diag.log";
+
 /// The node and admin logs under an estate root, kept in the estate's artifacts before the root is
-/// removed: `<node dir>/stdout.log` and `stderr.log`.
+/// removed: `<node dir>/stdout.log`, `stderr.log` and the transport diagnostic file (R-QH1), which
+/// the bootstrap admin writes too though its stderr is the test's.
 fn keep_node_logs(root: &Path, artifacts: &Path) {
     let dest = artifacts.join("node-logs");
     for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
-        for name in ["stdout.log", "stderr.log"] {
+        for name in ["stdout.log", "stderr.log", TRANSPORT_DIAG_FILE] {
             let f = e.path().join(name);
             if f.is_file() {
                 let _ = std::fs::create_dir_all(&dest);
@@ -1600,6 +1605,13 @@ fn keep_node_logs(root: &Path, artifacts: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // CONTRACT: the file the estate keeps with every node's logs is the transport diagnostic file
+    // the nodes write (R-QH1); a rename of one without the other loses a red gate's handshake evidence.
+    #[test]
+    fn the_kept_transport_diag_file_is_the_one_nodes_write() {
+        assert_eq!(TRANSPORT_DIAG_FILE, rafka_mesh_telemetry::TRANSPORT_DIAG_FILE);
+    }
 
     // CONTRACT: a binary is refused by name when a source file its dep-info lists is newer than it, and
     // accepted when none is; a binary with no dep-info beside it is not judged.

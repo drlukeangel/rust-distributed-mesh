@@ -19,6 +19,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 pub mod export;
 pub mod logs;
 mod log_sink;
+mod transport_diag;
+pub use transport_diag::{TRANSPORT_DIAG_FILE, TRANSPORT_DIAG_TARGET};
 pub mod watchdog;
 mod pipeline;
 pub use pipeline::{install_span_capture, span_capture, span_export_layer, span_processor, CountingBatchProcessor, SpanCapture, SpanLoss};
@@ -61,9 +63,7 @@ impl Exporters {
             }));
         }
         export::bounded(what, jobs);
-        if let Some(sink) = STDERR_SINK.get() {
-            sink.flush();
-        }
+        flush_log_sinks();
     }
 }
 
@@ -79,13 +79,24 @@ static STDERR_SINK: std::sync::OnceLock<log_sink::LogSink> = std::sync::OnceLock
 
 static EXIT_FLUSH: std::sync::OnceLock<Exporters> = std::sync::OnceLock::new();
 
+/// The transport diagnostic file's writer ([`transport_diag`]), drained with the fmt log's.
+static DIAG_SINK: std::sync::OnceLock<log_sink::LogSink> = std::sync::OnceLock::new();
+
+/// Returns once every line handed to the stderr log and the transport diagnostic file is written.
+fn flush_log_sinks() {
+    for sink in [STDERR_SINK.get(), DIAG_SINK.get()].into_iter().flatten() {
+        sink.flush();
+    }
+}
+
 /// Drain and shut down the exporters before a deliberate `process::exit`, which skips the guard's
 /// `Drop`: spans closed just before the exit (the reason it exits for) reach the evidence file and the
 /// collector. A process that never initialised telemetry has nothing to drain. The wait is bounded
 /// by [`export::DRAIN_BOUND`]: an unreachable collector never holds the exit.
 pub fn flush_before_exit() {
-    if let Some(exporters) = EXIT_FLUSH.get() {
-        exporters.drain("the exit drain");
+    match EXIT_FLUSH.get() {
+        Some(exporters) => exporters.drain("the exit drain"),
+        None => flush_log_sinks(),
     }
 }
 
@@ -251,9 +262,15 @@ fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
 /// is installed and the span context is valid. Carried inside protocol codecs
 /// and Build intents so causality survives process and executor boundaries.
 pub fn current_traceparent() -> Option<String> {
+    traceparent_of(&tracing::Span::current())
+}
+
+/// W3C `traceparent` of `span`, when an OpenTelemetry layer is installed and its context is valid:
+/// what ties a line written outside span export (the transport diagnostic file) to its trace.
+pub fn traceparent_of(span: &tracing::Span) -> Option<String> {
     use opentelemetry::trace::TraceContextExt;
     use tracing_opentelemetry::OpenTelemetrySpanExt;
-    let cx = tracing::Span::current().context();
+    let cx = span.context();
     let span = cx.span();
     let sc = span.span_context();
     sc.is_valid().then(|| format!("00-{}-{}-{:02x}", sc.trace_id(), sc.span_id(), sc.trace_flags().to_u8()))
@@ -413,22 +430,34 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     }
     let stderr_sink = log_sink::LogSink::start(std::io::stderr());
     let _ = STDERR_SINK.set(stderr_sink.clone());
-    let fmt_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()).and(filter_fn(export::admits_source));
+    let fmt_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()).and(filter_fn(export::admits_source)).and(filter_fn(not_transport_diag));
+    // The transport diagnostic file (R-QH1), beside and apart from every other output.
+    let diag = transport_diag::start(&service).map(|(layer, sink)| {
+        let _ = DIAG_SINK.set(sink);
+        layer
+    });
     if !any {
-        let _ = tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter)).try_init();
+        let _ = tracing_subscriber::registry().with(diag).with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter)).try_init();
         return None;
     }
     let provider = builder.build();
-    let log_filter = tracing_subscriber::filter::LevelFilter::from_level(otlp_log_export_level()).and(filter_fn(export::admits_source));
+    let log_filter = tracing_subscriber::filter::LevelFilter::from_level(otlp_log_export_level()).and(filter_fn(export::admits_source)).and(filter_fn(not_transport_diag));
     use opentelemetry::logs::LoggerProvider as _;
     let log_layer = logs.as_ref().map(|p| logs::LogAdapter::new(p.logger("rafka-mesh")).with_filter(log_filter));
     let _ = tracing_subscriber::registry()
+        .with(diag)
         .with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter))
         .with(span_export_layer(&provider, &service))
         .with(log_layer)
         .try_init();
     let _ = watchdog::spawn();
     Some(guard(provider, logs))
+}
+
+/// A line of the transport diagnostic file's own target goes to that file only, never to stderr
+/// or the OTLP log bridge.
+fn not_transport_diag(meta: &tracing::Metadata<'_>) -> bool {
+    meta.target() != TRANSPORT_DIAG_TARGET
 }
 
 /// What span export (OTLP and the evidence files) carries, as rafka-v2's telemetry

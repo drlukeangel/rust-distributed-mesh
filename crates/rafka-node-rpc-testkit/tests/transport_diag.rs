@@ -43,7 +43,8 @@ fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {
 /// maker's holds the accept failure with the remote address and its error chain; and the packets
 /// of the handshake are on both sides: the dialler's Initial sent and the maker's reply received,
 /// the maker's first Initial received and its reply sent. What must NOT happen: a diagnostic line,
-/// a noq or iroh line in either process's span evidence (R-TL1), or a side with no file.
+/// a noq or iroh line in either process's span evidence (R-TL1), or a side with no file. The
+/// dialler's connect failure names the trace of its exported dial span.
 #[test]
 fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs() {
     if crate::own_process::delegated(module_path!(), "a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs") {
@@ -122,5 +123,9 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     for leaked in ["noq.packet", "\"connect-failed\"", "\"accept-failed\"", "\"endpoint-bound\"", "transport_diag", "noq_proto", "iroh::"] {
         assert!(!spans.contains(leaked), "{leaked:?} reached span evidence");
     }
-    let _ = std::fs::remove_dir_all(&root);
+    // The dial's line names its trace, and that trace is the dial span the dialler exported.
+    let trace = failed.split("trace=00-").nth(1).and_then(|t| t.split('-').next()).unwrap_or_else(|| panic!("the connect failure names no trace: {failed}"));
+    assert!(spans.contains(&format!("\"trace_id\":\"{trace}\"")) && spans.contains("rdm.node_rpc.connection.create.via-dial"), "the connect failure's trace {trace} is not the exported dial's");
+    // Kept for the reader: both ends' files and the run's span evidence.
+    println!("transport diagnostics kept in {}", root.display());
 }
