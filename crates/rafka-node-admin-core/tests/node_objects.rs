@@ -703,7 +703,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         assert!(completed.completed(), "the drive ended Complete");
         // The reconcile loop's `ensure_active`, acting on a `list_active` read taken before the
         // verdict entered the log.
-        let ensured = door.drives.ensure(&door.env, &build);
+        let ensured = door.drives.ensure(&door.env, &build, accepted.attempt);
         let kept = Arc::ptr_eq(&ensured, &completed) && door.drives.get(&build).is_some_and(|d| Arc::ptr_eq(&d, &completed));
         let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();

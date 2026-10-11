@@ -1115,7 +1115,7 @@ impl RecoverySubmitter {
                     span.record("build_id", o.build_id.0.as_str());
                     span.record("attempt", o.attempt);
                     span.record("disposition", "created");
-                    let drive = door.drives.ensure(&door.env, &o.build_id);
+                    let drive = door.drives.ensure(&door.env, &o.build_id, o.attempt);
                     let mut reader = drive.reader(o.attempt);
                     follow(&mut reader).await
                 }

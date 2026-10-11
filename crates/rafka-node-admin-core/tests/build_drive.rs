@@ -474,16 +474,16 @@ async fn a_completed_drive_is_kept_for_its_own_attempt_and_replaced_once_the_bui
     use rafka_node_admin_core::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptReceipt};
     let r = rig().await;
     let drives = Arc::new(Drives::default());
-    let first = drives.ensure(&r.env, &r.build);
+    let first = drives.ensure(&r.env, &r.build, 1);
     let BuildReply::Complete { attempt: done, .. } = terminal_of(&first).await else { panic!("the first run completes the Build") };
     r.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: r.build.clone(), attempt: done, outcome: AttemptOutcome::Converged }).await.unwrap();
-    let stale = drives.ensure(&r.env, &r.build);
+    let stale = drives.ensure(&r.env, &r.build, done);
     assert!(Arc::ptr_eq(&stale, &first), "a read that showed attempt {done} running is handed the drive that completed it");
     r.builds
         .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 })
         .await
         .unwrap();
-    let reopened = drives.ensure(&r.env, &r.build);
+    let reopened = drives.ensure(&r.env, &r.build, done + 1);
     assert!(!Arc::ptr_eq(&reopened, &first), "the reopened Build is driven by a new drive");
     assert!(matches!(terminal_of(&reopened).await, BuildReply::Complete { attempt, .. } if attempt == done + 1), "the new drive claims and ends attempt {}", done + 1);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), done), ("mesh1.admin.2".to_string(), done + 1)], "one build.attempt.run per attempt");
