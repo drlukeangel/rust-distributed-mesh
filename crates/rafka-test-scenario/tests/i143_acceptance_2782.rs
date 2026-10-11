@@ -645,9 +645,11 @@ async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
 }
 
 /// A joining node-admin held at a boot cut (armed from `<root>/faults/<name>.boot.json`, before its
-/// first line runs): the create Build waits on it, and it is not Ready until the release.
+/// first line runs): the create Build waits on it, and it is not Ready until the release. `stops_at`
+/// is the create step the held admin stops the Build at: with `exact`, the Build holds a complete
+/// receipt for every step before it and none after.
 #[allow(clippy::too_many_arguments)]
-async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str, receipts_before: usize, exact: bool) {
+async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str, stops_at: CreateStep, exact: bool) {
     let mut ev = Evidence::new(family, id);
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
     let faults = run.root.join("faults");
@@ -667,7 +669,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let door = Door::open(&run.root, admin, "").await;
     let held = door.wait_held(id).await;
     let op = format!("create-node:{admin}");
-    let want = create_order[..receipts_before].to_vec();
+    let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
     wait_for_observed(&format!("`{id}`: the Build reaches the held admin (complete receipts {want:?})"), Duration::from_secs(60), || async {
         let b = run.build(&exec, &build_id).await;
@@ -980,8 +982,8 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     .await;
 
     // A joining admin held at its hydration of the Fabric record, and at its Ready gate on the provider domain.
-    join_case(&run, Family::RuntimeMetadataHydration, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "mesh1.admin.3", 12, false).await;
-    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.4", 12, true).await;
+    join_case(&run, Family::RuntimeMetadataHydration, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "mesh1.admin.3", CreateStep::WaitForNodeReady, false).await;
+    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.4", CreateStep::WaitForNodeReady, true).await;
 
     finish(run, &dir).await;
 }
