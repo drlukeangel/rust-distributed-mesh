@@ -266,10 +266,10 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
 /// CONTRACT (R-JN1 item 6; node-create.md step 4; node-recovery.md steps 3-4): a first start (a
 /// birth this authority does not hold: no last accepted name) is admitted under its create spec's
 /// name whatever row stands at that `path.name`. A recovery creates the new node at the exited
-/// node's `path.name`, where the predecessor's row still stands (its `Deleted` row, the seed of the
-/// new node's config, which the new birth's own claim takes over after the join): the join
-/// installs the reported address and answers `Joined`, never `JoinMismatch` naming the
-/// predecessor's row. Only a held birth's join reads the row it is reconciled to.
+/// node's `path.name`; where another node's row stands there at the join (a create that wrote no
+/// claim over the predecessor's `Deleted` row), the join installs the reported address and answers
+/// `Joined` with no config handed, never `JoinMismatch` naming the predecessor's row. Only a held
+/// birth's join is refused over another node's row.
 #[test]
 fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitted_under_its_create_spec_name() {
     let cell = "a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitted_under_its_create_spec_name";
@@ -316,7 +316,9 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         let reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34568");
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into() }).await;
-        assert!(matches!(joined, JoinReply::Joined { .. }), "a first start is admitted under its create spec's name over its predecessor's row: {joined:?}");
+        let JoinReply::Joined { answer } = &joined else { panic!("a first start is admitted under its create spec's name over its predecessor's row: {joined:?}") };
+        let answer = rafka_node_admin_core::wire::answer_from_wire(answer).expect("the answer decodes");
+        assert_eq!(answer.control.config, None, "another node's row hands the first start no config: {answer:?}");
         assert_eq!(*installed.lock().unwrap(), vec![good.node.transport_addr], "the reported address is installed for the key");
         assert_eq!(reported.borrow().as_ref().map(|d| d.node.node_id.clone()), Some(dep.node_id.clone()), "WaitForBind receives the new node's own report");
         json!({ "cell": cell, "joined": format!("{joined:?}"), "predecessor": predecessor.as_str() })
