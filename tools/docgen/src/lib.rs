@@ -145,6 +145,13 @@ mod tests {
             .unwrap_or_else(|| panic!("no enum {name} in {file}"))
     }
 
+    /// `file:line` of the first line of `file` that starts with `prefix`, read from the source.
+    fn line_of(root: &Path, file: &str, prefix: &str) -> String {
+        let text = std::fs::read_to_string(root.join(file)).unwrap();
+        let line = text.lines().position(|l| l.starts_with(prefix)).unwrap_or_else(|| panic!("no line starting {prefix:?} in {file}")) + 1;
+        format!("{file}:{line}")
+    }
+
     fn positions(names: &[String]) -> Vec<(String, String)> {
         names.iter().enumerate().map(|(i, n)| (i.to_string(), n.clone())).collect()
     }
@@ -190,7 +197,8 @@ mod tests {
         for (variant, serde) in [("Pending", "pending"), ("ReadyForTraffic", "ready-for-traffic"), ("PendingReconnect", "pending-reconnect"), ("Deleted", "deleted")] {
             assert!(node_status.contains(&format!("**`{variant}`** | `{serde}`")), "NodeStatus::{variant} is `{serde}` on the page:\n{node_status}");
         }
-        assert!(statuses.contains("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rafka-mesh-transport/src/membership.rs:874` |"), "the mesh status string const is listed with its value and site");
+        let site = line_of(&root, "crates/rafka-mesh-transport/src/membership.rs", "pub const MESH_READY_FOR_TRAFFIC:");
+        assert!(statuses.contains(&format!("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `{site}` |")), "the mesh status string const is listed with its value and site {site}");
     }
 
     #[test]
@@ -198,7 +206,8 @@ mod tests {
         let root = rafka_mesh_audit::workspace_root();
         let pages = pages(&root).unwrap();
         let config = page(&pages, "config.md");
-        assert!(config.contains("| `RDM_FABRIC` | `crates/rafka-mesh-entity/src/launch.rs:11` | const `ENV_FABRIC` |"), "a launch env const is listed at its declaration:\n{config}");
+        let site = line_of(&root, "crates/rafka-mesh-entity/src/launch.rs", "pub const ENV_FABRIC:");
+        assert!(config.contains(&format!("| `RDM_FABRIC` | `{site}` | const `ENV_FABRIC` |")), "a launch env const is listed at its declaration {site}:\n{config}");
         assert!(config.lines().any(|l| l.starts_with("| `RDM_STALENESS_MS` |")), "the staleness env is listed");
         assert!(!config.contains("RDM_NOT_YET_INVENTED"), "a test-only literal is not config");
     }
