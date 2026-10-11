@@ -62,6 +62,25 @@ pub fn tickle_round_at_default_budget() -> std::time::Duration {
     }
 }
 
+/// The mesh-primary's recovery tick (node-recovery.md "Detection and proof": "The mesh-primary runs
+/// one loop for its own members, on every gossip interval, never on a timer of its own"): the loop
+/// runs a pass, then waits here for the next one.
+pub(crate) struct Cadence {
+    period: std::time::Duration,
+}
+
+impl Cadence {
+    /// The cadence at `period`, the gossip interval.
+    pub(crate) fn every(period: std::time::Duration) -> Self {
+        Self { period }
+    }
+
+    /// Wait for the next pass.
+    pub(crate) async fn next(&mut self) {
+        tokio::time::sleep(self.period).await;
+    }
+}
+
 /// Verdict of asking live peer nodes to tickle a target node.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ViaPeerVerdict {
@@ -413,6 +432,58 @@ pub(crate) mod tests {
         let r2 = tick_observed(&mut t, PROBE_DELAY + FLOOR, true, silent("b"), false, no_path(), &reads).await;
         assert_eq!(r2.offline, vec!["b".to_string()], "round 2 is TRUE OFFLINE, as without the read");
         assert_eq!(reads.load(Ordering::SeqCst), 1, "one read for the failed event");
+    }
+
+    mod cadence {
+        //! The recovery tick's cadence (node-recovery.md "Detection and proof": "The mesh-primary
+        //! runs one loop for its own members, on every gossip interval"), under paused time: each
+        //! pass spends a known time, and the clock moves only while the loop waits.
+        use super::super::Cadence;
+        use std::time::Duration;
+        use tokio::time::{sleep, Instant};
+
+        /// The gate's gossip interval (`RDM_GOSSIP_INTERVAL_MS=500`).
+        const INTERVAL: Duration = Duration::from_millis(500);
+
+        /// Run one pass per spent time in `work`, each followed by the cadence's wait, and return
+        /// the instant each pass started, measured from the loop's start.
+        async fn pass_starts(work: &[Duration]) -> Vec<Duration> {
+            let start = Instant::now();
+            let mut cadence = Cadence::every(INTERVAL);
+            let mut starts = Vec::new();
+            for spent in work {
+                starts.push(start.elapsed());
+                sleep(*spent).await;
+                cadence.next().await;
+            }
+            starts
+        }
+
+        fn ms(v: &[u64]) -> Vec<Duration> {
+            v.iter().map(|m| Duration::from_millis(*m)).collect()
+        }
+
+        /// CONTRACT (node-recovery.md "Detection and proof", on every gossip interval): a pass that
+        /// spends 100 ms leaves the next pass on the interval's grid, starting 500 ms after the
+        /// previous pass STARTED: 0, 500, 1000 ms. Must NOT happen: the next pass starting one
+        /// interval after the previous pass ENDED (0, 600, 1200 ms), its own work added to each tick.
+        #[tokio::test(start_paused = true)]
+        async fn the_recovery_tick_starts_every_pass_on_the_gossip_interval_grid() {
+            let w = Duration::from_millis(100);
+            assert_eq!(pass_starts(&[w, w, w]).await, ms(&[0, 500, 1000]), "each pass starts one interval after the previous one started");
+        }
+
+        /// CONTRACT (a late tick does not burst, and the grid holds): a pass that spends 1200 ms, past
+        /// two grid points (an inline tickle ladder spends whole call budgets), is followed by the one
+        /// pass it owes at once (1200 ms), then the passes return to the loop's own grid (1500,
+        /// 2000 ms). Must NOT happen: the two missed ticks run back to back (a burst: 1200, 1300,
+        /// 1500), the grid moved to the late pass (1200, 1700, 2200), or the interval added after
+        /// the pass's work (1700, 2300, 2900).
+        #[tokio::test(start_paused = true)]
+        async fn a_pass_past_the_interval_owes_one_pass_then_the_tick_returns_to_its_grid() {
+            let (long, w) = (Duration::from_millis(1200), Duration::from_millis(100));
+            assert_eq!(pass_starts(&[long, w, w, w]).await, ms(&[0, 1200, 1500, 2000]), "one owed pass at once, then the loop's own grid");
+        }
     }
 
     mod via_peer {
