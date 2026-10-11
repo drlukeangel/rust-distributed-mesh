@@ -227,6 +227,10 @@ async fn recovery_deletes_the_exited_instance_then_creates_a_new_node_over_its_d
 /// Must NOT happen: a new endpoint key minted for the recovered node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovery_whose_inherited_data_dir_has_no_endpoint_key_fails_by_name_and_mints_none() {
+    // Its own capture, set before any span of this run: the refusal's trace is this cell's evidence,
+    // and both cells of the stem hold a subscriber when their callsites first register.
+    let spans = Spans::default();
+    let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let rig = rig().await;
     let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
     let recorder = Recorder(rig.log.clone());
@@ -272,5 +276,8 @@ async fn a_recovery_whose_inherited_data_dir_has_no_endpoint_key_fails_by_name_a
     let log = rig.log.lock().unwrap().clone();
     assert!(!log.iter().any(|l| l.starts_with("NodeDeleting") || l.starts_with("NodeDeleted")), "nothing of the exited birth was deleted: {log:?}");
     assert!(rig.sink.removed.lock().unwrap().is_empty(), "the path was not removed");
+    let all = spans.0.lock().unwrap().clone();
+    assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("recover") && f.get("build_id") == Some(&recover_build.0)), "the recovery ran as its pipeline");
+    assert!(!all.values().any(|(n, _, _)| n == "rdm.node_admin.node.delete.via-exit-proof"), "no node.deleted is published");
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }

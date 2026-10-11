@@ -1009,21 +1009,31 @@ pub(crate) struct Identity {
 fn ensure_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
     let path = data_dir.join("node-key");
-    let key = match std::fs::read_to_string(&path) {
-        Ok(h) => {
-            let bytes: [u8; 32] = hex::decode(h.trim())
-                .map_err(|e| format!("{}: {e}", path.display()))?
-                .try_into()
-                .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
-            iroh::SecretKey::from_bytes(&bytes)
+    if !path.exists() {
+        let k = iroh::SecretKey::generate();
+        std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    load_transport_key(data_dir)
+}
+
+/// Read the transport key an existing data dir holds, minting none: a recovery's node takes the
+/// endpoint key of the data dir it inherits (node-recovery.md, "Retained"), so a dir with no key
+/// is refused by name, never given a new one.
+fn load_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
+    let path = data_dir.join("node-key");
+    let h = match std::fs::read_to_string(&path) {
+        Ok(h) => h,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !data_dir.is_dir() => {
+            return Err(format!("the inherited data dir {} does not exist: no node-key to load the endpoint key from", data_dir.display()))
         }
-        Err(_) => {
-            let k = iroh::SecretKey::generate();
-            std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
-            k
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("node-key is missing in the inherited data dir {}: the endpoint key cannot be retained", data_dir.display())),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    Ok(EndpointId(key.public().to_string()))
+    let bytes: [u8; 32] = hex::decode(h.trim())
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .try_into()
+        .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
+    Ok(EndpointId(iroh::SecretKey::from_bytes(&bytes).public().to_string()))
 }
 
 async fn poll<F, Fut>(within: Duration, mut f: F) -> bool
@@ -1226,13 +1236,15 @@ impl DeploymentPipeline<'_> {
         // reports at its join is the one this admin publishes for the birth.
         let bind_addr = SocketAddr::new(self.provider.bind_ip(&req.node), 0);
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
+        let inherits = inherited.is_some();
         let data_dir = match (inherited, prior.as_ref().and_then(|p| p.data_dir.clone())) {
             (Some(d), _) => d,
             (None, Some(d)) => PathBuf::from(d),
             (None, None) => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
-            let key = ensure_transport_key(&data_dir)?;
+            // An inherited data dir keeps its key: it is loaded, never minted.
+            let key = if inherits { load_transport_key(&data_dir)? } else { ensure_transport_key(&data_dir)? };
             if !req.held_runtimes.is_empty() {
                 let store = crate::storage::FileNodesStorage::open(&data_dir).map_err(|e| e.to_string())?;
                 for row in &req.held_runtimes {
@@ -2059,6 +2071,10 @@ impl DeploymentPipeline<'_> {
                 reason: format!("{name}: the exit proof names birth {} at {}, the recovery is of {} at {}", req.exit.node_id, req.exit.incarnation_id.0, old.node_id, birth.0),
             });
         }
+        // The new node takes the endpoint key of the data dir it inherits: a dir that holds none is
+        // refused by name before anything of the exited birth changes.
+        let inherited = self.birth_dir(&old);
+        let inherited_key = load_transport_key(&inherited).map_err(|reason| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name}: {reason}") })?;
         // node.delete of the exited instance: the receipt first, then the publish, as every delete.
         let op = LifecycleOp {
             build_id: req.build_id.to_string(),
@@ -2098,10 +2114,9 @@ impl DeploymentPipeline<'_> {
         self.sink.remove(name);
         // The key the fence names is the one in the inherited data dir (a record resolved from the
         // durable runtime rows carries none): the new birth will load exactly it.
-        let inherited = self.birth_dir(&old);
         let mut fenced = old.clone();
         if fenced.endpoint_id.is_none() {
-            fenced.endpoint_id = Some(ensure_transport_key(&inherited).map_err(|reason| PipelineError { step: RetireStep::NodeDeleted.name(), reason })?);
+            fenced.endpoint_id = Some(inherited_key);
         }
         after_deleted(fenced).await;
         // node.create at the same path.name over the inherited data dir: a new node.id and incarnation,
