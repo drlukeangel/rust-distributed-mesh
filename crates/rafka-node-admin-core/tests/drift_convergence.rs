@@ -622,11 +622,20 @@ mod one_attempt_number {
     use rafka_node_admin_core::http::ControlPlane;
     use tokio::sync::Notify;
 
-    /// The estate's Build log with one gate: an `open_attempt` of `reason` stops at the log's door
-    /// (after its caller computed the number) until the cell lets it write.
+    /// The write a [`Gate`] stops at the log's door.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Holds {
+        /// An `open_attempt` of this reason, after its caller computed the number.
+        Attempt(AttemptReason),
+        /// The first `publish_accepted`: a submitted change past its check, inside its durable write.
+        Acceptance,
+    }
+
+    /// The estate's Build log with one gate: the write it `holds` stops at the log's door until
+    /// the cell lets it write.
     struct Gate {
         inner: Arc<MemoryBuildStateAdapter>,
-        holds: AttemptReason,
+        holds: Holds,
         arrived: Notify,
         release: Notify,
     }
@@ -634,10 +643,14 @@ mod one_attempt_number {
     #[async_trait::async_trait]
     impl BuildStateAdapter for Gate {
         async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
+            if self.holds == Holds::Acceptance {
+                self.arrived.notify_one();
+                self.release.notified().await;
+            }
             self.inner.publish_accepted(a).await
         }
         async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
-            if o.reason == self.holds {
+            if self.holds == Holds::Attempt(o.reason) {
                 self.arrived.notify_one();
                 self.release.notified().await;
             }
@@ -669,7 +682,7 @@ mod one_attempt_number {
         }
     }
 
-    fn gate(e: &Estate, holds: AttemptReason) -> Arc<Gate> {
+    fn gate(e: &Estate, holds: Holds) -> Arc<Gate> {
         Arc::new(Gate { inner: e.builds.clone(), holds, arrived: Notify::new(), release: Notify::new() })
     }
 
@@ -710,7 +723,7 @@ mod one_attempt_number {
     async fn a_drift_attempt_that_loses_its_number_to_a_requested_restart_opens_nothing() {
         let e = estate().await;
         let k = lose_a_node(&e).await;
-        let g = gate(&e, AttemptReason::ProvenDrift);
+        let g = gate(&e, Holds::Attempt(AttemptReason::ProvenDrift));
         let cp = door(&e, e.builds.clone()).await;
         let (drift, rest) = tokio::join!(drift_pass(&e, &*g), async {
             g.arrived.notified().await;
@@ -734,7 +747,7 @@ mod one_attempt_number {
     async fn a_requested_restart_that_loses_its_number_to_a_drift_attempt_is_refused_by_name() {
         let e = estate().await;
         let k = lose_a_node(&e).await;
-        let g = gate(&e, AttemptReason::Restart);
+        let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
         let cp = door(&e, g.clone()).await;
         let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None), async {
             g.arrived.notified().await;
@@ -752,6 +765,88 @@ mod one_attempt_number {
         let body: serde_json::Value = serde_json::from_slice(&http_body_util::BodyExt::collect(response.into_body()).await.unwrap().to_bytes()).unwrap();
         assert_eq!(body["error"], "attempt-taken", "{body}");
         assert!(body["detail"].as_str().unwrap().contains(&format!("{}", k + 1)), "the refusal names the attempt: {body}");
+    }
+
+    /// The cell's span directory: the gate's, else this cell's own under the workspace target.
+    fn evidence_dir(cell: &str) -> std::path::PathBuf {
+        match std::env::var("I143_ACCEPTANCE_DIR") {
+            Ok(d) => std::path::PathBuf::from(d),
+            Err(_) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/3061/unit").join(cell),
+        }
+    }
+
+    /// Every span this process emitted, from the evidence exporter's JSONL files in `dir`.
+    fn collect_spans(dir: &std::path::Path) -> Vec<serde_json::Value> {
+        let mut spans = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".spans.jsonl")) {
+                spans.extend(std::fs::read_to_string(&p).unwrap().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
+            }
+        }
+        spans
+    }
+
+    /// CONTRACT: the proven-drift pass has read the accepted Build settled and computed attempt k+1
+    /// for a lost node while a submitted topology change, past the same check, is inside its durable
+    /// write. The submitted change is admitted as the next Build; the drift pass opens nothing on
+    /// the Build the pointer no longer names, writes no Opened fact, and returns no attempt to
+    /// execute. One Build is active: the submitted one. Must NOT happen: an attempt of a superseded
+    /// Build opened beside the new Build, two plans of two topologies in flight. Canon:
+    /// ops-naming-proposal.md "Two topology changes ... never run together: one Build is in flight".
+    #[tokio::test]
+    async fn a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing() {
+        if crate::own_process::delegated(module_path!(), "a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing") {
+            return;
+        }
+        let dir = evidence_dir("a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s35");
+        let root = tracing::info_span!("rdm.test.build.admission.drift-versus-submit");
+        use tracing::Instrument as _;
+        let e = estate().await;
+        let k = lose_a_node(&e).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let g = gate(&e, Holds::Acceptance);
+        let cp = door(&e, g.clone()).await;
+        let submit = tokio::spawn({
+            let cp = cp.clone();
+            async move { cp.submit("POST /api/topology", rafka_node_admin_core::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rafka_mesh_entity::NodeKind::RpcNode }).await }.instrument(root.clone())
+        });
+        g.arrived.notified().await;
+        let mut pass = Box::pin(drift_pass(&e, &*e.builds).instrument(root.clone()));
+        // One poll of the drift pass while the submitted change is held inside its write.
+        let early = tokio::select! {
+            biased;
+            r = &mut pass => Some(r),
+            _ = std::future::ready(()) => None,
+        };
+        g.release.notify_one();
+        let admitted = submit.await.unwrap().expect("the submitted change is admitted").build_id;
+        let drift = match early {
+            Some(r) => r,
+            None => (&mut pass).await,
+        };
+        drop(pass);
+        assert_eq!(drift, None, "the drift pass opened an attempt of {} beside the admitted Build {admitted}", before.build_id);
+        let opened: Vec<AttemptOpened> = opened_facts(&e, k + 1).await.into_iter().filter(|o| o.build_id == before.build_id).collect();
+        assert!(opened.is_empty(), "no attempt of the superseded Build is open: {opened:?}");
+        let active = e.builds.list_active().await.unwrap();
+        assert_eq!(active.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>(), vec![admitted.clone()], "one Build is active: the submitted one");
+        drop(root);
+        drop(telemetry);
+        let spans = collect_spans(&dir);
+        let refused: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.reject.via-build-in-progress").collect();
+        assert_eq!(refused.len(), 1, "the drift pass is refused once, by name: {refused:?}");
+        let created = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.create.via-rest").expect("the submitted change's span");
+        assert_eq!(refused[0]["trace_id"], created["trace_id"], "the refusal and the admitted Build are one story");
+        let a = &refused[0]["attributes"];
+        assert_eq!(a["route"], "proven-drift", "{a}");
+        assert_eq!(a["build_id"], before.build_id.0.as_str(), "{a}");
+        assert!(a["accepted_now"].as_str().unwrap_or_default().contains(admitted.0.as_str()), "the refusal names the Build admitted first: {a}");
+        println!("trace_id={} admitted={admitted} refused_drift_on={}", refused[0]["trace_id"].as_str().unwrap_or_default(), before.build_id);
     }
 }
 
