@@ -346,14 +346,21 @@ async fn serve_node(b: &Birth) -> ServedNode {
 
 /// A birth serving Status that records every request and answers each with `reply`.
 async fn serve_node_answering(b: &Birth, reply: StatusReply) -> ServedNode {
+    serve_node_with(b, move |_| reply.clone()).await
+}
+
+/// A birth serving Status that records every request and answers each with what `answer` says.
+async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusReply + Send + Sync + 'static) -> ServedNode {
     use rafka_node_rpc_contract::catalog::OpOwner;
     let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
     let heard: Arc<tokio::sync::Notify> = Arc::default();
     let (s, h) = (seen.clone(), heard.clone());
+    let answer = Arc::new(answer);
     let server = ServerBuilder::new()
         .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
-            let (s, h, reply) = (s.clone(), h.clone(), reply.clone());
+            let (s, h, answer) = (s.clone(), h.clone(), answer.clone());
             async move {
+                let reply = answer(&req);
                 s.lock().unwrap().push(req);
                 h.notify_one();
                 Ok(reply)
@@ -809,6 +816,26 @@ async fn successor_new(rig: &Rig) -> (Birth, ServedNode) {
     (b, node)
 }
 
+/// [`successor_new`], drained (Draining in the mesh-primary's view, its declared state Draining),
+/// answering `node.connections.delete` with every connection cut and nothing held, and every other
+/// request `Applied`.
+async fn successor_drained(rig: &Rig) -> (Birth, ServedNode) {
+    let mut b = birth("mesh1.rpc.3.new", NodeKind::RpcNode, "mesh1", false, false);
+    (b.node.status, b.node.declared) = (NodeStatus::Draining, Some("Draining".into()));
+    rig.topology.write().await.nodes.push(b.node.clone());
+    let node = serve_node_with(&b, |req| match req {
+        StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![rafka_mesh_entity::ConnectionId::mint()], not_open: vec![], held: vec![] },
+        _ => StatusReply::Applied,
+    })
+    .await;
+    configs_door(rig, &node).await;
+    (b, node)
+}
+
+fn delete_all(b: &Birth) -> StatusRequest {
+    StatusRequest::DeleteConnections { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope: rafka_node_rpc_contract::status::ConnectionScope::All }
+}
+
 fn update_node(b: &Birth, name: &str) -> StatusRequest {
     StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into() }
 }
@@ -852,17 +879,19 @@ fn a_ready_for_traffic_nodes_rename_is_refused_by_name_at_the_mesh_primary_and_n
 /// CONTRACT (R-CR1a, R-CR2: drained, then `node.connections.delete` has completed): the successor
 /// `mesh1.rpc.3.new`, drained (Draining in the mesh-primary's view, its declared state Draining), is
 /// refused the rename `Busy` naming its held status and that no `node.connections.deleted` is held for
-/// the birth, nothing claimed and nothing told. What must NOT happen: a drained node that still holds
-/// its connections takes another name.
+/// the birth, nothing claimed and nothing told. A caller's `node.connections.delete { All }` through
+/// the mesh-primary is carried to the exact birth and answered with the birth's
+/// `node.connections.deleted`, which the mesh-primary holds; the same `node.update` then writes the
+/// row at `mesh1.rpc.3` and the birth is told `ApplyNodeName`, ending `NodeUpdated`. A start begins
+/// the birth's next cycle: the receipt is not carried over, and a rename after it is refused again.
+/// What must NOT happen: a drained node that still holds its connections takes another name, or a
+/// started one renamed on its last cycle's cut.
 #[test]
 fn a_drained_nodes_rename_is_refused_until_node_connections_deleted_then_applied() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        let (succ, node) = successor_new(&rig).await;
-        if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == succ.node.node_id) {
-            (n.status, n.declared) = (NodeStatus::Draining, Some("Draining".into()));
-        }
+        let (succ, node) = successor_drained(&rig).await;
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let refused = reply(&call(&rig, &b["admin2"], &update_node(&succ, "mesh1.rpc.3")).await);
         assert!(
@@ -871,22 +900,54 @@ fn a_drained_nodes_rename_is_refused_until_node_connections_deleted_then_applied
         );
         assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+
+        let deleted = reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await);
+        assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the mesh-primary answers the birth's node.connections.deleted: {deleted:?}");
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ)], "the delete is carried to the exact birth");
+        let applied = reply(&call(&rig, &b["admin2"], &update_node(&succ, "mesh1.rpc.3")).await);
+        assert_eq!(applied, StatusReply::NodeUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
+        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "the row at the new name holds the birth");
+        assert_eq!(
+            node.seen.lock().unwrap().last().cloned(),
+            Some(StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }),
+            "the live birth is told its name"
+        );
+
+        // A start begins the birth's next cycle: its last cycle's cut does not carry over.
+        rig.authority.begin_cycle(&succ.node, succ.node.incarnation_id.as_ref().unwrap()).await;
+        let again = reply(&call(&rig, &b["admin2"], &update_node(&succ, "mesh1.rpc.3.new")).await);
+        assert!(matches!(&again, StatusReply::Busy { reason } if reason.contains("no node.connections.deleted")), "a started birth is refused until its connections are deleted again: {again:?}");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-update-node");
     let outcomes: Vec<_> = spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("connections").cloned().unwrap_or_default())).collect();
-    assert_eq!(outcomes, vec![("busy".to_string(), "none-deleted".to_string())], "{spans:?}");
-    eprintln!("trace {}: rdm.node_admin.node.update.via-update-node outcomes={outcomes:?}", spans[0].0);
+    assert_eq!(
+        outcomes,
+        vec![("busy".to_string(), "none-deleted".to_string()), ("node-updated".to_string(), "deleted".to_string()), ("busy".to_string(), "none-deleted".to_string())],
+        "{spans:?}"
+    );
+    let carried = cap.spans("rdm.node_admin.node.connections.delete.via-mesh-primary");
+    assert_eq!(carried.len(), 1, "{carried:?}");
+    assert_eq!((carried[0].1.get("scope").map(String::as_str), carried[0].1.get("status_at_cut").map(String::as_str), carried[0].1.get("outcome").map(String::as_str)), (Some("all"), Some("Draining"), Some("connections-deleted")), "{carried:?}");
+    eprintln!("trace {}: rdm.node_admin.node.connections.delete.via-mesh-primary scope=all status_at_cut=Draining outcome=connections-deleted", carried[0].0);
+    for (trace, attrs) in &spans {
+        eprintln!("trace {trace}: rdm.node_admin.node.update.via-update-node outcome={:?} connections={:?} traffic={:?}", attrs.get("outcome"), attrs.get("connections"), attrs.get("traffic"));
+    }
 }
 
-/// CONTRACT (R13 step 3): a rename into a name another node holds is refused `NameHeld { by }` by
-/// the store adapter's insert-and-fail; nothing is written and the birth is told nothing. A live
-/// node that routes traffic renamed to `.old` is refused `RejectedMetaFieldIsRdmOwned { name }`.
+/// CONTRACT (R13 step 3): a rename of a stopped successor into a name another node holds is refused
+/// `NameHeld { by }` by the store adapter's insert-and-fail; nothing is written and the birth is told
+/// nothing. A live node that can carry traffic renamed to `.old` is refused `Busy` naming its status
+/// (R-CR1a).
 #[test]
 fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
         let (succ, node) = successor_new(&rig).await;
+        // Stopped: the name check is the claim's alone.
+        if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == succ.node.node_id) {
+            (n.parked, n.status) = (true, NodeStatus::Leaving);
+        }
         let holder = NodeId::mint();
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default() }).await.unwrap();
@@ -896,17 +957,18 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
         let routed = &b["rpc1"];
         let refused = reply(&call(&rig, &b["admin2"], &update_node(routed, "mesh1.rpc.1.old")).await);
-        assert_eq!(refused, StatusReply::RejectedMetaFieldIsRdmOwned { field: "name".into() }, "a live node that routes traffic keeps its name");
+        assert!(matches!(&refused, StatusReply::Busy { reason } if reason.contains("ReadyForTraffic")), "a live node that can carry traffic keeps its name, refused naming its status: {refused:?}");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-update-node");
     let outcomes: Vec<_> = spans.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect();
-    assert_eq!(outcomes, vec!["name-held".to_string(), "rejected-meta-field-is-rdm-owned".to_string()], "{spans:?}");
+    assert_eq!(outcomes, vec!["name-held".to_string(), "busy".to_string()], "{spans:?}");
     eprintln!("trace {}: rdm.node_admin.node.update.via-update-node outcome=name-held", spans[0].0);
 }
 
 /// CONTRACT (R13; ops-naming "A rename is the same write": caller → the node's mesh-primary, Forward
 /// `0x1A` when not directly reachable): a caller of another mesh whose client reaches mesh1's primary
-/// only through a carrier (mesh1.admin.2) renames the live successor `mesh1.rpc.3.new` to
+/// only through a carrier (mesh1.admin.2) renames the drained successor `mesh1.rpc.3.new`, whose
+/// `node.connections.deleted` mesh1's primary holds, to
 /// `mesh1.rpc.3` with `node.update`: the call ends `NodeUpdated` naming the exact birth, the row at
 /// `mesh1.rpc.3` holds it, the birth was told `ApplyNodeName` once; the route span says `via-peer`
 /// with the carrier, and the mesh-primary's `via-update-node` span says `node-updated` after the
@@ -916,7 +978,8 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_no
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        let (succ, node) = successor_new(&rig).await;
+        let (succ, node) = successor_drained(&rig).await;
+        assert!(matches!(reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await), StatusReply::ConnectionsDeleted { .. }), "the drained successor's connections are deleted first");
         let (carrier, _carrier_router) = carrier_admin(&b["admin2"], &rig.resolved).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(carrier.clone());
@@ -929,7 +992,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_no
         assert_eq!(reply, StatusReply::NodeUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
         assert_eq!(row.node_id, succ.node.node_id);
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }]);
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ), StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }]);
     });
     let updates = cap.spans("rdm.node_admin.node.update.via-update-node");
     assert_eq!(updates.len(), 1, "{updates:?}");
@@ -974,7 +1037,7 @@ fn a_stopped_nodes_rename_at_its_mesh_primary_writes_the_row_and_tells_the_node_
 /// CONTRACT (R12; node-rpc-envelope.md :434, the ApplyNodeName answers): `ApplyNodeName` naming this
 /// admin, from another node-admin, is answered by the admin itself from what its name decision says:
 /// `Applied` once it holds the name, `AlreadyApplied` for the name it holds, `Busy` naming its
-/// in-flight count while it routes traffic. One naming another incarnation is
+/// held connections while it holds any. One naming another incarnation is
 /// `RejectedStaleIncarnation`, one from a member that is not a node-admin `RejectedNotAuthority`, one
 /// whose name is not a path.name `Malformed`; none of the three reaches the decision.
 #[test]
@@ -985,7 +1048,7 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
         let asked: Arc<Mutex<Vec<PathName>>> = Arc::default();
         let a = asked.clone();
-        let decisions = Arc::new(Mutex::new(vec![rafka_node_admin_core::node_name::NameApply::Busy { in_flight: 2 }, rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Applied]));
+        let decisions = Arc::new(Mutex::new(vec![rafka_node_admin_core::node_name::NameApply::Busy { routes: vec!["mesh1.rpc.1 (direct, entry 3123456789ab)".into(), "mesh1.rpc.2 (direct, entry 4123456789ab)".into()] }, rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Applied]));
         let held: PathName = rig.admin.node.name.clone();
         let _ = rig.authority.rename.set(Arc::new(move |name: PathName| {
             let (a, d, held) = (a.clone(), decisions.clone(), held.clone());
@@ -999,7 +1062,7 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
         let inc = me.incarnation_id.clone().unwrap();
         assert_eq!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::Applied);
         assert_eq!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::AlreadyApplied);
-        assert!(matches!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::Busy { reason } if reason.contains("2 calls in flight")));
+        assert!(matches!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::Busy { reason } if reason.contains("2 connections: mesh1.rpc.1 (direct, entry 3123456789ab), mesh1.rpc.2")));
         assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), "mesh1.admin.1.old")).await), StatusReply::RejectedStaleIncarnation { held: inc.clone() });
         assert!(matches!(reply(&call(&rig, rpc1, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its name");
         assert!(matches!(reply(&call(&rig, admin2, &told(inc, "not a path name")).await), StatusReply::Malformed { .. }));

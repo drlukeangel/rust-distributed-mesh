@@ -226,6 +226,12 @@ impl NodeRpcClient {
         self.pool.close_peer(peer, reason.as_bytes())
     }
 
+    /// The endpoint the resolver names for the node `node` now, if it resolves: the key its pooled
+    /// connections to that node are held under.
+    pub fn endpoint_of(&self, node: &rafka_mesh_entity::NodeId) -> Option<iroh::PublicKey> {
+        self.resolver.resolve(&NodeTarget::ExactNode(node.clone())).ok().map(|n| n.endpoint_id)
+    }
+
     /// Hard-cut every connection this client holds (`node.connections.delete`): dials in flight are
     /// cancelled and every pooled connection is closed, so no call rides one and the next call dials
     /// afresh. Returns how many pooled connections were closed.

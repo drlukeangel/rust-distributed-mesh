@@ -34,6 +34,22 @@ pub struct Declared {
     /// from the mesh's primary and the exact birth that sent it. Memory of this process's tenure; it is
     /// never stored or rehydrated, because a report is evidence only while it is fresh.
     pub reports: BTreeMap<String, MeshReport>,
+    /// Per birth `(node id, incarnation)` of this admin's mesh: the `node.connections.deleted` it
+    /// answered the last `node.connections.delete` this mesh-primary carried to it, in its current
+    /// cycle (R-CR2: what a rename of a live birth needs). Memory of this tenure: a successor holds
+    /// none, and refuses a live rename until the delete is carried again.
+    pub connections_deleted: std::collections::HashMap<(NodeId, IncarnationId), ConnectionsDeletedReceipt>,
+}
+
+/// A birth's `node.connections.deleted`, as its mesh-primary holds it for the rename precondition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionsDeletedReceipt {
+    /// Whether the cut was `All` (gossip neighbours and every pooled peer connection).
+    pub all: bool,
+    /// The open entries the birth still held after the cut.
+    pub held: Vec<rafka_mesh_entity::ConnectionId>,
+    /// The birth's status in this admin's view when the cut was carried.
+    pub status_at_cut: crate::model::NodeStatus,
 }
 
 /// A mesh primary's round-complete report, as the fabric-primary received it.
@@ -204,7 +220,7 @@ pub struct StatusAuthority {
     /// Where this admin's own `hydrate_before_ready` stands (the cell its start writes): while it is
     /// Blocked, a probe naming this admin is answered `Blocked` carrying its blocker.
     pub hydration: Hydrating,
-    /// This admin as the subject of `ApplyNodeName`: it takes the name with no traffic in flight
+    /// This admin as the subject of `ApplyNodeName`: it takes the name holding no connection (R-CR1)
     /// and publishes its digest carrying it; filled once its digest exists.
     pub rename: Rename,
     /// This admin's view taking a node's row its `node.update` moved (R13): the view lists the birth
@@ -388,9 +404,7 @@ impl StatusAuthority {
             }
             StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return self.serve_command(&view, sender.as_ref(), req).await,
             StatusRequest::DeleteConnections { node_id, .. } if *node_id == self.node_id => return self.serve_command(&view, sender.as_ref(), req).await,
-            StatusRequest::DeleteConnections { .. } => {
-                return StatusReply::NotReady { reason: format!("{}: node.connections.delete is not yet carried to the birth by its mesh-primary; nothing is cut", self.me) };
-            }
+            StatusRequest::DeleteConnections { .. } => return self.carry_delete_connections(&view, sender.as_ref(), req).await,
             StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } => {
                 let Some(leaver) = self.leaver.get().cloned() else {
                     return StatusReply::NotReady { reason: format!("{} is still starting: it cannot serve {} yet", self.me, req.op()) };
@@ -406,9 +420,10 @@ impl StatusAuthority {
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
                 };
             }
-            StatusRequest::UpdateNode { .. } => {
+            StatusRequest::UpdateNode { node_id, incarnation, .. } => {
                 // A stopped node is told nothing: only a live birth's apply needs the node-RPC client.
-                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| c.client()), &self.row_moved, req).await;
+                let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
+                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| c.client()), &self.row_moved, deleted.as_ref(), req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {
@@ -463,6 +478,8 @@ impl StatusAuthority {
     /// `ReadyForTraffic` run forward again from the start. The cleared state is a row put before it
     /// is held, as every applied state is.
     pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
+        // The cut of its last cycle is not its next cycle's: a started birth holds connections again.
+        self.declared.lock().unwrap().connections_deleted.remove(&(node.node_id.clone(), birth.clone()));
         let held = self.declared.lock().unwrap().node(&node.node_id, birth);
         let Some(state) = held else { return };
         let outcome = match self.status_storage.remove_node_declared(&node.node_id, birth).await {
@@ -531,6 +548,61 @@ impl StatusAuthority {
 
     /// `drain-node` / `stop-node` naming this admin: served by the subject itself, from another
     /// node-admin (its owning mesh-admin).
+    /// `node.connections.delete` naming a birth of this admin's mesh (R-CR2, R-CR3): this
+    /// mesh-primary validates the scope, commands the exact birth with the same request, and holds
+    /// the birth's `node.connections.deleted` as its receipt for that birth's rename; the caller is
+    /// answered the birth's reply. A scope that names nothing to cut is refused here, sending nothing.
+    async fn carry_delete_connections(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
+        use tracing::Instrument;
+        let StatusRequest::DeleteConnections { node_id, incarnation, scope } = req else { unreachable!("carry_delete_connections is called for DeleteConnections only") };
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.connections.delete.via-mesh-primary",
+            node = %self.me, subject_id = %node_id, subject = tracing::field::Empty, sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(),
+            scope = scope.name(), status_at_cut = tracing::field::Empty, closed = tracing::field::Empty, held = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
+        );
+        let reply = async {
+            let Some(subject) = view.nodes.iter().find(|n| n.node_id == *node_id) else {
+                return StatusReply::PeerUnresolved { reason: format!("{}: node {node_id} is not in the mesh-primary's view; its connections cannot be deleted through it", self.me) };
+            };
+            tracing::Span::current().record("subject", subject.name.to_string().as_str()).record("status_at_cut", format!("{:?}", subject.status).as_str());
+            if !view.own(&self.node_id).is_some_and(|n| n.is_primary && n.mesh == subject.mesh) {
+                return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) } };
+            }
+            if subject.incarnation_id.as_ref() != Some(incarnation) {
+                return match subject.incarnation_id.clone() {
+                    Some(held) => StatusReply::RejectedStaleIncarnation { held },
+                    None => StatusReply::PeerUnresolved { reason: format!("{}: {} has no known birth; its connections cannot be deleted", self.me, subject.name) },
+                };
+            }
+            if let Some(reason) = scope.refusal() {
+                return StatusReply::RejectedConnectionScope { reason: format!("{}: {reason}", subject.name) };
+            }
+            let Some(configs) = self.configs.get() else {
+                return StatusReply::NotReady { reason: format!("{} has no node-RPC client yet to carry node.connections.delete to {}; nothing is cut", self.me, subject.name) };
+            };
+            let target = rafka_node_rpc::NodeTarget::ExactNode(node_id.clone());
+            let reply = match configs.client().call::<rafka_node_rpc_contract::status::Status>(&target, req, &rafka_node_rpc::CallOptions::default()).await.0 {
+                rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.into_value(),
+                other => {
+                    let detail = format!("{} carried node.connections.delete to {} and the call ended {}: {other:?}; no node.connections.deleted is held", self.me, subject.name, other.name());
+                    tracing::Span::current().record("detail", detail.as_str());
+                    return StatusReply::NotReady { reason: detail };
+                }
+            };
+            if let StatusReply::ConnectionsDeleted { closed, held, .. } = &reply {
+                tracing::Span::current().record("closed", closed.len()).record("held", held.len());
+                let receipt = ConnectionsDeletedReceipt { all: matches!(scope, rafka_node_rpc_contract::status::ConnectionScope::All), held: held.clone(), status_at_cut: subject.status };
+                self.declared.lock().unwrap().connections_deleted.insert((node_id.clone(), incarnation.clone()), receipt);
+            }
+            reply
+        }
+        .instrument(span.clone())
+        .await;
+        span.record("outcome", reply.name());
+        span.in_scope(|| tracing::info!("node.connections.delete carried by the mesh-primary"));
+        reply
+    }
+
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
         let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. } | StatusRequest::StartNode { node_id, incarnation, .. } | StatusRequest::DeleteConnections { node_id, incarnation, .. }) = req else {
             unreachable!("serve_command is called for commands only")
@@ -743,7 +815,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             Some(StatusReply::Applied)
         }
         StatusRequest::ApplyNodeName { name, .. } => {
-            // R12: the node owns its name and takes the row's name only with no traffic in flight.
+            // R12, R-CR1: the node owns its name and takes the row's name only while it holds no connection.
             let asked = match name.parse::<rafka_mesh_entity::PathName>() {
                 Ok(n) => n,
                 Err(e) => {
@@ -756,11 +828,11 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                 return Some(StatusReply::NotReady { reason: format!("{}: its digest does not exist yet; the name {asked} is not taken", me.name) });
             };
             let (held, decision) = rename(asked.clone()).await;
-            let in_flight = match decision {
-                crate::node_name::NameApply::Busy { in_flight } => in_flight,
-                _ => 0,
+            let routes = match &decision {
+                crate::node_name::NameApply::Busy { routes } => routes.join(", "),
+                _ => String::new(),
             };
-            tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, in_flight, outcome = decision.name(), "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, routes = %routes, outcome = decision.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the mesh-primary's name for this admin was decided"));
             Some(crate::node_name::reply(&held, &asked, &decision))
         }

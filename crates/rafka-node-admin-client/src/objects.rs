@@ -166,8 +166,8 @@ impl NodeMeta {
     /// `node.update`'s validation from the held record, in the documented order
     /// (node-rpc-envelope.md "Meta and config"; R13 step 2 and the first half of step 3): every
     /// RDM-owned field equals the held value, else `MetaFieldIsRdmOwned { field }`; a changed name
-    /// requires no traffic, that is the held node is stopped, or its current name is `<name>.new`
-    /// and nothing has routed to it (`.new` to `<name>` only). The only renames are a node to or
+    /// requires the node quiet, that is stopped, or drained with `node.connections.deleted` (R-CR1a);
+    /// a node that can carry traffic keeps its name whatever its name. The only renames are a node to or
     /// from its `.old` form and to or from its `.new` form (node-replace.md); `.old` to `.new` and a
     /// new ordinal are refused naming the name.
     pub fn check_update(&self, held: &NodeMeta, traffic: Traffic) -> Result<(), MetaFieldIsRdmOwned> {
@@ -207,8 +207,7 @@ impl NodeMeta {
             let suffixed = |n: &PathName| n.old || n.new;
             let one_suffix_toggles = self.name.base() == held.name.base() && suffixed(&self.name) != suffixed(&held.name);
             let quiet = match traffic {
-                Traffic::Stopped => true,
-                Traffic::NothingRouted => held.name.new && self.name == held.name.base(),
+                Traffic::Stopped | Traffic::ConnectionsDeleted => true,
                 Traffic::Routed => false,
             };
             if !(one_suffix_toggles && quiet) {
@@ -219,15 +218,16 @@ impl NodeMeta {
     }
 }
 
-/// Whether the node a `node.update` names carries traffic, as its mesh-primary holds it: a name
-/// changes only with none (R13 step 3).
+/// Whether the node a `node.update` names can carry traffic, as its mesh-primary holds it: a name
+/// changes only when it is not ready-for-traffic and holds no connection (R-CR1a, R-CR2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Traffic {
     /// The held status is stopped.
     Stopped,
-    /// The node is live and nothing has routed to it: a successor born `<name>.new`.
-    NothingRouted,
-    /// The node is live and routes traffic.
+    /// The node was drained and its mesh-primary holds its `node.connections.deleted` of every
+    /// connection.
+    ConnectionsDeleted,
+    /// Anything else: the node can carry traffic.
     Routed,
 }
 
@@ -363,9 +363,21 @@ impl Nodes {
         r
     }
 
-    /// `node.connections.delete`: the hard cut of a node's mesh connections.
-    pub fn connections_delete(&self) -> CallEnd {
-        CallEnd::NotBackedToday { op: NodeOp::ConnectionsDelete, why: "no op cuts a node's connections; the cut is a step of the stop workflow" }
+    /// `node.connections.delete`: the hard cut of the connections of the exact birth `held` names,
+    /// `scope` `All` (the stop's cut) or `Connections` naming open entries by id, a single call to the
+    /// node's mesh-primary `mesh_primary` over `route` (R-CR2, R-CR3; [`crate::NodeRpc::connections_delete`]).
+    /// A scope that names nothing to cut is refused here by name, `RejectedConnectionScope`, and
+    /// nothing is sent.
+    pub async fn connections_delete(&self, held: &NodeMeta, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rafka_node_rpc_contract::status::ConnectionScope) -> Result<rafka_node_rpc_contract::status::StatusReply, CallEnd> {
+        if let Some(reason) = scope.refusal() {
+            let span = NodeOp::ConnectionsDelete.span();
+            span.record("outcome", "rejected-connection-scope");
+            span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), reason = %reason, "the scope names nothing to cut; nothing is sent"));
+            return Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason: format!("{}: {reason}", held.name) });
+        }
+        let incarnation = held.incarnation.clone().ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} ({}) has no known birth; node.connections.delete names an exact birth", held.name, held.node_id) })?;
+        let birth = crate::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation };
+        crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, &birth, scope, &rafka_node_rpc::CallOptions::default()).await
     }
 
     /// `node.config.get`.
@@ -502,20 +514,21 @@ mod tests {
         assert_eq!(renumbered.check_update(&held, Traffic::Stopped), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "no rename but .old exists");
     }
 
-    /// CONTRACT (R13 step 3; node-replace.md steps 3-4 and rollback 1): a successor born `<name>.new`
-    /// that nothing has routed to takes `<name>` while live; a node routing traffic never changes its
-    /// name; `<name>` goes back to `<name>.new` only while stopped; `.old` and `.new` never swap.
+    /// CONTRACT (R13 step 3, R-CR1a; node-replace.md rollback 1): a node takes another name only
+    /// when quiet, stopped or drained with `node.connections.deleted`, and then only between the bare
+    /// name and one suffix; a node that can carry traffic keeps its name, `.new` included; `.old` and
+    /// `.new` never swap.
     #[test]
-    fn a_name_changes_only_with_no_traffic_and_only_between_the_bare_name_and_one_suffix() {
+    fn a_name_changes_only_when_quiet_and_only_between_the_bare_name_and_one_suffix() {
         let base = held();
         let new = NodeMeta { name: base.name.successor(), ..base.clone() };
         let old = NodeMeta { name: base.name.renamed(), ..base.clone() };
         let name = |r| r == Err(MetaFieldIsRdmOwned { field: MetaField::Name });
-        assert_eq!(base.check_update(&new, Traffic::NothingRouted), Ok(()), "the successor nothing routed to takes the name");
-        assert!(name(base.check_update(&new, Traffic::Routed)), "a successor that routes traffic keeps .new");
-        assert!(name(new.check_update(&base, Traffic::NothingRouted)), "a live node never gives its name back to .new");
+        assert_eq!(base.check_update(&new, Traffic::Stopped), Ok(()), "the stopped successor takes the name");
+        assert_eq!(base.check_update(&new, Traffic::ConnectionsDeleted), Ok(()), "the drained successor whose connections were deleted takes the name");
+        assert!(name(base.check_update(&new, Traffic::Routed)), "a successor that can carry traffic keeps .new");
         assert_eq!(new.check_update(&base, Traffic::Stopped), Ok(()), "rollback: the stopped successor gives the name back");
-        assert!(name(old.check_update(&base, Traffic::NothingRouted)), "the predecessor gives up its name only when stopped");
+        assert!(name(old.check_update(&base, Traffic::Routed)), "the predecessor gives up its name only when quiet");
         assert!(name(new.check_update(&old, Traffic::Stopped)), ".old never becomes .new");
         assert!(name(old.check_update(&new, Traffic::Stopped)), ".new never becomes .old");
     }

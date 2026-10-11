@@ -1,13 +1,12 @@
 //! A live node takes the name its mesh-primary's row now holds (`ApplyNodeName`; node-rpc-envelope.md
-//! "Meta and config", R12/R13, lifecycles/node-replace.md step 4).
+//! "Meta and config", R12/R13, R-CR1).
 //!
 //! CONTRACT: a node born `mesh1.rpc.1.new` answers `ApplyNodeName { name: mesh1.rpc.1 }` with
-//! `Busy` naming its in-flight count (the apply call itself not counted) while a call is in flight,
-//! and holds nothing: its digest still says `.new`. With nothing in flight it answers `Applied`, and
-//! every digest it publishes from then on carries `mesh1.rpc.1`; the same name again is
-//! `AlreadyApplied`, and a stale incarnation is refused naming the one held. What must NOT happen: a
-//! name taken while traffic is in flight, a digest naming the new name before the apply, or a later
-//! cadence digest reverting to the birth's name.
+//! `Busy` naming the route it holds to its admin (its join), and holds nothing: its digest still
+//! says `.new`. Drained and its connections deleted (`DeleteConnections { All }`), it answers
+//! `Applied` and holds `mesh1.rpc.1`; the same name again is `AlreadyApplied`, and a stale
+//! incarnation is refused naming the one held. What must NOT happen: a name taken while the node
+//! holds a connection, or a digest naming the new name before the apply.
 
 use crate::common::admin_side_serving;
 use rafka_mesh_entity::launch::Launch;
@@ -15,14 +14,13 @@ use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
-use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, PullRequest, PullServer};
+use rafka_node_rpc_contract::status::{ConnectionScope, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
 
 #[test]
-fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_from_then_on() {
-    let cap = crate::common::capture("a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_from_then_on");
+fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
+    let cap = crate::common::capture("a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
@@ -49,16 +47,7 @@ fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_
             mesh_issuer: None,
         };
         admin.deployed(&launch, &key);
-        // The node serves one held op: a call into it stays in flight until the cell releases it.
-        let pull = PullServer::new(vec![]);
-        pull.gate.open();
-        pull.hold();
-        let _running = node::start(&launch, {
-            let pull = pull.clone();
-            move |b, _| pull.serve(b)
-        })
-        .await
-        .expect("the node comes up");
+        let running = node::start(&launch, |b, _| b).await.expect("the node comes up");
 
         let book = &admin.observer.membership.book;
         // Every digest the admin's book takes ticks this count: the cell awaits a published digest, never the cadence.
@@ -84,37 +73,25 @@ fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_
         };
         let apply = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.to_string() };
 
-        // One call in flight: the name is refused Busy, naming that one call, and nothing is held.
-        let held = async { client.call::<HydratePull>(&target, &PullRequest::Pull, &opts).await.0 };
-        let busy = async {
-            pull.entered(1).await;
-            match call(apply.clone()).await {
-                StatusReply::Busy { reason } => assert!(reason.contains("1 call in flight"), "Busy names the one call in flight, not the apply itself: {reason}"),
-                other => panic!("a node with a call in flight answered {other:?}"),
-            }
-            let seq = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
-            digests.borrow_and_update();
-            while book.get(launch.node_id.as_str()).unwrap().0.digest_seq == seq {
-                digests.changed().await.unwrap();
-            }
-            assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
-            // Nothing in flight from here: the held call answers once released.
-            pull.release();
-        };
-        let (out, ()) = tokio::join!(held, busy);
-        assert!(matches!(out, RpcOutcome::Reply(_)), "the held call answers once released: {out:?}");
-
-        assert_eq!(call(apply.clone()).await, StatusReply::Applied);
-        // The node published the name before it answered; the admin hears that digest.
-        digests.borrow_and_update();
-        while book.get(launch.node_id.as_str()).unwrap().0.node.name != taken {
-            digests.changed().await.unwrap();
+        // Holding its join route: the name is refused Busy, naming that route, and nothing is held.
+        match call(apply.clone()).await {
+            StatusReply::Busy { reason } => assert!(reason.contains("mesh1.admin.1 (direct, entry "), "Busy names the route the node holds: {reason}"),
+            other => panic!("a node holding a connection answered {other:?}"),
         }
         let seq = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
-        while book.get(launch.node_id.as_str()).unwrap().0.digest_seq <= seq + 1 {
+        digests.borrow_and_update();
+        while book.get(launch.node_id.as_str()).unwrap().0.digest_seq == seq {
             digests.changed().await.unwrap();
         }
-        assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, taken, "later cadence digests keep the applied name");
+        assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
+
+        // Drained, and every connection deleted: the name moves.
+        let drain = StatusRequest::DrainNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_apply".into(), attempt: 1, operation: format!("drain-node:{born}") };
+        assert_eq!(call(drain).await, StatusReply::Applied);
+        let delete = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+        assert!(matches!(call(delete).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
+        assert_eq!(call(apply.clone()).await, StatusReply::Applied);
+        assert_eq!(running.membership.held_name(&born), taken, "the node holds the applied name");
 
         // The same name again is done; a stale incarnation is refused naming the one held.
         assert_eq!(call(apply.clone()).await, StatusReply::AlreadyApplied);

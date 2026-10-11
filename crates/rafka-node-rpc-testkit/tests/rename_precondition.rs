@@ -5,18 +5,23 @@
 //!
 //! CONTRACT: `mesh1.rpc.1.new` joins its admin and is dialled by its peer `mesh1.rpc.2`, so its own
 //! connections log holds a `connected` entry to each. Drained (`DrainNode`), it is told
-//! `ApplyNodeName { mesh1.rpc.1 }` and answers `Busy` naming both routes, holding nothing. What must
-//! NOT happen: a drained node that still holds connections takes another name.
+//! `ApplyNodeName { mesh1.rpc.1 }` and answers `Busy` naming both routes, holding nothing. Its admin's
+//! `DeleteConnections { All }` answers `ConnectionsDeleted` closing both routes' open entries and
+//! holding none, each drop written under `mesh1.rpc.1.new`; the same `ApplyNodeName` then answers
+//! `Applied`. No `connected` entry under `mesh1.rpc.1.new` is the latest of its pair after the
+//! rename, and the next entry the node writes (its peer dials it again) names `mesh1.rpc.1`. What must
+//! NOT happen: a drained node that still holds connections takes another name, a route left open
+//! under the name it gave up, or a drop written under another name.
 
 use crate::common::admin_side_serving;
-use rafka_mesh_entity::connections::NodeConnection;
+use rafka_mesh_entity::connections::{ConnectionState, NodeConnection};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::ping::{Ping, PingRequest};
-use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
 use std::sync::{Arc, OnceLock};
@@ -137,9 +142,48 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
             "a drained node holding its routes keeps its name, Busy naming each route: {busy:?}"
         );
         assert_eq!(renamed_seams.connections.own().name, born, "the node holds the name it had");
+
+        // node.connections.delete { All }: every route closed, each drop under the name it holds.
+        let open_ids: Vec<_> = renamed_seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+        let deleted = call(StatusRequest::DeleteConnections { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), scope: ConnectionScope::All }).await;
+        let StatusReply::ConnectionsDeleted { closed, not_open, held } = &deleted else { panic!("the cut ends node.connections.deleted: {deleted:?}") };
+        assert!(open_ids.iter().all(|id| closed.contains(id)) && not_open.is_empty() && held.is_empty(), "every open entry is closed and none held: open {open_ids:?}, {deleted:?}");
+
+        // The same apply now takes the name.
+        assert_eq!(call(apply).await, StatusReply::Applied, "with no connection held the name moves");
+        assert_eq!(renamed_seams.connections.own().name, taken, "the node holds its new name");
+
+        // Its peer dials it again: the node's next entry names the name it holds.
+        let _ = peer_seams.client.call::<Ping>(&NodeTarget::ExactNode(renamed.node_id.clone()), &PingRequest::Ping { payload: b"after the rename".to_vec() }, &CallOptions::default()).await;
+        renamed_seams.connections.drain().await;
+        let log = kept_log(&store, &fabric, &born);
+        let mut wrong: Vec<String> = Vec::new();
+        let mut latest: std::collections::BTreeMap<(String, String, String), &NodeConnection> = Default::default();
+        for e in &log {
+            latest.insert((e.source.name.to_string(), e.destination.name.to_string(), format!("{:?}", e.kind)), e);
+        }
+        for ((source, destination, kind), e) in &latest {
+            if source == &born.to_string() && e.state == ConnectionState::Connected {
+                wrong.push(format!("{source} -> {destination} {kind} is still connected under the name the node gave up: {e:?}"));
+            }
+        }
+        for dest in ["mesh1.admin.1", "mesh1.rpc.2"] {
+            let drop = log.iter().find(|e| e.source.name == born && e.destination.name.to_string() == dest && e.state == ConnectionState::Disconnected && e.reason.as_deref() == Some("node.connections.delete"));
+            if drop.is_none() {
+                wrong.push(format!("no drop of the route to {dest} under {born}"));
+            }
+        }
+        let next = log.iter().rev().find(|e| e.destination.name == peer_name && e.state == ConnectionState::Connected);
+        if !next.is_some_and(|e| e.source.name == taken) {
+            wrong.push(format!("the node's next entry for its peer names {taken} as its source: {next:?}"));
+        }
+        assert!(wrong.is_empty(), "{} wrong after the rename:\n{}", wrong.len(), wrong.join("\n"));
         let _ = std::fs::remove_dir_all(&root);
     });
     let applies: Vec<std::collections::BTreeMap<String, String>> =
         spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-apply-node-name").map(|(_, _, f)| f.clone()).collect();
-    assert_eq!(applies.iter().map(|f| f.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["busy".to_string()], "{applies:#?}");
+    assert_eq!(applies.iter().map(|f| f.get("outcome").cloned().unwrap_or_default()).collect::<std::collections::BTreeSet<_>>(), ["applied".to_string(), "busy".to_string()].into(), "{applies:#?}");
+    let cuts: Vec<std::collections::BTreeMap<String, String>> =
+        spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.connections.delete.via-delete-connections").map(|(_, _, f)| f.clone()).collect();
+    assert!(cuts.iter().any(|f| f.get("scope").map(String::as_str) == Some("all") && f.get("held").map(String::as_str) == Some("0") && f.get("outcome").map(String::as_str) == Some("connections-deleted")), "{cuts:#?}");
 }

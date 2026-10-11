@@ -78,6 +78,12 @@ fn end_of(node: &ResolvedNode) -> ConnectionEnd {
     ConnectionEnd { name: node.name.clone(), node_id: node.node_id.clone(), incarnation: Some(node.incarnation.clone()) }
 }
 
+/// This node's open routes in `held`: its own latest Direct entries that are `connected`, then its
+/// own active Proxy entries, each by destination.
+fn open_routes(held: &ConnectionsHeld) -> Vec<NodeConnection> {
+    held.own_latest_directs().into_iter().filter(|e| e.state == ConnectionState::Connected).chain(held.own_active_proxies()).cloned().collect()
+}
+
 fn kind_name(k: ConnectionKind) -> &'static str {
     match k {
         ConnectionKind::Direct => "direct",
@@ -211,6 +217,72 @@ impl ConnectionsWriter {
         self.persist(&row).await?;
         let _ = self.inner.held.lock().unwrap().apply(row);
         Ok(())
+    }
+
+    /// The connections this node holds now (R-CR1): its own latest Direct entries that are
+    /// `connected` and its own active Proxy entries, under the name it holds, once every observation
+    /// handed to the writer before the call has landed. Ordered by destination, Direct first.
+    pub async fn held_routes(&self) -> Vec<NodeConnection> {
+        self.drain().await;
+        let _gate = self.inner.write_gate.lock().await;
+        self.own_now();
+        open_routes(&self.inner.held.lock().unwrap())
+    }
+
+    /// `node.connections.delete`'s drops (R-CR3): each of `routes` (open entries this node held,
+    /// whose connections were just cut) gets one `disconnected` entry with its own id and `reason`,
+    /// naming this node as it is now, written durably and then applied. A route whose open entry is
+    /// no longer the latest of its pair (a newer entry was written meanwhile) is cut and writes no
+    /// drop: the newer entry is the pair's state. Returns the ids of the routes cut, and those whose
+    /// drop the storage refused, with its refusal: the log still holds those open.
+    pub async fn write_drops(&self, routes: &[NodeConnection], reason: &str) -> (Vec<rafka_mesh_entity::ConnectionId>, Vec<(rafka_mesh_entity::ConnectionId, String)>) {
+        let _gate = self.inner.write_gate.lock().await;
+        let own = self.own_now();
+        let (mut closed, mut refused) = (Vec::new(), Vec::new());
+        for route in routes {
+            let current = {
+                let held = self.inner.held.lock().unwrap();
+                open_routes(&held).into_iter().any(|r| r.id == route.id)
+            };
+            if !current {
+                closed.push(route.id.clone());
+                continue;
+            }
+            let drop = NodeConnection {
+                id: rafka_mesh_entity::ConnectionId::mint(),
+                source: own.clone(),
+                destination: route.destination.clone(),
+                kind: route.kind,
+                state: ConnectionState::Disconnected,
+                carrier: route.carrier.clone(),
+                recovery: None,
+                reason: Some(reason.to_string()),
+                logged_at_ms: self.stamp(),
+            };
+            let span = tracing::info_span!(
+                "rdm.node_admin.connection.update.via-connections-delete",
+                source = %drop.source.name,
+                destination = %drop.destination.name,
+                kind = kind_name(drop.kind),
+                closed_entry = %route.id,
+                entry = %drop.id,
+                reason,
+                outcome = tracing::field::Empty,
+            );
+            match self.persist(&drop).await {
+                Ok(()) => {
+                    let _ = self.inner.held.lock().unwrap().apply(drop);
+                    span.record("outcome", "landed");
+                    closed.push(route.id.clone());
+                }
+                Err(e) => {
+                    span.record("outcome", format!("refused: {e}").as_str());
+                    refused.push((route.id.clone(), e));
+                }
+            }
+            span.in_scope(|| tracing::info!("the drop of a connection node.connections.delete cut"));
+        }
+        (closed, refused)
     }
 
     /// The raw log first, then the index; an error names the storage's own refusal.
