@@ -408,3 +408,23 @@ async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_
     let told_as_missing = spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt");
     assert!(!told_as_missing.iter().any(|(_, a)| a["node"] == STOPPED), "an unreadable receipt is not a missing one: {told_as_missing:?}");
 }
+
+/// CONTRACT (§6.9 Age, "Distinct facts get distinct arms and distinct spans"): the fabric's pointer
+/// names an accepted Build this admin's Build log cannot read. Whether a stopped node is still in the
+/// accepted topology cannot be decided, so the sweep skips it as an unreadable Build log
+/// (`rdm.node_admin.node.reject.via-unreadable-build-log`, naming the accepted Build), never as a
+/// delete under way, and submits nothing.
+#[tokio::test]
+async fn a_stopped_node_whose_accepted_build_cannot_be_read_is_skipped_as_an_unreadable_build_log() {
+    let (spans, _g) = capture("i143-3072-unreadable-accepted");
+    let t = view("mesh1.admin.1");
+    let elsewhere = MemoryBuildStateAdapter::new();
+    let accepted = AcceptedStore::seeded(&elsewhere, t.fabric.id.clone(), desired(&t), "mesh1.admin.1").await.unwrap();
+    let b0 = accepted.build_id().await.unwrap();
+    let cp = ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
+
+    assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
+    let unreadable = spans.spans("rdm.node_admin.node.reject.via-unreadable-build-log");
+    assert!(unreadable.iter().any(|(_, a)| a["node"] == STOPPED && a["reason"].contains(b0.0.as_str())), "{unreadable:?}");
+    assert!(spans.spans("rdm.node_admin.node.reject.via-delete-under-way").is_empty(), "an unreadable accepted Build is not a delete under way");
+}
