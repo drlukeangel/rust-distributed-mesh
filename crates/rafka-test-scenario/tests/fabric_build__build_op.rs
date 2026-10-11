@@ -96,11 +96,15 @@ impl Caller {
     }
 }
 
-/// Read a Build stream to its end; a failed step or a broken stream is a defect of the cell.
-async fn until_complete(stream: &mut BuildStream) {
+/// Read a Build stream to its end; a failed step or a broken stream is a defect of the cell. The
+/// frames read, `Complete` last.
+async fn until_complete(stream: &mut BuildStream) -> Vec<BuildFrame> {
+    let mut frames = Vec::new();
     while let Some(frame) = stream.next().await {
-        match frame.expect("the stream does not break") {
-            BuildFrame::Complete { .. } => return,
+        let frame = frame.expect("the stream does not break");
+        frames.push(frame.clone());
+        match frame {
+            BuildFrame::Complete { .. } => return frames,
             BuildFrame::Failed { operation, step, reason, .. } => panic!("the Build failed at {operation} {step}: {reason}"),
             _ => {}
         }
@@ -110,6 +114,12 @@ async fn until_complete(stream: &mut BuildStream) {
 
 /// Birth the fabric's shape through `build.create`: one call, awaited to its `Complete`.
 async fn born(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> BuildCarrier {
+    born_framed(estate, caller, shape).await.0
+}
+
+/// [`born`], with every frame the Builds that birthed the shape streamed.
+async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> (BuildCarrier, Vec<BuildFrame>) {
+    let mut frames = Vec::new();
     let carrier = caller.carrier().await;
     let desired = FabricDesired { fabric: FABRIC.into(), meshes: shape.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
     let builds = Builds::new(carrier.clone());
@@ -118,15 +128,15 @@ async fn born(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> B
         // is done, and the shape is accepted after it.
         Err(CallEnd::BuildInProgress { current }) => {
             let mut day_zero = carrier.resubmit(&current, 1).await.expect("the fabric-primary streams the Build in flight");
-            until_complete(&mut day_zero).await;
+            frames.extend(until_complete(&mut day_zero).await);
             builds.create(&BuildSpec::Fabric(desired)).await.expect("the fabric-primary accepts the shape once the Day-0 Build is done")
         }
         other => other.expect("the fabric-primary accepts the shape"),
     };
-    until_complete(&mut stream).await;
+    frames.extend(until_complete(&mut stream).await);
     estate.settled_shape(shape, Duration::from_secs(90)).await;
     caller.learn().await;
-    carrier
+    (carrier, frames)
 }
 
 /// Every frame of a workflow stream, to its end.
@@ -466,4 +476,82 @@ impl Caller {
     fn bases_except(&self, dead: &str) -> Vec<String> {
         self.bases.lock().unwrap().iter().filter(|(name, _)| name.as_str() != dead).map(|(_, base)| base.clone()).collect()
     }
+}
+
+/// The next `Blocked` frame of `stream`. A terminal frame or a broken stream before it is a defect of
+/// the cell; frames before it are returned beside it.
+async fn next_blocked(stream: &mut BuildStream) -> (Vec<BuildFrame>, (String, String)) {
+    let mut before = Vec::new();
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(90), stream.next()).await.expect("a frame within the bound").expect("the stream goes on").expect("the stream does not break");
+        match frame {
+            BuildFrame::Blocked { step, reason, .. } => return (before, (step, reason)),
+            BuildFrame::Complete { .. } | BuildFrame::Failed { .. } => panic!("the Build ended before the Blocked frame: {frame:?} after {before:?}"),
+            other => before.push(other),
+        }
+    }
+}
+
+/// How many attempts of `node`'s knob hook (`rafka_node_rpc_testkit::hydrate_probe::KnobHydrator`)
+/// ended blocked for `reason`.
+fn knob_attempts(knob: &std::path::Path, node: &str, reason: &str) -> usize {
+    std::fs::read_to_string(knob.join(format!("{node}.attempts"))).unwrap_or_default().lines().filter(|l| *l == format!("blocked {reason}")).count()
+}
+
+/// CONTRACT (node-start.md step 3; node-rpc-envelope.md frame table, Blocked "emitted on a new
+/// blocker or reason change, never on a timer"): a birth whose `hydrate_before_ready` is Blocked
+/// answers its executor's `ProbeNodeState` `NotReady` carrying the hook's blocker, and the Build
+/// stream carries `Blocked { WaitForNodeReady, reason }` once per reason. The hook here runs again
+/// every time its authority addresses it, so it is blocked again for the same reason many times;
+/// none of those reruns frames anything. A changed reason frames once more; when the hook passes the
+/// birth is Ready, the step completes and the Build is `Complete` with no further Blocked. The Builds
+/// that birthed the shape, whose births register no hook (plain Pending until Ready), frame no
+/// Blocked. What must NOT happen: a Blocked frame for a plain Pending birth, a repeat for an unchanged
+/// reason, or a Blocked frame after the hook passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes() {
+    let test = "a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes";
+    const SHAPE1: [(&str, u32, u32); 1] = [("mesh1", 2, 1)];
+    const BLOCKED: &str = "mesh1.rpc.2";
+    const A: &str = "the rows of orders are not yet published";
+    const B: &str = "the authority of orders is draining";
+    let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
+    let caller = Caller::of(&estate.admin).await;
+    let (carrier, shape_frames) = born_framed(&estate, &caller, &SHAPE1).await;
+    assert!(!shape_frames.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })), "births with no hook are plain Pending until Ready and frame no Blocked: {shape_frames:?}");
+
+    // The next birth's hook is blocked for A from its first attempt.
+    let knob = rafka_node_rpc_testkit::hydrate_knob_dir(&estate.root);
+    std::fs::create_dir_all(&knob).unwrap();
+    std::fs::write(knob.join(BLOCKED), A).unwrap();
+    let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
+    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(grown)).await.expect("the fabric-primary accepts the grown shape");
+    let (before_a, (step, reason)) = next_blocked(&mut stream).await;
+    assert_eq!(step, "WaitForNodeReady", "the blocked step: {reason}");
+    assert!(reason.contains(BLOCKED) && reason.contains(A) && reason.contains("authority-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
+    assert!(!before_a.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })));
+
+    // Reruns blocked for the same reason: the executor's probes address the birth, so its hook runs
+    // again on each; wait until it has been blocked for A three more times.
+    wait_for("three more attempts blocked for A", Duration::from_secs(60), || async { (knob_attempts(&knob, BLOCKED, A) >= 4).then_some(()) }).await;
+    std::fs::write(knob.join(BLOCKED), B).unwrap();
+    let (before_b, (step_b, reason_b)) = next_blocked(&mut stream).await;
+    assert_eq!(step_b, "WaitForNodeReady");
+    assert!(reason_b.contains(B) && !reason_b.contains(A), "the next Blocked frame is the changed reason, never A again: {reason_b}");
+    assert!(!before_b.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "the step is still in flight: {before_b:?}");
+
+    wait_for("an attempt blocked for B", Duration::from_secs(60), || async { (knob_attempts(&knob, BLOCKED, B) >= 2).then_some(()) }).await;
+    std::fs::write(knob.join(BLOCKED), "pass").unwrap();
+    let rest = until_complete(&mut stream).await;
+    assert!(!rest.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })), "nothing is framed Blocked once the hook passed: {rest:?}");
+    assert!(rest.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "WaitForNodeReady completed: {rest:?}");
+    let a_reruns = knob_attempts(&knob, BLOCKED, A);
+
+    estate.stop().await;
+    let spans = estate.spans();
+    // The flame: the blocked birth's probe answers, each naming its blocker.
+    let probes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == BLOCKED && s(&sp["attributes"]["state"]) == "blocked").collect();
+    assert!(probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(A)) && probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(B)), "the birth answered both blockers NotReady");
+    estate.artifact("blocked-probes", &json!({ "a_reruns": a_reruns, "blocked_probe_answers": probes.len() }));
+    estate.record_trace_url(probes[0]["trace_id"].as_str().unwrap_or(""));
 }

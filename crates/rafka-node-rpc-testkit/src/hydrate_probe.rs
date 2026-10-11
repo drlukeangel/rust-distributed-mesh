@@ -337,3 +337,39 @@ impl HydrateBeforeReady for TestHydrator {
         }
     }
 }
+
+/// A node's `hydrate_before_ready` read from a scenario's knob file
+/// ([`crate::hydrate_knob_dir`]`/<path.name>`): each attempt reads the file; `pass` (or no file)
+/// returns `Ok`, any other text is `Blocked` with that text as its reason, run again when the
+/// node's authority addresses it. A scenario changes the reason or lets the hook pass by rewriting
+/// the file. Testkit only; never a product binary.
+pub struct KnobHydrator {
+    file: std::path::PathBuf,
+}
+
+impl KnobHydrator {
+    /// The hook for the node `name` of the estate under `root`, when the scenario recorded a knob
+    /// for it; `None` otherwise (the node registers no hook).
+    pub fn for_node(root: &std::path::Path, name: &str) -> Option<Arc<Self>> {
+        let file = crate::hydrate_knob_dir(root).join(name);
+        file.exists().then(|| Arc::new(Self { file }))
+    }
+}
+
+#[async_trait::async_trait]
+impl HydrateBeforeReady for KnobHydrator {
+    async fn hydrate_before_ready(&self, _ctx: &HydrateCtx) -> HookOutcome {
+        let outcome = match std::fs::read_to_string(&self.file) {
+            Ok(text) if text.trim() != "pass" => HookOutcome::Blocked { reason: text.trim().to_string(), retry_on: RetryOn::AuthorityAddressed },
+            _ => HookOutcome::Ok,
+        };
+        // One line per attempt beside the knob (`<path.name>.attempts`): what the scenario waits on.
+        let line = match &outcome {
+            HookOutcome::Blocked { reason, .. } => format!("blocked {reason}\n"),
+            _ => "ok\n".to_string(),
+        };
+        let attempts = std::path::PathBuf::from(format!("{}.attempts", self.file.display()));
+        let _ = std::fs::OpenOptions::new().create(true).append(true).open(&attempts).and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+        outcome
+    }
+}

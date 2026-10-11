@@ -41,6 +41,14 @@ pub fn skew_os_clock_from_root(root: &std::path::Path, name: &str) -> Option<i64
     Some(ms)
 }
 
+/// The directory under an estate's data root where a scenario records a `hydrate_before_ready` knob
+/// for one node: while the file `<root>/hydrate-knob/<path.name>` exists when the node starts, the
+/// node registers [`hydrate_probe::KnobHydrator`], whose hook is Blocked with the file's text as its
+/// reason until the text is `pass`.
+pub fn hydrate_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("hydrate-knob")
+}
+
 /// The directory under an estate's data root where a scenario records a rafka-time knob for one
 /// node: the file `<root>/rafka-time-knob/<path.name>` holds `ahead_ms=<signed ms>` and/or
 /// `drift_ppm=<signed ppm>` lines.
