@@ -530,9 +530,20 @@ impl NodesStorage for FileNodesStorage {
         let rows = self.mesh(&row.name.mesh)?;
         let previous = rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?;
         let claimed = claim_against(previous.as_ref(), row);
-        if claimed == Ok(Claimed::Written) {
-            rows.rows.write(&key, ROW_FORMAT, row).await?;
-            rows.index_put(previous.as_ref(), row).await?;
+        match claimed {
+            Ok(Claimed::Written) => {
+                rows.rows.write(&key, ROW_FORMAT, row).await?;
+                rows.index_put(previous.as_ref(), row).await?;
+            }
+            // The node holds the key: its entry names it once the claim answers, also when the write
+            // that put the row ended before its entry was written (the row and its entry are two
+            // files), so a retried move never leaves the node's row unnamed.
+            Ok(Claimed::HeldByNode) => {
+                if rows.ids.read::<RowId>(row.node_id.as_str(), ROW_ID_FORMAT).await?.is_none_or(|e| e.name != row.name) {
+                    rows.index_put(None, row).await?;
+                }
+            }
+            Err(_) => {}
         }
         Ok(claimed)
     }
@@ -743,7 +754,9 @@ mod tests {
     /// key; a move (claim the new key, release the old) leaves it naming the new one; a release
     /// drops it; a recovery's new node claiming over a `Deleted` row of another node, or a blind put
     /// over another node's row, leaves that node with no entry. A node that never held a row has
-    /// none. What must NOT happen: an entry naming a key whose row another node holds.
+    /// none; a claim of a key the node already holds names it (a write that ended between the row
+    /// file and its entry). What must NOT happen: an entry naming a key whose row another node
+    /// holds, or a row its node holds that no entry names.
     #[tokio::test]
     async fn the_node_rows_id_index_names_exactly_the_row_each_node_holds() {
         let d = crate::record_store::tempdir("row-id-index");
@@ -773,6 +786,13 @@ mod tests {
             assert_eq!((n.node_row_name("mesh1", &new.node_id).await.unwrap(), n.node_row_name("mesh1", &over.node_id).await.unwrap()), (None, Some(over.name.clone())));
         }
         assert_eq!(keys(&root.nodes("mesh1").join("ids")).len(), 1, "on disk, one entry per node that holds a row");
+        // A write that ended between the row and its entry (two files): the node's claim of the key
+        // it holds names it, so the retried move that claims it again leaves no row unnamed.
+        let torn = row("mesh1.rpc.3");
+        std::fs::write(root.nodes("mesh1").join("rows").join("mesh1.rpc.3.json"), serde_json::to_vec(&serde_json::json!({"format": ROW_FORMAT, "record": torn})).unwrap()).unwrap();
+        assert_eq!(file.node_row_name("mesh1", &torn.node_id).await.unwrap(), None);
+        assert_eq!(file.claim_node_row(&torn).await.unwrap(), Ok(Claimed::HeldByNode));
+        assert_eq!(file.node_row_name("mesh1", &torn.node_id).await.unwrap(), Some(torn.name.clone()), "the claim of a key the node holds names it");
         let _ = std::fs::remove_dir_all(&d);
     }
 
