@@ -7,13 +7,20 @@
 //! the incumbent. `Applied` acknowledges a call; only the matched `FabricPrimaryTaken` confirms
 //! the transfer. Both calls are unary and not forwardable; only node-admins serve the family.
 //!
+//! A Build's executor N calls [`FabricPrimaryHandoverRequest::TakeSeats`] on the exact seat holder
+//! P it is about to drain, inside P's mesh ("TakeSeats: Build-driven seat transfer"): P commits one
+//! durable row holding every seat it transfers at each seat's next epoch and answers
+//! [`FabricPrimaryHandoverReply::SeatsCommitted`]; a seat epoch that is not P's is
+//! [`FabricPrimaryHandoverReply::RejectedStaleSeat`]. A seat is the existing
+//! [`rafka_mesh_entity::Seat`] (the mesh is the holder birth's).
+//!
 //! The doc's reply enum holds nine variants. The family sits on the framework's six outcomes, so
 //! `PeerUnresolved`, `Busy`, `Draining` and `Unauthorized` are appended after the doc's nine;
-//! positions 0..=8 are the doc's order.
+//! positions 0..=8 are the doc's order, and the seat transfer's two replies follow at 13 and 14.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rafka_mesh_entity::{CommittedSeat, IncarnationId, NodeId, Seat};
 use serde::{Deserialize, Serialize};
 
 /// The fabric-primary handover protocol.
@@ -30,7 +37,16 @@ pub struct HandoverBirth {
     pub incarnation: IncarnationId,
 }
 
-/// The two directed calls of a handover.
+/// A seat a [`FabricPrimaryHandoverRequest::TakeSeats`] moves, with the epoch the caller holds for it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SeatEpoch {
+    /// The seat.
+    pub seat: Seat,
+    /// The seat's current epoch as the caller holds it.
+    pub expected_epoch: u64,
+}
+
+/// The directed calls of a handover and of a Build-driven seat transfer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FabricPrimaryHandoverRequest {
     /// Incumbent to successor: take the fabric seat at `expected_epoch + 1`.
@@ -61,6 +77,25 @@ pub enum FabricPrimaryHandoverRequest {
         /// The handover's operation identity.
         operation: String,
     },
+    /// A Build's executor to the seat holder it is about to drain: commit every seat named to the
+    /// executor at its next epoch.
+    TakeSeats {
+        /// The fabric.
+        fabric: String,
+        /// The exact birth that holds the seats.
+        holder: HandoverBirth,
+        /// The executor of the SeatTransfer step: the admin the election seats once the holder's
+        /// birth is gone.
+        successor: HandoverBirth,
+        /// Every seat the holder holds, each with its current epoch.
+        seats: Vec<SeatEpoch>,
+        /// The Build whose attempt the executor won.
+        build_id: String,
+        /// The attempt the executor won.
+        attempt: u32,
+        /// The drain, stop, restart or replace operation the transfer precedes.
+        operation: String,
+    },
 }
 
 impl FabricPrimaryHandoverRequest {
@@ -69,6 +104,7 @@ impl FabricPrimaryHandoverRequest {
         match self {
             Self::TakeFabricPrimary { .. } => "take-fabric-primary",
             Self::FabricPrimaryTaken { .. } => "fabric-primary-taken",
+            Self::TakeSeats { .. } => "take-seats",
         }
     }
 }
@@ -134,6 +170,20 @@ pub enum FabricPrimaryHandoverReply {
         /// Why.
         reason: String,
     },
+    /// The seat holder committed the transfer: every seat it moved, at its committed epoch.
+    SeatsCommitted {
+        /// The committed seats.
+        seats: Vec<CommittedSeat>,
+    },
+    /// A seat's epoch is not the one the call named.
+    RejectedStaleSeat {
+        /// The seat.
+        seat: Seat,
+        /// The epoch the call named.
+        expected: u64,
+        /// The epoch the holder holds.
+        current: u64,
+    },
 }
 
 impl FabricPrimaryHandoverReply {
@@ -153,6 +203,8 @@ impl FabricPrimaryHandoverReply {
             Self::Busy { .. } => "busy",
             Self::Draining { .. } => "draining",
             Self::Unauthorized { .. } => "unauthorized",
+            Self::SeatsCommitted { .. } => "seats-committed",
+            Self::RejectedStaleSeat { .. } => "rejected-stale-seat",
         }
     }
 }
@@ -160,14 +212,16 @@ impl FabricPrimaryHandoverReply {
 impl NodeProtocol for FabricPrimaryHandover {
     const OP: u8 = 0x21;
     const NAME: &'static str = "fabric-primary-handover";
-    /// A fabric name, two exact births, two epochs and an operation identity.
+    /// A fabric name, two exact births, at most two seat epochs (or two epochs), a Build id and an
+    /// operation identity.
     const MAX_REQUEST_FRAME_BYTES: usize = 2048;
-    /// One reply: an enum tag and at most one reason string.
+    /// One reply: an enum tag and at most one reason string, or two committed seats (a seat, an
+    /// exact birth and an epoch each).
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// A handover is decided by the two exact births themselves; a carried call is decided by no one.
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 2;
-    const REPLY_VARIANTS: u32 = 13;
+    const REQUEST_VARIANTS: u32 = 3;
+    const REPLY_VARIANTS: u32 = 15;
 
     type Request = FabricPrimaryHandoverRequest;
     type Reply = FabricPrimaryHandoverReply;
@@ -175,8 +229,8 @@ impl NodeProtocol for FabricPrimaryHandover {
     fn classify_reply(reply: &FabricPrimaryHandoverReply) -> ReplyKind {
         use FabricPrimaryHandoverReply::*;
         match reply {
-            Applied | AlreadyApplied => ReplyKind::Success,
-            RejectedStaleEpoch { .. } | RejectedWrongBirth { .. } | RejectedNotAuthority | RejectedNotEligible { .. } | RejectedConflict { .. } => ReplyKind::ProtocolRefusal,
+            Applied | AlreadyApplied | SeatsCommitted { .. } => ReplyKind::Success,
+            RejectedStaleEpoch { .. } | RejectedWrongBirth { .. } | RejectedNotAuthority | RejectedNotEligible { .. } | RejectedConflict { .. } | RejectedStaleSeat { .. } => ReplyKind::ProtocolRefusal,
             NotReady { .. } => ReplyKind::NotReady,
             Malformed { kind } => ReplyKind::Malformed(*kind),
             PeerUnresolved { .. } => ReplyKind::PeerUnresolved,

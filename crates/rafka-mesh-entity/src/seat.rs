@@ -60,6 +60,17 @@ impl SeatHolder {
     }
 }
 
+/// One seat a Build-driven seat transfer committed (node-rpc-envelope.md, "TakeSeats: Build-driven
+/// seat transfer"): the seat and its committed holder, the exact birth at the seat's next epoch.
+/// Postcard is positional, so its bytes are the seat, the holder's birth and the epoch, in that order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CommittedSeat {
+    /// The seat that moved.
+    pub seat: Seat,
+    /// Its committed holder and the epoch the transfer committed.
+    pub holder: SeatHolder,
+}
+
 impl std::fmt::Display for SeatHolder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}@{} (epoch {})", self.mesh, self.node_id, self.incarnation.0, self.epoch)

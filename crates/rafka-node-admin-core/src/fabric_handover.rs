@@ -566,6 +566,7 @@ impl HandoverDoor {
         match req {
             Request::TakeFabricPrimary { fabric, incumbent, successor, expected_epoch, operation } => self.serve_take(peer, Payload { fabric, incumbent, successor, expected_epoch, operation }).await,
             Request::FabricPrimaryTaken { fabric, incumbent, successor, expected_epoch, committed_epoch, operation } => self.serve_taken(peer, Payload { fabric, incumbent, successor, expected_epoch, operation }, committed_epoch).await,
+            Request::TakeSeats { .. } => Reply::NotReady { reason: format!("{}: this build does not serve TakeSeats", self.me) },
         }
     }
 }
@@ -583,7 +584,8 @@ fn refusal_reason(r: &Reply) -> (&'static str, String) {
         Reply::Busy { reason } => ("busy", reason.clone()),
         Reply::Draining { reason } => ("draining", reason.clone()),
         Reply::Malformed { kind } => ("malformed", format!("{kind:?}")),
-        Reply::Applied | Reply::AlreadyApplied => ("applied", String::new()),
+        Reply::RejectedStaleSeat { seat, expected, current } => ("stale-seat", format!("{}: expected {expected}, current {current}", seat.name())),
+        Reply::Applied | Reply::AlreadyApplied | Reply::SeatsCommitted { .. } => ("applied", String::new()),
     }
 }
 
