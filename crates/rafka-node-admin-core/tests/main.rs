@@ -28,6 +28,7 @@ pub fn adopted_time() -> rafka_mesh_transport::clock::RafkaTime {
 mod admin_serves_forward;
 mod loopback;
 mod build_catch_up;
+mod build_admission;
 mod build_claim;
 mod build_drive;
 mod build_facts_read;

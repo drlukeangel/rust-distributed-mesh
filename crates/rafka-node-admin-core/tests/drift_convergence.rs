@@ -303,7 +303,7 @@ impl Estate {
         let me: PathName = self.fabric_primary().await.parse().ok()?;
         let t = self.view.read().await.clone();
         let mut started = HashSet::new();
-        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await
+        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await
     }
 
     /// The fabric-primary drives the accepted Build until no Build is active: the claim on its own
@@ -584,7 +584,7 @@ async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row()
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
-    let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
 }
 
@@ -608,7 +608,7 @@ async fn a_durable_runtime_row_of_a_runtime_that_runs_opens_no_attempt() {
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
-    let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(opened, None, "a silent member whose runtime runs is held, never replaced");
 }
 
@@ -622,11 +622,20 @@ mod one_attempt_number {
     use rafka_node_admin_core::http::ControlPlane;
     use tokio::sync::Notify;
 
-    /// The estate's Build log with one gate: an `open_attempt` of `reason` stops at the log's door
-    /// (after its caller computed the number) until the cell lets it write.
+    /// The write a [`Gate`] stops at the log's door.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Holds {
+        /// An `open_attempt` of this reason, after its caller computed the number.
+        Attempt(AttemptReason),
+        /// The first `publish_accepted`: a submitted change past its check, inside its durable write.
+        Acceptance,
+    }
+
+    /// The estate's Build log with one gate: the write it `holds` stops at the log's door until
+    /// the cell lets it write.
     struct Gate {
         inner: Arc<MemoryBuildStateAdapter>,
-        holds: AttemptReason,
+        holds: Holds,
         arrived: Notify,
         release: Notify,
     }
@@ -634,10 +643,14 @@ mod one_attempt_number {
     #[async_trait::async_trait]
     impl BuildStateAdapter for Gate {
         async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
+            if self.holds == Holds::Acceptance {
+                self.arrived.notify_one();
+                self.release.notified().await;
+            }
             self.inner.publish_accepted(a).await
         }
         async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
-            if o.reason == self.holds {
+            if self.holds == Holds::Attempt(o.reason) {
                 self.arrived.notify_one();
                 self.release.notified().await;
             }
@@ -669,7 +682,7 @@ mod one_attempt_number {
         }
     }
 
-    fn gate(e: &Estate, holds: AttemptReason) -> Arc<Gate> {
+    fn gate(e: &Estate, holds: Holds) -> Arc<Gate> {
         Arc::new(Gate { inner: e.builds.clone(), holds, arrived: Notify::new(), release: Notify::new() })
     }
 
@@ -694,11 +707,18 @@ mod one_attempt_number {
         e.builds.facts().await.unwrap().into_iter().filter_map(|f| match f { BuildFact::Opened(o) if o.attempt == attempt => Some(o), _ => None }).collect()
     }
 
+    /// The proven-drift pass over `builds`, under an admission of its own: the number race of two
+    /// authorities, which only the log's insert-and-fail decides.
     async fn drift_pass(e: &Estate, builds: &dyn BuildStateAdapter) -> Option<(BuildId, u32)> {
+        drift_pass_under(e, builds, &tokio::sync::Mutex::new(())).await
+    }
+
+    /// The proven-drift pass over `builds`, under `admission`.
+    async fn drift_pass_under(e: &Estate, builds: &dyn BuildStateAdapter, admission: &tokio::sync::Mutex<()>) -> Option<(BuildId, u32)> {
         let me: PathName = e.fabric_primary().await.parse().unwrap();
         let t = e.view.read().await.clone();
         let mut started = HashSet::new();
-        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &e.book, &e.provider, builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await
+        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &e.book, &e.provider, builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await
     }
 
     /// CONTRACT: the proven-drift pass has read the settled Build and computed attempt k+1 for a lost
@@ -710,7 +730,7 @@ mod one_attempt_number {
     async fn a_drift_attempt_that_loses_its_number_to_a_requested_restart_opens_nothing() {
         let e = estate().await;
         let k = lose_a_node(&e).await;
-        let g = gate(&e, AttemptReason::ProvenDrift);
+        let g = gate(&e, Holds::Attempt(AttemptReason::ProvenDrift));
         let cp = door(&e, e.builds.clone()).await;
         let (drift, rest) = tokio::join!(drift_pass(&e, &*g), async {
             g.arrived.notified().await;
@@ -734,7 +754,7 @@ mod one_attempt_number {
     async fn a_requested_restart_that_loses_its_number_to_a_drift_attempt_is_refused_by_name() {
         let e = estate().await;
         let k = lose_a_node(&e).await;
-        let g = gate(&e, AttemptReason::Restart);
+        let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
         let cp = door(&e, g.clone()).await;
         let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None), async {
             g.arrived.notified().await;
@@ -752,6 +772,154 @@ mod one_attempt_number {
         let body: serde_json::Value = serde_json::from_slice(&http_body_util::BodyExt::collect(response.into_body()).await.unwrap().to_bytes()).unwrap();
         assert_eq!(body["error"], "attempt-taken", "{body}");
         assert!(body["detail"].as_str().unwrap().contains(&format!("{}", k + 1)), "the refusal names the attempt: {body}");
+    }
+
+    /// The cell's span directory: the gate's, else this cell's own under the workspace target.
+    fn evidence_dir(cell: &str) -> std::path::PathBuf {
+        match std::env::var("I143_ACCEPTANCE_DIR") {
+            Ok(d) => std::path::PathBuf::from(d),
+            Err(_) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/3061/unit").join(cell),
+        }
+    }
+
+    /// Every span this process emitted, from the evidence exporter's JSONL files in `dir`.
+    fn collect_spans(dir: &std::path::Path) -> Vec<serde_json::Value> {
+        let mut spans = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".spans.jsonl")) {
+                spans.extend(std::fs::read_to_string(&p).unwrap().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
+            }
+        }
+        spans
+    }
+
+    /// CONTRACT: the proven-drift pass has read the accepted Build settled and computed attempt k+1
+    /// for a lost node while a submitted topology change, past the same check, is inside its durable
+    /// write. The submitted change is admitted as the next Build; the drift pass opens nothing on
+    /// the Build the pointer no longer names, writes no Opened fact, and returns no attempt to
+    /// execute. One Build is active: the submitted one. Must NOT happen: an attempt of a superseded
+    /// Build opened beside the new Build, two plans of two topologies in flight. Canon:
+    /// ops-naming-proposal.md "Two topology changes ... never run together: one Build is in flight".
+    #[tokio::test]
+    async fn a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing() {
+        if crate::own_process::delegated(module_path!(), "a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing") {
+            return;
+        }
+        let dir = evidence_dir("a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s35");
+        let root = tracing::info_span!("rdm.test.build.admission.drift-versus-submit");
+        use tracing::Instrument as _;
+        let e = estate().await;
+        let k = lose_a_node(&e).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let g = gate(&e, Holds::Acceptance);
+        let cp = door(&e, g.clone()).await;
+        let submit = tokio::spawn({
+            let cp = cp.clone();
+            async move { cp.submit("POST /api/topology", rafka_node_admin_core::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rafka_mesh_entity::NodeKind::RpcNode }).await }.instrument(root.clone())
+        });
+        g.arrived.notified().await;
+        // The drift pass of the same fabric-primary: the admission its door holds.
+        let mut pass = Box::pin(drift_pass_under(&e, &*e.builds, &cp.admission).instrument(root.clone()));
+        // One poll of the drift pass while the submitted change is held inside its write.
+        let early = tokio::select! {
+            biased;
+            r = &mut pass => Some(r),
+            _ = std::future::ready(()) => None,
+        };
+        let waited = early.is_none();
+        g.release.notify_one();
+        let admitted = submit.await.unwrap().expect("the submitted change is admitted").build_id;
+        let drift = match early {
+            Some(r) => r,
+            None => (&mut pass).await,
+        };
+        drop(pass);
+        assert_eq!(drift, None, "the drift pass opened an attempt of {} beside the admitted Build {admitted}", before.build_id);
+        assert!(waited, "the drift pass waited at the admission the submitted change held");
+        let opened: Vec<AttemptOpened> = opened_facts(&e, k + 1).await.into_iter().filter(|o| o.build_id == before.build_id).collect();
+        assert!(opened.is_empty(), "no attempt of the superseded Build is open: {opened:?}");
+        let active = e.builds.list_active().await.unwrap();
+        assert_eq!(active.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>(), vec![admitted.clone()], "one Build is active: the submitted one");
+        drop(root);
+        drop(telemetry);
+        let spans = collect_spans(&dir);
+        let refused: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.reject.via-build-in-progress").collect();
+        assert_eq!(refused.len(), 1, "the drift pass is refused once, by name: {refused:?}");
+        assert!(!spans.iter().any(|s| s["name"] == "rdm.node_admin.build.update.via-proven-drift"), "a refused drift pass opened nothing and names no attempt update");
+        let created = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.create.via-rest").expect("the submitted change's span");
+        assert_eq!(refused[0]["trace_id"], created["trace_id"], "the refusal and the admitted Build are one story");
+        let a = &refused[0]["attributes"];
+        assert_eq!(a["route"], "proven-drift", "{a}");
+        assert_eq!(a["build_id"], before.build_id.0.as_str(), "{a}");
+        assert!(a["accepted_now"].as_str().unwrap_or_default().contains(admitted.0.as_str()), "the refusal names the Build admitted first: {a}");
+        println!("trace_id={} admitted={admitted} refused_drift_on={}", refused[0]["trace_id"].as_str().unwrap_or_default(), before.build_id);
+    }
+
+    /// CONTRACT: the proven-drift pass for a peer mesh whose rebirth the ladder decided (its two
+    /// node-admins exited, the mesh unheard) is refused at the admission, because a requested restart
+    /// of the same Build was admitted first. A refused pass opened nothing, so it spends nothing:
+    /// once the restart's attempt completes, the next pass releases the mesh's first recovering
+    /// node-admin as attempt k+2. Must NOT happen: the refused pass records the mesh's one release as
+    /// spent, and the decided mesh's node-admins stay held for as long as the Build stays accepted.
+    #[tokio::test]
+    async fn a_drift_pass_refused_at_the_admission_spends_no_recovery_release() {
+        use rafka_node_admin_core::investigate::PeerMesh;
+        let e = estate().await;
+        let fp = e.fabric_primary().await;
+        let own = fp.split('.').next().unwrap().to_string();
+        let peer_mesh = SHAPE.iter().map(|(m, _, _)| (*m).to_string()).find(|m| *m != own).expect("a peer mesh");
+        let admins = [format!("{peer_mesh}.admin.1"), format!("{peer_mesh}.admin.2")];
+        for p in &admins {
+            let id = e.node_id(p).await;
+            e.world.exit_with(&id, Some(1));
+        }
+        e.unheard(&admins.iter().map(String::as_str).collect::<Vec<_>>()).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
+        let cp = door(&e, g.clone()).await;
+        let me: PathName = fp.parse().unwrap();
+        let decided = |m: &str| (m == peer_mesh).then_some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true });
+        let mut started = HashSet::new();
+        let mut held = HashSet::new();
+        let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
+        let time = crate::adopted_time();
+        let hold = |m: &str| decided(m).and_then(|p| p.unheard_ms);
+        let defers = |_: &str| false;
+        let rebirth = |m: &str| decided(m).is_some_and(|p| p.rebirth_decided);
+        let restart = tokio::spawn({
+            let (cp, path): (_, PathName) = (cp.clone(), format!("{own}.rpc.1").parse().unwrap());
+            async move { cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, path, rafka_node_admin_core::http::ActionKind::Restart, None).await }
+        });
+        g.arrived.notified().await;
+        let t = e.view.read().await.clone();
+        let refused = {
+            let mut pass = Box::pin(rafka_node_admin_core::admin::reconcile_drift(&time, &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &rebirth, &|_, _| {}));
+            // One poll while the restart holds the admission inside its write.
+            let early = tokio::select! {
+                biased;
+                r = &mut pass => Some(r),
+                _ = std::future::ready(()) => None,
+            };
+            assert!(early.is_none(), "the drift pass waits at the admission the restart holds: {early:?}");
+            g.release.notify_one();
+            let r = restart.await.unwrap().expect("the restart was admitted first");
+            assert_eq!(r.attempt, before.attempt + 1);
+            pass.await
+        };
+        assert_eq!(refused, None, "the restart holds attempt k+1: the drift pass opened nothing");
+        e.converge().await;
+        let settled = e.accepted.current(&*e.builds).await.unwrap();
+        assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the restart's attempt completed on the same Build");
+        let t = e.view.read().await.clone();
+        let opened = rafka_node_admin_core::admin::reconcile_drift(&time, &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &rebirth, &|_, _| {}).await;
+        assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
+        let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Replace") };
+        assert_eq!(path.to_string(), admins[0], "the first admin in path order");
     }
 }
 
@@ -773,10 +941,10 @@ async fn a_decided_peer_mesh_held_ready_from_topology_is_proven_and_repaired() {
     assert!(t.cohort(lost, NodeKind::NodeAdmin).all(|a| a.status.is_live()), "the view still holds the dead admins ready");
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
-    let undecided = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
+    let undecided = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(undecided, None, "nothing names the mesh's admins before the ladder decides");
     let seen = std::sync::Mutex::new(Vec::new());
-    let decided = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|n, i| seen.lock().unwrap().push((n.clone(), i.clone()))).await;
+    let decided = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|n, i| seen.lock().unwrap().push((n.clone(), i.clone()))).await;
     assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the decided mesh's exited admins open the next attempt");
     assert_eq!(seen.lock().unwrap().len(), 2, "both proven exits are handed to the view, so neither dead admin holds the mesh's seat");
 }
@@ -805,7 +973,7 @@ async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
-    let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(opened, None, "a proven departure is held: its runtime row is not drift");
 }
 
@@ -829,7 +997,7 @@ mod unheard_mesh_hold {
     async fn pass(e: &Estate, started: &mut HashSet<(BuildId, u32, Vec<String>)>, held: &mut Held, peer: &(dyn Fn(&str) -> Option<PeerMesh> + Sync)) -> Option<(BuildId, u32)> {
         let me: PathName = e.fabric_primary().await.parse().expect("a fabric-primary");
         let t = e.view.read().await.clone();
-        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|_, _| {}).await
+        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|_, _| {}).await
     }
 
     const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), rebirth_decided: false });
