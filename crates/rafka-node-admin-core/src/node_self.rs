@@ -3,9 +3,13 @@
 //! over its own surface: an rpc node, a role node and a node-admin differ only in how they refuse
 //! new work, how they publish and how they leave and rejoin the mesh (their [`Session`]).
 //!
-//! - `DrainNode`: answer `Applied` (or `AlreadyApplied` for the same operation), refuse new work,
-//!   and when the eligible in-flight work reaches zero publish `node-drained` on the node's own
-//!   mesh channel and call `NodeDrained` at the commanding admin. The process keeps running.
+//! - `DrainNode`: answer `Applied`, refuse new work, and when the eligible in-flight work reaches
+//!   zero publish `node-drained` on the node's own mesh channel and call `NodeDrained` at the
+//!   commanding admin. The process keeps running. Admission is keyed on the natural key
+//!   `(node_id, incarnation, Draining)`, never the attempt (node-rpc-envelope.md, "Status"): a
+//!   `DrainNode` of any attempt or commander for a birth already draining, or drained, in this cycle
+//!   answers `AlreadyApplied` and runs no drain of its own; its commander is owed `node-drained`
+//!   naming its own operation, when the drain reaches zero or at once when it already has.
 //! - `StopNode`: drain (`Draining`; the receipt is `Established` or, at the bound, `Deadline`),
 //!   hard-cut the mesh connections (gossip neighbours, pooled and accepted peer connections; never
 //!   the endpoint and never the commander's connection the call rides), enter `Leaving`, and answer
@@ -22,7 +26,6 @@ use rafka_mesh_entity::{LifecycleOp, MemberStatus, MeshDigest};
 use rafka_mesh_transport::membership::{Frame, Membership};
 use rafka_node_rpc::{NodeRpcClient, NodeRpcServer, NodeTarget};
 use rafka_node_rpc_contract::status::{DrainReceipt, NodeState, Status, StatusReply, StatusRequest};
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -118,6 +121,46 @@ enum Cycle {
     Parked(DrainReceipt),
 }
 
+/// This birth's drain in its current cycle (live since its birth or its last start). Its natural
+/// key is `(node_id, incarnation, Draining)` (node-rpc-envelope.md, "Status"): one drain per cycle,
+/// whichever attempt or commander asks for it.
+enum Drain {
+    /// Under way (a `DrainNode`'s drain, or a stop's): every commander that asked, with its own
+    /// operation, is owed `node-drained` when the eligible in-flight work reaches zero.
+    Running(Vec<Owed>),
+    /// The eligible in-flight work reached zero: a commander that asks now is owed `node-drained` at once.
+    Drained,
+}
+
+/// A commander owed `node-drained` by this cycle's drain.
+struct Owed {
+    /// The admin whose `DrainNode` asked.
+    commander: NodeId,
+    /// Its operation: the completion names its own Build, attempt and operation.
+    op: LifecycleOp,
+    /// The serve span of its `DrainNode`: the completion call continues that command's trace,
+    /// whichever drain (the one it started, one it joined, or a stop's) reached zero.
+    trace: tracing::Span,
+}
+
+impl Owed {
+    /// The completion call this commander is owed, in its own command's trace.
+    async fn complete(self, me: &NodeSelf) {
+        use tracing::Instrument;
+        me.complete(&self.commander, &self.op).instrument(self.trace).await
+    }
+}
+
+/// How a `DrainNode` was admitted.
+enum DrainAdmission {
+    /// The first of this cycle: its drain runs.
+    Start,
+    /// A drain is under way: this commander is owed its completion when it ends.
+    Joined,
+    /// The birth is drained: this commander is owed its completion now.
+    Drained,
+}
+
 /// The surface a node kind gives the commands.
 pub struct NodeSelf {
     /// This birth's logical node.
@@ -146,7 +189,8 @@ pub struct NodeSelf {
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
     /// them onto the backbone.
     pub backbone: Option<rafka_mesh_transport::membership::Backbone>,
-    seen: Mutex<HashSet<String>>,
+    /// This birth's drain in its current cycle; `None` until a drain or a stop is admitted.
+    drain: Mutex<Option<Drain>>,
     /// Where this birth stands between a stop and a start.
     cycle: Mutex<Cycle>,
     /// How this process leaves and rejoins its mesh; filled once the process holds the parts.
@@ -171,7 +215,7 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, retire: None, backbone: None, seen: Mutex::new(HashSet::new()), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, retire: None, backbone: None, drain: Mutex::new(None), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -329,20 +373,54 @@ impl NodeSelf {
             StatusRequest::StopNode { .. } => Some(self.stop(commander.clone(), spare, op, parent).await),
             StatusRequest::StartNode { .. } => Some(self.start(commander.clone(), spare, op, parent).await),
             _ => {
-                let key = format!("{build_id}/{attempt}/{operation}");
-                let current = (self.status)();
-                if !self.seen.lock().unwrap().insert(key.clone()) {
-                    return Some(StatusReply::AlreadyApplied);
-                }
+                use tracing::Instrument;
                 // Forward only: a node already leaving is not drained.
-                if current == MemberStatus::Leaving {
-                    self.seen.lock().unwrap().remove(&key);
+                if (self.status)() == MemberStatus::Leaving {
                     return Some(StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
                 }
                 let (me, commander) = (self.clone(), commander.clone());
-                tokio::spawn(async move { me.drain(commander, op, parent).await });
-                Some(StatusReply::Applied)
+                match self.admit_drain(&commander, &op, &parent) {
+                    DrainAdmission::Start => {
+                        tokio::spawn(async move { me.drain(commander, op, parent).await });
+                        Some(StatusReply::Applied)
+                    }
+                    DrainAdmission::Joined => Some(StatusReply::AlreadyApplied),
+                    DrainAdmission::Drained => {
+                        tokio::spawn(async move { me.complete(&commander, &op).await }.instrument(parent));
+                        Some(StatusReply::AlreadyApplied)
+                    }
+                }
             }
+        }
+    }
+
+    /// Admit `commander`'s `DrainNode` for `op` on the natural key `(node_id, incarnation,
+    /// Draining)` of this cycle (the caller checked the birth and that it is not leaving): the first
+    /// starts the drain; any later one, of any attempt or commander, is owed the same drain's
+    /// completion under its own operation. An identical repeat while the drain runs is owed it once.
+    fn admit_drain(&self, commander: &NodeId, op: &LifecycleOp, serve: &tracing::Span) -> DrainAdmission {
+        let mut drain = self.drain.lock().unwrap();
+        match &mut *drain {
+            None => {
+                *drain = Some(Drain::Running(vec![Owed { commander: commander.clone(), op: op.clone(), trace: serve.clone() }]));
+                DrainAdmission::Start
+            }
+            Some(Drain::Running(owed)) => {
+                if !owed.iter().any(|o| &o.commander == commander && o.op.build_id == op.build_id && o.op.attempt == op.attempt && o.op.operation == op.operation) {
+                    owed.push(Owed { commander: commander.clone(), op: op.clone(), trace: serve.clone() });
+                }
+                DrainAdmission::Joined
+            }
+            Some(Drain::Drained) => DrainAdmission::Drained,
+        }
+    }
+
+    /// The drain of this cycle reached zero: it is drained, and the commanders it owes
+    /// `node-drained` are returned, each once (empty when another drain of the birth took them).
+    fn drained(&self) -> Vec<Owed> {
+        match self.drain.lock().unwrap().replace(Drain::Drained) {
+            Some(Drain::Running(owed)) => owed,
+            _ => Vec::new(),
         }
     }
 
@@ -385,7 +463,9 @@ impl NodeSelf {
                 d.in_flight = Some(0);
                 let _ = self.membership.publish(&d).await;
                 tracing::Span::current().record("in_flight_at_zero", true);
-                self.complete(&commander, &op).await;
+                for owed in self.drained() {
+                    owed.complete(&self).await;
+                }
             };
             tokio::join!(declared, completion);
         }
@@ -411,6 +491,12 @@ impl NodeSelf {
                 Cycle::Live => {
                     let (tx, rx) = tokio::sync::watch::channel(None);
                     *cycle = Cycle::Stopping(rx);
+                    // The stop drains the birth: a DrainNode that reaches it meanwhile is this
+                    // cycle's drain and joins it, never a drain of its own.
+                    let mut drain = self.drain.lock().unwrap();
+                    if drain.is_none() {
+                        *drain = Some(Drain::Running(Vec::new()));
+                    }
                     Next::Run(tx)
                 }
             }
@@ -449,6 +535,14 @@ impl NodeSelf {
             .drain_for_stop()
             .instrument(tracing::info_span!("rdm.node_admin.node.drain.via-stop", node = %self.held_name(), operation = %op.operation, receipt = tracing::field::Empty))
             .await;
+        // An established drain is this cycle's drain reaching zero: every commander whose
+        // DrainNode joined it gets node-drained now, while the connections are whole. A deadline is
+        // not drained, and owes none.
+        if matches!(receipt, DrainReceipt::Established { .. }) {
+            for owed in self.drained() {
+                owed.complete(self).await;
+            }
+        }
         // 2. Leaving is declared to the authority while this node can still reach it, then no more is
         // said: the node gossips nothing for its stop.
         if let Some(declare) = &self.declare {
@@ -531,7 +625,11 @@ impl NodeSelf {
             self.server.resume();
             match session.rejoin(retire, &commander).await {
                 Ok(()) => {
-                    *self.cycle.lock().unwrap() = Cycle::Live;
+                    // A new cycle: its next drain is a new drain.
+                    let mut cycle = self.cycle.lock().unwrap();
+                    *cycle = Cycle::Live;
+                    *self.drain.lock().unwrap() = None;
+                    drop(cycle);
                     parking().unpark();
                     StatusReply::Started
                 }

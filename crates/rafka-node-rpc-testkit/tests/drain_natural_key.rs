@@ -191,7 +191,7 @@ fn a_drain_from_a_later_attempt_joins_the_drain_under_way_and_each_commander_get
         assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 1, "one drain task for the birth's one drain, whichever attempts asked");
         let accepted: Vec<_> = spans_named(&spans, "rdm.node_admin.status.update.via-completion-accepted").into_iter().filter(|f| f.get("op").map(String::as_str) == Some("node-drained")).collect();
         for attempt in ["1", "2", "3"] {
-            assert!(accepted.iter().any(|f| f.get("attempt").map(String::as_str) == Some(attempt) && f.get("outcome").map(String::as_str) == Some("Applied")), "the commander accepted attempt {attempt}'s node-drained as its first: {accepted:?}");
+            assert!(accepted.iter().any(|f| f.get("attempt").map(String::as_str) == Some(attempt) && f.get("outcome").map(String::as_str) == Some("applied")), "the commander accepted attempt {attempt}'s node-drained as its first: {accepted:?}");
         }
 
         // StopNode is a different state: admitted, the drain established with nothing in flight.
