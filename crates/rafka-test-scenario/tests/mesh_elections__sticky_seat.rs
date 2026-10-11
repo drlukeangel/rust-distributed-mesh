@@ -313,6 +313,17 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
         .chain(named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").into_iter().filter(|sp| attr(sp, "winner_path").is_empty() && attr(sp, "previous_node_id") != "" && (replaced_at..ready_at).contains(&at_ns(sp))))
         .collect();
     assert!(vacant.is_empty(), "a seat was vacant during the hand-over: {vacant:#?}");
+    // P was the fabric-primary driving the Build: its drive ends at its seat row (seat-lost), a
+    // stream attached there ends with SeatMoved naming N, and N resumes the SAME attempt: no attempt
+    // after the transfer's is claimed.
+    let transfer_attempt = num(committed[0], "attempt").unwrap();
+    let p_drive: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
+    assert!(p_drive.iter().any(|sp| attr(sp, "outcome") == "seat-lost"), "P's drive ends at its seat row: {p_drive:#?}");
+    for sp in named(&spans, "rdm.node_admin.build.update.via-seat-moved").into_iter().filter(|sp| attr(sp, "build_id") == build) {
+        assert_eq!(attr(sp, "to"), n_name, "SeatMoved names N: {sp:#?}");
+    }
+    let later_claims: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "won" && num(sp, "attempt").is_some_and(|a| a > transfer_attempt)).collect();
+    assert!(later_claims.is_empty(), "N resumed the same attempt; no later attempt was claimed: {later_claims:#?}");
     // The Build facts were handed on with the fence.
     assert!(fence.iter().any(|sp| sp["attributes"]["facts"].as_str().and_then(|f| f.parse::<u64>().ok()).is_some()), "the fence span names the facts handed on: {fence:#?}");
     // No claim decided by P after its fence.
