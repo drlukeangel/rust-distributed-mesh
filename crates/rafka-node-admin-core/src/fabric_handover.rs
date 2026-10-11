@@ -664,7 +664,7 @@ impl HandoverDoor {
         // this admin does is answered, so no dispatch of the old seat follows the transfer. The fence
         // names the committed successor's path.name, resolved by its node id (it is a member of this
         // view whether or not the view's seat flags have moved yet).
-        let successor = self.topology.read().await.members().find(|n| n.node_id == payload.successor.node_id).map(|n| n.name.to_string());
+        let successor = self.topology.read().await.own(&payload.successor.node_id).map(|n| n.name.to_string());
         (self.fence_builds)(format!("the seat is now {} {}", payload.successor.mesh, payload.successor.node_id), successor).await;
         (self.project_view)().await;
         if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {

@@ -3079,7 +3079,7 @@ impl Running {
     async fn leave_with(self, parked: bool) {
         // A leaving holder yields before it says anything: its Build log decides nothing after
         // this, and the committed facts are with the neighbours before the new holder acts.
-        self.builds.yield_seat("leaving").await;
+        self.builds.yield_seat("leaving", None).await;
         self.executor.abort();
         self.hierarchy.abort();
         self.publisher.abort();

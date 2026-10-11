@@ -202,13 +202,13 @@ pub struct Authority {
     set: tokio::sync::watch::Sender<bool>,
 }
 
-/// The sticky fence of a Build log: why it was set, and the admin a committed seat transfer named as
-/// the holder now (none when the seat was yielded without a named successor: leaving, drain, stop).
+/// The sticky fence of a Build log: why it was set, and the admin the moved seat record names as the
+/// holder now (none when a leaving holder yielded before any record names a successor).
 #[derive(Debug, Clone)]
 pub struct SeatFence {
     /// Why the fence was set.
     pub by: String,
-    /// The admin (path.name) the committed transfer moved the seat to.
+    /// The admin (path.name) the seat moved to.
     pub to: Option<String>,
 }
 
@@ -424,8 +424,8 @@ impl FabricBuildStateAdapter {
     }
 
     /// The committed seat transfer fenced this admin's Build log: set the sticky fence naming the
-    /// admin the seat moved to, nothing more. The yield that follows the seat record (`yield_seat`)
-    /// hands the committed facts on.
+    /// admin the seat moved to, nothing more. The yield on the moved seat record (`yield_seat`, from
+    /// seat_watch) names the same admin and hands the committed facts on.
     pub async fn fence_seat(&self, by: &str, to: Option<String>) -> bool {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence-at-handover", node = %self.authority.node, by, to = to.as_deref().unwrap_or("none"), fenced = tracing::field::Empty);
         async {
@@ -438,14 +438,16 @@ impl FabricBuildStateAdapter {
     }
 
     /// The fabric-primary seat was yielded: set the sticky fence under the gate's lock (so a
-    /// decision in flight has committed durably), then hand every active committed fact to the
-    /// neighbours before the new holder acts. Returns how many facts were handed on. A send that
-    /// fails is named (`via-broadcast-refused`, fact `hand-over`) and fails nothing: the fence is
-    /// local and committed, and the new holder's catch-up and `FetchBuildFacts` carry the facts.
-    pub async fn yield_seat(&self, by: &str) -> usize {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence", node = %self.authority.node, by, facts = tracing::field::Empty, fenced = tracing::field::Empty);
+    /// decision in flight has committed durably), naming `to`, the admin the seat record names now
+    /// (none for a leaving holder, whose seat names no successor yet), then hand every active
+    /// committed fact to the neighbours before the new holder acts. Returns how many facts were
+    /// handed on. A send that fails is named (`via-broadcast-refused`, fact `hand-over`) and fails
+    /// nothing: the fence is local and committed, and the new holder's catch-up and
+    /// `FetchBuildFacts` carry the facts.
+    pub async fn yield_seat(&self, by: &str, to: Option<String>) -> usize {
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence", node = %self.authority.node, by, to = to.as_deref().unwrap_or("none"), facts = tracing::field::Empty, fenced = tracing::field::Empty);
         async {
-            let fenced = self.authority.fence(by, None).await;
+            let fenced = self.authority.fence(by, to).await;
             tracing::Span::current().record("fenced", fenced);
             let facts = active_facts(&*self.local, None).await;
             let n = facts.len();
