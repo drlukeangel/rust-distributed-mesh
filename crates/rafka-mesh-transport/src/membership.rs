@@ -5805,4 +5805,35 @@ mod tests {
         assert_eq!((refused[1]["frame"].as_str(), refused[1]["operation"].as_str()), ("node-deleted", "retire-node:mesh1.admin.1"));
         assert!(refused.iter().all(|f| f["node_id"] == id.to_string() && f["incarnation_id"] == inc.0));
     }
+
+    /// CONTRACT (R-NS1 change 3): a departure refused by the departed fence is refused by name once.
+    /// Its publisher carries it in every aggregate for the retention (it never held the departure this
+    /// book holds), so each later copy of the same refused departure is a copy of a refusal already
+    /// made: refused again, opening no second span. Must NOT happen: one refusal span per aggregate
+    /// copy (canonical_ids: 44 refusals of one replace-node departure at one admin).
+    #[test]
+    fn a_departure_refused_by_the_departed_fence_is_refused_by_name_once_and_its_copies_silently() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let mesh_id = MeshId::mint();
+        let mut d = digest(&id, &inc, None, MemberStatus::Leaving, 100);
+        d.node.name = "mesh2.admin.2".parse().unwrap();
+        d.mesh_id = Some(mesh_id.clone());
+        assert!(book.record(d));
+        assert_eq!(book.mesh_left(&mesh_id, Some("mesh2"), "b1", 1, 1).departed, 1);
+        let replaced = LifecycleOp { build_id: "b2".into(), attempt: 2, ..op_at("mesh2.admin.2", &id, &inc, "replace-node:mesh2.admin.2") };
+        for copy in 0..3 {
+            assert!(!book.depart(replaced.clone()), "copy {copy} of the refused departure departs nothing again");
+        }
+        let refused = spans.named("rdm.mesh.membership.reject.via-departed-birth");
+        assert_eq!(refused.len(), 1, "one refusal by name, its copies silent: {refused:?}");
+        assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-deleted", "replace-node:mesh2.admin.2", "b2"));
+        // Another departure of the same birth is a fact of its own: refused by name once.
+        let retired = op_at("mesh2.admin.2", &id, &inc, "retire-node:mesh2.admin.2");
+        assert!(!book.depart(retired.clone()) && !book.depart(retired));
+        assert_eq!(spans.named("rdm.mesh.membership.reject.via-departed-birth").len(), 2, "each refused departure once");
+    }
 }
