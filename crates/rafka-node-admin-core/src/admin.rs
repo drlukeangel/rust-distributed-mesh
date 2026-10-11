@@ -462,11 +462,17 @@ impl Records {
                 tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node = %old.name, node_id = %old.node_id, status = ?old.status)
                     .in_scope(|| tracing::info!("the view names a replaced predecessor under its .old path"));
             }
+            // The births the fabric-primary's view holds for the first time: their rows are claimed
+            // from this held record once the view is installed (`crate::node_rows`).
+            let arrivals = self.rows.get().map(|rows| rows.arrivals(&held, &t)).unwrap_or_default();
             *held = t.clone();
             drop(held);
             self.view_tick.send_modify(|v| *v += 1);
             self.wake.poke();
             self.view_changed.notify_one();
+            if let (Some(rows), false) = (self.rows.get(), arrivals.is_empty()) {
+                rows.claim_arrivals(arrivals).await;
+            }
         }
         t
     }
