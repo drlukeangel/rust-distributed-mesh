@@ -334,8 +334,10 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     assert!(faults.is_empty(), "a planned seat move left a handler fault: {faults:#?}");
     let later_claims: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "won" && num(sp, "attempt").is_some_and(|a| a > transfer_attempt)).collect();
     assert!(later_claims.is_empty(), "N resumed the same attempt; no later attempt was claimed: {later_claims:#?}");
-    // The Build facts were handed on with the fence.
-    assert!(fence.iter().any(|sp| sp["attributes"]["facts"].as_str().and_then(|f| f.parse::<u64>().ok()).is_some()), "the fence span names the facts handed on: {fence:#?}");
+    // The Build facts were handed on when P's record moved; nothing is fenced beside the row.
+    let hand_over: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-hand-over").into_iter().filter(|sp| attr(sp, "node") == p).collect();
+    assert!(hand_over.iter().any(|sp| sp["attributes"]["facts"].as_str().and_then(|f| f.parse::<u64>().ok()).is_some()), "the hand-over span names the facts handed on: {hand_over:#?}");
+    assert!(named(&spans, "rdm.node_admin.build.update.via-seat-fence-at-handover").is_empty() && named(&spans, "rdm.node_admin.build.update.via-seat-fence").is_empty(), "no fence is written beside the row");
     // No claim decided by P after its fence.
     let late: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) > fenced_at && matches!(attr(sp, "outcome").as_str(), "won" | "lost" | "not-open")).collect();
     assert!(late.is_empty(), "P decided a claim after its fence: {late:#?}");
@@ -358,10 +360,9 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
 }
 
 /// CONTRACT: the same hand-over while the fabric primary P is deciding claims of a running Build
-/// (mesh2 grows by two rpc nodes as P is replaced). A claim decided before P's fence committed
-/// wholly before the fence returned (its decision ended no later than the fence span), and P
-/// decides none after it: every claim request that reaches P after the fence is refused, never
-/// `won`. One winner per attempt, no birth twice.
+/// (mesh2 grows by two rpc nodes as P is replaced). P's seat row is its fence: a claim P won
+/// committed wholly before the row moved its record, and P wins none after it. One winner per
+/// attempt, no birth twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_decided_after() {
     let cell = "a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_decided_after";
