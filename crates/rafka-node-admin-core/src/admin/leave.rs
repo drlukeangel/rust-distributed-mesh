@@ -53,8 +53,10 @@ impl AdminRunner {
     }
 
     async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), String> {
-        // Resumed after the departure was recorded: the receipt is the record.
-        if self.builds.read_build(build_id).await.is_ok_and(|b| b.steps.iter().any(|r| r.operation == outer && r.step == STEP_MESH_LEFT && r.outcome == StepOutcome::Complete)) {
+        // Where this owner resumes, from its own Build facts, before it calls anything.
+        let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
+        if crate::mesh_leave::owner_resume(&steps, outer)? == crate::mesh_leave::OwnerResume::Left {
+            // Resumed after the departure was recorded: the receipt is the record.
             self.forget_mesh_id(mesh);
             return Ok(());
         }
