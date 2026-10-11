@@ -152,9 +152,12 @@ impl ParkGate {
                 if rx.borrow().parked && rx.wait_for(|s| !s.parked).await.is_err() {
                     return std::future::pending().await;
                 }
+                // The park is looked at first: a task woken by its own work and by the park at once is
+                // held where it stands, never polled one step past the park.
                 tokio::select! {
-                    out = &mut task => return out,
+                    biased;
                     _ = rx.wait_for(|s| s.parked) => {}
+                    out = &mut task => return out,
                 }
             }
         })
