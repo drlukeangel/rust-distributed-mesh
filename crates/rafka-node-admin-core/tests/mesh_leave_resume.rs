@@ -28,25 +28,26 @@ const EXITING: &str = "mesh2.rpc.2";
 const OTHER_ADMIN: &str = "mesh2.admin.2";
 const FINAL: &str = "mesh2.admin.1";
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on
-/// every thread of the cell's own runtime.
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its
+/// span filter and `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher
+/// installed on every thread of the cell's own runtime.
 pub(crate) struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 pub(crate) fn capture() -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", "mesh2.admin.1")]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("mesh-leave-resume"));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture("mesh2.admin.1", exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+}
+
+/// The trace id of `span`, a cell's root, as the capture's pipeline stamps it.
+pub(crate) fn trace_id(span: &tracing::Span) -> String {
+    span.in_scope(rafka_mesh_telemetry::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context: the capture is installed on this thread")
 }
 
 impl Capture {
@@ -63,7 +64,7 @@ impl Capture {
     }
 
     pub(crate) fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
+        self.capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
         self.exporter
             .get_finished_spans()
             .unwrap()
@@ -277,11 +278,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             }
         };
         let root = tracing::info_span!("cell.mesh-leave-resume", build_id = %build_id, operation = %outer);
-        let trace_id = {
-            use opentelemetry::trace::TraceContextExt as _;
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            root.context().span().span_context().trace_id().to_string()
-        };
+        let trace_id = trace_id(&root);
         let _in_root = root.enter();
 
         // Attempt 1: both sides capture the roster at admission; the ordinary tier is incomplete.
@@ -384,11 +381,7 @@ fn an_incomplete_tier_is_refused_not_ready_naming_the_births_without_an_exited_r
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-leave-incomplete", build_id = %build_id, operation = %outer);
-        let trace_id = {
-            use opentelemetry::trace::TraceContextExt as _;
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            root.context().span().span_context().trace_id().to_string()
-        };
+        let trace_id = trace_id(&root);
         let _in_root = root.enter();
         let roster = accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
         let mp = accepted_roster(&builds, &key, STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
@@ -469,11 +462,7 @@ fn an_owner_resuming_after_the_final_primary_exited_records_mesh_left_from_the_r
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-leave-final-exited", build_id = %build_id, operation = %outer);
-        let trace_id = {
-            use opentelemetry::trace::TraceContextExt as _;
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            root.context().span().span_context().trace_id().to_string()
-        };
+        let trace_id = trace_id(&root);
         let _in_root = root.enter();
         let roster = accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
         let mp = accepted_roster(&builds, &key, STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();

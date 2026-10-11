@@ -229,6 +229,9 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     start_with_client(launch, |b, resolver, _client| register(b, resolver)).await
 }
 
+/// The process's stop signal, latched from its first line (node-admin's own listener: one per process).
+pub use rafka_node_admin_core::entry::{listen_for_stop, stop_requested};
+
 /// Until this process is told to stop: a SIGTERM/ctrl-c, or the mesh transport stopping for
 /// good (a runtime that can neither be heard nor answer ends; its exit is the death proof the
 /// fabric recovers from). `binary` names the process in the exit line.
@@ -241,18 +244,8 @@ pub async fn wait_for_signal(binary: &str) {
         rafka_mesh_telemetry::flush_before_exit();
         rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
     };
-    #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = term.recv() => {}
-            _ = tokio::signal::ctrl_c() => {}
-            () = stopped => {}
-        }
-    }
-    #[cfg(not(unix))]
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
+        () = stop_requested() => {}
         () = stopped => {}
     }
 }
@@ -308,10 +301,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // the birth so any admin can manage it, whoever launched it.
     let dir = launch.data_dir.clone();
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-runtime-record", node = %launch.name);
-    let runtime = tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
-        .await
-        .map_err(|e| anyhow!("reading the runtime record: {e}"))?
-        .map_err(|e| anyhow!("{e}"))?;
+    let runtime = rafka_node_admin_core::node_self::wait_for_own_record(&dir, Duration::from_secs(10)).await.map_err(|e| anyhow!("{e}"))?;
     drop(step);
     // The identity this process records its intentional exit under (a transport that stopped).
     rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {

@@ -1144,11 +1144,7 @@ fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again(
     let cap = crate::mesh_leave_resume::capture();
     let trace_id = cap.run(async {
     let root = tracing::info_span!("cell.mesh-leave-reopen");
-    let trace_id = {
-        use opentelemetry::trace::TraceContextExt as _;
-        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-        root.context().span().span_context().trace_id().to_string()
-    };
+    let trace_id = crate::mesh_leave_resume::trace_id(&root);
     let _in_root = root.enter();
     use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, StepOutcome};
     for left in [false, true] {
@@ -1213,11 +1209,7 @@ fn a_removed_mesh_whose_final_primary_exited_without_mesh_left_opens_its_shutdow
     let cap = crate::mesh_leave_resume::capture();
     let (opened, build_id, trace_id) = cap.run(async {
         let root = tracing::info_span!("cell.mesh-leave-reopen-final-exited");
-        let trace_id = {
-            use opentelemetry::trace::TraceContextExt as _;
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            root.context().span().span_context().trace_id().to_string()
-        };
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
         let _in_root = root.enter();
         let e = estate().await;
         let fp = e.fabric_primary().await;

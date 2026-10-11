@@ -11,7 +11,6 @@
 //! The detectors are `rafka_test_scenario::wedge`: they judge a cut by the consequences it leaves,
 //! never by the injector's success and never by a duration.
 
-use opentelemetry::trace::TracerProvider as _;
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, PreCommit, RequestFinished};
 use rafka_node_rpc_contract::ping::Ping;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -21,7 +20,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Layer as _;
 
 fn acceptance_dir(layer: &str, cell: &str) -> PathBuf {
     match std::env::var("I143_ACCEPTANCE_DIR") {
@@ -34,11 +32,12 @@ fn acceptance_dir(layer: &str, cell: &str) -> PathBuf {
 // UNIT: the detector refuses every wedge that lacks a consequence, by name.
 // ---------------------------------------------------------------------------------------------
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher, so the spans are
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher, so the spans are
 /// exactly the ones the detector emitted for this cell.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
@@ -46,21 +45,17 @@ struct Capture {
 fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2782-{cell}");
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2782")).with_filter(tracing_subscriber::filter::filter_fn(|m| m.name().starts_with("rdm.")));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
 impl Capture {
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
-        self.exporter
-            .get_finished_spans()
-            .unwrap()
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let finished = self.exporter.get_finished_spans().unwrap();
+        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
+        finished
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
@@ -289,7 +284,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
 use rafka_node_admin_core::lifecycle::HookPhase;
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, wait_for_observed, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -314,6 +309,11 @@ fn s(v: &Value) -> String {
 /// The steps of `operation` at `attempt` the Build holds a `complete` receipt for, in order.
 fn done_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
     build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["outcome"] == "complete" && r["attempt"] == attempt).map(|r| s(&r["step"])).collect()
+}
+
+/// The steps of `operation` at `attempt` the Build holds a `failed` receipt for, in order, each with its reason.
+fn failed_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
+    build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["attempt"] == attempt).filter_map(|r| r["outcome"].get("failed").map(|f| format!("{}: {}", s(&r["step"]), s(&f["reason"])))).collect()
 }
 
 /// How many receipts each step of `operation` holds at `attempt`.
@@ -645,9 +645,11 @@ async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
 }
 
 /// A joining node-admin held at a boot cut (armed from `<root>/faults/<name>.boot.json`, before its
-/// first line runs): the create Build waits on it, and it is not Ready until the release.
+/// first line runs): the create Build waits on it, and it is not Ready until the release. `stops_at`
+/// is the create step the held admin stops the Build at: with `exact`, the Build holds a complete
+/// receipt for every step before it and none after.
 #[allow(clippy::too_many_arguments)]
-async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str, receipts_before: usize, exact: bool) {
+async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str, stops_at: CreateStep, exact: bool) {
     let mut ev = Evidence::new(family, id);
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
     let faults = run.root.join("faults");
@@ -667,12 +669,18 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let door = Door::open(&run.root, admin, "").await;
     let held = door.wait_held(id).await;
     let op = format!("create-node:{admin}");
-    let want = create_order[..receipts_before].to_vec();
+    let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
-    wait_for(&format!("`{id}`: the Build reaches the held admin"), Duration::from_secs(60), || async {
+    let wanted = if exact { format!("complete receipts exactly {want:?}") } else { format!("at least the complete receipts of every step before {}", CreateStep::WaitForBind.name()) };
+    wait_for_observed(&format!("`{id}`: the Build reaches the held admin ({wanted})"), Duration::from_secs(60), || async {
         let b = run.build(&exec, &build_id).await;
         let d = done_steps(&b, &op, 1);
-        (if exact { d == want } else { d.len() >= create_order.iter().position(|x| x == CreateStep::WaitForBind.name()).unwrap() }).then_some(())
+        let reached = if exact { d == want } else { d.len() >= create_order.iter().position(|x| x == CreateStep::WaitForBind.name()).unwrap() };
+        if reached {
+            Ok(())
+        } else {
+            Err(format!("attempt {} state {}: complete receipts {d:?}; failed {:?}", b["attempt"], b["state"], failed_steps(&b, &op, 1)))
+        }
     })
     .await;
     let mut reads = Vec::new();
@@ -975,8 +983,8 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     .await;
 
     // A joining admin held at its hydration of the Fabric record, and at its Ready gate on the provider domain.
-    join_case(&run, Family::RuntimeMetadataHydration, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "mesh1.admin.3", 12, false).await;
-    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.4", 12, true).await;
+    join_case(&run, Family::RuntimeMetadataHydration, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "mesh1.admin.3", CreateStep::WaitForNodeReady, false).await;
+    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.4", CreateStep::WaitForNodeReady, true).await;
 
     finish(run, &dir).await;
 }

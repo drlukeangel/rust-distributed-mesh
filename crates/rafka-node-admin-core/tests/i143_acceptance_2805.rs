@@ -34,27 +34,23 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     }
 }
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     /// The resource's `service.name` this capture exports under.
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2805-{cell}");
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2805"));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
 impl Capture {
@@ -74,10 +70,10 @@ impl Capture {
 
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
-        self.exporter
-            .get_finished_spans()
-            .unwrap()
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let finished = self.exporter.get_finished_spans().unwrap();
+        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
+        finished
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();

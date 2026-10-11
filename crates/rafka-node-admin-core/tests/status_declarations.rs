@@ -518,21 +518,20 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
     eprintln!("trace {}: rdm.node_admin.node.update.via-config outcome=config-row-refused", spans[0].0);
 }
 
-/// The spans a cell's own run exported, with their trace ids.
+/// The spans a cell's own run exported through the product span pipeline
+/// (`rafka_mesh_telemetry::span_capture`), with their trace ids.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder().with_simple_exporter(exporter.clone()).build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("status-declarations"));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture("status-declarations", exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
 impl Capture {
@@ -551,7 +550,7 @@ impl Capture {
     /// Every finished span called `name`: its trace id, its attributes and its events (each event's
     /// message and fields), in the order they happened.
     fn spans_with_events(&self, name: &str) -> Vec<(String, BTreeMap<String, String>, Vec<String>)> {
-        let _ = self.provider.force_flush();
+        self.capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
         self.exporter
             .get_finished_spans()
             .unwrap()
@@ -566,7 +565,7 @@ impl Capture {
 
     /// Every finished span called `name`: its trace id and its attributes.
     fn spans(&self, name: &str) -> Vec<(String, BTreeMap<String, String>)> {
-        let _ = self.provider.force_flush();
+        self.capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
         self.exporter
             .get_finished_spans()
             .unwrap()
