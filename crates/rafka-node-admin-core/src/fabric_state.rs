@@ -511,6 +511,22 @@ mod tests {
         assert_eq!(book.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "checked-in-as-another-birth" }]);
     }
 
+    /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who is calling"): a check-in is
+    /// decided for the subject it names, as this primary's view holds it, never for its caller. A
+    /// subject the view does not hold is the direction refusal `SubjectUnknown`, and nothing counts.
+    /// What must NOT happen: `SenderNotSubject` "unknown peer".
+    #[test]
+    fn a_check_in_for_a_subject_the_view_does_not_hold_is_subject_unknown() {
+        let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
+        let book = RoundBook::default();
+        let k = key("bld_1", 1, &fabric);
+        book.open(&k);
+        book.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
+        let up = RoundKind::StateCommit.up(&k, node.clone(), inc.clone());
+        assert_eq!(book.check_in("mesh1.admin.1", None, &up), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+        assert!(!book.complete(&k), "nothing counted");
+    }
+
     fn target(inc: &IncarnationId, status: NodeStatus) -> Node {
         let mut n = Node::allocated("mesh2.admin.1".parse().unwrap());
         n.status = status;

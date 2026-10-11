@@ -1201,6 +1201,37 @@ mod tests {
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a drain-node naming this admin's node id reaches the subject's own door: {reply:?}");
     }
 
+    /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who is calling; the fence is target
+    /// node id + op"): a call naming this admin from an endpoint its view holds no birth for is decided
+    /// for the subject it names, as one from an admin it holds is. A drain-node naming this admin's
+    /// exact birth reaches the subject's own door (`NodeSelf::serve`, here not yet filled, so
+    /// `NotReady` by name), and a probe naming it is answered by the subject. The direction refusals
+    /// stay: a command naming another birth of this admin is `RejectedStaleIncarnation`. What must
+    /// NOT happen: `SenderNotSubject` "unknown peer", or a probe of the subject answered as if this
+    /// admin were not the subject.
+    #[tokio::test]
+    async fn a_call_naming_this_admin_from_an_endpoint_it_never_heard_of_is_decided_for_the_subject() {
+        let mut me = node("mesh1.admin.2");
+        me.kind = NodeKind::NodeAdmin;
+        me.mesh = "mesh1".into();
+        me.status = crate::model::NodeStatus::ReadyForTraffic;
+        let view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![me.clone()],
+        };
+        let auth = authority_of(&me, view);
+        let incarnation = me.incarnation_id.clone().unwrap();
+        let drain = StatusRequest::DrainNode { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.admin.2".into() };
+        let reply = auth.apply(None, &drain).await;
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a drain-node from a stranger reaches the subject's own door: {reply:?}");
+        let probe = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: incarnation.clone() };
+        let reply = auth.apply(None, &probe).await;
+        assert!(matches!(&reply, R::Current { node_id, state: NodeState::ReadyForTraffic, .. } if *node_id == me.node_id), "a probe from a stranger is answered by the subject: {reply:?}");
+        let stale = StatusRequest::DrainNode { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 2, operation: "drain-node:mesh1.admin.2".into() };
+        assert_eq!(auth.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
+    }
+
     fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rafka_mesh_entity::MeshDigest {
         rafka_mesh_entity::MeshDigest {
             fabric_id: FabricId::mint(),
