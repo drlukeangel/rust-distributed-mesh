@@ -18,7 +18,7 @@ use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, StorageMeta
 use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, ReplaceRequest, Timeouts};
+use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, ReplaceRequest, RetireRequest, Timeouts};
 use rafka_node_admin_core::node_commands::NodeCommand;
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus, TerminationMode};
@@ -29,10 +29,13 @@ use std::time::Duration;
 
 type Log = Arc<Mutex<Vec<String>>>;
 
-/// The live observer, logging every drain it sends and every readiness it proves, in order.
+/// The live observer, logging every drain it sends and every readiness it proves, in order. With
+/// `stop_not_sent`, a `stop-node` never reaches the birth (`NotSent`): the birth keeps running,
+/// as a predecessor that never admits its stop does.
 struct Logged<'a> {
     inner: &'a LiveMesh,
     log: Log,
+    stop_not_sent: bool,
 }
 
 #[async_trait::async_trait]
@@ -49,6 +52,9 @@ impl NodeObserver for Logged<'_> {
     }
     async fn send_command(&self, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
         self.log.lock().unwrap().push(format!("{}:{}", cmd.operation_prefix(), node.node_id));
+        if self.stop_not_sent && cmd == NodeCommand::Stop {
+            return CommandAdmission::NotSent { reason: format!("the cell holds back stop-node to {}: the birth never admits it", node.name) };
+        }
         self.inner.send_command(node, cmd, ctx).await
     }
     async fn await_completion(&self, node: &Node, cmd: NodeCommand, ctx: &CommandContext, within: Duration) -> Completion {
@@ -125,11 +131,13 @@ const REPLACE_ORDER: [&str; 18] = [
     "Complete",
 ];
 
-/// Every step of the recovery of a birth the provider already proves terminal, in order.
-const RECOVERY_ORDER: [&str; 19] = [
+/// Every step of the recovery of a birth the provider already proves terminal, in order. It was
+/// never stopped, so it is renamed only on its exit proof (node-update.md "Rename precondition"),
+/// and the old identity's delete releases no storage (node-delete.md "Storage").
+const RECOVERY_ORDER: [&str; 18] = [
     "NodeDeleting",
-    "RenamePredecessor",
     "TerminateRuntime",
+    "RenamePredecessor",
     "NodeDeleted",
     "AllocateIdentity",
     "PrepareStorage",
@@ -144,7 +152,6 @@ const RECOVERY_ORDER: [&str; 19] = [
     "ApplyMeshPending",
     "WaitForMeshJoin",
     "WaitForNodeReady",
-    "ReleaseStorage",
     "Complete",
 ];
 
@@ -223,13 +230,13 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let rig = rig().await;
-        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
+        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: false };
         let recorder = Recorder { log: rig.log.clone(), peer: Some(&rig.admin.observer.membership) };
         let pipeline = rig.pipeline(&observer, &recorder);
 
         let birth_build = publish_build(&rig.builds, persistent(true)).await;
         let first = pipeline
-            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -327,26 +334,95 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
     })
 }
 
+/// CONTRACT: a replace whose predecessor never admits stop-node (`NotSent`: the birth runs on,
+/// drained, never stopped) fails at the stop's wait step by name and renames nothing (node-replace.md
+/// step 2: "node[1].stop runs the complete stop and leaves the predecessor stopped"; node-update.md,
+/// "Rename precondition": the node is not ready-for-traffic and holds no connection; node-stop.md, the
+/// complete stop's only proof is the birth's `stopped`). The run is the drain, stop-node and its wait,
+/// which fails naming the birth, stop-node and the admission it got. The predecessor keeps its
+/// path.name and its process runs; no successor identity is allocated and no `Complete` is
+/// receipted; no `NodeStopped` is published, as nothing parked. A birth that does not answer goes to
+/// node recovery, never a lenient replace. What must NOT happen: the predecessor's path.name given up
+/// while its process still runs (a RenamePredecessor receipt or span), or anything of a successor.
+#[test]
+fn a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails_by_name() {
+    if crate::own_process::delegated(module_path!(), "a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails_by_name") {
+        return;
+    }
+    let cap = crate::common::capture("a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails_by_name");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let rig = rig().await;
+        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: true };
+        let recorder = Recorder { log: rig.log.clone(), peer: None };
+        let pipeline = rig.pipeline(&observer, &recorder);
+
+        let birth_build = publish_build(&rig.builds, persistent(true)).await;
+        let first = pipeline
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .await
+            .unwrap_or_else(|e| panic!("create: {e}"));
+        rig.log.lock().unwrap().clear();
+
+        let replace_build = publish_build(&rig.builds, persistent(true)).await;
+        let e = match pipeline
+            .replace(&ReplaceRequest { build_id: replace_build.clone(), attempt: 1, predecessor: first.node.clone(), handle: first.handle.clone(), spec: &RPC_NODE, held_runtimes: Vec::new() }, None, |_| async { Ok(()) })
+            .await
+        {
+            Ok(created) => panic!("a predecessor that never admitted stop-node is not stopped, yet the replace created {}", created.node.node_id),
+            Err(e) => e,
+        };
+        assert_eq!(e.step, "AwaitNodeLeft", "{e}");
+        assert!(e.reason.contains(&first.node.name.to_string()) && e.reason.contains("stop-node") && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
+
+        // The stop was asked for and its wait failed; nothing after it ran.
+        let view = rig.builds.read_build(&replace_build).await.unwrap();
+        let operation = format!("replace-node:{}", path());
+        let steps = receipts(&view.steps, &operation);
+        assert!(steps.iter().any(|s| s == "StopNode"), "stop-node was asked: {steps:?}");
+        for never in ["RenamePredecessor", "TerminateRuntime", "AllocateIdentity", "Complete"] {
+            assert!(!steps.iter().any(|s| s == never), "no {never} receipt: {steps:?}");
+        }
+        let log = rig.log.lock().unwrap().clone();
+        let old = first.node.node_id.to_string();
+        assert!(log.iter().any(|l| l == &format!("stop-node:{old}")), "stop-node was asked: {log:?}");
+        assert!(!log.iter().any(|l| l.starts_with("NodeStopped")), "nothing parked, so no NodeStopped: {log:?}");
+        assert_eq!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Running, "the predecessor's process runs: it was never stopped");
+        assert!(rig.sink.renamed.lock().unwrap().is_empty(), "the predecessor keeps its path.name");
+        let all = spans.0.lock().unwrap().clone();
+        assert!(
+            !all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-replace-rename" && f.get("build_id") == Some(&replace_build.0)),
+            "no rename is spanned"
+        );
+
+        rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+        assert!(matches!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the predecessor was stopped");
+        let _ = std::fs::remove_dir_all(&rig.template.data_root);
+    })
+}
+
 /// CONTRACT: a replace of a birth the provider already proves terminal sends it nothing: no drain, no
 /// Leaving, no admission wait (node-recovery.md). It is node.delete of the exited instance, then
-/// node.create (node-recovery.md "Steps"; step 3 then step 4): NodeDeleting, rename, the terminal
-/// proof, NodeDeleted (the predecessor's Deleted row, written while the executor is still the writer
-/// of the mesh's rows: a mesh's only admin replaced by the fabric-primary as acting primary hands the
-/// seat to its successor at readiness, R13), then the successor's identity, handoff, start and
-/// readiness. With ephemeral storage nothing is handed over and the predecessor's directory is
-/// released after the successor's readiness.
+/// node.create (node-recovery.md "Steps"; step 3 then step 4): NodeDeleting, the terminal proof,
+/// rename (a predecessor that was never stopped is renamed only on its exit proof, node-update.md
+/// "Rename precondition"), NodeDeleted (the predecessor's Deleted row, written while the executor is
+/// still the writer of the mesh's rows: a mesh's only admin replaced by the fabric-primary as acting
+/// primary hands the seat to its successor at readiness, R13), then the successor's identity,
+/// handoff, start and readiness. With ephemeral storage nothing is handed over, and the old
+/// identity's delete keeps the predecessor's directory and its endpoint key (node-delete.md step 3:
+/// "Retain the data dir, node-identity.json and endpoint key").
 #[test]
 fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage() {
     let cap = crate::common::capture("recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage");
     cap.run(crate::common::Threads::Workers(4), async move {
         let rig = rig().await;
-        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
+        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: false };
         let recorder = Recorder { log: rig.log.clone(), peer: None };
         let pipeline = rig.pipeline(&observer, &recorder);
 
         let birth_build = publish_build(&rig.builds, add_node()).await;
         let first = pipeline
-            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().unwrap());
@@ -372,11 +448,73 @@ fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephem
         let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
         assert!(at(&format!("NodeDeleting:{old}")) < at(&format!("NodeDeleted:{old}")) && at(&format!("NodeDeleted:{old}")) < at(&format!("ready:{new}")), "node.delete of the exited instance, then node.create: {log:?}");
 
-        // Ephemeral: nothing moved, and the renamed directory is gone after the departure.
+        // Ephemeral: nothing moved, and the predecessor's directory stays after the departure.
         let new_dir = std::path::PathBuf::from(second.node.data_dir.clone().unwrap());
         assert!(!new_dir.join("scratch").exists(), "ephemeral storage is not handed over");
-        assert!(!old_dir.exists(), "the predecessor's directory is released after NodeDeleted");
+        assert!(old_dir.join("scratch").is_dir() && old_dir.join("node-key").is_file(), "the old identity's delete keeps the predecessor's directory and its endpoint key: {old_dir:?}");
+        assert!(view.steps.iter().all(|r| r.step != "ReleaseStorage"), "no step of a replace releases storage: {:?}", receipts(&view.steps, &operation));
         // The successor is this test's runtime: it is stopped, with the provider's proof, before the test ends.
+        rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+        assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the successor was stopped");
+        let _ = std::fs::remove_dir_all(&rig.template.data_root);
+    })
+}
+
+/// CONTRACT: a replace hands its successor the storage of its own predecessor (and of a successor an
+/// earlier attempt of the same operation left behind), never the storage of another birth at the
+/// path. A birth deleted earlier at `mesh1.rpc.1` keeps its data dir (node-delete.md "Storage":
+/// "Retain data dir and endpoint key"); the path's next birth then exits and is replaced: the
+/// recovery of a proven-terminal birth is the replace that hands storage over (a live predecessor
+/// stays parked with its data, node-replace.md). The successor's WAL is the replaced birth's, and
+/// the deleted birth's WAL stays in its own data dir. Must NOT happen:
+/// the deleted birth's storage moved into the successor's directory, or HandoffStorage refused
+/// because the deleted birth's WAL collides with the predecessor's.
+#[test]
+fn a_replace_never_hands_over_the_storage_of_a_birth_deleted_earlier_at_its_path() {
+    let cap = crate::common::capture("a_replace_never_hands_over_the_storage_of_a_birth_deleted_earlier_at_its_path");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let rig = rig().await;
+        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: false };
+        let recorder = Recorder { log: rig.log.clone(), peer: None };
+        let pipeline = rig.pipeline(&observer, &recorder);
+        let seg = |dir: &std::path::Path| dir.join("wal").join("segments").join("seg-0");
+
+        // The path's first birth, with a WAL, is deleted: its data dir stays.
+        let deleted = pipeline
+            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .await
+            .unwrap_or_else(|e| panic!("create: {e}"));
+        let deleted_dir = std::path::PathBuf::from(deleted.node.data_dir.clone().expect("the birth's directory"));
+        std::fs::create_dir_all(seg(&deleted_dir).parent().unwrap()).unwrap();
+        std::fs::write(seg(&deleted_dir), b"the deleted birth's records").unwrap();
+        pipeline
+            .retire(&RetireRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: deleted.node.clone(), handle: deleted.handle.clone() })
+            .await
+            .unwrap_or_else(|e| panic!("delete: {e}"));
+        assert_eq!(std::fs::read(seg(&deleted_dir)).unwrap(), b"the deleted birth's records", "the delete keeps the birth's storage");
+
+        // The path's next birth, with its own WAL, is replaced.
+        let current = pipeline
+            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .await
+            .unwrap_or_else(|e| panic!("create: {e}"));
+        let current_dir = std::path::PathBuf::from(current.node.data_dir.clone().expect("the birth's directory"));
+        assert_ne!(current_dir, deleted_dir, "a new node at the path has a directory of its own");
+        std::fs::create_dir_all(seg(&current_dir).parent().unwrap()).unwrap();
+        std::fs::write(seg(&current_dir), b"the replaced birth's records").unwrap();
+        // The runtime dies; the provider's exact inspection is the proof.
+        rig.provider.terminate(&current.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+        assert!(matches!(rig.provider.inspect(&current.handle).await, DeploymentStatus::Exited { .. }));
+        let replace_build = publish_build(&rig.builds, persistent(true)).await;
+        let second = pipeline
+            .replace(&ReplaceRequest { build_id: replace_build.clone(), attempt: 1, predecessor: current.node.clone(), handle: current.handle.clone(), spec: &RPC_NODE, held_runtimes: Vec::new() }, None, |_| async { Ok(()) })
+            .await
+            .unwrap_or_else(|e| panic!("replace: {e}"));
+
+        let new_dir = std::path::PathBuf::from(second.node.data_dir.clone().unwrap());
+        assert_eq!(std::fs::read(seg(&new_dir)).unwrap(), b"the replaced birth's records", "the successor's WAL is its predecessor's");
+        assert_eq!(std::fs::read(seg(&deleted_dir)).unwrap(), b"the deleted birth's records", "the deleted birth's storage stays in its own data dir");
+        assert!(!current_dir.join("wal").exists(), "the predecessor's storage moved, it was not copied");
         rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
         assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the successor was stopped");
         let _ = std::fs::remove_dir_all(&rig.template.data_root);

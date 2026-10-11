@@ -554,6 +554,7 @@ async fn connections_route_lists_a_direct_a_proxy_with_its_carrier_and_a_failed_
     use rafka_mesh_entity::{IncarnationId, NodeId};
     let end = |n: &str| ConnectionEnd { name: n.parse().unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) };
     let fact = |s: &str, d: &str, kind, state, carrier: Option<&str>| NodeConnection {
+        id: rafka_mesh_entity::ConnectionId::mint(),
         source: end(s),
         destination: end(d),
         kind,

@@ -45,3 +45,6 @@ mod rejoin_name;
 mod command_natural_key;
 mod transport_diag;
 mod connections_rename;
+mod rename_precondition;
+mod connections_delete;
+mod no_caller_check;

@@ -21,7 +21,7 @@ use crate::build_state::{BuildStateAdapter, LocalBuildLog as _};
 use crate::deployment::endpoint::spec_for;
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
-    CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireKind, RetireRequest, Timeouts, TopologySink,
+    CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireRequest, Timeouts, TopologySink,
 };
 use crate::deployment::provider::{DeploymentHandle, DeploymentProvider, FabricPolicy, TerminationMode};
 use crate::executor::{BuildExecutor, OperationRunner};
@@ -1128,13 +1128,14 @@ const VIEW_POLL: Duration = Duration::from_millis(200);
 /// The view's next rebuild is due: at once when a routing fact the book holds moved since the last
 /// rebuild read it (a birth's status, an overlay, a departure, a mesh status: states.md "Routing",
 /// applied on receipt), else after `poll`; and only while the admin's gate is open. A parked admin's
-/// rebuild is held here, holding nothing, and is due the moment the gate opens.
-pub(crate) async fn view_rebuild_due(facts: &mut rafka_mesh_transport::membership::RoutingWatch, poll: Duration, gate: &crate::park_gate::ParkGate) {
+/// rebuild is held here, holding nothing, and is due the moment the gate opens. Answers the
+/// rebuild's turn: the caller ends it before it waits here again.
+pub(crate) async fn view_rebuild_due(facts: &mut rafka_mesh_transport::membership::RoutingWatch, poll: Duration, gate: &crate::park_gate::ParkGate) -> crate::park_gate::Turn {
     tokio::select! {
         _ = tokio::time::sleep(poll) => {}
         _ = facts.moved() => {}
     }
-    gate.opened().await;
+    gate.turn("view-rebuild").await
 }
 
 /// Every birth of `fabric` this admin's book holds besides itself, heard a moment ago or only
@@ -2322,9 +2323,17 @@ struct AdminSession {
 
 #[async_trait::async_trait]
 impl crate::node_self::Session for AdminSession {
+    async fn park_tasks(&self) -> crate::node_self::TasksParked {
+        // The gate parks, so no turn begins; the turns already past their wait point end on their
+        // own completion, and only then does the stop go on to its cut.
+        let at = self.gate.quiesce().await;
+        crate::node_self::TasksParked { turns_in_progress: at.in_progress(), waited_for: at.named() }
+    }
+
     async fn cut(&self, spare: Option<iroh::PublicKey>) -> crate::node_self::CutReport {
-        // Held first, so nothing it was doing goes out on the connections cut below.
-        self.gate.park();
+        // The stop held this admin's tasks before it (`park_tasks`): nothing it was doing goes out on
+        // the connections cut below.
+        let turns_in_progress = self.gate.state().borrow().in_progress();
         if let Some(h) = self.hydrating.lock().unwrap().take() {
             h.abort();
         }
@@ -2334,10 +2343,10 @@ impl crate::node_self::Session for AdminSession {
         self.backbone.park().await;
         let pooled = self.client.close_pooled("node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
-        crate::node_self::CutReport { neighbours, pooled, accepted }
+        crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), crate::node_self::StartFailed> {
         use crate::node_self::StartFailed;
         let name = self.name.to_string();
         let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %self.name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
@@ -2368,6 +2377,8 @@ impl crate::node_self::Session for AdminSession {
                 d.config = c.clone();
             }
         }
+        // Only now are its connections recorded: the join's names the handed name.
+        drop(rows);
         take_entry_control(&joined, &self.accepted, &*self.builds, &self.entry_floor).await;
         if let Some(sd) = joined.control.shutdown.clone() {
             let _ = self.shutdown.learn(sd, "start", &joined.served_by).await;
@@ -2870,30 +2881,28 @@ impl AdminRunner {
         rows.into_values().collect()
     }
 
-    async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>, before_ready: Option<crate::deployment::pipeline::BeforeReady>) -> Result<(), String> {
-        if restart_of.is_none() {
-            match self.fence_predecessor(node).await {
-                // The member is alive (it answers) or held (its exact runtime still runs):
-                // nothing to create. Silence never authorizes a replacement.
-                FenceOutcome::Alive | FenceOutcome::Held => return Ok(()),
-                // Nothing proves the path free: the create fails, naming what could not be read.
-                FenceOutcome::RecordsUnreadable { reason } => return Err(format!("{node}: the runtimes recorded at this path cannot be read, so no birth is created over them: {reason}")),
-                // A birth the provider proves terminal is replaced at its path: the old identity is
-                // deleted (its terminal proof, NodeDeleted, its Deleted row), then the successor is
-                // created (node-recovery.md "Steps").
-                FenceOutcome::Clear { gone: Some(prev) } => match prev.incarnation_id {
-                    Some(birth) => return self.replace(build_id, attempt, node, &birth).await,
-                    None => {}
-                },
-                FenceOutcome::Clear { gone: None } => {}
-            }
+    async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, before_ready: Option<crate::deployment::pipeline::BeforeReady>) -> Result<(), String> {
+        match self.fence_predecessor(node).await {
+            // The member is alive (it answers) or held (its exact runtime still runs):
+            // nothing to create. Silence never authorizes a replacement.
+            FenceOutcome::Alive | FenceOutcome::Held => return Ok(()),
+            // Nothing proves the path free: the create fails, naming what could not be read.
+            FenceOutcome::RecordsUnreadable { reason } => return Err(format!("{node}: the runtimes recorded at this path cannot be read, so no birth is created over them: {reason}")),
+            // A birth the provider proves terminal is replaced at its path: the old identity is
+            // deleted (its terminal proof, NodeDeleted, its Deleted row), then the successor is
+            // created (node-recovery.md "Steps").
+            FenceOutcome::Clear { gone: Some(prev) } => match prev.incarnation_id {
+                Some(birth) => return self.replace(build_id, attempt, node, &birth).await,
+                None => {}
+            },
+            FenceOutcome::Clear { gone: None } => {}
         }
         let mut template = self.template_for(node.kind, &node.mesh).await?;
         if node.kind == NodeKind::NodeAdmin && before_ready.is_some() {
             template = self.with_mesh_issuer(template, &node.mesh)?;
         }
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of, held_runtimes };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), held_runtimes };
         let created = self.pipeline(&template).create_with(&req, before_ready).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
@@ -2944,7 +2953,7 @@ impl AdminRunner {
         // A recovered predecessor's exit is proven; a replaced one is parked at `<path>.old`, its
         // process alive: nothing is retired about its paths or its birth.
         if matches!(self.provider.inspect(&req.handle).await, crate::deployment::provider::DeploymentStatus::Exited { .. }) {
-            self.after_exit(&req.predecessor, crate::deployment::pipeline::RetireKind::Removal);
+            self.after_exit(&req.predecessor);
         }
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
@@ -3035,32 +3044,31 @@ impl AdminRunner {
         }
     }
 
-    /// What follows a birth's proven exit, for a restart and a removal and a replacement alike: the
-    /// resolver names no current birth for it, and its direct paths are retired. A restart's next
-    /// birth keeps the key and binds a port the operating system assigns, so this endpoint holds no
-    /// path to the key until that birth reports one (R-I1's replacement, with no address left).
-    fn after_exit(&self, record: &Node, kind: crate::deployment::pipeline::RetireKind) {
+    /// What follows a birth's proven exit, for a removal and a replacement alike: the resolver names
+    /// no current birth for it, and its direct paths are retired. A later birth that keeps the key
+    /// binds a port the operating system assigns, so this endpoint holds no path to the key until
+    /// that birth reports one (R-I1's replacement, with no address left).
+    fn after_exit(&self, record: &Node) {
         if let (Some(rpc), Some(incarnation)) = (&self.node_rpc, record.incarnation_id.as_ref()) {
             // The exit is proven: the resolver names no current birth for the node until its
             // successor is applied, so no dial, probe or install aims at the dead birth's socket.
             rpc.resolver.retire_birth(&record.node_id, incarnation);
         }
-        // The exit is proven: the exited birth's direct paths are retired, for a restart and a
-        // removal alike. Until now they stayed open for the typed drain.
+        // The exit is proven: the exited birth's direct paths are retired. Until now they stayed
+        // open for the typed drain.
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             // Not awaited: the endpoint's actor for this key answers when it is free, and the
             // retire does not wait for a dead peer's actor (the same call membership spawns).
             let ep = ep.clone();
             tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
-            let reason = if kind != crate::deployment::pipeline::RetireKind::Removal { "restart" } else { "removal" };
-            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-retired", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = reason, reason = "proven-exit")
+            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-retired", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = "removal", reason = "proven-exit")
                 .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
         }
     }
 
     /// `drain-node:<path>` / `stop-node:<path>` (node-drain.md, node-stop.md): the exact birth `from` at
-    /// `node`, fenced by incarnation, through its one half of the shutdown leg. A drain leaves the
-    /// process running; a stop ends with the provider's Exited proof and publishes no departure.
+    /// `node`, fenced by incarnation. A drain leaves the process running; a stop parks it, its
+    /// process alive (node-stop.md: no runtime Exited receipt), and publishes no departure.
     async fn standalone(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId, stop: bool) -> Result<(), String> {
         let op = if stop { "stop-node" } else { "drain-node" };
         let seen = self.topology.read().await.node(node).cloned();
@@ -3074,7 +3082,7 @@ impl AdminRunner {
             None => self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from)).ok_or_else(|| format!("{op}:{node}: birth {} is not in this admin's view and no runtime handle of it is held", from.0))?,
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind: RetireKind::Restart };
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle };
         if stop {
             // The process is parked, not exited: nothing is retired about its paths or its birth.
             self.pipeline(&template).stop(&req).await.map_err(|e| e.to_string())?;
@@ -3104,9 +3112,9 @@ impl AdminRunner {
             }
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind: RetireKind::Removal };
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle };
         self.pipeline(&template).delete_parked(&req).await.map_err(|e| e.to_string())?;
-        self.after_exit(&record, RetireKind::Removal);
+        self.after_exit(&record);
         self.handles.lock().unwrap().remove(node);
         Ok(())
     }
@@ -3221,10 +3229,6 @@ impl AdminRunner {
         self.pipeline(&template).start(&req).await.map_err(|e| e.to_string())
     }
 
-    async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
-        self.retire_with(build_id, attempt, node, RetireKind::Removal).await
-    }
-
     /// The target of a retire the view cannot name: the accepted Build's `Replace` action names the
     /// exact birth, and the one data dir recorded for the path under this provider's data root
     /// names its node and its exact runtime. Refused by name when no record names that birth; a
@@ -3306,7 +3310,7 @@ impl AdminRunner {
         Ok((record, handle))
     }
 
-    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, kind: RetireKind) -> Result<Option<Node>, String> {
+    async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match &seen {
             Some(n) => self.handle_for(n).await?,
@@ -3316,8 +3320,7 @@ impl AdminRunner {
                     Some(h) => h,
                     // Silent past every window the view keeps: the Build names the birth, the
                     // durable runtime record names its exact runtime (node-admin-lifecycle.md 4.2).
-                    None if kind == RetireKind::Removal => self.rebuild_absent_birth(build_id, node).await?,
-                    None => return Err(format!("{node} is not in this admin's view")),
+                    None => self.rebuild_absent_birth(build_id, node).await?,
                 }
             }
         };
@@ -3329,9 +3332,9 @@ impl AdminRunner {
             None => record,
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind };
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
-        self.after_exit(&record, kind);
+        self.after_exit(&record);
         self.handles.lock().unwrap().remove(node);
         Ok(Some(record))
     }
@@ -3436,7 +3439,7 @@ impl AdminRunner {
                     // proceed (e4.s11).
                     let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).all(|n| !n.status.is_live());
                     let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
-                    self.create(build_id, attempt, node, None, before_ready).await
+                    self.create(build_id, attempt, node, before_ready).await
                 }
                 .instrument(span)
                 .await
@@ -3643,6 +3646,8 @@ pub struct Running {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// The gate a stop parks (`node_self`'s `Session::cut`) and a start opens.
     gate: crate::park_gate::ParkGate,
+    /// This admin as the subject of the drain, stop and start its mesh-admin commands.
+    node_self: Arc<crate::node_self::NodeSelf>,
     /// Asked before each leave announcement publish (a testkit executable's wiring; none in the product).
     leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,
     /// This admin's Build log: fenced before the first `Leaving` (ruling R-A2).
@@ -3662,6 +3667,18 @@ impl Running {
     /// while it is parked.
     pub fn gate(&self) -> &crate::park_gate::ParkGate {
         &self.gate
+    }
+
+    /// Whether this admin publishes its mesh's aggregate on the backbone: the role its hierarchy
+    /// last decided (its mesh's primary, its view authorizing).
+    pub fn publishes_its_mesh(&self) -> bool {
+        self.backbone.is_mesh_primary()
+    }
+
+    /// This admin as the subject of `drain-node`, `stop-node` and `start-node`: what such a command
+    /// naming it reaches once its Status authority has decided it (`status_rpc`'s `serve_command`).
+    pub fn node_self(&self) -> Arc<crate::node_self::NodeSelf> {
+        self.node_self.clone()
     }
 
     /// Where this admin's `hydrate_before_ready` stands; `None` when the app registered no hook.
@@ -4298,7 +4315,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut written: HashSet<(rafka_mesh_entity::Seat, String, u64)> = HashSet::new();
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("seat-rows").await;
                 let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
                 rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
                 for row in rows {
@@ -4314,6 +4331,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         }
                     }
                 }
+                drop(turn);
                 if changed.changed().await.is_err() {
                     return;
                 }
@@ -4800,11 +4818,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut births = book.birth_changes();
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("mesh-rows").await;
                 births.borrow_and_update();
                 let seated = *own_seat.borrow_and_update();
                 let held: Vec<MeshDigest> = book.all().into_iter().filter(|d| d.fabric_id == fabric_id).collect();
                 writer.round(&held, seated, |id| book.is_departed(id.as_str())).await;
+                drop(turn);
                 tokio::select! {
                     changed = births.changed() => if changed.is_err() { return },
                     changed = own_seat.changed() => if changed.is_err() { return },
@@ -4910,12 +4929,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let (book, nodes_storage, me, fabric_id) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
         let park = park_gate.clone();
         tokio::spawn(async move {
-            park.opened().await;
+            let turn = park.turn("runtime-rows").await;
             let mut written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
+            drop(turn);
             let mut births = book.birth_changes();
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("runtime-rows").await;
                 births.borrow_and_update();
                 for d in book.all().into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me) {
                     let key = (d.node.node_id.clone(), d.node.incarnation.clone());
@@ -4931,6 +4951,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         Err(e) => tracing::info!(node = %d.node.name, error = %e, "a heard birth's runtime could not be stored"),
                     }
                 }
+                drop(turn);
                 if births.changed().await.is_err() {
                     return;
                 }
@@ -4946,11 +4967,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut births = book.birth_changes();
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("superseded-rows").await;
                 births.borrow_and_update();
                 if let Some(a) = authority.get() {
                     a.retire_superseded(&book).await;
                 }
+                drop(turn);
                 if births.changed().await.is_err() {
                     return;
                 }
@@ -5084,7 +5106,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut reported = None;
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("ready").await;
                 let held: Vec<MeshDigest> = book
                     .current(book.staleness_floor())
                     .into_iter()
@@ -5163,6 +5185,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         .in_scope(|| tracing::info!("not ready: a held birth's runtime cannot be managed from here"));
                     reported = Some(blocked);
                 }
+                drop(turn);
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }));
@@ -5197,14 +5220,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         }));
     }
     {
-        // The name is held on this admin's own digest and by its membership, taken only with no call
-        // in flight other than the apply itself; a stopped admin holds it and publishes nothing.
-        let (membership, digest, stats) = (membership.clone(), digest.clone(), rpc_server.stats());
+        // The name is held on this admin's own digest and by its membership, taken only while it
+        // holds no connection (R-CR1); a stopped admin holds it and publishes nothing.
+        let (membership, digest, connections) = (membership.clone(), digest.clone(), connections.clone());
         let _ = rename.set(Arc::new(move |asked: PathName| {
-            let (membership, digest, stats) = (membership.clone(), digest.clone(), stats.clone());
+            let (membership, digest, connections) = (membership.clone(), digest.clone(), connections.clone());
             Box::pin(async move {
                 let held = digest.lock().unwrap().node.name.clone();
-                let decision = crate::node_name::decide(&held, &asked, rafka_node_rpc::ServerStats::get(&stats.in_flight).saturating_sub(1));
+                let routes = connections.held_routes().await;
+                let decision = crate::node_name::decide(&held, &asked, &routes);
                 if decision == crate::node_name::NameApply::Applied {
                     membership.set_name(asked.clone());
                     let d = {
@@ -5231,6 +5255,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         });
         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
         let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
+        own.set_connections(connections.clone());
         own.set_session(Arc::new(AdminSession {
             gate: park_gate.clone(),
             name: name.clone(),
@@ -5298,7 +5323,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         tasks.push(tokio::spawn(async move {
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("declarer").await;
                 let addressed = records.wake.take_addressed();
                 let view = topology.read().await.clone();
                 let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
@@ -5307,6 +5332,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
+                drop(turn);
                 // One coalesced wake from the inputs, never a timer: a poke during the round is
                 // the stored permit, so the next round runs at once; a burst runs one.
                 records.wake.woken().await;
@@ -5346,7 +5372,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut written: WrittenSilence = HashMap::new();
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("offline-tickle").await;
                 let view = topology.read().await.clone();
                 let holds_seat = view.holds_mesh_seat(&mesh, &me_id);
                 // Every admin watches the same set, the seat holder or not, so a successor tickles on
@@ -5500,6 +5526,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         });
                     }
                 }
+                drop(turn);
                 cadence.next().await;
             }
         }));
@@ -5557,7 +5584,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut was_fabric_primary = false;
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("hierarchy").await;
                 // The accepted Build's planned births are what a mesh's readiness is counted over.
                 if let Some(b) = accepted.current(&*adapter).await {
                     records.set_planned(&b.topology);
@@ -5671,6 +5698,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 builds.join_admins(admins.clone()).await;
                 backbone.join_admins(admins).await;
                 let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
+                drop(turn);
                 // The next round is due after one gossip interval, or at once when a checklist the
                 // fabric-primary waits on, or the application's answer, moved, or when the view changes
                 // what the round publishes: this admin takes or loses a seat, or its mesh's status moves
@@ -5708,6 +5736,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         tasks.push(tokio::spawn(async move {
             let mut held: BTreeSet<PathName> = BTreeSet::new();
             let mut facts = book.routing_watch();
+            let mut turn = rebuild_gate.turn("view-rebuild").await;
             loop {
                 facts.seen();
                 let t = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
@@ -5725,7 +5754,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 if authority.get().is_some() && held.contains(&me) {
                     rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
-                view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
+                drop(turn);
+                turn = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
             }
         }));
     }
@@ -5780,7 +5810,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut held = HashSet::new();
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("executor").await;
                 // A fabric shutdown freezes reconciliation: no Build attempt, no drift recovery, no
                 // rebirth from here on (fabric-mesh-lifecycle.md §11.1).
                 if frozen.held().is_some() {
@@ -5805,6 +5835,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
                         crate::build_op::ensure_active(&drives, &drive_env).await;
                     }
                 }
+                drop(turn);
                 tokio::select! {
                     _ = submitted.notified() => {}
                     _ = tokio::time::sleep(Duration::from_millis(300)) => {}
@@ -5822,7 +5853,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
             loop {
                 tokio::time::sleep(ttl).await;
                 // Held here while the admin is parked: its own wait, outside every lock.
-                park.opened().await;
+                let turn = park.turn("stopped-sweep").await;
                 if frozen.held().is_some() {
                     return;
                 }
@@ -5830,6 +5861,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
                     let swept = control.sweep_stopped(Some(ttl)).await;
                     tracing::debug!(?swept, "stopped-node sweep");
                 }
+                drop(turn);
             }
         }));
     }
@@ -5854,7 +5886,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
                 }
             }
             // Held here while the admin is parked: its own wait, outside every lock.
-            park.opened().await;
+            let turn = park.turn("shutdown-drain").await;
             // The seats stay as they were before any admin drained (FML-26): held before this
             // admin says Draining, so no view of its own moves them.
             records_w.hold_seats();
@@ -5868,6 +5900,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
             let _ = membership_w.publish(&d).await;
             tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me)
                 .in_scope(|| tracing::info!("reconciliation frozen; Draining"));
+            drop(turn);
             if crate::shutdown::drain(me, me_id, drain_control, stopper).await {
                 done.notify_waiters();
             }
@@ -5879,7 +5912,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
             tracing::info!(error = %e, "control API stopped");
         }
     }));
-    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert, gate: park_gate.clone() })
+    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs") })
 }
 
 #[cfg(test)]
@@ -7547,12 +7580,14 @@ mod tests {
         assert!(!quiet(&records).await, "the gate closing wakes it");
     }
 
-    /// CONTRACT (R-J1 step 5): a node-admin the fabric-primary admitted over `JoinNode` is known to
+    /// CONTRACT (R-J1 step 5): a node-admin the fabric-primary admitted over `JoinNode` is held by
     /// the fabric-primary's status authority when the join is answered, before any gossip carries its
-    /// digest. Its first declaration (`ReadyForTraffic`) is `Applied`, never refused as an unknown
-    /// peer; an endpoint that never joined is still refused `SenderNotSubject` "unknown peer".
+    /// digest. Before the join its declaration names a subject the authority does not hold
+    /// (`SubjectUnknown`); after it, its first declaration (`ReadyForTraffic`) is `Applied`. Nothing
+    /// checks who is calling (node-rpc.md §14): the same declaration from an endpoint that never
+    /// joined is decided for the subject it names.
     #[tokio::test]
-    async fn an_admitted_node_admin_declares_ready_before_its_digest_is_gossiped_and_a_stranger_is_refused() {
+    async fn an_admitted_node_admin_is_a_held_subject_before_its_digest_is_gossiped() {
         use crate::join::{Deployed, JoinDoor, Joins};
         use crate::status_rpc::{Declared, StatusAuthority};
         use rafka_node_rpc_contract::status::{NodeState, NotAuthority, StatusReply, StatusRequest};
@@ -7631,18 +7666,18 @@ mod tests {
         };
         let endpoint = reported.node.endpoint_id.clone();
         assert!(authority.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
+        let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::ReadyForTraffic };
+        assert_eq!(authority.apply(None, &declare).await, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "before the join the subject is not held");
         let joined = door.serve(endpoint.clone(), JoinRequest::JoinNode { digest: (&reported).into() }).await;
         assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
 
         // Acceptance made the birth known; no projection tick ran since.
         let sender = authority.sender_of(&endpoint).await.expect("the admitted birth is known when its join is answered");
-        let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(sender), &declare).await, StatusReply::Applied);
 
-        // An endpoint that never joined is a stranger, named as one.
+        // An endpoint that never joined sends the same declaration: decided for the subject it names.
         assert!(authority.sender_of(&EndpointId("key-never-joined".into())).await.is_none());
-        let refused = authority.apply(None, &declare).await;
-        assert_eq!(refused, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } });
+        assert_eq!(authority.apply(None, &declare).await, StatusReply::AlreadyApplied);
     }
 
     #[test]

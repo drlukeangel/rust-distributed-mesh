@@ -434,6 +434,12 @@ impl From<WireStorageDisposition> for StorageDisposition {
     }
 }
 
+/// The step an earlier build ran on a removal to release storage. No step of this build runs it (a
+/// delete retains storage, node-delete.md "Storage"); its receipt keeps its typed output
+/// (`WireOutput::Storage`), so the positional layout of `WireOutput` and a Build fact an earlier
+/// build wrote still decode.
+pub const RELEASE_STORAGE_STEP: &str = "ReleaseStorage";
+
 /// The type of output each step produces; a step not listed commits none.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Produces {
@@ -484,7 +490,7 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::CommandAdmission
     } else if ret(RetireStep::AwaitNodeDrained) || ret(RetireStep::AwaitNodeLeft) {
         Produces::Completion
-    } else if ret(RetireStep::ReleaseStorage) {
+    } else if step == RELEASE_STORAGE_STEP {
         Produces::Storage
     } else if ret(RetireStep::TerminateRuntime) {
         Produces::Terminal

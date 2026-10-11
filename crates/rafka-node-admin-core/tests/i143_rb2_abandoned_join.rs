@@ -144,7 +144,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             timeouts: Timeouts { bind: Duration::from_millis(300), ..Timeouts::default() },
         };
         let name: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
-        let err = pipeline.create(&CreateRequest { build_id: build_id.clone(), attempt: 3, node: name.clone(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() }).await.unwrap_err();
+        let err = pipeline.create(&CreateRequest { build_id: build_id.clone(), attempt: 3, node: name.clone(), spec: &RPC_NODE, held_runtimes: Vec::new() }).await.unwrap_err();
         assert_eq!(err.step, "WaitForBind", "{err}");
 
         // The exact birth the create deployed, from its own receipts and data dir.

@@ -11,6 +11,12 @@
 //! names the key at Y alone too. What must NOT happen: X left in a side book (the backbone's) and
 //! read back when the endpoint dials the key; a second node keeping X because the first node of
 //! the process consumed the newer birth.
+//!
+//! Every connection between the admin and the old birth is registered at the admin before the old
+//! birth dies: iroh registers a connection with the remote's state only once its handshake has
+//! completed on that side, and a registration puts the connection's socket back into the remote's
+//! paths. A connection the admin registered only after it accepted the newer birth would put X back
+//! from outside the move this cell is about.
 
 use futures_lite::StreamExt;
 use iroh::protocol::Router;
@@ -21,22 +27,57 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+/// The cell's own connection from the old birth to the admin: an ALPN only the admin serves.
+const HELD: &[u8] = b"rdm-cell/held";
+
+/// Hands every connection its router accepts to the cell. The router calls `accept` only once iroh's
+/// `Accepting` resolved, and that resolves only once the endpoint registered the connection with the
+/// remote's state (iroh `endpoint/connection.rs` `conn_from_noq_conn`). The cell holds the handle,
+/// so the connection stays open.
+#[derive(Debug, Clone)]
+struct HandOver(tokio::sync::mpsc::UnboundedSender<iroh::endpoint::Connection>);
+
+impl iroh::protocol::ProtocolHandler for HandOver {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), iroh::protocol::AcceptError> {
+        let _ = self.0.send(connection);
+        Ok(())
+    }
+}
+
 struct Node {
     ep: iroh::Endpoint,
     router: Router,
     gossip: iroh_gossip::net::Gossip,
 }
 
-async fn node_with(key: iroh::SecretKey) -> Node {
+async fn bind(key: iroh::SecretKey, alpns: &[&[u8]]) -> iroh::Endpoint {
     let transport = iroh::endpoint::QuicTransportConfig::builder().build();
-    let ep = rafka_node_rpc::endpoint::bind_exact(key, "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
-    let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    Node { ep, router, gossip }
+    rafka_node_rpc::endpoint::bind_exact(key, "127.0.0.1:0".parse().unwrap(), alpns.iter().map(|a| a.to_vec()).collect(), transport).await.unwrap()
 }
 
-fn socket_of(n: &Node) -> SocketAddr {
-    SocketAddr::from(([127, 0, 0, 1], n.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port()))
+/// A gossip node; with `held`, it also serves the cell's [`HELD`] ALPN through it.
+async fn node_with(key: iroh::SecretKey, held: Option<HandOver>) -> Node {
+    let alpns: &[&[u8]] = if held.is_some() { &[iroh_gossip::ALPN, HELD] } else { &[iroh_gossip::ALPN] };
+    let ep = bind(key, alpns).await;
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+    let mut router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone());
+    if let Some(held) = held {
+        router = router.accept(HELD, held);
+    }
+    Node { ep, router: router.spawn(), gossip }
+}
+
+/// The peer admin's first birth: it holds every gossip connection the admin dials to it and hands
+/// each to the cell. It joins no gossip topic, so its own gossip would only drop what the admin sends
+/// (iroh-gossip `proto/state.rs` `State::handle` passes a message only to a topic it joined).
+async fn first_birth_at(key: iroh::SecretKey, dialed: HandOver) -> (iroh::Endpoint, Router) {
+    let ep = bind(key, &[iroh_gossip::ALPN]).await;
+    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, dialed).spawn();
+    (ep, router)
+}
+
+fn socket_of(ep: &iroh::Endpoint) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port()))
 }
 
 /// The birth `incarnation` of node `node_id` at `socket`, under `key`.
@@ -126,7 +167,9 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
 
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rafka_mesh_transport::clock::os_clock;
-    let (admin, member) = (node_with(iroh::SecretKey::generate()).await, node_with(iroh::SecretKey::generate()).await);
+    let (held_tx, mut held_at_admin) = tokio::sync::mpsc::unbounded_channel();
+    let admin = node_with(iroh::SecretKey::generate(), Some(HandOver(held_tx))).await;
+    let member = node_with(iroh::SecretKey::generate(), None).await;
     let m_admin = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
     let backbone = Backbone::join(&admin.gossip, &admin.ep, &m_admin, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
     let m_member = Membership::join(&member.gossip, &member.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![]).await.unwrap();
@@ -135,25 +178,34 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
     // to the member, and connected to the admin.
     let key = iroh::SecretKey::generate();
     let peer = key.public();
-    let old = node_with(key.clone()).await;
-    let x = socket_of(&old);
+    let (dialed_tx, mut dialed_at_old) = tokio::sync::mpsc::unbounded_channel();
+    let old = first_birth_at(key.clone(), HandOver(dialed_tx)).await;
+    let x = socket_of(&old.0);
     let node_id = NodeId::mint();
     let first_birth = IncarnationId::mint();
     let first = birth(&node_id, peer, x, &first_birth, None);
     m_admin.learn(first.clone(), "join");
     m_member.learn(first, "join");
     backbone.join_admins(vec![iroh::EndpointAddr::new(peer).with_ip_addr(x)]).await;
-    let held = old.ep.connect(iroh::EndpointAddr::new(admin.ep.id()).with_ip_addr(socket_of(&admin)), iroh_gossip::ALPN).await.unwrap();
+    // The admin's gossip dial to X is registered at the admin and in use: gossip writes on a
+    // connection only once its connect returned, and a connect returns only once the endpoint
+    // registered the connection.
+    let dialed = dialed_at_old.recv().await.unwrap();
+    let first_frames = dialed.accept_uni().await.unwrap();
+    // The old birth's own connection to the admin, registered at the admin: its connect returning
+    // says only that the old side completed the handshake.
+    let held = old.0.connect(iroh::EndpointAddr::new(admin.ep.id()).with_ip_addr(socket_of(&admin.ep)), HELD).await.unwrap();
+    let held_by_admin = held_at_admin.recv().await.unwrap();
+    assert_eq!(held_by_admin.remote_id(), peer);
     assert!(paths(&admin.ep, peer).await.contains(&x), "the old birth is connected to the admin at {x}");
 
     // The key re-binds: the old process dies without a word (no close reaches the admin, which keeps
-    // its connection to X open and in use), and its successor binds a new socket Y.
-    drop(held);
+    // its connections to X open and in use), and its successor binds a new socket Y.
     drop(old);
     let open = active_paths(&admin.ep, peer).await;
     assert!(open.contains(&x), "the admin still holds the dead birth's path to {x} open: {open:?}");
-    let new = node_with(key).await;
-    let y = socket_of(&new);
+    let new = node_with(key, None).await;
+    let y = socket_of(&new.ep);
     assert_ne!(x, y);
     let second = birth(&node_id, peer, y, &IncarnationId::mint(), Some(first_birth));
     m_admin.learn(second.clone(), "join");
@@ -171,10 +223,16 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
         assert!(Instant::now() < deadline, "the admin still holds a path to the old socket {x}: {:?}", paths(&admin.ep, peer).await);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert_eq!(
+        held_by_admin.close_reason(),
+        Some(iroh::endpoint::ConnectionError::LocallyClosed),
+        "the retire closed the admin's open connection from the old birth, whose last path X was"
+    );
     let _dialed = admin.ep.connect(iroh::EndpointAddr::new(peer), iroh_gossip::ALPN).await.unwrap();
     let after = paths(&admin.ep, peer).await;
     assert!(!after.contains(&x), "a dial of the key by its id reached for the old socket {x} again: {after:?}");
     assert!(after.contains(&y), "the dial went to {y}: {after:?}");
+    drop((held, held_by_admin, dialed, first_frames));
 
     drop(telemetry);
     let spans = spans_of(&dir);

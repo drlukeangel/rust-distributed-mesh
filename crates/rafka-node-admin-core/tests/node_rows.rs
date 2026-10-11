@@ -853,7 +853,7 @@ mod writer {
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let req = CreateRequest { build_id: BuildId("build-node-rows".into()), attempt: 1, node: name.parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id: BuildId("build-node-rows".into()), attempt: 1, node: name.parse().unwrap(), spec: &RPC_NODE, held_runtimes: Vec::new() };
         let r = pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string());
         let _ = std::fs::remove_dir_all(&data_root);
         r

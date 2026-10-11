@@ -3254,6 +3254,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-docgen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "quote",
+ "rafka-mesh-audit",
+ "syn",
+]
+
+[[package]]
 name = "rafka-gateway"
 version = "0.1.0"
 dependencies = [

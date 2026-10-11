@@ -158,7 +158,7 @@ async fn recovery_deletes_the_exited_instance_then_creates_a_new_node_over_its_d
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -255,7 +255,7 @@ async fn a_recovery_whose_inherited_data_dir_has_no_endpoint_key_fails_by_name_a
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));

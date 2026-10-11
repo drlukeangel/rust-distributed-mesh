@@ -1,14 +1,15 @@
 //! A node.delete of a stopped node (node-decommission.md step 1, node-stop.md step 6): the stopped
 //! birth already ran its whole stop (drain receipt, connection cut, `stopped`, `NodeStopped`), so
 //! its delete composes nothing of that stop again. It goes from the `NodeDeleting` pre-notice
-//! straight to the provider's exact runtime exit proof, then `NodeDeleted`. The cell drives the
-//! retire pipeline over a recording provider and a recording observer: nothing here depends on timing.
+//! straight to the provider's exact runtime exit proof, then `NodeDeleted`, and releases no storage
+//! (node-delete.md "Storage": "Retain data dir and endpoint key"). The cell drives the retire
+//! pipeline over a recording provider and a recording observer: nothing here depends on timing.
 
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::pipeline::{
-    CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink,
+    CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RetireRequest, RetireStep, Timeouts, TopologySink,
 };
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
@@ -96,7 +97,8 @@ impl TopologySink for Discard {
 /// provider's stop and its `Exited` inspection of the exact runtime), then `NodeDeleted`, and
 /// `Complete`. Must NOT happen: a drain, a stop or a seat transfer sent again to the stopped birth,
 /// or any of their receipts (`SeatTransfer`, `DrainNode`, `AwaitNodeDrained`, `StopNode`,
-/// `AwaitNodeLeft`).
+/// `AwaitNodeLeft`), or a step that releases storage (`ReleaseStorage`: node-delete.md step 3,
+/// "Retain the data dir, node-identity.json and endpoint key").
 #[tokio::test]
 async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof() {
     crate::enable_callsites();
@@ -140,26 +142,27 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), kind: RetireKind::Removal };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone() };
     let out = pipeline.retire(&req).await;
-
-    let view = builds.read_build(&build_id).await.unwrap();
-    let order: Vec<&str> = view.steps.iter().map(|s| s.step.as_str()).collect();
-    assert_eq!(*observer.sent.lock().unwrap(), Vec::<String>::new(), "nothing is sent to a stopped birth: its stop is done; steps {order:?}");
-    assert_eq!(
-        order,
-        [RetireStep::NodeDeleting, RetireStep::TerminateRuntime, RetireStep::NodeDeleted, RetireStep::ReleaseStorage, RetireStep::RemoveTopologyMembership, RetireStep::Complete].map(|s| s.name()),
-        "the pre-notice, the exact runtime's exit proof, the departure: {out:?}"
-    );
-    assert!(out.is_ok(), "{out:?}");
-    assert_eq!(*provider.terminated.lock().unwrap(), vec![handle.deployment_id.to_string()], "the exact runtime is stopped through provider control, once");
-
+    // The trace first: a red below still names the steps the delete ran, with their trace id.
     capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
     let spans = exporter.get_finished_spans().unwrap();
     for s in spans.iter().filter(|s| s.name.starts_with("rdm.node_admin.deployment.update.via-")) {
         let step = s.attributes.iter().find(|kv| kv.key.as_str() == "step").map(|kv| kv.value.to_string()).unwrap_or_default();
         eprintln!("span {} trace_id={} step={step}", s.name, s.span_context.trace_id());
     }
+
+    let view = builds.read_build(&build_id).await.unwrap();
+    let order: Vec<&str> = view.steps.iter().map(|s| s.step.as_str()).collect();
+    assert_eq!(*observer.sent.lock().unwrap(), Vec::<String>::new(), "nothing is sent to a stopped birth: its stop is done; steps {order:?}");
+    assert_eq!(
+        order,
+        [RetireStep::NodeDeleting, RetireStep::TerminateRuntime, RetireStep::NodeDeleted, RetireStep::RemoveTopologyMembership, RetireStep::Complete].map(|s| s.name()),
+        "the pre-notice, the exact runtime's exit proof, the departure, and no storage release: {out:?}"
+    );
+    assert!(out.is_ok(), "{out:?}");
+    assert_eq!(*provider.terminated.lock().unwrap(), vec![handle.deployment_id.to_string()], "the exact runtime is stopped through provider control, once");
+
     let steps: Vec<String> = spans
         .iter()
         .filter(|s| s.name == "rdm.node_admin.deployment.update.via-step")
@@ -167,4 +170,5 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         .collect();
     assert!(!steps.iter().any(|s| s == RetireStep::DrainNode.name() || s == RetireStep::StopNode.name()), "no drain or stop step span: {steps:?}");
     assert!(steps.iter().any(|s| s == RetireStep::TerminateRuntime.name()), "{steps:?}");
+    assert!(!steps.iter().any(|s| s == "ReleaseStorage"), "no step span releases storage: {steps:?}");
 }

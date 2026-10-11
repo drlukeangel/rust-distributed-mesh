@@ -132,7 +132,6 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 attempt: 1,
                 node: "mesh1.rpc.1".parse().unwrap(),
                 spec: &RPC_NODE,
-                restart_of: None,
                 held_runtimes: Vec::new(),
             })
             .await
@@ -149,7 +148,6 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 attempt: 1,
                 node: created.node.clone(),
                 handle: created.handle.clone(),
-                kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
             })
             .await;
         assert_eq!(
@@ -191,18 +189,17 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             template: &template,
             timeouts: timeouts(),
         };
-        let create = |build_id, restart_of| CreateRequest {
+        let create = |build_id| CreateRequest {
             build_id,
             attempt: 1,
             node: "mesh1.rpc.1".parse().unwrap(),
             spec: &RPC_NODE,
-            restart_of,
             held_runtimes: Vec::new(),
         };
 
         // Birth A, then A exits.
         let a = pipeline
-            .create(&create(publish_build(&builds, add_node()).await, None))
+            .create(&create(publish_build(&builds, add_node()).await))
             .await
             .unwrap_or_else(|e| panic!("create A: {e}"));
         process
@@ -213,7 +210,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
 
         // Birth B at the same path, ready.
         let b = pipeline
-            .create(&create(publish_build(&builds, add_node()).await, None))
+            .create(&create(publish_build(&builds, add_node()).await))
             .await
             .unwrap_or_else(|e| panic!("create B: {e}"));
         assert_ne!(b.node.incarnation_id, a.node.incarnation_id, "a new birth");
@@ -231,7 +228,6 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
                 attempt: 1,
                 node: b.node.clone(),
                 handle: b.handle.clone(),
-                kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
             })
             .await;
         // B is live and admits its node-admin: its drain-node was admitted and its stop-node answered

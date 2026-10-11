@@ -226,6 +226,12 @@ impl NodeRpcClient {
         self.pool.close_peer(peer, reason.as_bytes())
     }
 
+    /// The endpoint the resolver names for the node `node` now, if it resolves: the key its pooled
+    /// connections to that node are held under.
+    pub fn endpoint_of(&self, node: &rafka_mesh_entity::NodeId) -> Option<iroh::PublicKey> {
+        self.resolver.resolve(&NodeTarget::ExactNode(node.clone())).ok().map(|n| n.endpoint_id)
+    }
+
     /// Hard-cut every connection this client holds (`node.connections.delete`): dials in flight are
     /// cancelled and every pooled connection is closed, so no call rides one and the next call dials
     /// afresh. Returns how many pooled connections were closed.
@@ -387,7 +393,6 @@ impl NodeRpcClient {
         if let Ok(Err(WriteError::Stopped(stop))) = &written {
             // The server refused before this request finished (node-rpc.md §27):
             // a healthy answer on a healthy connection.
-            self.pool.healthy(&key);
             if stop.into_inner() == u64::from(ResetCode::UnservedOp.code()) {
                 return Phase::Done(pre.unserved_before_finish(), Some(evidence));
             }
@@ -522,26 +527,15 @@ impl NodeRpcClient {
             Ok(Err(e)) => Committed::Lost(IndeterminateReason::ReplyLost(e.to_string())),
         };
         tracing::info!(step = "reply-read", waited_ms = read_at.elapsed().as_millis() as u64, "the reply direction ended");
-        // Pool health from what came back (never reachability).
-        match &got {
-            Committed::Reply(_) | Committed::Reset(_) => self.pool.healthy(&key),
-            // The pooled connection leaving the pool after a post-commit loss is a Direct edge that broke: told
-            // through the observer's one door for it.
-            Committed::Lost(IndeterminateReason::ReplyDeadline) => {
-                if self.pool.timed_out(&key, &conn) {
-                    if let Some(o) = &self.observer {
-                        o.direct_broken(&node, "two reply deadlines in a row evicted the connection");
-                    }
+        // A reply lost with the connection evicts it (node-rpc.md §21; never reachability), and the pooled
+        // connection leaving the pool is a Direct edge that broke: told through the observer's one door for it.
+        // A reply deadline is no evidence about the connection: it stays pooled.
+        if let Committed::Lost(IndeterminateReason::ReplyLost(why)) = &got {
+            if self.pool.broken(&key, &conn) {
+                if let Some(o) = &self.observer {
+                    o.direct_broken(&node, why);
                 }
             }
-            Committed::Lost(IndeterminateReason::ReplyLost(why)) => {
-                if self.pool.broken(&key, &conn) {
-                    if let Some(o) = &self.observer {
-                        o.direct_broken(&node, why);
-                    }
-                }
-            }
-            Committed::Lost(_) => {}
         }
         let out = match got {
             Committed::Reply(bytes) => match decode_single_frame(&bytes, max_reply) {

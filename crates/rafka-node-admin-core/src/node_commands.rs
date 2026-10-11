@@ -227,28 +227,27 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
 
 /// A birth's `node-drained` completion call at the admin `receiver` that commanded it (node-left
 /// is the reply of `stop-node`, never a call; a `NodeLeft` request is refused by name before it
-/// reaches here): it resolves the open command it names. `sender` is the resolved caller `(node id,
-/// incarnation, path.name)`; it must be the subject. A completion with no open command is
-/// refused `NotReady` naming the mismatch, never counted toward another operation.
-pub fn accept_completion(commands: &CommandBook, receiver: &str, sender: Option<(&NodeId, Option<&IncarnationId>, &str)>, req: &StatusRequest) -> StatusReply {
+/// reaches here): it resolves the open command it names. `subject` is the birth the request names
+/// as the receiver holds it `(incarnation, path.name)`, `None` when the receiver holds no such
+/// node; `caller` names who called, for the span only. Nothing checks who is calling (node-rpc.md
+/// §14). A completion with no open command is refused naming the mismatch, never counted toward
+/// another operation.
+pub fn accept_completion(commands: &CommandBook, receiver: &str, subject: Option<(Option<&IncarnationId>, &str)>, caller: &str, req: &StatusRequest) -> StatusReply {
     let (node_id, incarnation, build_id, attempt, operation) = match req {
         StatusRequest::NodeDrained { node_id, incarnation, build_id, attempt, operation } | StatusRequest::NodeLeft { node_id, incarnation, build_id, attempt, operation } => (node_id, incarnation, build_id, attempt, operation),
         _ => unreachable!("accept_completion is called for completions only"),
     };
-    let reply = match sender {
-        Some((from, held, _)) if from == node_id => match held {
-            Some(held) if held != incarnation => StatusReply::RejectedStaleIncarnation { held: held.clone() },
-            Some(_) => {
-                let key = CommandKey { build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() };
-                match commands.complete(&key) {
-                    Accepted::First => StatusReply::Applied,
-                    Accepted::Again => StatusReply::AlreadyApplied,
-                    Accepted::NoOpenCommand { field, expected, reported } => StatusReply::RejectedUnmatchedCompletion { field, expected, reported },
-                }
+    let reply = match subject.and_then(|(held, _)| held) {
+        Some(held) if held != incarnation => StatusReply::RejectedStaleIncarnation { held: held.clone() },
+        Some(_) => {
+            let key = CommandKey { build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() };
+            match commands.complete(&key) {
+                Accepted::First => StatusReply::Applied,
+                Accepted::Again => StatusReply::AlreadyApplied,
+                Accepted::NoOpenCommand { field, expected, reported } => StatusReply::RejectedUnmatchedCompletion { field, expected, reported },
             }
-            None => StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown },
-        },
-        other => StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: other.map(|(_, _, n)| n.to_string()).unwrap_or_else(|| "unknown peer".into()) } },
+        }
+        None => StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown },
     };
     tracing::info_span!(
         "rdm.node_admin.status.update.via-completion-accepted",
@@ -259,7 +258,8 @@ pub fn accept_completion(commands: &CommandBook, receiver: &str, sender: Option<
         attempt = *attempt,
         subject = %node_id,
         incarnation_id = %incarnation.0,
-        sender = %sender.map(|(_, _, n)| n).unwrap_or_default(),
+        name = %subject.map(|(_, n)| n).unwrap_or_default(),
+        caller = %caller,
         outcome = reply.name(),
         "otel.kind" = "internal"
     )
@@ -294,30 +294,30 @@ mod tests {
         assert!(matches!(book.complete(&stranger), Accepted::NoOpenCommand { field, .. } if field == "command"));
     }
 
-    /// CONTRACT: a completion is answered by the one fact that is wrong. The subject's own
-    /// completion for its open command is `Applied` (a repeat `AlreadyApplied`); one reporting an
-    /// incarnation other than the sender's is `RejectedStaleIncarnation` with the held one; one
-    /// naming no open command is `RejectedUnmatchedCompletion` naming the differing field; one from
-    /// another birth is `RejectedNotAuthority`. NotReady stands for none of them.
+    /// CONTRACT: a completion is answered by the one fact that is wrong, about the subject it names
+    /// as the receiver holds it (node-rpc.md §14: nothing checks who is calling). The subject's
+    /// completion for its open command is `Applied` (a repeat `AlreadyApplied`), whoever calls; one
+    /// reporting an incarnation other than the one held is `RejectedStaleIncarnation` with the held
+    /// one; one naming no open command is `RejectedUnmatchedCompletion` naming the differing field; one
+    /// for a subject the receiver does not hold is `SubjectUnknown`. NotReady stands for none of them.
     #[test]
     fn a_completion_is_answered_by_the_fact_that_is_wrong() {
         let book = CommandBook::default();
         let k = key("drain-node:mesh1.rpc.1");
         let _ = book.open(k.clone());
         let req = |attempt: u32, incarnation: &IncarnationId| StatusRequest::NodeDrained { node_id: k.node_id.clone(), incarnation: incarnation.clone(), build_id: k.build_id.clone(), attempt, operation: k.operation.clone() };
-        fn sender_of<'a>(id: &'a NodeId, inc: &'a IncarnationId) -> Option<(&'a NodeId, Option<&'a IncarnationId>, &'static str)> {
-            Some((id, Some(inc), "mesh1.rpc.1"))
+        fn subject_of(inc: &IncarnationId) -> Option<(Option<&IncarnationId>, &'static str)> {
+            Some((Some(inc), "mesh1.rpc.1"))
         }
 
-        assert_eq!(accept_completion(&book, "mesh1.admin.1", sender_of(&k.node_id, &k.incarnation), &req(1, &k.incarnation)), StatusReply::Applied);
-        assert_eq!(accept_completion(&book, "mesh1.admin.1", sender_of(&k.node_id, &k.incarnation), &req(1, &k.incarnation)), StatusReply::AlreadyApplied);
+        assert_eq!(accept_completion(&book, "mesh1.admin.1", subject_of(&k.incarnation), "", &req(1, &k.incarnation)), StatusReply::Applied, "a caller the receiver holds no birth for");
+        assert_eq!(accept_completion(&book, "mesh1.admin.1", subject_of(&k.incarnation), "mesh1.rpc.1", &req(1, &k.incarnation)), StatusReply::AlreadyApplied);
         let newer = IncarnationId("newer".into());
-        assert_eq!(accept_completion(&book, "mesh1.admin.1", sender_of(&k.node_id, &newer), &req(1, &k.incarnation)), StatusReply::RejectedStaleIncarnation { held: newer.clone() });
+        assert_eq!(accept_completion(&book, "mesh1.admin.1", subject_of(&newer), "mesh1.rpc.1", &req(1, &k.incarnation)), StatusReply::RejectedStaleIncarnation { held: newer.clone() });
         assert_eq!(
-            accept_completion(&book, "mesh1.admin.1", sender_of(&k.node_id, &k.incarnation), &req(2, &k.incarnation)),
+            accept_completion(&book, "mesh1.admin.1", subject_of(&k.incarnation), "mesh1.rpc.1", &req(2, &k.incarnation)),
             StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }
         );
-        let other = NodeId::mint();
-        assert!(matches!(accept_completion(&book, "mesh1.admin.1", Some((&other, Some(&k.incarnation), "mesh1.rpc.2")), &req(1, &k.incarnation)), StatusReply::RejectedNotAuthority { .. }));
+        assert_eq!(accept_completion(&book, "mesh1.admin.1", None, "mesh1.rpc.2", &req(1, &k.incarnation)), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
     }
 }

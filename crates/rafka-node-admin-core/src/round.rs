@@ -110,6 +110,12 @@ pub(crate) fn fabric_missing(meshes: &[(String, Option<IncarnationId>, bool)], m
     out
 }
 
+/// The report that counts for each of `meshes`, read for the primary `view` names it now
+/// ([`crate::status_rpc::Declared::report_of`]).
+pub(crate) fn reports_of<'a>(declared: &crate::status_rpc::Declared, view: &crate::topology::Topology, meshes: impl Iterator<Item = &'a str>) -> BTreeMap<String, MeshReport> {
+    meshes.filter_map(|m| declared.report_of(m, view.cohort_primary(m, NodeKind::NodeAdmin)).map(|r| (m.to_string(), r))).collect()
+}
+
 /// Whether the mesh a fabric-primary decided to rebirth is back: its current primary is a birth the
 /// decision did not find, it reported to this fabric-primary, and it reported after the decision.
 /// A ready primary of a newer birth that has not reported is not this.
@@ -279,7 +285,7 @@ impl RoundDriver {
                 send_down(&self.me, "fabric", &i.view.fabric.name, targets, i.client);
             }
             let my_mesh_done = !awaiting.mesh_awaiting_round || out.mesh;
-            let reports = i.records.declared.lock().unwrap().reports.clone();
+            let reports = reports_of(&i.records.declared.lock().unwrap(), i.view, meshes.iter().map(|(m, _, _)| m.as_str()));
             let missing = fabric_missing(&meshes, my_mesh_done, &reports);
             if missing.is_empty() {
                 let waited_ms = round.began.elapsed().as_millis() as u64;
@@ -504,11 +510,11 @@ mod tests {
         let done = driver.step(awaiting, inputs()).await;
         assert!(!done.fabric && records.adopted_degraded(), "the topology reading alone does not clear degraded");
         // A report from a birth that is not the primary now does not either.
-        records.declared.lock().unwrap().reports.insert("mesh1".into(), MeshReport { incarnation: IncarnationId::mint(), at: Instant::now() });
+        records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(IncarnationId::mint()), Instant::now());
         let done = driver.step(awaiting, inputs()).await;
         assert!(!done.fabric && records.adopted_degraded(), "a report of another birth is not the current primary's");
         // The current primary re-declares to the new holder: the round is complete and degraded clears.
-        records.declared.lock().unwrap().reports.insert("mesh1".into(), MeshReport { incarnation: reborn.incarnation_id.clone().unwrap(), at: Instant::now() });
+        records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(reborn.incarnation_id.clone().unwrap()), Instant::now());
         let done = driver.step(awaiting, inputs()).await;
         assert!(done.fabric && !records.adopted_degraded(), "every mesh primary reported for this round");
     }

@@ -548,6 +548,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         };
         Arc::new(rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), membership.clone(), set_status, current, Some(declare)).with_retire(cancel.clone()))
     };
+    own.set_connections(connections.clone());
     let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
     let hydration_cell: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>> = Arc::default();
     let hydrating_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
@@ -577,7 +578,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
     // cadence until an authority answers by name. An authority that does not yet hold this
-    // birth answers `sender-not-subject`; the next cadence carries the digest and the retry lands.
+    // birth answers `subject-unknown`; the next cadence carries the digest and the retry lands.
     // When the mesh's primary seat moves to another birth, this birth's state is owed to the new
     // holder (R-S2: a declaration is owed again when the authority is another node or a new
     // incarnation of the same node): that declaration is how the new primary learns this birth
@@ -726,10 +727,10 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         self.membership.park().await;
         let pooled = self.client.close_pooled("node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
-        rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted }
+        rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<rafka_node_admin_core::connections_writer::RowsHeld>) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
         use rafka_node_admin_core::node_self::StartFailed;
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
@@ -757,6 +758,8 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         // The row's name and config the join answer handed are held before the node re-enters its
         // topic or says anything: a node renamed while stopped publishes its row's name (R-JN1).
         install_handed(&self.membership, &joined.control);
+        // Only now are its connections recorded: the join's names the handed name.
+        drop(rows);
         // 2. The mesh channel and the topology: rafka-time again last, so both are current the moment the node re-enters.
         let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %name, launcher = %authority);
         self.membership.unpark().await;
@@ -977,8 +980,10 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// hands its peers to its mesh channel again, publishes its digest, and answers its current
 /// state; no transition. While its `hydrate_before_ready` hook is Blocked it answers `Blocked` with
-/// the hook's blocker and republishes nothing. `DrainNode` and `StopNode` from a node-admin are obeyed by
-/// `rafka_node_admin_core::node_self`. A stale incarnation is refused with the one held.
+/// the hook's blocker and republishes nothing. `DrainNode`, `StopNode` and `StartNode` are obeyed by
+/// `rafka_node_admin_core::node_self`. A stale incarnation is refused with the one held. Nothing
+/// checks who is calling (node-rpc.md §14): every request is decided on the target node id, the op
+/// and the exact birth it names; the caller is named in spans and is where a drain's completion goes.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
     b.serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: StatusRequest| {
@@ -991,35 +996,27 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // birth (a hook blocked on its authority's word runs again on it).
             let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
-            let from_admin = sender.as_ref().is_some_and(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin);
             // A sender this node holds no digest of is named by the one fact it holds of it: its endpoint.
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
                 me.addressed.note(&from.node.node_id);
             }
-            if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
-                let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) else {
-                    return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
-                };
-                let reply = me.own.serve(&from.node.node_id, Some(peer.endpoint_id), &req).await.expect("a command");
-                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+            if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::DeleteConnections { .. }) {
+                let commander = sender.as_ref().map(|d| d.node.node_id.clone());
+                let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a node command naming this node was decided"));
                 return Ok(reply);
             }
             if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
-                // A round command is the mesh primary's: the node-admin holding this node's mesh seat.
+                // A member checks in with its mesh's primary: the node-admin holding this node's mesh
+                // seat (fabric-state-commit.md: "node → mesh-primary → fabric-primary").
                 let mesh = me.digest.node.name.mesh.clone();
-                let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.node.name.mesh == mesh) else {
-                    return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
-                };
                 let reply = match me.membership.seats().mesh(&mesh) {
                     None => StatusReply::NotReady { reason: format!("{} has not yet heard who holds the primary seat of {mesh}", me.digest.node.name) },
-                    Some(held) if !held.is_birth(&from.node.node_id, &from.node.incarnation) => {
-                        StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: from.node.name.to_string() } }
-                    }
-                    Some(_) => me.own.serve(&from.node.node_id, None, &req).await.expect("a round op"),
+                    Some(held) => me.own.serve(Some(&held.node_id), None, &req).await.expect("a round op"),
                 };
-                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a round command naming this node was decided"));
                 return Ok(reply);
             }
@@ -1027,8 +1024,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } => (node_id, incarnation),
                 _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             };
-            if *node_id != me.digest.node.node_id || !from_admin {
-                return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself, from a node-admin".into() } });
+            if *node_id != me.digest.node.node_id {
+                return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } });
             }
             if *incarnation != me.digest.node.incarnation {
                 return Ok(StatusReply::RejectedStaleIncarnation { held: me.digest.node.incarnation.clone() });
@@ -1104,9 +1101,13 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             return Ok(StatusReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt });
                         }
                     };
-                    // The apply call itself is in flight and is not traffic (as node_self's drain).
-                    let in_flight = rafka_node_rpc::ServerStats::get(&me.stats.in_flight).saturating_sub(1);
-                    let decision = rafka_node_admin_core::node_name::decide(&held, &asked, in_flight);
+                    // R-CR1: the name moves only while the node holds no connection, read from its
+                    // connections writer once every observation has landed.
+                    let routes = match me.own.held_routes().await {
+                        Ok(r) => r,
+                        Err(reason) => return Ok(StatusReply::NotReady { reason }),
+                    };
+                    let decision = rafka_node_admin_core::node_name::decide(&held, &asked, &routes);
                     let published = match decision {
                         rafka_node_admin_core::node_name::NameApply::Applied => {
                             me.membership.set_name(asked.clone());
@@ -1123,7 +1124,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         }
                         _ => "unchanged",
                     };
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, in_flight, digest = published, outcome = decision.name(), "otel.kind" = "internal")
+                    let held_routes = routes.iter().map(rafka_node_admin_core::node_name::route_name).collect::<Vec<_>>().join(", ");
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
                     Ok(rafka_node_admin_core::node_name::reply(&held, &asked, &decision))
                 }

@@ -188,7 +188,7 @@ pub fn own_end(own: &PathName) -> ConnectionEnd {
 /// A connections fact at stamp `at`, in the shape the writer records it.
 pub fn edge(from: ConnectionEnd, to: ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, at: u64) -> NodeConnection {
     let recovery = (kind == ConnectionKind::Direct && state == ConnectionState::Failed).then_some(DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
-    NodeConnection { source: from, destination: to, kind, state, carrier, recovery, reason: None, logged_at_ms: at }
+    NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: from, destination: to, kind, state, carrier, recovery, reason: None, logged_at_ms: at }
 }
 
 pub fn held_for(own: &PathName) -> ConnectionsHeld {

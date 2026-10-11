@@ -750,8 +750,8 @@ async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
     Json(v)
 }
 
-/// `GET /api/connections`: the connection facts this admin holds, read-only. Each names its
-/// source, destination, kind (`direct` or `proxy`, a proxy with its carrier), state and when it
+/// `GET /api/connections`: the connection facts this admin holds, read-only. Each names its entry's
+/// minted id, its source, destination, kind (`direct` or `proxy`, a proxy with its carrier), state and when it
 /// was observed. An admin that holds none lists none.
 async fn get_connections(State(cp): State<Shared>) -> Json<Value> {
     use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, NodeConnection};
@@ -774,6 +774,7 @@ async fn get_connections(State(cp): State<Shared>) -> Json<Value> {
         .iter()
         .map(|f| {
             json!({
+                "id": f.id.to_string(),
                 "source": f.source.name.to_string(),
                 "destination": f.destination.name.to_string(),
                 "kind": match f.kind { ConnectionKind::Direct => "direct", ConnectionKind::Proxy => "proxy" },

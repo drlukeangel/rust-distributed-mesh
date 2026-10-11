@@ -1,0 +1,13 @@
+[package]
+name = "rafka-docgen"
+version = "0.1.0"
+edition = "2021"
+description = "Reads RDM source with syn and writes the generated reference pages (wire, frames, statuses, spans, config) and the book SUMMARY into a rafka-v2 checkout"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+rafka-mesh-audit = { path = "../mesh-audit" }

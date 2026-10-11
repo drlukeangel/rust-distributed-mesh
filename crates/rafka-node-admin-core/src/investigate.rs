@@ -363,7 +363,7 @@ fn local_now_ms() -> u64 {
 /// down its ladder.
 pub async fn run(w: Watch) {
     let w = Arc::new(w);
-    let inv = Investigations::new(w.me.to_string(), w.ladder.clone());
+    let inv = Investigations::new(w.me.to_string(), w.ladder.clone(), w.gate.clone());
     // When this admin took the fabric-primary seat: a peer mesh it has never heard is unheard from then.
     let mut seat_since: Option<Instant> = None;
     let mut wait = w.round;
@@ -373,8 +373,9 @@ pub async fn run(w: Watch) {
             _ = inv.landed() => {}
         }
         wait = w.round;
-        // Held here while the admin is parked: its own wait, outside every lock.
-        w.gate.opened().await;
+        // Held here while the admin is parked: its own wait, outside every lock. The turn ends with
+        // the pass.
+        let _turn = w.gate.turn("peer-mesh-investigation").await;
         let view = Arc::new(w.topology.read().await.clone());
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
         if !(fabric_primary && w.membership.authorizes()) {
@@ -446,7 +447,7 @@ fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
 fn restore(w: &Watch, view: &Topology) {
     let Some(recovery) = w.records.peer_recovery() else { return };
     let primary = view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin).and_then(|p| p.incarnation_id.clone());
-    let report = w.records.declared.lock().unwrap().reports.get(&recovery.mesh).cloned();
+    let report = w.records.declared.lock().unwrap().report_of(&recovery.mesh, view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin));
     if crate::round::recovered(&recovery, primary.as_ref(), report.as_ref()) {
         w.records.set_peer_recovery(None);
         tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %w.me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = recovery.verdict_rafka_ms)
@@ -460,15 +461,18 @@ pub(crate) struct Investigations {
     /// This admin's `path.name`, named on the probe and verdict spans.
     me: String,
     ladder: Arc<Mutex<Ladder>>,
-    /// The probes in flight, each its own task; dropped with the driver, they end with it.
+    /// The probes in flight, each its own task, held by the admin's park gate while it is parked;
+    /// dropped with the driver, they end with it.
     probes: Mutex<tokio::task::JoinSet<()>>,
     /// Woken when a probe ends, so the step it opens (probe 2, the decision) is taken then.
     landed: Arc<tokio::sync::Notify>,
+    /// The admin's park gate: a probe in flight while the admin is parked is held where it stands.
+    gate: crate::park_gate::ParkGate,
 }
 
 impl Investigations {
-    pub(crate) fn new(me: String, ladder: Arc<Mutex<Ladder>>) -> Self {
-        Self { me, ladder, probes: Mutex::new(tokio::task::JoinSet::new()), landed: Arc::new(tokio::sync::Notify::new()) }
+    pub(crate) fn new(me: String, ladder: Arc<Mutex<Ladder>>, gate: crate::park_gate::ParkGate) -> Self {
+        Self { me, ladder, probes: Mutex::new(tokio::task::JoinSet::new()), landed: Arc::new(tokio::sync::Notify::new()), gate }
     }
 
     /// Resolves when a probe has ended since the last wake.
@@ -510,11 +514,13 @@ impl Investigations {
                 );
                 let (me, ladder, landed, mesh) = (self.me.clone(), self.ladder.clone(), self.landed.clone(), mesh.to_string());
                 let probe = tracing::Instrument::instrument(start(n), span.clone());
-                probes.spawn(async move {
+                // A probe takes no lock a handler needs: while the admin is parked it is held where it
+                // stands, so a stopped admin's probe makes no further call.
+                probes.spawn(self.gate.hold(async move {
                     let found = probe.await;
                     land(&me, &span, &ladder, &mesh, ticket, n, unheard_ms, found);
                     landed.notify_one();
-                });
+                }));
             }
         }
         steps
@@ -543,7 +549,7 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
     let at = local_now_ms().saturating_sub(unheard.as_millis() as u64);
     let start = |n: u8| {
         let (w, view, mesh) = (w.clone(), view.clone(), mesh.clone());
-        async move { probe(&w, &view, &mesh, n).await }
+        async move { probe(&WatchCalls(&w), &w.carriers, &view, w.membership.book.seats.mesh(&mesh), &mesh, n).await }
     };
     let steps = inv.tick(&mesh, unheard, start).await;
     for step in steps {
@@ -647,102 +653,157 @@ pub(crate) fn fold_admin_outcomes(outcomes: &[ProbeOutcome]) -> ProbeOutcome {
     }
 }
 
-/// Probe `mesh`'s node-admins (mesh-investigation.md steps 1 and 3): `ProbeNodeState` to the exact
-/// mesh-primary first, then to each other node-admin (`admins_in_probe_order`), each direct and,
-/// when that fails, Forwarded through a member that answered a Ping. Active connections are asked first, then path order; probe 2 prefers a member probe 1
-/// did not use.
-async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
-    let record = w.membership.book.seats.mesh(mesh);
+/// How one direct or carried `ProbeNodeState` ended: what [`classify`] reads in it, and the Node
+/// RPC outcome's name.
+#[derive(Debug, Clone)]
+pub(crate) struct Contact {
+    pub(crate) outcome: ProbeOutcome,
+    pub(crate) detail: String,
+    /// The Node RPC outcome's name (`Reply`, `NotSent`, ...).
+    pub(crate) end: &'static str,
+}
+
+impl Contact {
+    /// What `out`, a `ProbeNodeState` of `admin`, says.
+    pub(crate) fn of(out: &rafka_node_rpc_contract::outcome::RpcOutcome<StatusReply>, admin: &PathName) -> Self {
+        let (outcome, detail) = classify(out, admin);
+        Self { outcome, detail, end: out.name() }
+    }
+}
+
+/// The calls one probe makes, each a primitive: [`probe`] is the workflow that calls them in
+/// mesh-investigation.md's order, and the admin plugs in its own Node RPC client ([`WatchCalls`]).
+#[async_trait::async_trait]
+pub(crate) trait ProbeCalls: Send + Sync {
+    /// `req`, the `ProbeNodeState` naming `admin`'s exact birth, direct to `admin`.
+    async fn direct(&self, admin: &Node, req: &StatusRequest) -> Contact;
+    /// iroh's local view of `admin`, read beside its direct contact: its known and its active
+    /// addresses. A diagnostic beside the probe; nothing decides on it.
+    async fn observe(&self, admin: &Node) -> (String, String);
+    /// A Ping to `member`: whether it answered, and the call's end.
+    async fn ping(&self, member: &Node) -> (bool, String);
+    /// `Forward { target: admin, inner: req }` through `carrier`.
+    async fn via(&self, carrier: &Node, admin: &Node, req: &StatusRequest) -> Contact;
+    /// Does this node hold an Active Direct connection to `node`?
+    fn connected(&self, node: &NodeId) -> bool;
+}
+
+/// The admin's own calls for a probe: its Node RPC client, its connections and its endpoint.
+pub(crate) struct WatchCalls<'a>(pub(crate) &'a Watch);
+
+#[async_trait::async_trait]
+impl ProbeCalls for WatchCalls<'_> {
+    async fn direct(&self, admin: &Node, req: &StatusRequest) -> Contact {
+        let opts = CallOptions { budget: Budget::Overall(ping_budget(self.0.round)), ..CallOptions::default() };
+        let (out, _) = self.0.client.call::<Status>(&NodeTarget::ExactNode(admin.node_id.clone()), req, &opts).await;
+        Contact::of(&out, &admin.name)
+    }
+
+    async fn observe(&self, admin: &Node) -> (String, String) {
+        let key = admin.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
+        let seen = rafka_mesh_transport::iroh_obs::observe_remote(&self.0.membership.endpoint(), key).await;
+        (seen.known_addrs, seen.active_addrs)
+    }
+
+    async fn ping(&self, member: &Node) -> (bool, String) {
+        let req = PingRequest::Ping { payload: b"peer-mesh-probe".to_vec() };
+        let opts = CallOptions { budget: Budget::Overall(ping_budget(self.0.round)), ..CallOptions::default() };
+        let (out, _) = self.0.client.call::<Ping>(&NodeTarget::ExactNode(member.node_id.clone()), &req, &opts).await;
+        (out.reply().is_some(), out.name().to_string())
+    }
+
+    async fn via(&self, carrier: &Node, admin: &Node, req: &StatusRequest) -> Contact {
+        let opts = CallOptions { budget: carried_budget(self.0.round), ..CallOptions::default() };
+        let (out, _) = self.0.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, req, &opts).await;
+        Contact::of(&out, &admin.name)
+    }
+
+    fn connected(&self, node: &NodeId) -> bool {
+        (self.0.connected)(node)
+    }
+}
+
+/// Probe `mesh`'s node-admins (mesh-investigation.md steps 1 and 3) through `calls`: `ProbeNodeState`
+/// to the exact mesh-primary the held seat record `record` names first, then to each other
+/// node-admin (`admins_in_probe_order`), each direct and, when that fails, Forwarded through a member
+/// that answered the Ping round made for it ([`find_carrier`]). `carriers` holds the carrier each
+/// mesh's latest probe went through; probe 2 prefers another member.
+pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rafka_mesh_entity::seat::SeatHolder>, mesh: &str, n: u8) -> Found {
     let seat_record = record.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let admins = admins_in_probe_order(view, mesh, record.as_ref());
     if admins.is_empty() {
         return Found { detail: format!("the view holds no node-admin of {mesh}"), seat_record, ..Found::default() };
     }
-    // Each node-admin in turn, the exact mesh-primary first: direct, then through a carrier member
-    // (found once per probe, on the first direct contact that fails). The first node-admin that
-    // answers ends the probe.
-    let direct = CallOptions { budget: Budget::Overall(ping_budget(w.round)), ..CallOptions::default() };
-    let carried = CallOptions { budget: carried_budget(w.round), ..CallOptions::default() };
-    let mut carrier: Option<Option<Node>> = None;
-    let (mut members_asked, mut carrier_why) = (String::new(), String::new());
+    // Each node-admin in turn, the exact mesh-primary first, follows the direct-then-via-peer policy:
+    // direct; when that fails, its own Ping round and the Forward through the member that ponged. The
+    // first node-admin that answers ends the probe. The carrier probe 2 prefers to avoid is the one
+    // that carried probe 1, read once here, never one this probe has used since.
+    let avoid = (n > 1).then(|| carriers.lock().unwrap().get(mesh).cloned()).flatten();
+    let mut carrier: Option<PathName> = None;
+    let mut members_asked: Vec<String> = Vec::new();
     let (mut outcomes, mut asked_admins, mut details) = (Vec::new(), Vec::new(), Vec::new());
     let (mut iroh_known, mut iroh_active) = (Vec::new(), Vec::new());
     for admin in &admins {
         let req = StatusRequest::ProbeNodeState { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().expect("filtered on it") };
-        let (out, _) = w.client.call::<Status>(&NodeTarget::ExactNode(admin.node_id.clone()), &req, &direct).await;
+        let direct = calls.direct(admin, &req).await;
         // One read of iroh's local view of the node-admin, beside its direct contact; the outcome is
         // the Node RPC's, never this.
-        let key = admin.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
-        let seen = rafka_mesh_transport::iroh_obs::observe_remote(&w.membership.endpoint(), key).await;
-        iroh_known.push(format!("{}={}", admin.name, seen.known_addrs));
-        iroh_active.push(format!("{}={}", admin.name, seen.active_addrs));
-        let (outcome, detail) = classify(&out, &admin.name);
-        if outcome == ProbeOutcome::AdminAlive {
-            outcomes.push(outcome);
-            asked_admins.push(format!("{}={}(direct)", admin.name, outcome.as_str()));
-            details.push(detail);
+        let (known, active) = calls.observe(admin).await;
+        iroh_known.push(format!("{}={known}", admin.name));
+        iroh_active.push(format!("{}={active}", admin.name));
+        if direct.outcome == ProbeOutcome::AdminAlive {
+            outcomes.push(direct.outcome);
+            asked_admins.push(format!("{}={}(direct)", admin.name, direct.outcome.as_str()));
+            details.push(direct.detail);
             break;
         }
-        let direct_failed = format!("direct: {}", out.name());
-        if carrier.is_none() {
-            let (found, asked, why) = find_carrier(w, view, mesh, n).await;
-            (members_asked, carrier_why) = (asked, why);
-            carrier = Some(found);
+        let direct_failed = format!("direct: {}", direct.end);
+        let (found, asked, why) = find_carrier(calls, view, mesh, avoid.as_ref()).await;
+        for m in asked {
+            if !members_asked.contains(&m) {
+                members_asked.push(m);
+            }
         }
-        let Some(Some(c)) = &carrier else {
+        let Some(c) = found else {
             outcomes.push(ProbeOutcome::Unreachable);
             asked_admins.push(format!("{}=unreachable", admin.name));
-            details.push(format!("{direct_failed}; no member answered the Ping ({carrier_why})"));
+            details.push(format!("{direct_failed}; no member answered the Ping ({why})"));
             continue;
         };
-        let (out, _) = w.client.call_via::<Status>(&NodeTarget::ExactNode(c.node_id.clone()), &admin.node_id, &req, &carried).await;
-        let (outcome, detail) = classify(&out, &admin.name);
-        outcomes.push(outcome);
-        asked_admins.push(format!("{}={}(via {})", admin.name, outcome.as_str(), c.name));
-        details.push(format!("{direct_failed}; {detail}"));
-        if outcome == ProbeOutcome::AdminAlive {
+        let carried = calls.via(&c, admin, &req).await;
+        outcomes.push(carried.outcome);
+        asked_admins.push(format!("{}={}(via {})", admin.name, carried.outcome.as_str(), c.name));
+        details.push(format!("{direct_failed}; {}", carried.detail));
+        carrier = Some(c.name);
+        if carried.outcome == ProbeOutcome::AdminAlive {
             break;
         }
     }
-    let carrier = carrier.flatten().map(|c| c.name.to_string()).unwrap_or_default();
-    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), seat_record }
+    if let Some(c) = &carrier {
+        carriers.lock().unwrap().insert(mesh.to_string(), c.clone());
+    }
+    let carrier = carrier.map(|c| c.to_string()).unwrap_or_default();
+    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked.join(","), carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), seat_record }
 }
 
-/// The carrier of a probe: a few of `mesh`'s ordinary members Pinged in parallel, active
-/// connections first, then path order; probe 2 prefers a member probe 1 did not carry through.
-/// Answers the member that ponged (`None`: none did), the members asked, and why each failed.
-async fn find_carrier(w: &Watch, view: &Topology, mesh: &str, n: u8) -> (Option<Node>, String, String) {
+/// The carrier for one node-admin: a few of `mesh`'s ordinary members Pinged in parallel, active
+/// connections first, then path order, the member `avoid` (the one that carried probe 1, when this is
+/// probe 2) asked last. Answers the first member in that order that ponged (`None`: none did), the
+/// members asked, and why each failed.
+async fn find_carrier<C: ProbeCalls + ?Sized>(calls: &C, view: &Topology, mesh: &str, avoid: Option<&PathName>) -> (Option<Node>, Vec<String>, String) {
     let mut members: Vec<Node> = view.members().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving && m.status != NodeStatus::Restarting).cloned().collect();
-    members.sort_by_key(|m| (!(w.connected)(&m.node_id), m.name.to_string()));
-    let used = w.ladder_last_carrier(mesh, n);
-    if n > 1 {
-        members.sort_by_key(|m| used.as_ref() == Some(&m.name));
-    }
+    members.sort_by_key(|m| (!calls.connected(&m.node_id), m.name.to_string()));
+    members.sort_by_key(|m| avoid == Some(&m.name));
     let asked: Vec<Node> = members.into_iter().take(PROBE_FANOUT).collect();
     let pings = futures_util::future::join_all(asked.iter().map(|m| async move {
-        let req = PingRequest::Ping { payload: b"peer-mesh-probe".to_vec() };
-        let opts = CallOptions { budget: Budget::Overall(ping_budget(w.round)), ..CallOptions::default() };
-        let (out, _) = w.client.call::<Ping>(&NodeTarget::ExactNode(m.node_id.clone()), &req, &opts).await;
-        (m, out.reply().is_some(), out.name().to_string())
+        let (ponged, end) = calls.ping(m).await;
+        (m, ponged, end)
     }))
     .await;
-    let members_asked = asked.iter().map(|m| m.name.to_string()).collect::<Vec<_>>().join(",");
+    let members_asked = asked.iter().map(|m| m.name.to_string()).collect();
     let why = pings.iter().map(|(m, _, o)| format!("{}: {o}", m.name)).collect::<Vec<_>>().join("; ");
     let carrier = pings.iter().find(|(_, ponged, _)| *ponged).map(|(m, _, _)| (*m).clone());
-    if let Some(c) = &carrier {
-        w.note_carrier(mesh, c.name.clone());
-    }
     (carrier, members_asked, why)
-}
-
-impl Watch {
-    fn ladder_last_carrier(&self, mesh: &str, n: u8) -> Option<PathName> {
-        (n > 1).then(|| self.carriers.lock().unwrap().get(mesh).cloned()).flatten()
-    }
-
-    fn note_carrier(&self, mesh: &str, carrier: PathName) {
-        self.carriers.lock().unwrap().insert(mesh.to_string(), carrier);
-    }
 }
 
 #[cfg(test)]
@@ -991,7 +1052,7 @@ mod tests {
     /// runs, or a decision taken with a probe outstanding.
     #[tokio::test(start_paused = true)]
     async fn a_running_probe_never_holds_the_ladder() {
-        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))));
+        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::park_gate::ParkGate::new());
         let ended = Arc::new(Mutex::new(Vec::<(u8, u64)>::new()));
         let t0 = tokio::time::Instant::now();
         let mut log: Vec<Step> = Vec::new();
@@ -1017,6 +1078,43 @@ mod tests {
         assert!(asked(2).len() == 1 && asked(2)[0] >= end(1), "probe 2 is asked once, after probe 1 ended at {} ms: {log:?}", end(1));
         let decided: Vec<u64> = log.iter().filter_map(|s| if let Step::Decide { rebirth: true, unheard_ms, .. } = s { Some(*unheard_ms) } else { None }).collect();
         assert!(decided.len() == 1 && decided[0] >= end(2), "the decision is taken once, after probe 2 ended at {} ms: {decided:?}", end(2));
+    }
+
+    /// CONTRACT (node-stop: a stopped admin's tasks are held, and it says nothing once cut;
+    /// park_gate.rs: a task that takes no lock a handler needs is held where it stands while the gate
+    /// is parked): a probe the investigation started before its admin parked makes no step while the
+    /// admin is parked, and finishes, from where it was, once the gate opens. Must NOT happen: a
+    /// stopped admin's probe going on to its next call (a ping, a status kick through a peer) after
+    /// the stop cut its connections.
+    #[tokio::test(start_paused = true)]
+    async fn a_probe_in_flight_when_the_admin_parks_makes_no_step_until_the_gate_opens() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let gate = crate::park_gate::ParkGate::new();
+        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), gate.clone());
+        let calls = Arc::new(AtomicU32::new(0));
+        let start = |_n: u8| {
+            let calls = calls.clone();
+            async move {
+                // Its first call, then its next one a second later.
+                calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                calls.fetch_add(1, Ordering::SeqCst);
+                Found { outcome: CarrierEdgeLost, ..Found::default() }
+            }
+        };
+        let mut asked = false;
+        for unheard_ms in (0..=2_000u64).step_by(100) {
+            asked |= inv.tick("mesh2", Duration::from_millis(unheard_ms), start).await.iter().any(|s| matches!(s, Step::Probe { n: 1, .. }));
+        }
+        assert!(asked, "probe 1 was asked at its 2 s rung");
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the probe made its first call");
+        gate.park();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the admin is parked: its probe made no step");
+        gate.resume();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "the gate opened: the probe finished from where it was");
     }
 
     /// CONTRACT (mesh-investigation.md step 4: a direct backbone receipt "cancels the investigation
@@ -1142,5 +1240,207 @@ mod tests {
         });
         assert!(rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(), "forgetting a retired mesh never returned: the ladder lock is held by the loop that takes it");
         assert!(ladder.lock().unwrap().meshes().is_empty());
+    }
+
+    /// A probe's calls, recorded in the order made and answered as the cell says: a node-admin in
+    /// `answers_direct` answers its direct `ProbeNodeState`, a member in `pongs` answers its Ping, a
+    /// node-admin in `answers_carried` answers the carried `ProbeNodeState` and every other carried
+    /// call is the carrier's `carrier-edge-lost`; `connected` are the members this node holds an
+    /// Active Direct connection to.
+    #[derive(Default)]
+    struct Recorder {
+        made: Mutex<Vec<String>>,
+        answers_direct: BTreeSet<String>,
+        pongs: BTreeSet<String>,
+        answers_carried: BTreeSet<String>,
+        connected: BTreeSet<NodeId>,
+    }
+
+    impl Recorder {
+        fn made(&self) -> Vec<String> {
+            self.made.lock().unwrap().clone()
+        }
+
+        fn note(&self, call: String, admin: Option<(&Node, &StatusRequest)>) {
+            // A ProbeNodeState names the node-admin's exact birth; anything else is recorded as such.
+            let exact = admin.is_none_or(|(a, req)| matches!(req, StatusRequest::ProbeNodeState { node_id, incarnation } if *node_id == a.node_id && Some(incarnation) == a.incarnation_id.as_ref()));
+            self.made.lock().unwrap().push(if exact { call } else { format!("{call} (not its exact birth)") });
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProbeCalls for Recorder {
+        async fn direct(&self, admin: &Node, req: &StatusRequest) -> Contact {
+            self.note(format!("direct {}", admin.name), Some((admin, req)));
+            if self.answers_direct.contains(&admin.name.to_string()) {
+                Contact { outcome: AdminAlive, detail: format!("{} answered: ReadyForTraffic", admin.name), end: "Reply" }
+            } else {
+                Contact { outcome: Unreachable, detail: "not sent: dial deadline".into(), end: "NotSent" }
+            }
+        }
+
+        async fn observe(&self, _admin: &Node) -> (String, String) {
+            ("unavailable".into(), "unavailable".into())
+        }
+
+        async fn ping(&self, member: &Node) -> (bool, String) {
+            self.note(format!("ping {}", member.name), None);
+            let pong = self.pongs.contains(&member.name.to_string());
+            (pong, if pong { "Reply".into() } else { "NotSent".into() })
+        }
+
+        async fn via(&self, carrier: &Node, admin: &Node, req: &StatusRequest) -> Contact {
+            self.note(format!("via {} > {}", carrier.name, admin.name), Some((admin, req)));
+            if self.answers_carried.contains(&admin.name.to_string()) {
+                Contact { outcome: AdminAlive, detail: format!("{} answered: ReadyForTraffic", admin.name), end: "Reply" }
+            } else {
+                Contact { outcome: CarrierEdgeLost, detail: format!("{} cannot reach {}", carrier.name, admin.name), end: "NotSent" }
+            }
+        }
+
+        fn connected(&self, node: &NodeId) -> bool {
+            self.connected.contains(node)
+        }
+    }
+
+    /// A ready member of its mesh: its kind is its path's.
+    fn member(name: &str) -> Node {
+        admin(name, false)
+    }
+
+    /// The peer mesh mesh2 of the probe cells: node-admins 1 and 2, the held mesh-primary seat record
+    /// naming node-admin 2 (so the exact mesh-primary is not the first in path order), rpc members 1
+    /// to 3, and this admin's own mesh1, never asked.
+    fn mesh2() -> (Arc<Topology>, rafka_mesh_entity::seat::SeatHolder) {
+        let v = view_of(vec![admin("mesh1.admin.1", true), member("mesh1.rpc.1"), admin("mesh2.admin.1", true), admin("mesh2.admin.2", false), member("mesh2.rpc.1"), member("mesh2.rpc.2"), member("mesh2.rpc.3")]);
+        let a2 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.2").unwrap().clone();
+        let record = rafka_mesh_entity::seat::SeatHolder { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), epoch: 3 };
+        (Arc::new(v), record)
+    }
+
+    fn node_id_of(v: &Topology, name: &str) -> NodeId {
+        v.nodes.iter().find(|n| n.name.to_string() == name).unwrap().node_id.clone()
+    }
+
+    fn calls(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    /// CONTRACT (mesh-investigation.md step 1: "probe 1 contacts mesh-x's current exact mesh-primary
+    /// first, then mesh-x's other node-admins, with ProbeNodeState. Each target follows the
+    /// established direct-then-via-peer policy: direct first; when that fails, Ping a few mesh-x
+    /// members in parallel (active connections in the connections table first, otherwise members
+    /// dialled from held topology) and, on a pong, use that member as the carrier for Forward";
+    /// step 3: "probe 2 repeats probe 1 (exact mesh-primary first, then the other node-admins, each
+    /// direct then via a peer), preferring a different carrier member"). The driver makes probes 1
+    /// and 2 of one investigation at their rungs through the probe's calls, recorded in order. Probe
+    /// 1: the exact birth the seat record names (node-admin 2) direct; it fails, so rpc 3 (the one
+    /// member held Active Direct), rpc 1 and rpc 2 are Pinged, and the carried ProbeNodeState goes
+    /// through rpc 3, the first in that order to pong; then node-admin 1 direct, its own Ping round,
+    /// and its Forward. Probe 2 repeats it with every member ponging, rpc 3 included, and carries
+    /// both through rpc 1. Every carrier answers carrier-edge-lost, so both probes find it, and each
+    /// probe's span names every node-admin asked in that order, the leg and the carrier. Must NOT
+    /// happen: the first node-admin asked being the path-first one, a node-admin's Forward with no
+    /// Ping round of its own after its direct contact failed, a carried call before the direct one,
+    /// probe 2 carried by probe 1's carrier while another member ponged, or a node of mesh1 asked.
+    #[tokio::test]
+    async fn a_probe_asks_each_node_admin_direct_then_through_a_carrier_the_exact_mesh_primary_first() {
+        let (view, record) = mesh2();
+        let rig = Arc::new(Recorder { pongs: ["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"].map(String::from).into(), connected: [node_id_of(&view, "mesh2.rpc.3")].into(), ..Recorder::default() });
+        let carriers = Arc::new(Mutex::new(BTreeMap::new()));
+        let capture = crate::span_capture::Capture::new("i143-3097-probe-order");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::park_gate::ParkGate::new());
+        let start = |n: u8| {
+            let (rig, carriers, view, record) = (rig.clone(), carriers.clone(), view.clone(), record.clone());
+            async move { probe(&*rig, &carriers, &view, Some(record), "mesh2", n).await }
+        };
+        // Probe 1 at its 2 s rung, probe 2 at its 4 s rung once probe 1 landed.
+        let mut made = Vec::new();
+        for (n, at) in [(1u8, Duration::from_secs(2)), (2, Duration::from_secs(4))] {
+            let steps = inv.tick("mesh2", at, start).await;
+            assert!(steps.iter().any(|s| matches!(s, Step::Probe { n: k, .. } if *k == n)), "probe {n} is asked at {at:?}: {steps:?}");
+            tokio::time::timeout(Duration::from_secs(10), inv.landed()).await.unwrap_or_else(|_| panic!("probe {n} landed"));
+            made.push(rig.made()[made.iter().map(Vec::len).sum::<usize>()..].to_vec());
+        }
+        assert_eq!(
+            made[0],
+            calls(&["direct mesh2.admin.2", "ping mesh2.rpc.3", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "via mesh2.rpc.3 > mesh2.admin.2", "direct mesh2.admin.1", "ping mesh2.rpc.3", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "via mesh2.rpc.3 > mesh2.admin.1"]),
+            "probe 1: the seat record's exact mesh-primary first, then the other node-admin, each direct, then a Ping round of its own (the Active Direct member first) and the Forward through the first member that ponged"
+        );
+        assert_eq!(
+            made[1],
+            calls(&["direct mesh2.admin.2", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "ping mesh2.rpc.3", "via mesh2.rpc.1 > mesh2.admin.2", "direct mesh2.admin.1", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "ping mesh2.rpc.3", "via mesh2.rpc.1 > mesh2.admin.1"]),
+            "probe 2 repeats probe 1, preferring a member probe 1 did not carry through (rpc 3 pongs and is asked last)"
+        );
+        let spans = capture.named("rdm.node_admin.mesh.update.via-probe");
+        assert_eq!(spans.len(), 2, "one span per probe: {spans:?}");
+        let attr = |i: usize, k: &str| spans[i].attributes.get(k).cloned().unwrap_or_default();
+        for (i, carrier) in [(0, "mesh2.rpc.3"), (1, "mesh2.rpc.1")] {
+            assert_eq!(attr(i, "probe"), (i + 1).to_string());
+            assert_eq!(attr(i, "target"), format!("mesh2.admin.2=carrier-edge-lost(via {carrier}),mesh2.admin.1=carrier-edge-lost(via {carrier})"), "probe {}: every node-admin asked, in order, with its leg", i + 1);
+            assert_eq!(attr(i, "carrier"), carrier, "probe {}", i + 1);
+            assert_eq!(attr(i, "outcome"), "carrier-edge-lost", "probe {}", i + 1);
+            assert_eq!(attr(i, "seat_record"), record.to_string(), "probe {}: ordered by the held seat record", i + 1);
+            eprintln!("span rdm.node_admin.mesh.update.via-probe trace_id={} {:?}", spans[i].trace_id, spans[i].attributes);
+        }
+        assert_eq!(attr(0, "member"), "mesh2.rpc.3,mesh2.rpc.1,mesh2.rpc.2", "probe 1 asked the Active Direct member first");
+        assert_eq!(attr(1, "member"), "mesh2.rpc.1,mesh2.rpc.2,mesh2.rpc.3", "probe 2 asked probe 1's carrier last");
+    }
+
+    /// CONTRACT (mesh-investigation.md step 1: each target follows the direct-then-via-peer policy;
+    /// "A probe of one node-admin uses ... else: fabric-primary → mesh-x member Ping ← Pong"): a
+    /// node-admin whose direct contact fails gets its own Ping round even when the round made for the
+    /// node-admin before it found no member that answered. With no member answering at all, the probe
+    /// is `unreachable` and says, for each node-admin, the Ping round made for it. Must NOT happen: the
+    /// second node-admin recorded unreachable for "no member answered the Ping" with no Ping made for it.
+    #[tokio::test]
+    async fn a_node_admin_whose_direct_contact_fails_gets_its_own_ping_round_after_one_no_member_answered() {
+        let (view, record) = mesh2();
+        let rig = Recorder::default();
+        let found = probe(&rig, &Mutex::new(BTreeMap::new()), &view, Some(record), "mesh2", 1).await;
+        assert_eq!(
+            rig.made(),
+            calls(&["direct mesh2.admin.2", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "ping mesh2.rpc.3", "direct mesh2.admin.1", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "ping mesh2.rpc.3"]),
+            "each node-admin whose direct contact failed has its own Ping round"
+        );
+        assert_eq!(found.outcome, Unreachable, "no member answered: {found:?}");
+        assert_eq!(found.target, "mesh2.admin.2=unreachable,mesh2.admin.1=unreachable");
+        assert_eq!(found.carrier, "", "no member carried the probe");
+        assert_eq!(found.detail.matches("no member answered the Ping (mesh2.rpc.1: NotSent; mesh2.rpc.2: NotSent; mesh2.rpc.3: NotSent)").count(), 2, "each node-admin names the Ping round made for it: {}", found.detail);
+    }
+
+    /// CONTRACT (mesh-investigation.md step 1: "A successful contact ends the failed-reachability
+    /// investigation"; step 3: probe 2 "preferring a different carrier member"): the first node-admin
+    /// that answers ends the probe, direct or carried, and no node-admin after it is asked; probe 2
+    /// prefers another carrier but is carried by probe 1's when it is the only member that answers.
+    /// Must NOT happen: a Ping round after a direct answer, a call to the next node-admin after a
+    /// carried answer, or probe 2 left without a carrier because the one member answering carried
+    /// probe 1.
+    #[tokio::test]
+    async fn the_first_answering_node_admin_ends_the_probe_and_probe_two_only_prefers_another_carrier() {
+        let (view, record) = mesh2();
+        let all: BTreeSet<String> = ["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"].map(String::from).into();
+
+        let rig = Recorder { answers_direct: ["mesh2.admin.2".to_string()].into(), pongs: all.clone(), ..Recorder::default() };
+        let found = probe(&rig, &Mutex::new(BTreeMap::new()), &view, Some(record.clone()), "mesh2", 1).await;
+        assert_eq!(rig.made(), calls(&["direct mesh2.admin.2"]), "the exact mesh-primary answered direct: nothing else is asked");
+        assert_eq!((found.outcome, found.target.as_str(), found.carrier.as_str()), (AdminAlive, "mesh2.admin.2=admin-alive(direct)", ""));
+
+        let rig = Recorder { answers_carried: ["mesh2.admin.2".to_string()].into(), pongs: all.clone(), ..Recorder::default() };
+        let found = probe(&rig, &Mutex::new(BTreeMap::new()), &view, Some(record.clone()), "mesh2", 1).await;
+        assert_eq!(rig.made(), calls(&["direct mesh2.admin.2", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "ping mesh2.rpc.3", "via mesh2.rpc.1 > mesh2.admin.2"]), "the exact mesh-primary answered through a carrier: node-admin 1 is never asked");
+        assert_eq!((found.outcome, found.target.as_str(), found.carrier.as_str()), (AdminAlive, "mesh2.admin.2=admin-alive(via mesh2.rpc.1)", "mesh2.rpc.1"));
+
+        // Probe 1 was carried by rpc 3; in probe 2 only rpc 3 answers its Ping.
+        let rig = Recorder { pongs: ["mesh2.rpc.3".to_string()].into(), ..Recorder::default() };
+        let carriers = Mutex::new(BTreeMap::from([("mesh2".to_string(), "mesh2.rpc.3".parse::<PathName>().unwrap())]));
+        let found = probe(&rig, &carriers, &view, Some(record), "mesh2", 2).await;
+        assert_eq!(
+            rig.made(),
+            calls(&["direct mesh2.admin.2", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "ping mesh2.rpc.3", "via mesh2.rpc.3 > mesh2.admin.2", "direct mesh2.admin.1", "ping mesh2.rpc.1", "ping mesh2.rpc.2", "ping mesh2.rpc.3", "via mesh2.rpc.3 > mesh2.admin.1"]),
+            "probe 1's carrier is asked last and, the only member answering, carries probe 2"
+        );
+        assert_eq!((found.outcome, found.carrier.as_str()), (CarrierEdgeLost, "mesh2.rpc.3"));
     }
 }

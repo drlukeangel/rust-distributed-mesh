@@ -3355,7 +3355,7 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
         // node.delete of the parked birth: its stop steps are done, nothing is released but its id and name.
         &["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]
     } else {
-        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "RemoveTopologyMembership", "Complete"]
+        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
     };
     for want in wanted.iter().copied() {
         let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the retire pipeline has no `{want}` step: {names:?}"));

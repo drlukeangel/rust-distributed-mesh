@@ -8,8 +8,9 @@
 //! 1. The node's `ReadyForTraffic` asked again through the oracle: `AlreadyApplied` (one logical
 //!    event); membership's `status` is untouched.
 //! 2. `Pending` after `ReadyForTraffic`: `RejectedInvalidNodeTransition`.
-//! 3. A declaration under another node's id: `RejectedNotAuthority` (sender-not-subject); under
-//!    a wrong incarnation: `RejectedStaleIncarnation`.
+//! 3. A declaration naming a node the authority does not hold: `RejectedNotAuthority`
+//!    (subject-unknown; decided for the subject, never the caller); under a wrong incarnation:
+//!    `RejectedStaleIncarnation`.
 //! 4. A declaration to the non-primary admin: `RejectedNotAuthority` (receiver-not-primary).
 //! 5. `Draining`, then `Leaving`: `Applied`, and the view follows.
 //! Every decision is one `rdm.node_admin.status.update.via-declaration` span on the authority.
@@ -46,7 +47,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let nodes = estate.nodes().await;
     let primary = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == true).expect("a mesh primary").clone();
     let other_admin = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] != true).expect("a non-primary admin").clone();
-    let (rpc1, rpc2) = (estate.node("mesh1.rpc.1").await, estate.node("mesh1.rpc.2").await);
+    let rpc1 = estate.node("mesh1.rpc.1").await;
     let node = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
     let to = format!("exact:{}", primary["node_id"].as_str().unwrap());
     // What the authority applied is the authority's view: read it there.
@@ -81,11 +82,13 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     assert_eq!(reply, "rejected-invalid-node-transition", "{r}");
     assert!(detail.contains("ReadyForTraffic"), "{r}");
 
-    // 3. Not the subject; a stale birth.
-    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-node-id", rpc2["node_id"].as_str().unwrap()]);
+    // 3. A subject the authority does not hold (decided for the subject, never the caller:
+    // node-rpc.md §14); a stale birth.
+    let never_born = rafka_mesh_entity::NodeId::mint();
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-node-id", never_born.as_str()]);
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-authority", "{r}");
-    assert!(detail.contains("SenderNotSubject"), "{r}");
+    assert!(detail.contains("SubjectUnknown"), "{r}");
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", "00000000000000000000000000000000"]);
     assert_eq!(declared(&r).0, "rejected-stale-incarnation", "{r}");
 
@@ -118,12 +121,15 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     assert!(backward.iter().any(|s| s["attributes"]["detail"] == "ReadyForTraffic"), "Pending after ReadyForTraffic: {backward:?}");
     assert!(backward.iter().all(|s| s["attributes"]["detail"] == "ReadyForTraffic" || s["attributes"]["detail"] == "Leaving"), "{backward:?}");
     assert_eq!(on_primary("rejected-stale-incarnation"), 1);
-    assert_eq!(on_primary("rejected-not-authority"), 1, "sender-not-subject on the primary");
+    assert_eq!(on_primary("rejected-not-authority"), 1, "subject-unknown on the primary");
+    assert!(decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-not-authority").all(|s| s["attributes"]["detail"] == "subject-unknown"), "the primary refuses no caller: {decided:?}");
     // Births try their mesh's admins in path order, so the non-primary admin refuses each once
     // (receiver-not-primary) besides the oracle's probe.
     let not_primary: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == other_admin["name"] && s["attributes"]["outcome"] == "rejected-not-authority").collect();
     assert!(not_primary.iter().any(|s| s["attributes"]["sender"] == "mesh1.rpc.1" && s["attributes"]["detail"] == "receiver-not-primary"), "{not_primary:?}");
-    assert!(not_primary.iter().all(|s| s["attributes"]["detail"] == "receiver-not-primary" || s["attributes"]["detail"] == "sender-not-subject"), "{not_primary:?}");
+    // A birth's declaration that reaches the non-primary admin before its view holds the birth names a
+    // subject it does not hold yet.
+    assert!(not_primary.iter().all(|s| s["attributes"]["detail"] == "receiver-not-primary" || s["attributes"]["detail"] == "subject-unknown"), "{not_primary:?}");
     // Nodes and admins declare their own state; the mesh primary declares its Mesh's; the Day-0
     // root applies its own mesh's Pending, having no upstream authority (e4.s11).
     assert!(decided.iter().all(|s| ["declare-node-state", "declare-mesh-state", "apply-fabric-event", "apply-mesh-state"].contains(&s["attributes"]["op"].as_str().unwrap_or(""))), "{decided:?}");

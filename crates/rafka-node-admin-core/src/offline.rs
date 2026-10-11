@@ -788,7 +788,7 @@ pub(crate) mod tests {
             assert_eq!(t.rounds(), (1, 0), "the round runs, at its direct connect");
             assert!(!follower.is_finished(), "the follower runs, queued on the view lock");
             let at = Instant::now();
-            gate.park();
+            gate.quiesce().await;
             tokio::task::yield_now().await;
             assert_eq!(t.rounds(), (1, 1), "the round ended at the park");
             assert!(follower.is_finished(), "the follower ended at the park");

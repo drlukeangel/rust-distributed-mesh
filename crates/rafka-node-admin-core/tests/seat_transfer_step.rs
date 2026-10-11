@@ -9,7 +9,7 @@
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, ReplaceRequest, ReplaceStep, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink};
+use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, ReplaceRequest, ReplaceStep, RetireRequest, RetireStep, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::fabric_handover::SeatTransferOutcome;
 use rafka_node_admin_core::join::Joins;
@@ -141,7 +141,7 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
         let trace_id = crate::mesh_leave_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
-            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle, kind: RetireKind::Removal };
+            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle };
             match workflow {
                 Some(NodeCommand::Stop) => pipeline.stop(&req).instrument(root).await,
                 Some(_) => pipeline.drain(&req).instrument(root).await,

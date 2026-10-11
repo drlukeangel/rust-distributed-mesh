@@ -372,6 +372,10 @@ pub async fn run(w: Watch) {
     let me_birth = (w.me_id.clone(), w.incarnation.clone());
     let mut seats_changed = w.membership.seats().subscribe();
     let mut held_the_fabric_seat = false;
+    // A turn runs from the gate to the next idle wait: the pass below, then the yield check at the
+    // top of the loop, which can hand facts on. It is held in an Option so it ends (`take`) right
+    // before the idle wait and begins again right after it.
+    let mut turn = Some(w.gate.turn("seat-watch").await);
     loop {
         // A fabric seat this birth held, now recorded to another birth: the record already fences
         // its Build log; the committed facts are handed to the neighbours before the new holder acts.
@@ -380,13 +384,14 @@ pub async fn run(w: Watch) {
         if let Some((by, to)) = owed {
             w.builds.hand_over_facts(&by, to).await;
         }
+        drop(turn.take());
         tokio::select! {
             _ = seats_changed.changed() => {}
             _ = w.membership.concerns().heard() => {}
             _ = tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()) => {}
         }
         // Held here while the admin is parked: its own wait, outside every lock.
-        w.gate.opened().await;
+        turn = Some(w.gate.turn("seat-watch").await);
         let heard = w.membership.concerns().drain();
         let view = w.topology.read().await.clone();
         let plan = plan(&view, &w.me, &me_birth, &heard, &mut said);

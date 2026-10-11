@@ -1143,7 +1143,7 @@ mod tests {
         assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&IncarnationId::mint()))]), &o).operations, vec![], "another birth's receipt is not this replace's");
         assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&from))]), &o).operations, replace, "begun: the successor holds the path, the departure is owed");
         let deleted = vec![step(6, "NodeDeleting", Some(&from)), step(6, "NodeDeleted", Some(&from))];
-        assert_eq!(plan_for_build(&build(deleted.clone()), &o).operations, replace, "NodeDeleted without Complete: the storage release is owed");
+        assert_eq!(plan_for_build(&build(deleted.clone()), &o).operations, replace, "NodeDeleted without Complete: the successor's Complete is owed");
         let mut finished = deleted;
         finished.push(step(6, "Complete", None));
         assert_eq!(plan_for_build(&build(finished), &o).operations, vec![], "finished");

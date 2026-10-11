@@ -11,9 +11,11 @@
 //!   -> AwaitNodeDrained (bounded; a deadline is an arm, never a failure)
 //!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (its `Stopped` reply, bounded, likewise)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
-//!   -> ReleaseStorage (a removal: by the Build's StorageMeta)
 //!   -> RemoveTopologyMembership -> Complete
 //! ```
+//!
+//! A removal releases identity, never storage: the data dir and its endpoint key stay
+//! (node-delete.md "Storage"), and no step here deletes a node's storage.
 //!
 //! Node-admin is the brain: identity, endpoints, storage and readiness are
 //! decided here; the provider only realises or retires the runtime. Every
@@ -51,7 +53,7 @@ use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
 use crate::model::{DeploymentId, EndpointId, IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::meta::{PersistentRetireDisposition, StorageMeta};
+use rafka_mesh_entity::meta::StorageMeta;
 use rafka_mesh_entity::{LifecycleOp, RuntimeFact};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -63,9 +65,8 @@ use std::time::{Duration, Instant};
 /// One step of creating a node, in the order of [`CreateStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateStep {
-    /// Mint the birth's incarnation and deployment id, and the node id unless the birth restarts a
-    /// node; a create (never a restart) then claims its name at the writer of its mesh's rows
-    /// before anything is launched (`crate::node_rows::NodeRows::claim`).
+    /// Mint the birth's node id, incarnation and deployment id; the create then claims its name at
+    /// the writer of its mesh's rows before anything is launched (`crate::node_rows::NodeRows::claim`).
     AllocateIdentity,
     /// Ensure the node's transport key in its data directory and hand a node-admin its held runtime rows.
     PrepareStorage,
@@ -187,8 +188,6 @@ pub enum RetireStep {
     /// and the committed seats installed (node-drain.md step 0; node-rpc-envelope.md "TakeSeats").
     /// Not in [`Self::ORDER`]: no other target runs it.
     SeatTransfer,
-    /// Only on a removal.
-    ReleaseStorage,
     /// Remove the node from the local topology.
     RemoveTopologyMembership,
     /// The node is retired.
@@ -197,7 +196,7 @@ pub enum RetireStep {
 
 impl RetireStep {
     /// Every retire step in order.
-    pub const ORDER: [RetireStep; 10] = [
+    pub const ORDER: [RetireStep; 9] = [
         Self::NodeDeleting,
         Self::DrainNode,
         Self::AwaitNodeDrained,
@@ -205,7 +204,6 @@ impl RetireStep {
         Self::AwaitNodeLeft,
         Self::TerminateRuntime,
         Self::NodeDeleted,
-        Self::ReleaseStorage,
         Self::RemoveTopologyMembership,
         Self::Complete,
     ];
@@ -222,7 +220,6 @@ impl RetireStep {
             Self::StopNode => "StopNode",
             Self::AwaitNodeLeft => "AwaitNodeLeft",
             Self::TerminateRuntime => "TerminateRuntime",
-            Self::ReleaseStorage => "ReleaseStorage",
             Self::RemoveTopologyMembership => "RemoveTopologyMembership",
             Self::Complete => "Complete",
         }
@@ -328,7 +325,6 @@ impl CurrentRuntimeAdoption {
             provider = ?kind,
             node = %node,
             attempt = 1u32,
-            restart = false,
         );
         let mut a = Self { node: node.clone(), data_dir: data_dir.to_path_buf(), span, receipts: Vec::new(), fact: None };
         a.fact = a.step(AdoptStep::AdoptCurrentRuntime, |n| {
@@ -530,21 +526,10 @@ pub(crate) fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operati
         .collect()
 }
 
-/// The lifecycle events a Mesh executor publishes around a retirement: the pre-notice once its
-/// own journal holds the step that records it, the departure once the provider proved the
-/// runtime terminal. Membership carries them; this trait is how the pipeline reaches it.
-/// Why a birth is being retired: the storage disposition and the lifecycle events follow it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RetireKind {
-    /// The logical node leaves the topology.
-    Removal,
-    /// The birth drains and stops and its process stays, parked: the same process starts again.
-    Restart,
-}
-
-/// What a removal did with the logical node's storage, by the accepted Build's
-/// `StorageMeta` for its path: the ReleaseStorage step's receipt.
+/// The typed output of a `ReleaseStorage` receipt ([`crate::wire::RELEASE_STORAGE_STEP`]). No step
+/// of this pipeline runs it: a delete retains the data dir and endpoint key (node-delete.md
+/// "Storage"). It stays the receipt's shape so the Build topic's positional layout
+/// ([`crate::wire`]) and a receipt an earlier build wrote still decode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "arm", rename_all = "kebab-case")]
 pub enum StorageDisposition {
@@ -858,9 +843,6 @@ pub struct CreateRequest {
     pub node: PathName,
     /// The endpoint plan of the node's kind.
     pub spec: &'static KindSpec,
-    /// `Some(current record)` for a restart: same node id, data dir and
-    /// transport key, a new incarnation.
-    pub restart_of: Option<Node>,
     /// The runtime rows this admin holds, handed to a node-admin's own nodes.storage before it
     /// starts: its durable map of the births a predecessor heard.
     pub held_runtimes: Vec<crate::storage::RuntimeRow>,
@@ -884,10 +866,6 @@ pub struct RetireRequest {
     pub node: Node,
     /// The runtime handle of the birth.
     pub handle: DeploymentHandle,
-    /// A removal of the logical node (the pre-notice and the departure are published, and the
-    /// storage goes by the Build's StorageMeta), or the retire half of a restart (the birth stops,
-    /// the logical node and its storage stay).
-    pub kind: RetireKind,
 }
 
 /// A request to start (or restart) a parked birth: the same process rejoins as itself.
@@ -919,11 +897,12 @@ pub(crate) enum StopEnd {
 /// What a stop's wait step must have seen to complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StopProof {
-    /// Whatever the birth answered: the shutdown leg of a restart, a retire or a mesh leave member,
-    /// which the provider's terminal proof judges.
+    /// Whatever the birth answered: the shutdown leg of a retire or a mesh leave member, which the
+    /// provider's terminal proof judges.
     Lenient,
-    /// stop-node admitted and `stopped` received, or the step fails by name: a standalone stop and
-    /// a replace's predecessor, whose only proof is that reply (node-stop.md; node-replace.md step 1).
+    /// stop-node admitted and `stopped` received, or the step fails by name: a whole node.stop, a
+    /// standalone one or the stop a restart composes, and a replace's predecessor, whose only proof
+    /// is that reply (node-stop.md "Completion": the matching `node.stopped`; node-replace.md step 1).
     Stopped,
 }
 
@@ -1077,6 +1056,9 @@ pub struct Created {
 pub(crate) struct Identity {
     node_id: NodeId,
     incarnation: IncarnationId,
+    /// Always `None`: a create mints a new node and supersedes no birth (node-restart.md "No
+    /// supersedes lineage"). The field keeps its position in the receipt's wire form
+    /// (`wire::WireOutput::Identity`, positional in every Build message).
     supersedes: Option<IncarnationId>,
     deployment_id: DeploymentId,
 }
@@ -1134,7 +1116,7 @@ impl DeploymentPipeline<'_> {
         Run { build_id, attempt, node, operation, done, owner, reusing: true }
     }
 
-    fn pipeline_span(&self, kind: &'static str, build_id: &BuildId, node: &PathName, attempt: u32, restart: bool) -> tracing::Span {
+    fn pipeline_span(&self, kind: &'static str, build_id: &BuildId, node: &PathName, attempt: u32) -> tracing::Span {
         tracing::info_span!(
             "rdm.node_admin.deployment.update.via-pipeline",
             pipeline = kind,
@@ -1142,7 +1124,6 @@ impl DeploymentPipeline<'_> {
             provider = ?self.provider.kind(),
             node = %node,
             attempt,
-            restart,
         )
     }
 
@@ -1221,7 +1202,7 @@ impl DeploymentPipeline<'_> {
         r.map_err(|reason| PipelineError { step, reason })
     }
 
-    /// Create (or restart) `req.node` through every step.
+    /// Create `req.node` through every step.
     pub async fn create(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
         self.create_with(req, None).await
     }
@@ -1230,13 +1211,12 @@ impl DeploymentPipeline<'_> {
     /// its mesh and before it is asked to be Ready.
     pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt, req.restart_of.is_some());
+        let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
         self.create_steps(req, before_ready).instrument(span).await
     }
 
     async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
-        let op = if req.restart_of.is_some() { "restart-node" } else { "create-node" };
-        let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("{op}:{}", req.node)).await;
+        let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("create-node:{}", req.node)).await;
         let mut created = self.create_to_ready(&mut run, req, before_ready, None, None).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         self.step(&mut run, CreateStep::Complete.name(), async {
@@ -1253,9 +1233,8 @@ impl DeploymentPipeline<'_> {
     /// only then does the successor start.
     /// `inherited`: a recovery's data dir, the exited birth's, taken over whole (node-recovery.md).
     async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, recovering: Option<&Recovering<'_>>, inherited: Option<PathBuf>) -> Result<Created, PipelineError> {
-        // The name this create claimed (a create, never a restart: a restart keeps its node and its
-        // row): a step after the claim that fails withdraws it, so the next attempt's fresh birth is
-        // not refused by this one's claim (lifecycles/node-create.md step 1).
+        // The name this create claimed: a step after the claim that fails withdraws it, so the next
+        // attempt's fresh birth is not refused by this one's claim (lifecycles/node-create.md step 1).
         let mut claimed: Option<NodeId> = None;
         let operation = run.operation.clone();
         let r = self.create_to_ready_claimed(run, req, before_ready, recovering, inherited, &mut claimed).await;
@@ -1267,9 +1246,6 @@ impl DeploymentPipeline<'_> {
 
     /// An earlier attempt's birth that is decided afresh lets go of the name its create claimed.
     async fn withdraw_earlier(&self, run: &Run<'_>, req: &CreateRequest, why: &str) {
-        if req.restart_of.is_some() {
-            return;
-        }
         let (Some(rows), Some(Some(earlier))) = (self.sink.node_rows(), run.done.get(CreateStep::AllocateIdentity.name())) else { return };
         if let Ok(earlier) = serde_json::from_value::<Identity>(earlier.clone()) {
             rows.withdraw(&req.node, &earlier.node_id, &run.operation, why).await;
@@ -1320,19 +1296,13 @@ impl DeploymentPipeline<'_> {
                 run.done.clear();
             }
         }
-        let prior = req.restart_of.clone();
         let rows = self.sink.node_rows();
         let id: Identity = self
             .step(run, CreateStep::AllocateIdentity.name(), async {
-                let id = Identity {
-                    node_id: prior.as_ref().map(|p| p.node_id.clone()).unwrap_or_else(NodeId::mint),
-                    incarnation: IncarnationId::mint(),
-                    supersedes: prior.as_ref().and_then(|p| p.incarnation_id.clone()),
-                    deployment_id: DeploymentId::mint(),
-                };
+                let id = Identity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() };
                 // The name claim, by the writer of the mesh's rows, after the node id is minted and
                 // before anything is launched (lifecycles/node-create.md step 1): refused, nothing is.
-                if let (Some(rows), None) = (&rows, &prior) {
+                if let Some(rows) = &rows {
                     rows.claim(&req.node, &id.node_id, &run_operation)
                         .await
                         .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
@@ -1340,9 +1310,7 @@ impl DeploymentPipeline<'_> {
                 Ok(id)
             })
             .await?;
-        if prior.is_none() {
-            *claimed = Some(id.node_id.clone());
-        }
+        *claimed = Some(id.node_id.clone());
         // The node binds port 0 and the operating system assigns the port; the address it
         // reports at its join is the one this admin publishes for the birth.
         let bind_ip = self
@@ -1353,10 +1321,9 @@ impl DeploymentPipeline<'_> {
         let bind_addr = SocketAddr::new(bind_ip, 0);
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
         let inherits = inherited.is_some();
-        let data_dir = match (inherited, prior.as_ref().and_then(|p| p.data_dir.clone())) {
-            (Some(d), _) => d,
-            (None, Some(d)) => PathBuf::from(d),
-            (None, None) => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
+        let data_dir = match inherited {
+            Some(d) => d,
+            None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
             // An inherited data dir keeps its key: it is loaded, never minted; both on the blocking pool.
@@ -1389,7 +1356,7 @@ impl DeploymentPipeline<'_> {
             name: req.node.clone(),
             node_id: id.node_id.clone(),
             incarnation: id.incarnation.clone(),
-            supersedes: id.supersedes.clone(),
+            supersedes: None,
             bind_addr,
             listeners: bind_listeners.clone(),
             launcher: Some(self.template.launcher.clone()),
@@ -1443,7 +1410,7 @@ impl DeploymentPipeline<'_> {
                 name: req.node.clone(),
                 node_id: id.node_id.clone(),
                 incarnation: id.incarnation.clone(),
-                supersedes: id.supersedes.clone(),
+                supersedes: None,
                 endpoint_id: endpoint_id.clone(),
                 runtime,
                 data_dir: data_dir.display().to_string(),
@@ -1529,9 +1496,6 @@ impl DeploymentPipeline<'_> {
         node.transport_addr = Some(bound.transport);
         node.listeners = bound.listeners.clone();
         node.status = NodeStatus::Pending;
-        if let Some(p) = &prior {
-            node.is_primary = p.is_primary;
-        }
         // One coherent birth projection: the node record (topology and data
         // dir) here; the fact itself the birth publishes with its own digest,
         // which WaitForMeshJoin holds to exactly this fact and data dir.
@@ -1621,7 +1585,7 @@ impl DeploymentPipeline<'_> {
     /// running; nothing stops it and nothing is deleted.
     pub async fn drain(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("drain", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("drain", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("drain-node:{name}")).await;
@@ -1641,7 +1605,7 @@ impl DeploymentPipeline<'_> {
     /// runtime exit is asked and no departure is published.
     pub async fn stop(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await;
@@ -1664,7 +1628,7 @@ impl DeploymentPipeline<'_> {
     /// birth, whose reply is `Started` once it rejoined, then the wait for it to report ready.
     pub async fn start(&self, req: &StartRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("start", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("start", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("start-node:{name}")).await;
@@ -1677,18 +1641,38 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// A restart (node-restart.md): `restart-node:<path>` holds the birth through its Leaving (the
-    /// pre-event), the birth drains and stops (it parks, its process alive), and the same process
-    /// starts again: the same node id, incarnation, endpoint key and port. `Complete` ends the restart.
+    /// A restart (node-restart.md): ONE operation, `restart-node:<path>`, on the live process, which
+    /// never exits. Its `NodeRestarting` pre-event holds the birth through the stop that follows; the
+    /// birth's seats move (a node-admin), it drains and stops and parks, its process alive; the same
+    /// process starts again, the same node id, incarnation, endpoint key and port. The stop and the
+    /// start are the stop and start steps every stop and start runs, here as steps of this one
+    /// operation, and its one `Complete`, after the start, ends the restart.
     pub async fn restart(&self, req: &StartRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("restart", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("restart", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut node = req.node.clone();
-            // The first half is the retire pipeline's, as a restart (the birth is held, not departed).
-            self.retire_steps(&RetireRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: req.node.clone(), handle: req.handle.clone(), kind: RetireKind::Restart }).await?;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("restart-node:{name}")).await;
+            let mut node = req.node.clone();
+            // The pre-event: the receipt first, then the publish, so the Build facts carry the hold
+            // from the moment it is announced and a successor derives it from the same facts.
+            let op = LifecycleOp {
+                build_id: req.build_id.to_string(),
+                attempt: req.attempt,
+                operation: run.operation.clone(),
+                node_id: node.node_id.clone(),
+                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") })?,
+                name: name.clone(),
+                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+            };
+            let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.restarting(&op).await;
+            // The stop of the live process: it parks and stays, and its `stopped` is the stop's
+            // completion. `NodeRestarting` holds it, so no `NodeStopped` is published for it.
+            self.seat_transfer_step(&mut run, &node).await?;
+            self.drain_steps(&mut run, &mut node, &req.handle).await?;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: false }).await?;
+            // The start of the same process.
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
             self.step(&mut run, CreateStep::Complete.name(), async {
                 self.sink.publish(node.clone());
@@ -1768,7 +1752,7 @@ impl DeploymentPipeline<'_> {
     /// digest does (`<path>`), by its exact `(node.id, incarnation)`.
     pub async fn delete_parked(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("delete-node:{name}")).await;
@@ -1797,7 +1781,7 @@ impl DeploymentPipeline<'_> {
     /// Retire `req.node` through every step.
     pub async fn retire(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt, false);
+        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
         self.retire_steps(req).instrument(span).await
     }
 
@@ -1806,43 +1790,23 @@ impl DeploymentPipeline<'_> {
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await;
         let mut node = req.node.clone();
         let handle = &req.handle;
-        // The pre-notice, for a departure only: this executor's journal holds its Claim for the
-        // attempt (it runs nothing before that) and now records this operation; every node hears
-        // the node is being removed and stops routing to it, while it stays found. A restart
-        // (`RetireKind::Restart`) stops the birth and keeps the logical node: it never emits a
-        // departure, so the same NodeId's next incarnation is taken.
-        let op = if req.kind == RetireKind::Removal {
-            let op = LifecycleOp {
-                build_id: req.build_id.to_string(),
-                attempt: req.attempt,
-                operation: run.operation.clone(),
-                node_id: node.node_id.clone(),
-                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?,
-                name: name.clone(),
-                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
-            };
-            // The receipt first, then the publish: the Build facts carry the overlay from the
-            // moment it is announced, so a successor derives it from the same facts.
-            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
-            self.lifecycle.deleting(&op).await;
-            Some(op)
-        } else {
-            // A restart: the pre-event of `restart-node:<path>` on the same receipt-then-publish
-            // order, so every node holds the birth through the Leaving that follows.
-            let op = LifecycleOp {
-                build_id: req.build_id.to_string(),
-                attempt: req.attempt,
-                operation: format!("restart-node:{name}"),
-                node_id: node.node_id.clone(),
-                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") })?,
-                name: name.clone(),
-                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
-            };
-            let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
-            self.lifecycle.restarting(&op).await;
-            None
+        // The pre-notice: this executor's journal holds its Claim for the attempt (it runs nothing
+        // before that) and now records this operation; every node hears the node is being removed
+        // and stops routing to it, while it stays found.
+        let op = LifecycleOp {
+            build_id: req.build_id.to_string(),
+            attempt: req.attempt,
+            operation: run.operation.clone(),
+            node_id: node.node_id.clone(),
+            incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?,
+            name: name.clone(),
+            event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
         };
-        let _terminal = if req.kind == RetireKind::Removal && node.parked {
+        // The receipt first, then the publish: the Build facts carry the overlay from the
+        // moment it is announced, so a successor derives it from the same facts.
+        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+        self.lifecycle.deleting(&op).await;
+        let _terminal = if node.parked {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
@@ -1854,25 +1818,15 @@ impl DeploymentPipeline<'_> {
             // terminal proof. A caller that puts other work between them (a replace) calls the halves.
             self.seat_transfer_step(&mut run, &node).await?;
             self.drain_steps(&mut run, &mut node, handle).await?;
-            if req.kind == RetireKind::Restart {
-                // The birth parks and stays: its process is the one that starts again.
-                self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Park { publish_stopped: false }).await?;
-                // The retire leg of this restart is finished: the next restart of the node runs it afresh.
-                self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
-                return Ok(());
-            }
-            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.expect("a stop that terminates yields the provider's receipt")
+            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is.
-        if let Some(op) = op {
-            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&node, op.clone())).await?;
-            self.lifecycle.deleted(&op).await;
-        }
-        if req.kind == RetireKind::Removal {
-            self.release_storage_step(&mut run, &req.build_id, &node).await?;
-        }
+        let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
+        let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&node, op.clone())).await?;
+        self.lifecycle.deleted(&op).await;
+        // node-delete.md step 3: the data dir, node-identity.json and endpoint key are retained; no
+        // step of the delete touches the birth's storage.
         self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
             self.sink.remove(name);
             Ok(())
@@ -1932,7 +1886,7 @@ impl DeploymentPipeline<'_> {
     pub async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let path = node.name.clone();
-        let span = self.pipeline_span("shutdown-member", build_id, &path, attempt, false);
+        let span = self.pipeline_span("shutdown-member", build_id, &path, attempt);
         async {
             let mut run = self.begin(build_id, attempt, &path, crate::mesh_leave::member_operation(outer_operation, &path.to_string())).await;
             self.drain_steps(&mut run, node, handle).await?;
@@ -2138,47 +2092,6 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// The storage disposition of a removal (the lock's StorageMeta): what the accepted Build's
-    /// meta for this path says, read here and interpreted here, never by the provider. The receipt
-    /// names the disposition.
-    pub(crate) async fn release_storage_step(&self, run: &mut Run<'_>, build_id: &BuildId, node: &Node) -> Result<(), PipelineError> {
-        let name = &node.name;
-        let _disposition: StorageDisposition = self
-            .step(run, RetireStep::ReleaseStorage.name(), async {
-                let storage = self
-                    .builds
-                    .read_build(build_id)
-                    .await
-                    .ok()
-                    .and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
-                let release = match storage {
-                    Some(StorageMeta::Ephemeral) | Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }) => true,
-                    Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }) => false,
-                    // No meta for this path in the Build: storage is never destroyed on missing evidence.
-                    None => return Ok(StorageDisposition::PreservedNoMeta),
-                };
-                if !release {
-                    return Ok(StorageDisposition::Preserved);
-                }
-                match node.data_dir.as_deref() {
-                    Some(dir) => match crate::record_store::blocking_io({
-                        let dir = dir.to_string();
-                        move || std::fs::remove_dir_all(dir)
-                    })
-                    .await
-                    {
-                        Ok(()) => Ok(StorageDisposition::Released { locator: dir.to_string() }),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StorageDisposition::Released { locator: dir.to_string() }),
-                        Err(e) => Err(format!("{dir}: {e}")),
-                    },
-                    None => Ok(StorageDisposition::Released { locator: String::new() }),
-                }
-            })
-            .await?;
-
-        Ok(())
-    }
-
     /// The directory of `node`'s birth as it is now: the data dir its record names, else the
     /// root's `<path>-<node_id>`.
     fn birth_dir(&self, node: &Node) -> PathBuf {
@@ -2205,9 +2118,12 @@ impl DeploymentPipeline<'_> {
     ///
     /// A predecessor the provider already proves terminal is the recovery of an exited node
     /// (node-recovery.md): it is sent nothing, and the operation is node.delete of the exited instance,
-    /// then node.create: NodeDeleting -> RenamePredecessor -> TerminateRuntime -> NodeDeleted (its
+    /// then node.create: NodeDeleting -> TerminateRuntime -> RenamePredecessor -> NodeDeleted (its
     /// Deleted row at `<path>.old`) -> AllocateIdentity -> PrepareStorage -> PrepareNetwork ->
-    /// HandoffStorage -> DeployRuntime -> ... -> WaitForNodeReady -> ReleaseStorage -> Complete.
+    /// HandoffStorage -> DeployRuntime -> ... -> WaitForNodeReady -> Complete. It was never stopped, so
+    /// it is renamed only on the provider's exact terminal proof (node-update.md, "Rename
+    /// precondition"), and the old identity's delete releases no storage (node-delete.md "Storage"):
+    /// its directory keeps what HandoffStorage did not move, its identity files and endpoint key.
     ///
     /// `before_ready` is the successor's `ApplyMeshPending` work (a mesh's first admin); `after_ready`
     /// commits the successor's lifecycle transition once it is ready.
@@ -2217,7 +2133,7 @@ impl DeploymentPipeline<'_> {
         Fut: std::future::Future<Output = Result<(), String>>,
     {
         use tracing::Instrument;
-        let span = self.pipeline_span("replace", &req.build_id, &req.predecessor.name, req.attempt, false);
+        let span = self.pipeline_span("replace", &req.build_id, &req.predecessor.name, req.attempt);
         self.replace_steps(req, before_ready, after_ready).instrument(span).await
     }
 
@@ -2250,6 +2166,9 @@ impl DeploymentPipeline<'_> {
             // it is announced, so a successor executor derives it from the same facts.
             let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.deleting(&op).await;
+            // The provider's exact terminal proof, before the predecessor gives up its name: it was
+            // never stopped, so it is renamed only on that proof (node-update.md, "Rename precondition").
+            self.terminate_step(&mut run, &old, &req.handle).await?;
         } else {
             // The recipe's first step (node-replace.md 1): the complete stop leaves the predecessor
             // parked, and the stop's departure (`NodeStopped`) drops it from every book, before it
@@ -2261,8 +2180,10 @@ impl DeploymentPipeline<'_> {
             // that does not answer goes to node recovery (node-recovery.md).
             self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
         }
-        // node-replace.md 2: the parked predecessor gives up its name, renamed `<path>.old`. The
-        // receipt names the exact old birth.
+        // node-replace.md 2: the predecessor gives up its name, renamed `<path>.old`, under the rename
+        // precondition (node-update.md): parked by its `stopped` reply, or ended on the provider's
+        // exact terminal proof above. The receipt names the exact old birth.
+        let proof = if exited { "exited" } else { "stopped" };
         let to = format!("{name}.old");
         self.step(&mut run, ReplaceStep::RenamePredecessor.name(), async {
             tracing::info_span!(
@@ -2274,6 +2195,7 @@ impl DeploymentPipeline<'_> {
                 incarnation_id = %birth.0,
                 from = %name,
                 to = %to,
+                proof,
             )
             .in_scope(|| tracing::info!("the predecessor gives up its path.name: the successor is created at it"));
             // node1.update(.old): the writer of the mesh's rows moves the predecessor's row first.
@@ -2285,28 +2207,25 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         if exited {
-            // node.delete of the exited instance, then node.create (node-recovery.md "Steps"): the
-            // provider's exact terminal proof, then the old identity's departure and its Deleted row
-            // at `<path>.old`, before anything of the successor exists. The row is written while this
-            // executor is the writer of the mesh's rows: a mesh's only admin, replaced by the
-            // fabric-primary as the acting primary of a mesh with no primary, hands the mesh's seat
-            // to its successor at the successor's readiness, and from then on that successor writes
-            // the mesh's rows (R13). The storage is released only after the successor took it over.
-            self.terminate_step(&mut run, &old, &req.handle).await?;
+            // node.delete of the exited instance, then node.create (node-recovery.md "Steps"): after
+            // the provider's exact terminal proof and the rename, the old identity's departure and its
+            // Deleted row at `<path>.old`, before anything of the successor exists. The row is written
+            // while this executor is the writer of the mesh's rows: a mesh's only admin, replaced by
+            // the fabric-primary as the acting primary of a mesh with no primary, hands the mesh's
+            // seat to its successor at the successor's readiness, and from then on that successor
+            // writes the mesh's rows (R13). The delete keeps the predecessor's storage (node-delete.md
+            // "Storage"); the successor's create takes over only what HandoffStorage moves.
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
             let parked = Node { name: name.renamed(), ..old.clone() };
             let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&parked, op)).await?;
             self.lifecycle.deleted(&op).await;
         }
         // node-replace.md 3: node.create at the freed name, a new node.id, incarnation and directory.
-        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, held_runtimes: req.held_runtimes.clone() };
+        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, held_runtimes: req.held_runtimes.clone() };
         let recovering = Recovering { build_id: &req.build_id, predecessor: &old };
         let mut created = self.create_to_ready(&mut run, &creq, before_ready, exited.then_some(&recovering), None).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
-        if exited {
-            self.release_storage_step(&mut run, &req.build_id, &old).await?;
-        }
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
             Ok(())
@@ -2337,7 +2256,7 @@ impl DeploymentPipeline<'_> {
         Fut: std::future::Future<Output = Result<(), String>>,
     {
         use tracing::Instrument;
-        let span = self.pipeline_span("recover", &req.build_id, &req.exited.name, req.attempt, false);
+        let span = self.pipeline_span("recover", &req.build_id, &req.exited.name, req.attempt);
         self.recover_steps(req, after_deleted, after_ready).instrument(span).await
     }
 
@@ -2412,7 +2331,7 @@ impl DeploymentPipeline<'_> {
         after_deleted(fenced).await;
         // node.create at the same path.name over the inherited data dir: a new node.id and incarnation,
         // the same endpoint key, no supersedes.
-        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, held_runtimes: req.held_runtimes.clone() };
+        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, held_runtimes: req.held_runtimes.clone() };
         let mut created = self.create_to_ready(&mut run, &creq, None, None, Some(inherited)).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
@@ -2428,20 +2347,19 @@ impl DeploymentPipeline<'_> {
 
     /// The recovered predecessor's storage goes into the successor's directory: after the successor's
     /// identity exists and before its process does.
-    /// The top-level directories of every directory that holds this path's storage (the predecessor's,
-    /// and a successor an earlier attempt of this operation left behind) move into the successor's
-    /// directory. Files (the identity, the transport key, the runtime record) never move. What the
-    /// Build's `StorageMeta` for the path says decides: only persistent storage is handed over, and a
-    /// node-admin's records are seeded from its maker at join, never inherited.
+    /// The top-level directories of every directory that holds this operation's storage (the
+    /// predecessor's, and a successor an earlier attempt of this operation left behind, named by its
+    /// `AllocateIdentity` receipt in this Build) move into the successor's directory. No other
+    /// directory at the path is read: a birth deleted earlier at the path keeps its data dir
+    /// (node-delete.md "Storage") and is not this operation's. Files (the identity, the transport key,
+    /// the runtime record) never move. What the Build's `StorageMeta` for the path says decides: only
+    /// persistent storage is handed over, and a node-admin's records are seeded from its maker at join,
+    /// never inherited.
     async fn hand_over_storage(&self, recovering: &Recovering<'_>, successor_dir: &std::path::Path) -> Result<(), String> {
         let predecessor = recovering.predecessor;
         let name = &predecessor.name;
-        let storage = self
-            .builds
-            .read_build(recovering.build_id)
-            .await
-            .ok()
-            .and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
+        let build = self.builds.read_build(recovering.build_id).await.ok();
+        let storage = build.as_ref().and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
         let withheld = match storage {
             _ if name.kind == NodeKind::NodeAdmin => Some("a node-admin's records are seeded from its maker when it joins, never inherited from its predecessor"),
             Some(StorageMeta::Persistent { .. }) => None,
@@ -2453,7 +2371,20 @@ impl DeploymentPipeline<'_> {
             return Ok(());
         }
         let current = self.birth_dir(predecessor);
-        let sources = storage_sources(&self.template.data_root, name, &current, successor_dir).await.map_err(|e| format!("{name}: {e}"))?;
+        let mut candidates = vec![current.clone()];
+        let operation = format!("replace-node:{name}");
+        for r in build.iter().flat_map(|b| b.steps.iter()).filter(|r| r.operation == operation && r.step == CreateStep::AllocateIdentity.name() && r.outcome == StepOutcome::Complete) {
+            let id: Identity = r
+                .output
+                .clone()
+                .ok_or_else(|| format!("{name}: the AllocateIdentity receipt of attempt {} of {operation} (Build {}) carries no identity", r.attempt, recovering.build_id))
+                .and_then(|o| serde_json::from_value(o).map_err(|e| format!("{name}: the AllocateIdentity receipt of attempt {} of {operation} (Build {}) is not an identity: {e}", r.attempt, recovering.build_id)))?;
+            let dir = self.template.data_root.join(format!("{name}-{}", id.node_id));
+            if dir != successor_dir && !candidates.contains(&dir) {
+                candidates.push(dir);
+            }
+        }
+        let sources = storage_sources(candidates).await.map_err(|e| format!("{name}: {e}"))?;
         // A directory is moved only once the runtime that used it is gone: the predecessor's is
         // proven terminal by `TerminateRuntime`, an earlier attempt's successor is checked here.
         for source in &sources {
@@ -2480,12 +2411,11 @@ struct StorageSource {
     runtime: Option<RuntimeFact>,
 }
 
-/// The directories holding `name`'s storage: its current birth's `current` (when it exists) and
-/// every other `<name>-*` directory under `data_root` but `successor`, each with the
-/// subdirectories it holds and its runtime record; only those that hold any. `Err` names the
-/// directory or record that could not be read.
-async fn storage_sources(data_root: &std::path::Path, name: &PathName, current: &std::path::Path, successor: &std::path::Path) -> Result<Vec<StorageSource>, String> {
-    let (data_root, prefix, current, successor) = (data_root.to_path_buf(), format!("{name}-"), current.to_path_buf(), successor.to_path_buf());
+/// Of the `candidates` (an operation's own directories: its predecessor's and each earlier
+/// attempt's successor's), those that hold storage, each with the subdirectories it holds and its
+/// runtime record; a candidate that is gone or holds none is skipped. `Err` names the directory or
+/// record that could not be read.
+async fn storage_sources(candidates: Vec<PathBuf>) -> Result<Vec<StorageSource>, String> {
     crate::record_store::blocking_io(move || {
         // The subdirectories `dir` holds; `None` when it is gone (never made, or removed).
         let subdirs = |dir: &std::path::Path| -> Result<Option<Vec<PathBuf>>, String> {
@@ -2504,11 +2434,8 @@ async fn storage_sources(data_root: &std::path::Path, name: &PathName, current: 
             }
             Ok(Some(out))
         };
-        let mut sources = vec![current.clone()];
-        let root = subdirs(&data_root)?.ok_or_else(|| format!("{}: the data root does not exist", data_root.display()))?;
-        sources.extend(root.into_iter().filter(|d| d.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&prefix)) && *d != successor && *d != current));
         let mut out = Vec::new();
-        for dir in sources {
+        for dir in candidates {
             let Some(holders) = subdirs(&dir)? else { continue };
             if holders.is_empty() {
                 continue;
@@ -2599,7 +2526,7 @@ mod tests {
         let current = root.join("mesh1.rpc.1-n1");
         std::fs::create_dir_all(current.join("data")).unwrap();
         let (waited, found) = op_waits_on_the_blocking_pool(Box::pin(async move { (root, current) }), |(root, current)| {
-            Box::pin(async move { storage_sources(&root, &"mesh1.rpc.1".parse().unwrap(), &current, &root.join("mesh1.rpc.1-n2")).await })
+            Box::pin(async move { storage_sources(vec![current, root.join("mesh1.rpc.1-n2")]).await })
         });
         assert!(waited, "the look finished on the runtime's thread while the blocking pool was held");
         assert_eq!(found.unwrap().len(), 1);
@@ -2613,20 +2540,20 @@ mod tests {
         let current = root.join("mesh1.rpc.1-n1");
         std::fs::create_dir_all(current.join("data")).unwrap();
         std::fs::create_dir_all(current.join(rafka_mesh_entity::runtime::RUNTIME_FILE)).unwrap();
-        let err = storage_sources(&root, &"mesh1.rpc.1".parse().unwrap(), &current, &root.join("mesh1.rpc.1-n2")).await.expect_err("an unreadable record proves nothing");
+        let err = storage_sources(vec![current.clone()]).await.expect_err("an unreadable record proves nothing");
         assert!(err.contains(rafka_mesh_entity::runtime::RUNTIME_FILE), "{err}");
     }
 
     /// CONTRACT: a storage directory that cannot be read is an error naming it, never "holds
-    /// nothing"; only a current birth directory never made is skipped.
+    /// nothing"; only a candidate directory never made is skipped.
     #[tokio::test]
     async fn a_storage_directory_that_cannot_be_read_is_an_error_naming_it() {
         let root = tempdir("handover-dir");
         let never_made = root.join("mesh1.rpc.1-n0");
-        assert!(storage_sources(&root, &"mesh1.rpc.1".parse().unwrap(), &never_made, &root.join("mesh1.rpc.1-n2")).await.unwrap().is_empty());
+        assert!(storage_sources(vec![never_made]).await.unwrap().is_empty());
         let current = root.join("mesh1.rpc.1-n1");
         std::fs::write(&current, b"a file where the birth's directory should be").unwrap();
-        let err = storage_sources(&root, &"mesh1.rpc.1".parse().unwrap(), &current, &root.join("mesh1.rpc.1-n2")).await.expect_err("an unreadable directory holds something unknown");
+        let err = storage_sources(vec![current.clone()]).await.expect_err("an unreadable directory holds something unknown");
         assert!(err.contains(&current.display().to_string()), "{err}");
     }
 

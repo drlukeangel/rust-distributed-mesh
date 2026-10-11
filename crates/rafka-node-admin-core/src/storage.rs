@@ -601,6 +601,7 @@ mod tests {
 
     fn fact(state: ConnectionState) -> NodeConnection {
         NodeConnection {
+            id: rafka_mesh_entity::ConnectionId::mint(),
             source: end("mesh1.admin.1"),
             destination: end("mesh1.rpc.1"),
             kind: ConnectionKind::Direct,

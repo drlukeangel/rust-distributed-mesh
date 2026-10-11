@@ -36,6 +36,18 @@ pub struct ConnectionsWriter {
     inner: Arc<Inner>,
 }
 
+/// A start's hold on every row of its connections writer ([`ConnectionsWriter::hold_rows`]):
+/// dropping it lets the rows observed meanwhile be written, naming the node as it is then.
+pub struct RowsHeld {
+    _gate: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl std::fmt::Debug for RowsHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RowsHeld")
+    }
+}
+
 /// Makes an observation's row from the held projection, inside the write gate, naming this node as
 /// it is at that moment (the source end the held projection's own source was just set to).
 type Build = Box<dyn FnOnce(&ConnectionsWriter, ConnectionEnd) -> NodeConnection + Send>;
@@ -63,8 +75,9 @@ struct Inner {
     /// applies them one at a time, so the index member of a pair is always the last observed.
     queue: tokio::sync::mpsc::UnboundedSender<(Build, &'static str)>,
     /// The one write gate: held across every build, durable write and apply, whether it is an
-    /// observation, a [`ConnectionsWriter::record`] or a retirement settlement.
-    write_gate: tokio::sync::Mutex<()>,
+    /// observation, a [`ConnectionsWriter::record`] or a retirement settlement; and by a start
+    /// until it holds the name its join answer handed ([`ConnectionsWriter::hold_rows`]).
+    write_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// The local OS clock: a writer orders its own rows by it and ages its owed retirements by it. No
@@ -76,6 +89,12 @@ fn local_now_ms() -> u64 {
 
 fn end_of(node: &ResolvedNode) -> ConnectionEnd {
     ConnectionEnd { name: node.name.clone(), node_id: node.node_id.clone(), incarnation: Some(node.incarnation.clone()) }
+}
+
+/// This node's open routes in `held`: its own latest Direct entries that are `connected`, then its
+/// own active Proxy entries, each by destination.
+fn open_routes(held: &ConnectionsHeld) -> Vec<NodeConnection> {
+    held.own_latest_directs().into_iter().filter(|e| e.state == ConnectionState::Connected).chain(held.own_active_proxies()).cloned().collect()
 }
 
 fn kind_name(k: ConnectionKind) -> &'static str {
@@ -108,7 +127,7 @@ impl ConnectionsWriter {
             in_flight: std::sync::atomic::AtomicUsize::new(0),
             idle: tokio::sync::Notify::new(),
             queue,
-            write_gate: tokio::sync::Mutex::new(()),
+            write_gate: Arc::new(tokio::sync::Mutex::new(())),
         });
         let weak = Arc::downgrade(&inner);
         runtime.spawn(async move {
@@ -118,6 +137,15 @@ impl ConnectionsWriter {
             }
         });
         Self { inner }
+    }
+
+    /// Hold every row: until the returned hold is dropped no row is built, written or applied, and
+    /// every connection observed meanwhile waits for it. A start takes it before its join and lets
+    /// it go once it holds the name its join answer handed (node-start.md step 2), so the join's
+    /// connection, and any other the start makes or accepts, is recorded under that name: a node
+    /// renamed while it was stopped never writes a row naming the name it gave up at its join.
+    pub async fn hold_rows(&self) -> RowsHeld {
+        RowsHeld { _gate: self.inner.write_gate.clone().lock_owned().await }
     }
 
     /// The projection the writer holds.
@@ -213,6 +241,72 @@ impl ConnectionsWriter {
         Ok(())
     }
 
+    /// The connections this node holds now (R-CR1): its own latest Direct entries that are
+    /// `connected` and its own active Proxy entries, under the name it holds, once every observation
+    /// handed to the writer before the call has landed. Ordered by destination, Direct first.
+    pub async fn held_routes(&self) -> Vec<NodeConnection> {
+        self.drain().await;
+        let _gate = self.inner.write_gate.lock().await;
+        self.own_now();
+        open_routes(&self.inner.held.lock().unwrap())
+    }
+
+    /// `node.connections.delete`'s drops (R-CR3): each of `routes` (open entries this node held,
+    /// whose connections were just cut) gets one `disconnected` entry with its own id and `reason`,
+    /// naming this node as it is now, written durably and then applied. A route whose open entry is
+    /// no longer the latest of its pair (a newer entry was written meanwhile) is cut and writes no
+    /// drop: the newer entry is the pair's state. Returns the ids of the routes cut, and those whose
+    /// drop the storage refused, with its refusal: the log still holds those open.
+    pub async fn write_drops(&self, routes: &[NodeConnection], reason: &str) -> (Vec<rafka_mesh_entity::ConnectionId>, Vec<(rafka_mesh_entity::ConnectionId, String)>) {
+        let _gate = self.inner.write_gate.lock().await;
+        let own = self.own_now();
+        let (mut closed, mut refused) = (Vec::new(), Vec::new());
+        for route in routes {
+            let current = {
+                let held = self.inner.held.lock().unwrap();
+                open_routes(&held).into_iter().any(|r| r.id == route.id)
+            };
+            if !current {
+                closed.push(route.id.clone());
+                continue;
+            }
+            let drop = NodeConnection {
+                id: rafka_mesh_entity::ConnectionId::mint(),
+                source: own.clone(),
+                destination: route.destination.clone(),
+                kind: route.kind,
+                state: ConnectionState::Disconnected,
+                carrier: route.carrier.clone(),
+                recovery: None,
+                reason: Some(reason.to_string()),
+                logged_at_ms: self.stamp(),
+            };
+            let span = tracing::info_span!(
+                "rdm.node_admin.connection.update.via-connections-delete",
+                source = %drop.source.name,
+                destination = %drop.destination.name,
+                kind = kind_name(drop.kind),
+                closed_entry = %route.id,
+                entry = %drop.id,
+                reason,
+                outcome = tracing::field::Empty,
+            );
+            match self.persist(&drop).await {
+                Ok(()) => {
+                    let _ = self.inner.held.lock().unwrap().apply(drop);
+                    span.record("outcome", "landed");
+                    closed.push(route.id.clone());
+                }
+                Err(e) => {
+                    span.record("outcome", format!("refused: {e}").as_str());
+                    refused.push((route.id.clone(), e));
+                }
+            }
+            span.in_scope(|| tracing::info!("the drop of a connection node.connections.delete cut"));
+        }
+        (closed, refused)
+    }
+
     /// The raw log first, then the index; an error names the storage's own refusal.
     async fn persist(&self, row: &NodeConnection) -> Result<(), String> {
         self.inner.storage.append_history(row).await.map_err(|e| e.to_string())?;
@@ -226,6 +320,7 @@ impl ConnectionsWriter {
 
     fn direct(own: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, reason: Option<String>) -> NodeConnection {
         NodeConnection {
+            id: rafka_mesh_entity::ConnectionId::mint(),
             source: own,
             destination,
             kind: ConnectionKind::Direct,
@@ -401,6 +496,7 @@ impl ConnectionObserver for ConnectionsWriter {
                         // The row names both ends as they are now: this process's birth, never the
                         // one that wrote the previous attempt, and the birth dialled.
                         Some(r) => NodeConnection {
+                            id: rafka_mesh_entity::ConnectionId::mint(),
                             source: own,
                             destination,
                             recovery: Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: r.recovery_epoch, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),

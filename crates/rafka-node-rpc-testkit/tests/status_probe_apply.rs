@@ -60,7 +60,7 @@ fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
             timeouts: Timeouts::default(),
         };
         let created = pipeline
-            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, held_runtimes: Vec::new() })
             .await
             .expect("the node is born");
         let node = created.node.clone();
@@ -84,18 +84,9 @@ fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
             }
         };
 
-        // The node admits a downward operation only from a node-admin it holds in its own membership
-        // book; the admin's digest reaches it by gossip after its join. Probe until the node has heard
-        // the admin (bounded), then hold it to its answer.
+        // The node answers the probe whoever sends it (node-rpc.md §14): the first probe is answered.
         let probe = StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-        let first = loop {
-            let reply = call(probe.clone()).await;
-            if !matches!(reply, StatusReply::RejectedNotAuthority { .. }) || tokio::time::Instant::now() >= deadline {
-                break reply;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        };
+        let first = call(probe.clone()).await;
         assert_eq!(first, StatusReply::Current { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic });
         // A stale incarnation: refused with the one held.
         let stale = StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: IncarnationId::mint() };
@@ -128,79 +119,6 @@ fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
         // The probe after the drain reports it.
         assert_eq!(call(probe).await, StatusReply::Current { node_id: node.node_id.clone(), incarnation, state: NodeState::Draining });
 
-        let _ = provider.terminate(&created.handle, TerminationMode::Graceful { grace: std::time::Duration::from_secs(2) }).await;
-    })
-}
-
-/// CONTRACT (CLAUDE.md: an error state carries every non-leaking detail): a node command from a
-/// sender the rpc node's membership book holds no digest of is refused `RejectedNotAuthority
-/// { SenderNotSubject }` naming that sender by its endpoint, the one fact the node holds of it.
-/// Whether the node obeys such a sender is not this cell's (it is refused as before). Must NOT
-/// happen: the refusal naming an empty sender (no_survivor, the created mesh2.admin.2's stop of the
-/// stopped rpc.1: `SenderNotSubject { sender: "" }`).
-#[test]
-fn a_command_from_a_sender_the_node_never_heard_is_refused_naming_its_endpoint() {
-    let cap = crate::common::capture("a_command_from_a_sender_the_node_never_heard_is_refused_naming_its_endpoint");
-    cap.run(crate::common::Threads::Workers(4), async move {
-        let fabric_id = FabricId::mint();
-        let fabric = format!("fab-{fabric_id}");
-        let policy = FabricPolicy::bootstrap(Some("process")).expect("a known MESH_SPAWN_TYPE");
-        let prepared = match rafka_node_admin_core::deployment::prepare(policy, &fabric).await {
-            Ok(p) => p,
-            Err(DeployError::Unsupported { reason, .. }) => {
-                eprintln!("process provider unsupported here: {reason}");
-                return;
-            }
-            Err(e) => panic!("preparing the process provider failed: {e}"),
-        };
-        let provider = prepared.provider.clone();
-        let admin = common::admin_side(prepared.admin_ip, &fabric_id).await;
-        let template = common::template(&fabric_id, admin.seed.clone(), admin.launcher.clone());
-        let _reap = common::ReapOnDrop(template.data_root.clone());
-        let builds = MemoryBuildStateAdapter::new();
-        let build_id = common::publish_build(&builds, common::add_node()).await;
-        let sink = common::Published::default();
-        let pipeline = DeploymentPipeline {
-            provider: &*provider,
-            joins: &admin.joins,
-            observer: &admin.observer,
-            sink: &sink,
-            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
-            builds: &builds,
-            template: &template,
-            timeouts: Timeouts::default(),
-        };
-        let created = pipeline
-            .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
-            .await
-            .expect("the node is born");
-        let node = created.node.clone();
-        let incarnation = node.incarnation_id.clone().expect("a born node has its incarnation");
-        // A sender the node never heard: its own endpoint, no digest published anywhere.
-        let stranger_key = iroh::SecretKey::generate();
-        let stranger_id = stranger_key.public();
-        let stranger_ep = rafka_node_rpc::endpoint::bind_exact(stranger_key, std::net::SocketAddr::new(prepared.admin_ip, 0), vec![rafka_node_rpc::ALPN.to_vec()], iroh::endpoint::QuicTransportConfig::builder().build()).await.expect("the stranger binds");
-        let resolver = std::sync::Arc::new(rafka_node_rpc::StaticResolver::new());
-        resolver.insert(ResolvedNode {
-            node_id: node.node_id.clone(),
-            name: node.name.clone(),
-            endpoint_id: node.endpoint_id.as_ref().expect("endpoint id").0.parse::<iroh::PublicKey>().unwrap(),
-            incarnation: incarnation.clone(),
-            transport_addr: node.transport_addr.expect("transport address"),
-        });
-        let stranger = rafka_node_rpc::NodeRpcClient::new(stranger_ep, resolver);
-        let stop = StatusRequest::StopNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_stranger".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let reply = match stranger.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &stop, &CallOptions::default()).await.0 {
-            RpcOutcome::Reply(r) => r.value().clone(),
-            other => panic!("expected a reply: {other:?}"),
-        };
-        match &reply {
-            StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } => {
-                assert!(sender.contains(&stranger_id.to_string()), "the refusal names the sender by its endpoint: {reply:?}");
-            }
-            other => panic!("a command from a sender the node never heard is refused SenderNotSubject: {other:?}"),
-        }
-        eprintln!("refusal: {reply:?}");
         let _ = provider.terminate(&created.handle, TerminationMode::Graceful { grace: std::time::Duration::from_secs(2) }).await;
     })
 }
