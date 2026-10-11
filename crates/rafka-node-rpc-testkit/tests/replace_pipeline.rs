@@ -4,7 +4,7 @@
 //! predecessor is stopped with the provider's exact terminal proof and its storage handed over, the
 //! successor starts, joins and is ready, and only then is the old identity deleted.
 //!
-//! Its own test binary: it asserts spans (see `process_pipeline_failure.rs`).
+//! It asserts spans, so it enables every callsite before installing its dispatcher (`crate::enable_callsites`).
 
 use crate::common;
 
@@ -159,6 +159,7 @@ fn receipts(steps: &[rafka_node_admin_core::build_state::BuildStepReceipt], oper
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
     let spans = Spans::default();
+    crate::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let rig = rig().await;
     let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };

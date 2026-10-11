@@ -16,6 +16,7 @@ use tracing_subscriber::layer::SubscriberExt;
 #[tokio::test]
 async fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
     let spans = Spans::default();
+    crate::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();

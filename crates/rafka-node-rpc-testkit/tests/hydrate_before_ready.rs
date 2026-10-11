@@ -158,6 +158,7 @@ fn drain(d: &MeshDigest) -> StatusRequest {
 }
 
 fn tracing_to(spans: &Spans) -> tracing::subscriber::DefaultGuard {
+    crate::enable_callsites();
     tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()))
 }
 
