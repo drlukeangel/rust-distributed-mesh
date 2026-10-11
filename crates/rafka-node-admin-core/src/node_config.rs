@@ -2,14 +2,15 @@
 //!
 //! Config is a field of the node record. The fabric-primary is its only writer: it checks the cap,
 //! writes the node's whole row from what it holds (a blind put of the `path.name` key; it never reads
-//! the store on the write path), tells the exact birth (`ApplyNodeConfig`, which the node holds and
-//! carries in its next digest), and answers `node.config.updated`. A single call, never a Build, and
+//! the store on the write path), tells the exact birth through the node's mesh-primary (Forward
+//! `0x1A`; direct when this fabric-primary is that primary or the node is it) with `ApplyNodeConfig`,
+//! which the node holds and carries in its next digest, and answers `node.config.updated`. A single call, never a Build, and
 //! never refused because a Build runs: updates go through this one door one at a time.
 
 use crate::storage::NodeRow;
 use crate::topology::Topology;
 use rafka_node_admin_client::{CallEnd, ExactBirth, NodeRpc};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
+use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, RouteChoice};
 use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use std::sync::Arc;
 
@@ -42,6 +43,7 @@ impl NodeConfigs {
             incarnation_id = %incarnation.0,
             keys = config.len(),
             row_status = tracing::field::Empty,
+            route = tracing::field::Empty,
             outcome = tracing::field::Empty,
             "otel.kind" = "internal",
         );
@@ -69,13 +71,21 @@ impl NodeConfigs {
             None => return StatusReply::PeerUnresolved { reason: format!("{me}: {} has no known birth; its config cannot be put", subject.name) },
             Some(_) => {}
         }
+        // The route to the birth (ops-naming "Node data"): through the node's mesh-primary, Forward
+        // `0x1A`, unless this fabric-primary is that primary or the node is the primary itself; then
+        // the call is direct. Chosen before the row is written, so a member with no route changes nothing.
+        let Some(primary) = view.cohort_primary(&subject.mesh, rafka_mesh_entity::NodeKind::NodeAdmin) else {
+            return StatusReply::PeerUnresolved { reason: format!("{me}: {} has no single live primary node-admin in the view; {} cannot be told its config", subject.mesh, subject.name) };
+        };
+        let route = if primary.name == *me || primary.node_id == subject.node_id { RouteChoice::Direct } else { RouteChoice::ViaPeer { carrier: primary.node_id.clone(), path: primary.name.clone() } };
+        span.record("route", route.token());
         let _one = self.one_at_a_time.lock().await;
         let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
         if let Err(e) = storage.put_node_row(&row).await {
             return StatusReply::ConfigRowRefused { node: subject.name.to_string(), reason: format!("{me}: nodes.storage refused the row of {node_id}: {e}") };
         }
         let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let told = NodeRpc::new(&self.client).config_apply(&birth, config.clone(), &CallOptions::default()).await;
+        let told = NodeRpc::new(&self.client).config_apply(&birth, &route, config.clone(), &CallOptions::default()).await;
         match told {
             Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() },
             Ok(refused) => StatusReply::ConfigNotApplied { node: subject.name.to_string(), answered: refused.name().into(), reason: format!("{me} wrote the row; the birth answered {refused:?}") },
