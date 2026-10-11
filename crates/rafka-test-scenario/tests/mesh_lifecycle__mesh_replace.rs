@@ -212,6 +212,25 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     // The forwarder leg: mesh2's ordinary nodes, which hear no backbone, hold it from what their
     // mesh primary forwards onto the mesh channel.
     assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
+    // gossip.md, node-stopped lifecycle overlay: mesh1's primary publishes NodeStopped from each member's
+    // matching stopped reply, for every member it stops. The overlay rides mesh1's backbone
+    // Members.in_flight from the next publication on, and mesh2's primary carries it onto mesh2's channel:
+    // every member stopped before mesh1's last publication is held Leaving and parked, not routable, at a
+    // mesh2 admin (backbone) and a mesh2 ordinary node (mesh channel).
+    let stopped_members: Vec<String> = ["mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string()].into_iter().chain(tier2.iter().map(|n| n.to_string())).collect();
+    let published_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped");
+    let stopped_at = |m: &str| -> u64 {
+        published_stopped.iter().find(|sp| s(&sp["attributes"]["node"]) == m && s(&sp["attributes"]["operation"]) == format!("stop-node:{m}")).map(|sp| start_ns(sp)).unwrap_or_else(|| panic!("mesh1's primary published NodeStopped for {m}: {published_stopped:?}"))
+    };
+    let last_publication = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).max().expect("mesh1's primary published its aggregate");
+    let carried: Vec<&String> = stopped_members.iter().filter(|m| stopped_at(m) < last_publication).collect();
+    assert!(!carried.is_empty(), "a member was stopped before mesh1's last publication: {stopped_members:?}");
+    let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
+    for m in carried {
+        let held: Vec<&Value> = leaving_states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == *m && parked(sp)).collect();
+        assert!(held.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.admin.") && sp["attributes"]["channel"] == "backbone"), "a mesh2 admin held {m} parked from mesh1's backbone Members.in_flight: {held:?}");
+        assert!(held.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held {m} parked from what mesh2's primary forwarded: {held:?}");
+    }
     let left = heard("via-mesh-left");
     assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a mesh2 node held mesh1's births departed on mesh-left: {left:?}");
     let last_exit = tier2_last.max(terminal_end(&final_name));
