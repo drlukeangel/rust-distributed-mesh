@@ -84,13 +84,14 @@ impl Capture {
     }
 }
 
-/// CONTRACT (node-stop.md step 3-4, R-ON1; park_gate.rs): the admin's hierarchy is in a turn, past
+/// CONTRACT (node-stop.md steps 3-4, R-ON1; park_gate.rs): the admin's hierarchy is in a turn, past
 /// its wait point and held where it takes the view lock, when its mesh-admin's `stop-node` reaches
 /// it; the cell lets the lock go only once the stop has parked the gate. The stop is answered
-/// `Stopped`, and the aggregate that turn published (its `topology_version` bump) began before the
-/// stop's connection cut did: the stop waited for the turn to end. Its cut found no turn in
-/// progress. Must NOT happen: a turn that was in progress at the park running on past the cut, so
-/// a stopped admin publishes its aggregate (and calls out) after it was cut.
+/// `Stopped`; its quiesce step (in the stop's own trace) names the hierarchy among the turns it
+/// waited for and ends after the aggregate that turn published (its `topology_version` bump), and
+/// the stop's connection cut begins only after the quiesce: its cut finds no turn in progress.
+/// Must NOT happen: a turn that was in progress at the park running on past the cut, so a stopped
+/// admin publishes its aggregate (and calls out) after it was cut.
 #[test]
 fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running() {
     let cell = "a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running";
@@ -149,6 +150,9 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     });
 
     let spans = cap.spans();
+    let artifact = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell);
+    std::fs::create_dir_all(&artifact).unwrap();
+    std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let me = "mesh1.admin.1";
     let named = |name: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && s["attributes"]["node"] == me).collect() };
     let cut = named("rdm.node_admin.node.connections.delete.via-stop");
@@ -166,9 +170,24 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
         bump["attributes"]["topology_version"],
         (bumped_at - cut_began) / 1000
     );
+    let quiesce = named("rdm.node_admin.node.update.via-stop-quiesce");
+    assert_eq!(quiesce.len(), 1, "one quiesce step for the stop: {quiesce:?}");
+    let quiesce = quiesce[0];
+    assert_eq!(quiesce["trace_id"], stop_trace.as_str(), "the quiesce is in the stop's own trace");
+    let waited_for = quiesce["attributes"]["waited_for"].as_str().unwrap_or_default();
+    assert!(waited_for.split(',').any(|t| t.split(':').next() == Some("hierarchy")), "the quiesce waited for the hierarchy's turn: {quiesce}");
+    assert!(bump["end_ns"].as_u64().unwrap() <= quiesce["end_ns"].as_u64().unwrap(), "the quiesce ended before the held turn published: {quiesce} {bump}");
+    assert!(quiesce["end_ns"].as_u64().unwrap() <= cut_began, "the cut began before the quiesce ended: {quiesce}");
     let cut_report = named("rdm.node_admin.node.connections.delete.via-stop-cut");
     assert_eq!(cut_report.len(), 1, "{cut_report:?}");
     assert_eq!(cut_report[0]["attributes"]["turns_in_progress"], "0", "the cut found a turn in progress: {}", cut_report[0]);
     assert_eq!(cut[0]["trace_id"], stop_trace.as_str(), "the cut is in the stop's own trace");
-    println!("stop trace {stop_trace}; aggregate bumped {} µs before the cut began", (cut_began - bumped_at) / 1000);
+    println!(
+        "stop trace {stop_trace}; held bump trace {} topology_version {}; quiesce waited for [{waited_for}] {} µs; aggregate bumped {} µs before the cut began; spans in {}",
+        bump["trace_id"].as_str().unwrap_or_default(),
+        bump["attributes"]["topology_version"].as_str().unwrap_or_default(),
+        (quiesce["end_ns"].as_u64().unwrap() - quiesce["start_ns"].as_u64().unwrap()) / 1000,
+        (cut_began - bumped_at) / 1000,
+        artifact.display()
+    );
 }

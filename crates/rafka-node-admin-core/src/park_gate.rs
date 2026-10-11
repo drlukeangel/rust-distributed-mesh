@@ -7,7 +7,8 @@
 //!   (drops its [`Turn`]) before its idle wait. It is never held mid-critical-section, so the parked
 //!   admin always serves its start (node-start: start is the only exit from stopped Leaving), and
 //!   each turn waits before it sends. A turn already past its wait point when the gate parks runs to
-//!   the end of that turn; [`ParkGate::park`] answers how many were;
+//!   the end of that turn: a stop parks with [`ParkGate::quiesce`], which resolves once every such
+//!   turn has ended, so nothing a turn does follows the stop's cut;
 //! - a task that takes no such lock is spawned through the gate ([`ParkGate::spawn`]): while the
 //!   gate is parked its future is not polled, so it holds its place at the await it was at.
 //! The gate neither cancels nor restarts a task.
@@ -88,6 +89,16 @@ impl ParkGate {
         at
     }
 
+    /// Park, and resolve once no turn is in progress: the turns already past their wait point have
+    /// ended, on their own completion, and no other begins. Answers the gate as it stood at the park.
+    /// A turn holds no lock at its wait point, and none is held here, so every turn can end.
+    pub async fn quiesce(&self) -> GateState {
+        let at = self.park();
+        let mut rx = self.state.subscribe();
+        let _ = rx.wait_for(|s| s.turns.is_empty()).await;
+        at
+    }
+
     /// Poll them again, and let turns begin.
     pub fn resume(&self) {
         self.state.send_modify(|s| s.parked = false);
@@ -155,6 +166,37 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
+
+    /// CONTRACT (node-stop: a stop holds its tasks before it cuts): a quiesce parks the gate at once
+    /// and resolves only once every turn that was in progress at the park has ended, on its own
+    /// completion; it answers those turns by task. No turn begins after the park until the gate
+    /// opens. Must NOT happen: a quiesce that resolves while a turn is still running, or a turn
+    /// begun on a parked gate.
+    #[tokio::test]
+    async fn a_quiesce_resolves_only_once_every_turn_in_progress_has_ended_and_none_begins_after_it() {
+        use futures_util::FutureExt;
+        let gate = ParkGate::new();
+        let a = gate.turn("hierarchy").await;
+        let b = gate.turn("executor").await;
+        let quiesce = gate.quiesce();
+        tokio::pin!(quiesce);
+        assert!((&mut quiesce).now_or_never().is_none(), "two turns are in progress: the quiesce waits");
+        assert!(gate.is_parked(), "the quiesce parked the gate at once");
+        let late = gate.turn("declarer");
+        tokio::pin!(late);
+        assert!((&mut late).now_or_never().is_none(), "no turn begins on a parked gate");
+        drop(a);
+        assert!((&mut quiesce).now_or_never().is_none(), "one turn is still in progress: the quiesce waits");
+        drop(b);
+        let at = (&mut quiesce).now_or_never().expect("every turn ended: the quiesce resolves");
+        assert_eq!((at.in_progress(), at.named().as_str()), (2, "executor,hierarchy"), "it answers the turns it waited for");
+        assert!((&mut late).now_or_never().is_none(), "still parked: the late turn has not begun");
+        gate.resume();
+        let late = (&mut late).now_or_never().expect("the gate opened: the turn begins");
+        assert_eq!(gate.state().borrow().named(), "declarer");
+        drop(late);
+        assert_eq!(gate.state().borrow().in_progress(), 0);
+    }
 
     /// CONTRACT: a task behind a parked gate makes no progress and keeps its place; the same task
     /// resumes where it was when the gate opens. What must NOT happen: a parked task that keeps

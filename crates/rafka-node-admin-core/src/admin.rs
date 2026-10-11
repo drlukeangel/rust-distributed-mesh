@@ -2075,9 +2075,17 @@ struct AdminSession {
 
 #[async_trait::async_trait]
 impl crate::node_self::Session for AdminSession {
+    async fn park_tasks(&self) -> crate::node_self::TasksParked {
+        // The gate parks, so no turn begins; the turns already past their wait point end on their
+        // own completion, and only then does the stop go on to its cut.
+        let at = self.gate.quiesce().await;
+        crate::node_self::TasksParked { turns_in_progress: at.in_progress(), waited_for: at.named() }
+    }
+
     async fn cut(&self, spare: Option<iroh::PublicKey>) -> crate::node_self::CutReport {
-        // Held first, so nothing it was doing goes out on the connections cut below.
-        let turns_in_progress = self.gate.park().in_progress();
+        // The stop held this admin's tasks before it (`park_tasks`): nothing it was doing goes out on
+        // the connections cut below.
+        let turns_in_progress = self.gate.state().borrow().in_progress();
         if let Some(h) = self.hydrating.lock().unwrap().take() {
             h.abort();
         }

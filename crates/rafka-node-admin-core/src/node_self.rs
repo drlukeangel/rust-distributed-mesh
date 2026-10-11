@@ -71,9 +71,19 @@ pub struct CutReport {
     pub pooled: usize,
     /// Connections peers had made to this node, closed (the commander's spared).
     pub accepted: usize,
-    /// Turns of the node's gated tasks still in progress when the cut began (a node-admin's park
-    /// gate; an ordinary node holds none).
+    /// Turns of the node's gated tasks in progress when the cut began (a node-admin's park gate,
+    /// quiesced by the stop before it; an ordinary node holds none).
     pub turns_in_progress: usize,
+}
+
+/// What holding a node's own tasks for its stop waited for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TasksParked {
+    /// Turns of its gated tasks already past their wait point when they were held; the stop waited
+    /// for each to end.
+    pub turns_in_progress: usize,
+    /// Those turns by task (`task` or `task:n`, comma-separated); empty when there were none.
+    pub waited_for: String,
 }
 
 /// Why a start stopped, and at which step.
@@ -89,6 +99,13 @@ pub struct StartFailed {
 /// stop and start that differs by node kind.
 #[async_trait::async_trait]
 pub trait Session: Send + Sync {
+    /// Hold this process's own tasks for its stop, once its drain is done: no turn begins, and this
+    /// resolves once every turn already past its wait point has ended, so nothing a turn does
+    /// follows the stop's declaration or its cut. A surface whose tasks need no holding has nothing
+    /// to wait for.
+    async fn park_tasks(&self) -> TasksParked {
+        TasksParked::default()
+    }
     /// Hard-cut the mesh connections: leave the gossip topics, close the pooled peer connections and
     /// the connections peers made, sparing `spare` (the commander, whose call is in flight). The
     /// endpoint stays bound.
@@ -552,17 +569,29 @@ impl NodeSelf {
         // not drained, and owes none.
         let owed = if matches!(receipt, DrainReceipt::Established { .. }) { self.drained() } else { Vec::new() };
         let completions = futures_util::future::join_all(owed.into_iter().map(|owed| owed.complete(self)));
-        // 2. Leaving is declared to the authority while this node can still reach it, then no more is
-        // said: the node gossips nothing for its stop. The owed completions are called beside the
-        // declaration, so the stop waits for neither longer than for the slower.
-        let declared = async {
+        let session = self.session.lock().unwrap().clone();
+        let held_then_declared = async {
+            // 2. The node's own tasks are held: no turn begins, and every turn already past its wait
+            // point runs to its end before anything more is said or cut.
+            if let Some(session) = &session {
+                let span = tracing::info_span!(
+                    "rdm.node_admin.node.update.via-stop-quiesce",
+                    node = %self.held_name(), operation = %op.operation, turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
+                );
+                let parked = session.park_tasks().instrument(span.clone()).await;
+                span.record("turns_in_progress", parked.turns_in_progress);
+                span.record("waited_for", parked.waited_for.as_str());
+            }
+            // 3. Leaving is declared to the authority while this node can still reach it, then no
+            // more is said: the node gossips nothing for its stop.
             if let Some(declare) = &self.declare {
                 declare(NodeState::Leaving).await;
             }
         };
-        tokio::join!(completions, declared);
-        // 3. The hard cut, sparing the commander's connection the stop call rides.
-        let session = self.session.lock().unwrap().clone();
+        // The owed completions are called beside the hold and the declaration, so the stop waits
+        // for neither longer than for the slower.
+        tokio::join!(completions, held_then_declared);
+        // 4. The hard cut, sparing the commander's connection the stop call rides.
         let report = match session {
             Some(session) => session.cut(spare).instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %op.operation, commander = %commander)).await,
             None => CutReport::default(),
@@ -672,9 +701,11 @@ impl NodeSelf {
                     StatusReply::Started
                 }
                 Err(failed) => {
-                    // The start stopped at its step: the node is parked again, as it was.
+                    // The start stopped at its step: the node is parked again, as it was: its tasks
+                    // held (a turn its rejoin let begin runs to its end), then its connections cut.
                     let _ = (self.set_status)(MemberStatus::Leaving);
                     self.server.drain();
+                    let _ = session.park_tasks().await;
                     let _ = session.cut(spare).await;
                     *self.cycle.lock().unwrap() = Cycle::Parked(receipt);
                     tracing::Span::current().record("failed_step", failed.step);
