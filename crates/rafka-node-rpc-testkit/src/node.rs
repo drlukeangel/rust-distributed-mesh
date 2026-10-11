@@ -223,41 +223,8 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     start_with_client(launch, |b, resolver, _client| register(b, resolver)).await
 }
 
-/// The stop signal of this process (SIGTERM or ctrl-c), latched from the moment [`listen_for_stop`]
-/// is first called: a binary calls it first thing, so a stop that arrives while the node boots is
-/// heard (the SIGTERM handler replaces the default disposition, which would end the process before
-/// its telemetry drained) and a stop that arrives between boot and [`wait_for_signal`] is not lost.
-static STOP: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>> = std::sync::OnceLock::new();
-
-/// Start listening for this process's stop signal (idempotent). Call it on the process's runtime.
-pub fn listen_for_stop() {
-    STOP.get_or_init(|| {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        #[cfg(unix)]
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::spawn(async move {
-            #[cfg(unix)]
-            tokio::select! {
-                _ = term.recv() => {}
-                _ = tokio::signal::ctrl_c() => {}
-            }
-            #[cfg(not(unix))]
-            let _ = tokio::signal::ctrl_c().await;
-            let _ = tx.send(true);
-        });
-        rx
-    });
-}
-
-/// Resolves once this process has been told to stop ([`listen_for_stop`]).
-pub async fn stop_requested() {
-    listen_for_stop();
-    let mut rx = STOP.get().expect("listening for the stop signal").clone();
-    if rx.wait_for(|stop| *stop).await.is_err() {
-        // The listener's runtime is gone: no signal can arrive through it.
-        std::future::pending::<()>().await;
-    }
-}
+/// The process's stop signal, latched from its first line (node-admin's own listener: one per process).
+pub use rafka_node_admin_core::entry::{listen_for_stop, stop_requested};
 
 /// Until this process is told to stop: a SIGTERM/ctrl-c, or the mesh transport stopping for
 /// good (a runtime that can neither be heard nor answer ends; its exit is the death proof the
@@ -328,10 +295,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // the birth so any admin can manage it, whoever launched it.
     let dir = launch.data_dir.clone();
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-runtime-record", node = %launch.name);
-    let runtime = tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
-        .await
-        .map_err(|e| anyhow!("reading the runtime record: {e}"))?
-        .map_err(|e| anyhow!("{e}"))?;
+    let runtime = rafka_node_admin_core::node_self::wait_for_own_record(&dir, Duration::from_secs(10)).await.map_err(|e| anyhow!("{e}"))?;
     drop(step);
     // The identity this process records its intentional exit under (a transport that stopped).
     rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {

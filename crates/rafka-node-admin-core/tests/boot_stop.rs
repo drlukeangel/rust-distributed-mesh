@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 /// provider yet: `admin.rs` waits for it up to 10 s) and is sent SIGTERM ends its boot by name and
 /// exits 0 through its telemetry drain: its evidence file holds `rdm.mesh.node.create.via-deployment`
 /// and `rdm.mesh.node.delete.via-signal` with `booted=false`. What must NOT happen: the default
-/// SIGTERM disposition ending the process before its batch export, leaving the file empty.
+/// SIGTERM disposition ending the process before its batch export, leaving the file empty, or the
+/// abandoned boot holding the exit past a Graceful stop's 5 s grace.
 #[test]
 fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain");
@@ -54,7 +55,9 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
         std::thread::sleep(Duration::from_millis(5));
     };
     unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    let signalled = Instant::now();
     let status = child.wait().unwrap();
+    let stopped_in = signalled.elapsed();
     let _ = std::fs::remove_dir_all(&data_dir);
     let spans: Vec<serde_json::Value> = std::fs::read_to_string(&path).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
     let names: Vec<&str> = spans.iter().filter_map(|s| s["name"].as_str()).collect();
@@ -62,4 +65,7 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
     let stop = spans.iter().find(|s| s["name"] == "rdm.mesh.node.delete.via-signal").unwrap_or_else(|| panic!("{} holds no stop span ({status}, {names:?})", path.display()));
     assert_eq!(stop["attributes"]["booted"], "false", "{stop}");
     assert!(status.success(), "the stopped admin exits 0: {status}");
+    // Within a Graceful stop's 5 s grace: the boot's record wait is dropped with the boot, never
+    // waited out (10 s) by the runtime's shutdown.
+    assert!(stopped_in < Duration::from_secs(5), "the admin exited {} ms after its stop: something of its abandoned boot held the exit", stopped_in.as_millis());
 }
