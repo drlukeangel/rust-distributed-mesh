@@ -223,8 +223,11 @@ fn node_status(s: MemberStatus) -> NodeStatus {
 pub struct Records {
     nodes: Mutex<BTreeMap<PathName, Node>>,
     removed: Mutex<std::collections::HashSet<(PathName, Option<IncarnationId>)>>,
-    /// The births a replacement renamed `<path>.old`: this view names them so until their departure.
-    renamed: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
+    /// The name a birth's row holds where it differs from the name the birth's digest says: a
+    /// predecessor a replacement renamed `<path>.old`, or a node its mesh-primary renamed while it was
+    /// stopped (`node.update`). The node authors its own digest, so only this view names it so; the
+    /// book's held digest keeps the name the node last published.
+    renamed: Mutex<HashMap<(NodeId, IncarnationId), PathName>>,
     meshes: Mutex<BTreeMap<String, MeshId>>,
     seats: Mutex<Seats>,
     /// nodes.storage: a birth this admin launches is a contact from the moment it is published,
@@ -533,7 +536,7 @@ impl TopologySink for Records {
         if nodes.get(name).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
             nodes.remove(name);
         }
-        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
+        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), name.renamed());
     }
 }
 
@@ -571,14 +574,16 @@ impl Records {
     /// The birth `incarnation` of `node_id`, recorded at `from`, holds the row its mesh-primary moved
     /// to `to` (`node.update`, R13): its launch record moves with the row.
     pub fn rename_birth(&self, from: &PathName, node_id: &NodeId, incarnation: &IncarnationId, to: &PathName) {
-        let _ = node_id;
-        let mut nodes = self.nodes.lock().unwrap();
-        if nodes.get(from).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
-            if let Some(mut n) = nodes.remove(from) {
-                n.name = to.clone();
-                nodes.insert(to.clone(), n);
+        {
+            let mut nodes = self.nodes.lock().unwrap();
+            if nodes.get(from).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
+                if let Some(mut n) = nodes.remove(from) {
+                    n.name = to.clone();
+                    nodes.insert(to.clone(), n);
+                }
             }
         }
+        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), to.clone());
     }
 }
 
@@ -718,9 +723,9 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         }
         let Some((_, age)) = book.get_at(d.node.node_id.as_str(), now) else { continue };
         heard.insert(d.node.incarnation.clone());
-        // A predecessor a replacement renamed is `<path>.old` here; its digest still says `<path>`
-        // (a node authors its own digest), so only this view names it so.
-        let name = if renamed.contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) { d.node.name.renamed() } else { d.node.name.clone() };
+        // A birth whose row holds another name is listed at the row's: a predecessor a replacement
+        // renamed `<path>.old`, a node renamed while stopped (a node authors its own digest).
+        let name = renamed.get(&(d.node.node_id.clone(), d.node.incarnation.clone())).cloned().unwrap_or_else(|| d.node.name.clone());
         // A birth under an open restart is held through everything below until its later birth is
         // heard: the restart's own retire (its Leaving, its removal from these records) is not a
         // departure (fabric-node-lifecycle.md: Restarting is commanded silence).
@@ -787,7 +792,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
             continue;
         }
         heard.insert(d.node.incarnation.clone());
-        let name = if renamed.contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) { d.node.name.renamed() } else { d.node.name.clone() };
+        let name = renamed.get(&(d.node.node_id.clone(), d.node.incarnation.clone())).cloned().unwrap_or_else(|| d.node.name.clone());
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
@@ -821,7 +826,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
             continue;
         }
         heard.insert(op.incarnation.clone());
-        let name = if renamed.contains(&(op.node_id.clone(), op.incarnation.clone())) { op.name.renamed() } else { op.name.clone() };
+        let name = renamed.get(&(op.node_id.clone(), op.incarnation.clone())).cloned().unwrap_or_else(|| op.name.clone());
         if removed.contains(&(name.clone(), Some(op.incarnation.clone()))) {
             continue;
         }
@@ -3997,6 +4002,16 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             configure: configure.clone(),
             hydration: hydration_cell.clone(),
             rename: rename.clone(),
+            row_moved: {
+                // The moved row enters what the view is projected from, then the view is projected.
+                let moved: crate::status_rpc::RowMoved = Arc::new(std::sync::OnceLock::new());
+                let (records, project) = (records.clone(), view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()));
+                let _ = moved.set(Arc::new(move |from: PathName, node_id: NodeId, incarnation: IncarnationId, to: PathName| {
+                    records.rename_birth(&from, &node_id, &incarnation, &to);
+                    project()
+                }));
+                moved
+            },
         }));
     }
     // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -5921,6 +5936,7 @@ mod tests {
             configure: Default::default(),
             hydration: Default::default(),
             rename: Default::default(),
+            row_moved: Default::default(),
         };
         let _ = Declared::default();
 
