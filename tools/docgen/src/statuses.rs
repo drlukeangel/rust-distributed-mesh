@@ -1,6 +1,7 @@
 //! statuses.md: every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source,
 //! each variant with its serde name and the labels the enum's methods give it, then every
-//! `pub const` string whose value is one of those names (the mesh / fabric status strings).
+//! `pub const` string whose value is one of those names (the mesh / fabric status strings). The
+//! page names files, never source lines, so it changes only when a status changes.
 
 use crate::render::{self, Columns};
 use crate::source::{self, Decl, DeclItem, Workspace};
@@ -46,9 +47,9 @@ pub fn page(ws: &Workspace) -> anyhow::Result<String> {
     }
     let mut out = format!("{}\n# {TITLE}\n\n", crate::MARKER);
     out.push_str("Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source, sorted by name. Each variant has its serde name (how a JSON view spells it; an enum that does not derive `Serialize` says so) and any label the enum's own methods give it (`fn name(&self) -> &'static str`). The status strings follow.\n\n");
-    out.push_str("| enum | crate | site |\n|---|---|---|\n");
+    out.push_str("| enum | crate | file |\n|---|---|---|\n");
     for d in &enums {
-        out.push_str(&format!("| [`{}`](#{}) | {} | `{}` |\n", d.name(), d.anchor(), d.krate.package, d.site()));
+        out.push_str(&format!("| [`{}`](#{}) | {} | `{}` |\n", d.name(), d.anchor(), d.krate.package, d.file.path));
     }
     out.push('\n');
     let cols = Columns { serde_name: true };
@@ -62,15 +63,15 @@ pub fn page(ws: &Workspace) -> anyhow::Result<String> {
                 let syn::Item::Const(c) = item else { continue };
                 let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &*c.expr else { continue };
                 if matches!(c.vis, syn::Visibility::Public(_)) && names.contains(&s.value()) {
-                    consts.push((c.ident.to_string(), s.value(), format!("{}:{}", file.path, c.ident.span().start().line), source::doc_line(&c.attrs)));
+                    consts.push((c.ident.to_string(), s.value(), file.path.clone(), source::doc_line(&c.attrs)));
                 }
             }
         }
     }
     consts.sort();
-    out.push_str("## Status strings\n\nEvery `pub const` string in RDM's non-test source whose value is a serde name or label above.\n\n| const | value | where | doc |\n|---|---|---|---|\n");
-    for (name, value, site, doc) in &consts {
-        out.push_str(&format!("| `{name}` | {} | `{site}` | {} |\n", render::code(value), render::doc(doc)));
+    out.push_str("## Status strings\n\nEvery `pub const` string in RDM's non-test source whose value is a serde name or label above.\n\n| const | value | file | doc |\n|---|---|---|---|\n");
+    for (name, value, file, doc) in &consts {
+        out.push_str(&format!("| `{name}` | {} | `{file}` | {} |\n", render::code(value), render::doc(doc)));
     }
     Ok(out)
 }

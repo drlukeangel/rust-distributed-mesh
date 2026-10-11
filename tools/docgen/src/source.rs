@@ -105,11 +105,6 @@ impl<'w> Decl<'w> {
         parts.join("-")
     }
 
-    /// `file:line`.
-    pub fn site(&self) -> String {
-        format!("{}:{}", self.file.path, self.line())
-    }
-
     /// One key per declaration, for dedup and ordering: name, package, module, site.
     pub fn key(&self) -> (String, String, Vec<String>, String, usize) {
         (self.name(), self.krate.package.clone(), self.module.clone(), self.file.path.clone(), self.line())

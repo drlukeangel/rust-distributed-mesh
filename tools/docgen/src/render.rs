@@ -193,7 +193,7 @@ pub fn type_section(out: &mut String, ws: &Workspace, decl: &Decl, cols: Columns
         }),
         DeclItem::Macro { mac, .. } => (&mac.attrs[..], format!("declared by `{}!`", source::text(&mac.mac.path))),
     };
-    out.push_str(&format!("`{}` · {shape} · {}\n\n", decl.site(), decl.krate.package));
+    out.push_str(&format!("`{}` · {shape} · {}\n\n", decl.file.path, decl.krate.package));
     let doc = match &decl.item {
         DeclItem::Macro { mac, .. } => source::macro_doc_line(mac),
         _ => source::doc_line(attrs),

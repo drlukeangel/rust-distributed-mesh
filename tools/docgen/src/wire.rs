@@ -1,6 +1,7 @@
 //! wire.md: every Node RPC op — each `impl NodeProtocol for T` in RDM's non-test source — sorted by
 //! op code, its constants as written, its request and reply bodies with variants and fields in
-//! declaration order (their postcard position), then every workspace type those bodies carry.
+//! declaration order (their postcard position), then every workspace type those bodies carry. The
+//! page names files, never source lines, so it changes only when a wire body changes.
 
 use crate::render::{self, Columns};
 use crate::source::{self, Decl, Workspace};
@@ -15,7 +16,7 @@ const CONSTS: [&str; 8] = ["OP", "NAME", "FORWARDABLE", "SERVED_WHILE_DRAINING",
 struct Op<'w> {
     code: u64,
     family: String,
-    site: String,
+    file: String,
     package: String,
     consts: BTreeMap<String, String>,
     request: Decl<'w>,
@@ -66,7 +67,7 @@ fn ops(ws: &Workspace) -> anyhow::Result<Vec<Op<'_>>> {
                     found.ok_or_else(|| anyhow::anyhow!("{site}: impl NodeProtocol for {family}: type {which} = {} names no single workspace struct or enum", source::text(*ty)))
                 };
                 let (request, reply) = (body("Request")?, body("Reply")?);
-                ops.push(Op { code, family, site, package: krate.package.clone(), consts, request, reply });
+                ops.push(Op { code, family, file: file.path.clone(), package: krate.package.clone(), consts, request, reply });
             }
         }
     }
@@ -128,7 +129,7 @@ pub fn page(ws: &Workspace) -> anyhow::Result<String> {
     }
     out.push('\n');
     for o in &ops {
-        out.push_str(&format!("## {} `{}`\n\n`impl NodeProtocol for {}` · `{}` · {}\n\n", o.consts.get("OP").map(String::as_str).unwrap_or_default(), o.name(), o.family, o.site, o.package));
+        out.push_str(&format!("## {} `{}`\n\n`impl NodeProtocol for {}` · `{}` · {}\n\n", o.consts.get("OP").map(String::as_str).unwrap_or_default(), o.name(), o.family, o.file, o.package));
         out.push_str("| const | value |\n|---|---|\n");
         for c in CONSTS {
             let value = match (o.consts.get(c), defaults.get(c)) {
