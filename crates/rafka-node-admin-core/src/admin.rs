@@ -471,7 +471,7 @@ impl Records {
             self.wake.poke();
             self.view_changed.notify_one();
             if let (Some(rows), false) = (self.rows.get(), arrivals.is_empty()) {
-                rows.claim_arrivals(arrivals).await;
+                rows.claim_arrivals(&t, arrivals).await;
             }
         }
         t
@@ -3474,7 +3474,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
             verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
             rows: {
-                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), nodes_storage.clone()));
+                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
                 records.set_rows(rows.clone());
                 rows
             },
