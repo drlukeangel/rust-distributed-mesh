@@ -228,8 +228,8 @@ pub enum ReplaceStep {
     /// The predecessor gives up its `path.name` (`<path>.old`) before the successor is created, so
     /// two nodes never hold one `path.name`.
     RenamePredecessor,
-    /// The predecessor's storage goes into the successor's empty directory, after the predecessor
-    /// is proven terminal and before the successor's process exists.
+    /// A recovery: the proven-terminal predecessor's storage goes into the successor's empty
+    /// directory, before the successor's process exists.
     HandoffStorage,
 }
 
@@ -896,9 +896,9 @@ pub struct ReplaceRequest {
     pub held_runtimes: Vec<crate::storage::RuntimeRow>,
 }
 
-/// The predecessor a successor's create stops and takes the storage of, between its prepared
-/// identity and the start of its runtime.
-struct Replacing<'a> {
+/// The proven-terminal predecessor of a recovery, whose storage the successor's create takes between
+/// its prepared identity and the start of its runtime.
+struct Recovering<'a> {
     build_id: &'a BuildId,
     predecessor: &'a Node,
     handle: &'a DeploymentHandle,
@@ -1010,23 +1010,6 @@ pub(crate) struct Identity {
     incarnation: IncarnationId,
     supersedes: Option<IncarnationId>,
     deployment_id: DeploymentId,
-}
-
-async fn poll<F, Fut>(within: Duration, mut f: F) -> bool
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let until = Instant::now() + within;
-    loop {
-        if f().await {
-            return true;
-        }
-        if Instant::now() >= until {
-            return false;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 /// One run of one operation (`create-node:<path>`, `retire-node:<path>`).
@@ -1150,11 +1133,11 @@ impl DeploymentPipeline<'_> {
         Ok(created)
     }
 
-    /// Every create step through `WaitForNodeReady`, as steps of `run`. A replacement runs them
-    /// inside its own operation ([`Replacing`]): once the successor's identity, storage and network
-    /// are decided, the predecessor (parked by its stop) is ended and its storage handed over, and only then does the
-    /// successor start.
-    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, replacing: Option<&Replacing<'_>>) -> Result<Created, PipelineError> {
+    /// Every create step through `WaitForNodeReady`, as steps of `run`. A replacement runs them inside
+    /// its own operation; a recovery ([`Recovering`]) also ends the proven-terminal predecessor and
+    /// hands its storage over once the successor's identity, storage and network are decided, and
+    /// only then does the successor start.
+    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, recovering: Option<&Recovering<'_>>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
@@ -1234,11 +1217,11 @@ impl DeploymentPipeline<'_> {
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
-        // A replacement: the successor now has its identity, key and directory. The predecessor, parked
-        // by its stop, is ended with the provider's exact terminal proof, and its storage handed over
+        // A recovery: the successor now has its identity, key and directory. The proven-terminal
+        // predecessor is ended with the provider's exact terminal proof, and its storage handed over
         // into that directory before the successor's process exists.
-        if let Some(replacing) = replacing {
-            self.end_and_hand_over(run, replacing, &data_dir).await?;
+        if let Some(recovering) = recovering {
+            self.end_and_hand_over(run, recovering, &data_dir).await?;
         }
         let launch = Launch {
             fabric: self.template.fabric.clone(),
@@ -1944,22 +1927,31 @@ impl DeploymentPipeline<'_> {
         node.data_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", node.name, node.node_id)))
     }
 
-    /// Replace `req.predecessor` with a new node at its path, in the order node-replace.md and
-    /// node-recovery.md give, as ONE operation `replace-node:<path>`:
+    /// Replace `req.predecessor` with a new node at its path, as ONE operation `replace-node:<path>`.
+    ///
+    /// A live predecessor follows Rafka's replace recipe (node-replace.md 1-3):
     ///
     /// ```text
-    /// NodeDeleting
-    ///   -> [DrainNode -> AwaitNodeDrained -> StopNode -> AwaitNodeLeft (NodeStopped)]  (a birth not yet proven terminal: parked)
-    ///   -> RenamePredecessor -> AllocateIdentity -> PrepareStorage -> PrepareNetwork
-    ///   -> TerminateRuntime -> HandoffStorage
-    ///   -> DeployRuntime -> ... -> WaitForBind -> ... -> WaitForMeshJoin -> WaitForNodeReady
-    ///   -> NodeDeleted -> ReleaseStorage -> Complete
+    /// DrainNode -> AwaitNodeDrained -> StopNode -> AwaitNodeLeft (NodeStopped)   (node[1].stop: parked)
+    ///   -> RenamePredecessor                                                    (node[1].update: <path>.old)
+    ///   -> AllocateIdentity -> PrepareStorage -> PrepareNetwork -> DeployRuntime -> ...
+    ///   -> WaitForBind -> ... -> WaitForMeshJoin -> WaitForNodeReady -> Complete (node.create)
     /// ```
     ///
-    /// The old identity's `NodeDeleted` is published after the successor is admitted and ready, and
-    /// never before: a replace is not a delete followed by a spawn. `before_ready` is the successor's
-    /// `ApplyMeshPending` work (a mesh's first admin); `after_ready` commits the successor's lifecycle
-    /// transition once it is ready.
+    /// The predecessor stays parked at `<path>.old`, its process, incarnation and data kept: the data
+    /// transfer is Rafka's own step after the create ("Rafka transfers its data as its own recipe
+    /// step. RDM interprets no application data."), and the predecessor's delete, or its rollback
+    /// (rename back, start), is a later step of the recipe. A replace publishes no NodeDeleting or
+    /// NodeDeleted ("delete retains the existing NodeDeleting/NodeDeleted gossip names. There is no new
+    /// replace gossip frame.").
+    ///
+    /// A predecessor the provider already proves terminal is the recovery of an exited node
+    /// (node-recovery.md): it is sent nothing, and the operation runs NodeDeleting -> RenamePredecessor
+    /// -> AllocateIdentity -> PrepareStorage -> PrepareNetwork -> TerminateRuntime -> HandoffStorage ->
+    /// DeployRuntime -> ... -> WaitForNodeReady -> NodeDeleted -> ReleaseStorage -> Complete.
+    ///
+    /// `before_ready` is the successor's `ApplyMeshPending` work (a mesh's first admin); `after_ready`
+    /// commits the successor's lifecycle transition once it is ready.
     pub async fn replace<F, Fut>(&self, req: &ReplaceRequest, before_ready: Option<BeforeReady>, after_ready: F) -> Result<Created, PipelineError>
     where
         F: FnOnce(Node) -> Fut,
@@ -1979,8 +1971,8 @@ impl DeploymentPipeline<'_> {
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("replace-node:{name}")).await;
         let mut old = req.predecessor.clone();
         let birth = old.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?;
-        // The receipt first, then the publish: the Build facts carry the overlay from the moment it is
-        // announced, so a successor executor derives it from the same facts.
+        // The exact old birth, named by every receipt that identifies it (the recovery's NodeDeleting
+        // and NodeDeleted, and the rename of either).
         let op = LifecycleOp {
             build_id: req.build_id.to_string(),
             attempt: req.attempt,
@@ -1990,19 +1982,25 @@ impl DeploymentPipeline<'_> {
             name: name.clone(),
             event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
         };
-        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
-        self.lifecycle.deleting(&op).await;
         // A birth the provider already proves terminal is sent nothing (node-recovery.md: no RPC can
-        // be required from the proven-terminal old birth); any other birth drains first.
-        // The recipe's first step (node-replace.md 1): the complete stop leaves the predecessor parked,
-        // and the stop's departure (`NodeStopped`) drops it from every book, before it gives up its
-        // name and before anything of the successor exists.
-        if !matches!(self.provider.inspect(&req.handle).await, DeploymentStatus::Exited { .. }) {
+        // be required from the proven-terminal old birth). An earlier attempt that announced the
+        // recovery (its NodeDeleting receipt) continues as a recovery.
+        let exited = run.done.contains_key(RetireStep::NodeDeleting.name()) || matches!(self.provider.inspect(&req.handle).await, DeploymentStatus::Exited { .. });
+        if exited {
+            // The receipt first, then the publish: the Build facts carry the overlay from the moment
+            // it is announced, so a successor executor derives it from the same facts.
+            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.deleting(&op).await;
+        } else {
+            // The recipe's first step (node-replace.md 1): the complete stop leaves the predecessor
+            // parked, and the stop's departure (`NodeStopped`) drops it from every book, before it
+            // gives up its name and before anything of the successor exists. The stop is strict
+            // (node-stop.md): `stopped` received, or the step fails by name.
             self.drain_steps(&mut run, &mut old, &req.handle).await?;
-            // The complete stop (node-stop.md): `stopped` received, or the step fails by name; a stop
-            // without it parked nothing and published no departure.
             self.stop_steps_with(&mut run, &mut old, &req.handle, true, StopEnd::Park { publish_stopped: true }).await?;
         }
+        // node-replace.md 2: the parked predecessor gives up its name, renamed `<path>.old`. The
+        // receipt names the exact old birth.
         let to = format!("{name}.old");
         self.step(&mut run, ReplaceStep::RenamePredecessor.name(), async {
             tracing::info_span!(
@@ -2017,20 +2015,23 @@ impl DeploymentPipeline<'_> {
             )
             .in_scope(|| tracing::info!("the predecessor gives up its path.name: the successor is created at it"));
             self.sink.rename_predecessor(name, &old.node_id, &birth);
-            Ok(())
+            Ok(op.clone())
         })
         .await?;
+        // node-replace.md 3: node.create at the freed name, a new node.id, incarnation and directory.
         let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, restart_of: None, held_runtimes: req.held_runtimes.clone() };
-        let replacing = Replacing { build_id: &req.build_id, predecessor: &old, handle: &req.handle };
-        let mut created = self.create_to_ready(&mut run, &creq, before_ready, Some(&replacing)).await?;
+        let recovering = Recovering { build_id: &req.build_id, predecessor: &old, handle: &req.handle };
+        let mut created = self.create_to_ready(&mut run, &creq, before_ready, exited.then_some(&recovering)).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
-        // The departure of the old identity: the provider's inspection is the proof, and the
-        // successor is admitted and ready.
-        let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-        let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
-        self.lifecycle.deleted(&op).await;
-        self.release_storage_step(&mut run, &req.build_id, &old).await?;
+        if exited {
+            // The recovery's departure of the old identity: the provider's inspection is the proof,
+            // and the successor is admitted and ready.
+            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.deleted(&op).await;
+            self.release_storage_step(&mut run, &req.build_id, &old).await?;
+        }
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
             Ok(())
@@ -2039,12 +2040,12 @@ impl DeploymentPipeline<'_> {
         Ok(created)
     }
 
-    /// The predecessor, parked since its stop (or proven terminal already), is ended with the
-    /// provider's exact terminal proof, and its storage goes into the successor's directory: after the
-    /// successor's identity exists and before its process does.
-    async fn end_and_hand_over(&self, run: &mut Run<'_>, replacing: &Replacing<'_>, successor_dir: &std::path::Path) -> Result<(), PipelineError> {
-        self.terminate_step(run, replacing.predecessor, replacing.handle).await?;
-        self.step(run, ReplaceStep::HandoffStorage.name(), async { self.hand_over_storage(replacing, successor_dir).await }).await
+    /// The recovered predecessor, proven terminal already, is ended with the provider's exact terminal
+    /// proof, and its storage goes into the successor's directory: after the successor's identity
+    /// exists and before its process does.
+    async fn end_and_hand_over(&self, run: &mut Run<'_>, recovering: &Recovering<'_>, successor_dir: &std::path::Path) -> Result<(), PipelineError> {
+        self.terminate_step(run, recovering.predecessor, recovering.handle).await?;
+        self.step(run, ReplaceStep::HandoffStorage.name(), async { self.hand_over_storage(recovering, successor_dir).await }).await
     }
 
     /// The top-level directories of every directory that holds this path's storage (the predecessor's,
@@ -2052,12 +2053,12 @@ impl DeploymentPipeline<'_> {
     /// directory. Files (the identity, the transport key, the runtime record) never move. What the
     /// Build's `StorageMeta` for the path says decides: only persistent storage is handed over, and a
     /// node-admin's records are seeded from its maker at join, never inherited.
-    async fn hand_over_storage(&self, replacing: &Replacing<'_>, successor_dir: &std::path::Path) -> Result<(), String> {
-        let predecessor = replacing.predecessor;
+    async fn hand_over_storage(&self, recovering: &Recovering<'_>, successor_dir: &std::path::Path) -> Result<(), String> {
+        let predecessor = recovering.predecessor;
         let name = &predecessor.name;
         let storage = self
             .builds
-            .read_build(replacing.build_id)
+            .read_build(recovering.build_id)
             .await
             .ok()
             .and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));

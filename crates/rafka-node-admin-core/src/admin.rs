@@ -1980,7 +1980,11 @@ impl AdminRunner {
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = crate::deployment::pipeline::ReplaceRequest { build_id: build_id.clone(), attempt, predecessor, handle, spec: spec_for(node.kind), held_runtimes };
         let created = self.pipeline(&template).replace(&req, before_ready, |ready| async move { self.bring_into_traffic(&ready).await }).await.map_err(|e| e.to_string())?;
-        self.after_exit(&req.predecessor, crate::deployment::pipeline::RetireKind::Removal);
+        // A recovered predecessor's exit is proven; a replaced one is parked at `<path>.old`, its
+        // process alive: nothing is retired about its paths or its birth.
+        if matches!(self.provider.inspect(&req.handle).await, crate::deployment::provider::DeploymentStatus::Exited { .. }) {
+            self.after_exit(&req.predecessor, crate::deployment::pipeline::RetireKind::Removal);
+        }
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
     }
@@ -2148,13 +2152,13 @@ impl AdminRunner {
             Some(crate::accepted::AttemptAction::Replace { path: p, from_incarnation }) if p == path => from_incarnation.clone(),
             other => return Err(refuse(format!("the Build's action is {other:?}, not a replace of this path"))),
         };
-        // A replacement an earlier attempt began receipted the exact birth it replaces: its node id names
-        // the directory.
+        // A replacement an earlier attempt began receipted the exact birth it replaces (a recovery's
+        // NodeDeleting, the RenamePredecessor of either): its node id names the directory.
         let operation = format!("replace-node:{path}");
         let named: Option<NodeId> = build
             .steps
             .iter()
-            .filter(|s| s.operation == operation && s.step == "NodeDeleting" && s.outcome == crate::build_state::StepOutcome::Complete)
+            .filter(|s| s.operation == operation && matches!(s.step.as_str(), "NodeDeleting" | "RenamePredecessor") && s.outcome == crate::build_state::StepOutcome::Complete)
             .filter_map(|s| s.output.clone())
             .filter_map(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v).ok())
             .find(|op| op.incarnation == from)

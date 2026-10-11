@@ -74,39 +74,52 @@ impl NodeRows {
         let Some((verb, path)) = operation.split_once(':') else { return };
         let Ok(name) = path.parse::<PathName>() else { return };
         match (verb, step) {
-            ("retire-node" | "replace-node", "NodeDeleting") => {
+            // The record of the node an operation acts on, held from its first step while every view
+            // still holds it live at its path.name: a removal's (or a recovery's) `NodeDeleting`, a
+            // replace's `DrainNode` (its stop then drops the parked predecessor from every book).
+            ("retire-node" | "replace-node", "NodeDeleting") | ("replace-node", "DrainNode") => {
                 // A receipt read after the step names its node by id: by then the view may hold a
-                // replace's successor at the path.name.
+                // replace's successor at the path.name. A `DrainNode` receipt names none, and the
+                // rename's receipt decides whose record it is (`moved_to_old`).
                 let held = match subject {
                     Some(id) => held_by(view, id).await,
                     None => held_at(view, &name).await,
                 };
                 if let Some(n) = held {
-                    self.announced.lock().unwrap().insert(operation.to_string(), n);
+                    self.announced.lock().unwrap().entry(operation.to_string()).or_insert(n);
                 }
             }
             ("retire-node", "NodeDeleted") => self.deleted(me, view, operation, &name, subject).await,
-            // A replace: the predecessor gives up its path.name (its row moves to `<path>.old`), and
-            // its departure is written there.
-            ("replace-node", "RenamePredecessor") => self.moved_to_old(me, view, operation, &name).await,
+            // A replace: the predecessor gives up its path.name (its row moves to `<path>.old`). It
+            // stays parked there; a recovery's departure is written there.
+            ("replace-node", "RenamePredecessor") => self.moved_to_old(me, view, operation, &name, subject).await,
             ("replace-node", "NodeDeleted") => self.deleted(me, view, operation, &name.renamed(), subject).await,
+            ("replace-node", "Complete") => {
+                self.announced.lock().unwrap().remove(operation);
+            }
             _ => {}
         }
     }
 
     /// A replace's `RenamePredecessor`: the predecessor's row moves from `name` to `<name>.old`, from
-    /// the record held at its `NodeDeleting` (or the view now, for a fabric-primary that took the
-    /// seat since), insert-and-fail on the `.old` key, then `name` is released for the successor.
-    async fn moved_to_old(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName) {
+    /// the record held at the operation's first step (or the view now, for a fabric-primary that took
+    /// the seat since), insert-and-fail on the `.old` key, then `name` is released for the successor.
+    /// `subject` is the predecessor the rename's receipt names: a held record of any other node is not
+    /// the predecessor's.
+    async fn moved_to_old(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName, subject: Option<&NodeId>) {
         let to = name.renamed();
-        let announced = self.announced.lock().unwrap().get(operation).cloned();
-        // A fabric-primary that took the seat since `NodeDeleting` reads its view now: the
-        // executor's own view names the predecessor `<path>.old` already, a peer's still `<path>`.
+        let is_subject = |n: &Node| subject.is_none_or(|id| &n.node_id == id);
+        let announced = self.announced.lock().unwrap().get(operation).cloned().filter(|n| is_subject(n));
+        // A fabric-primary that took the seat since the operation's first step reads its view now:
+        // the executor's own view names the predecessor `<path>.old` already, a peer's still `<path>`.
         let record = match announced {
             Some(n) => Some(n),
-            None => match held_at(view, &to).await {
-                Some(n) => Some(n),
-                None => held_at(view, name).await,
+            None => match subject {
+                Some(id) => held_by(view, id).await,
+                None => match held_at(view, &to).await {
+                    Some(n) => Some(n),
+                    None => held_at(view, name).await,
+                },
             },
         };
         let span = tracing::info_span!(
