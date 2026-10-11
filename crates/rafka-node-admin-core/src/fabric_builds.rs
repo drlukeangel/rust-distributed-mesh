@@ -412,13 +412,32 @@ impl FabricBuildStateAdapter {
         sender.broadcast(encode_shutdown(shutdown)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting fabric shutdown: {e}")))
     }
 
-    async fn broadcast(&self, fact: BuildFact) -> Result<(), BuildStateError> {
-        self.send(encode(vec![fact])?).await
-    }
-
-    async fn send(&self, bytes: bytes::Bytes) -> Result<(), BuildStateError> {
+    /// Broadcast `fact` (encoded as `bytes`), already committed to this admin's own log. A send
+    /// that fails is named and never undoes or fails the commit: progress waits on no gossip, and
+    /// the Build topic is durability and recovery evidence (node-rpc-envelope.md "Build carrier"),
+    /// repaired by the neighbour-up catch-up and `FetchBuildFacts`.
+    async fn publish(&self, fact: &BuildFact, bytes: bytes::Bytes) {
         let sender = self.sender.read().await.clone();
-        sender.broadcast(bytes).await.map_err(|e| BuildStateError::Io(format!("broadcasting Build fact: {e}")))
+        if let Err(e) = sender.broadcast(bytes).await {
+            let (kind, attempt, step) = match fact {
+                BuildFact::Accepted(_) => ("accepted", None, None),
+                BuildFact::Opened(o) => ("opened", Some(o.attempt), None),
+                BuildFact::Claim(c) => ("claim", Some(c.attempt), None),
+                BuildFact::Step(r) => ("step", Some(r.attempt), Some(r.step.as_str())),
+                BuildFact::Attempt(r) => ("attempt", Some(r.attempt), None),
+                BuildFact::Forget { .. } => ("forget", None, None),
+            };
+            tracing::info_span!(
+                "rdm.node_admin.build.reject.via-broadcast-refused",
+                sent_by = %self.authority.node,
+                fact = kind,
+                build_id = %fact.build_id(),
+                attempt = attempt.map(u64::from),
+                step = step,
+                detail = %format!("broadcasting a Build fact committed to {}'s own log on the fabric's Build topic: {e}", self.authority.node),
+            )
+            .in_scope(|| tracing::info!("a committed Build fact was not broadcast: the neighbour-up catch-up and FetchBuildFacts carry it"));
+        }
     }
 }
 
@@ -426,14 +445,20 @@ impl FabricBuildStateAdapter {
 impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let _gate = self.authority.enter().await?;
+        let fact = BuildFact::Accepted(accepted.clone());
+        let bytes = encode(vec![fact.clone()])?;
         self.local.publish_accepted(accepted).await?;
-        self.broadcast(BuildFact::Accepted(accepted.clone())).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         let _gate = self.authority.enter().await?;
+        let fact = BuildFact::Opened(opened.clone());
+        let bytes = encode(vec![fact.clone()])?;
         self.local.open_attempt(opened).await?;
-        self.broadcast(BuildFact::Opened(opened.clone())).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
@@ -447,9 +472,11 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         let _gate = self.authority.enter().await?;
+        let fact = BuildFact::Claim(claim.clone());
+        let bytes = encode(vec![fact.clone()])?;
         let outcome = self.local.claim_attempt(claim).await?;
         if outcome == ClaimOutcome::Won {
-            self.broadcast(BuildFact::Claim(claim.clone())).await?;
+            self.publish(&fact, bytes).await;
         }
         Ok(outcome)
     }
@@ -460,15 +487,21 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         // Encoded before it commits: a receipt with no wire shape is refused by name and lands in
-        // no log, never in this admin's own log alone where no other admin can read it.
-        let bytes = encode(vec![BuildFact::Step(receipt.clone())])?;
+        // no log, never in this admin's own log alone where no other admin can read it. Once the
+        // local write commits, the receipt is the step's durable commit whatever its broadcast does.
+        let fact = BuildFact::Step(receipt.clone());
+        let bytes = encode(vec![fact.clone()])?;
         self.local.append_step_receipt(receipt).await?;
-        self.send(bytes).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+        let fact = BuildFact::Attempt(receipt.clone());
+        let bytes = encode(vec![fact.clone()])?;
         self.local.append_attempt_receipt(receipt).await?;
-        self.broadcast(BuildFact::Attempt(receipt.clone())).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
@@ -480,8 +513,11 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         let _gate = self.authority.enter().await?;
+        let fact = BuildFact::Forget { build_id: build_id.clone() };
+        let bytes = encode(vec![fact.clone()])?;
         self.local.forget(build_id).await?;
-        self.broadcast(BuildFact::Forget { build_id: build_id.clone() }).await
+        self.publish(&fact, bytes).await;
+        Ok(())
     }
 
 
