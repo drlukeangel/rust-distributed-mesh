@@ -572,7 +572,17 @@ impl DriveEnv {
             if self.accepted.build_id().await.as_ref() != Some(&id) {
                 return self.stalled(drive, format!("{}: Build {id} is not the accepted Build (Fabric.build_id): nothing drives it", self.me));
             }
-            let take_over = departed.as_deref().is_some_and(|d| p.executor.as_deref() == Some(d));
+            // The claim's holder was proven departed: by this pass, or by an earlier pass or the
+            // drift reconcile, whose proof this admin recorded for its exact birth. Either way the
+            // next attempt is claimed without calling the lost holder or proving it again.
+            let recorded = match (&departed, p.state == BuildState::Running, p.executor.as_deref().and_then(parse_path)) {
+                (None, true, Some(holder)) => self.departure.recorded(&holder).await,
+                _ => false,
+            };
+            let take_over = recorded || departed.as_deref().is_some_and(|d| p.executor.as_deref() == Some(d));
+            if recorded {
+                departed = p.executor.clone();
+            }
             let (attempt, executor, context) = if p.state == BuildState::Running && !take_over {
                 let holder = p.executor.clone().unwrap_or_default();
                 let Some(holder) = parse_path(&holder) else {
@@ -702,7 +712,14 @@ impl DriveEnv {
             }
         };
         let Some(lead) = lead else {
-            return Err(self.stalled(drive, format!("{}: no admin can execute what is left of Build {id} in this view", self.me)));
+            // Named: the operation, its mesh, and the same-mesh admins the attempt waits for.
+            let t = self.topology.read().await.clone();
+            let why = match crate::accepted::plan_for_build(p, &t).operations.first() {
+                Some(op) => format!("{}: no admin can execute what is left of Build {id} in this view: {}", self.me, crate::executor::why_no_executor(op, &t)),
+                None => format!("{}: no admin can execute what is left of Build {id} in this view", self.me),
+            };
+            self.blocked(drive, attempt, "", "successor-held", &why);
+            return Err(self.stalled(drive, why));
         };
         match self.door.claim(&lead.to_string(), id, attempt).await {
             BuildClaimReply::Won { context } => Ok((attempt, lead, context)),
