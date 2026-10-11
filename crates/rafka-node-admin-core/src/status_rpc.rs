@@ -24,6 +24,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 pub struct Declared {
     /// Per birth `(node id, incarnation)`: the greatest state it declared.
     pub nodes: std::collections::HashMap<(NodeId, IncarnationId), NodeState>,
+    /// Per birth held in `nodes`: the path.name it declared at.
+    pub names: std::collections::HashMap<(NodeId, IncarnationId), crate::model::PathName>,
     /// Per mesh id.
     pub meshes: std::collections::HashMap<MeshId, MeshState>,
     /// Per fabric id: the events applied, in order, each once.
@@ -59,7 +61,9 @@ impl Declared {
         for e in status.fabric_events().await.map_err(|e| format!("status.storage: {e}"))? {
             declared.fabric.entry(e.fabric_id).or_default().push(e.event);
         }
-        declared.nodes = crate::status_storage::fold_declared(status.node_declared().await.map_err(|e| format!("status.storage: {e}"))?);
+        let rows = status.node_declared().await.map_err(|e| format!("status.storage: {e}"))?;
+        declared.names = crate::status_storage::declared_names(&rows);
+        declared.nodes = crate::status_storage::fold_declared(rows);
         Ok(declared)
     }
 }
@@ -146,7 +150,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
                 Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
                 Transition::Backward { current } => (StatusReply::RejectedInvalidNodeTransition { current }, None),
                 Transition::Apply => {
-                    let row = crate::status_storage::NodeDeclaredRow { node_id: sender.node_id.clone(), incarnation_id: incarnation.clone(), state: *state };
+                    let row = crate::status_storage::NodeDeclaredRow { node_id: sender.node_id.clone(), incarnation_id: incarnation.clone(), name: sender.name.clone(), state: *state };
                     (StatusReply::Applied, Some(Effect::Node(row, *state)))
                 }
             }
@@ -313,7 +317,9 @@ impl StatusAuthority {
         let Some(state) = held else { return };
         let outcome = match self.status_storage.remove_node_declared(&node.node_id, birth).await {
             Ok(()) => {
-                self.declared.lock().unwrap().nodes.remove(&(node.node_id.clone(), birth.clone()));
+                let mut declared = self.declared.lock().unwrap();
+                declared.nodes.remove(&(node.node_id.clone(), birth.clone()));
+                declared.names.remove(&(node.node_id.clone(), birth.clone()));
                 "begun"
             }
             Err(_) => "refused",
@@ -323,29 +329,42 @@ impl StatusAuthority {
     }
 
     /// The declared-state rows of every birth this admin holds that `book` says is superseded: the
-    /// book holds a later incarnation of the node (a restart), or holds the node departed
-    /// (node.deleted). Each such birth's keys are tombstoned, blind, and then forgotten in memory. A
-    /// birth the book holds at the same incarnation keeps its rows, however long it is silent, and
-    /// so does a birth the book does not hold at all (nothing is proven of it).
+    /// book holds a later incarnation of the node (a restart), holds the node departed
+    /// (node.deleted), or holds the birth's path.name under another node_id (a recovery's new node,
+    /// node-recovery.md). Each such birth's keys are tombstoned, blind, and then forgotten in memory.
+    /// A birth the book holds at the same incarnation keeps its rows, however long it is silent, and
+    /// so does a birth the book does not hold at all whose path no other node holds (nothing is
+    /// proven of it).
     pub async fn retire_superseded(&self, book: &rafka_mesh_transport::membership::DigestBook) {
-        // The births held, read under the lock and the lock released before any await.
-        let held: Vec<(NodeId, IncarnationId)> = self.declared.lock().unwrap().nodes.keys().cloned().collect();
-        for (node_id, incarnation) in held {
+        // The births held and their paths, read under the lock and the lock released before any await.
+        let held: Vec<((NodeId, IncarnationId), Option<crate::model::PathName>)> = {
+            let declared = self.declared.lock().unwrap();
+            declared.nodes.keys().map(|k| (k.clone(), declared.names.get(k).cloned())).collect()
+        };
+        // Who the book holds at each path.name now.
+        let at_path: std::collections::HashMap<crate::model::PathName, NodeId> = book.all().into_iter().map(|d| (d.node.name, d.node.node_id)).collect();
+        for ((node_id, incarnation), name) in held {
             let (why, by) = match book.get(node_id.as_str()) {
                 Some((d, _)) if d.node.incarnation != incarnation => ("new-incarnation", d.node.incarnation.0.clone()),
                 Some(_) => continue,
                 None if book.is_departed(node_id.as_str()) => ("node-deleted", String::new()),
-                None => continue,
+                None => match name.as_ref().and_then(|n| at_path.get(n)) {
+                    Some(other) if *other != node_id => ("new-node", other.to_string()),
+                    _ => continue,
+                },
             };
             let (outcome, error) = match self.status_storage.remove_node_declared(&node_id, &incarnation).await {
                 Ok(()) => {
-                    self.declared.lock().unwrap().nodes.remove(&(node_id.clone(), incarnation.clone()));
+                    let mut declared = self.declared.lock().unwrap();
+                    declared.nodes.remove(&(node_id.clone(), incarnation.clone()));
+                    declared.names.remove(&(node_id.clone(), incarnation.clone()));
                     ("retired", String::new())
                 }
                 Err(e) => ("refused", e.to_string()),
             };
             let span = match why {
                 "new-incarnation" => tracing::info_span!("rdm.node_admin.status.remove.via-new-incarnation", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.0, held_incarnation_id = %by, outcome, error = %error, "otel.kind" = "internal"),
+                "new-node" => tracing::info_span!("rdm.node_admin.status.remove.via-new-node", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.0, path = %name.as_ref().map(ToString::to_string).unwrap_or_default(), held_node_id = %by, outcome, error = %error, "otel.kind" = "internal"),
                 _ => tracing::info_span!("rdm.node_admin.status.remove.via-node-deleted", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.0, outcome, error = %error, "otel.kind" = "internal"),
             };
             span.in_scope(|| tracing::info!("a superseded birth's declared-state keys are tombstoned: nothing of that birth is folded back"));
@@ -403,6 +422,7 @@ impl StatusAuthority {
                 Effect::Node(row, state) => match transition(declared.node(&row.node_id, &row.incarnation_id), *state) {
                     Transition::Apply => {
                         declared.nodes.insert((row.node_id.clone(), row.incarnation_id.clone()), *state);
+                        declared.names.insert((row.node_id.clone(), row.incarnation_id.clone()), row.name.clone());
                         StatusReply::Applied
                     }
                     Transition::AlreadyApplied => StatusReply::AlreadyApplied,
