@@ -276,6 +276,9 @@ pub(crate) const PROBE_FANOUT: usize = 3;
 
 /// What the driver needs of its admin.
 pub struct Watch {
+    /// The admin's park gate: this watch is held at its own wait while the admin is parked, never
+    /// where it reads the view.
+    pub gate: crate::park_gate::ParkGate,
     /// This admin's `path.name`.
     pub me: PathName,
     /// The node id this admin was born with: whether it holds the fabric seat is decided by it.
@@ -315,6 +318,8 @@ pub async fn run(w: Watch) {
     let mut seat_since: Option<Instant> = None;
     loop {
         tokio::time::sleep(w.round).await;
+        // Held here while the admin is parked: its own wait, outside every lock.
+        w.gate.opened().await;
         let view = w.topology.read().await.clone();
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
         if !(fabric_primary && w.membership.authorizes()) {
