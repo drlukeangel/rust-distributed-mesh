@@ -121,9 +121,12 @@ pub trait MeshStorage: Send + Sync {
 
 /// What a save of `row` meets in `held`, the row at its key, given the meshes whose row is `Dead`.
 fn claim_mesh_against(held: Option<&MeshRow>, row: &MeshRow, dead: &std::collections::HashSet<MeshId>) -> Result<MeshClaimed, MeshNameHeld> {
-    let _ = (held, dead);
-    let _ = row;
-    Ok(MeshClaimed::Written)
+    match held {
+        None => Ok(MeshClaimed::Written),
+        Some(h) if h.mesh_id == row.mesh_id => Ok(MeshClaimed::AlreadyHeld),
+        Some(h) if dead.contains(&h.mesh_id) => Ok(MeshClaimed::Reclaimed { from: h.mesh_id.clone() }),
+        Some(h) => Err(MeshNameHeld { path: row.path.clone(), name: row.name.clone(), by: h.mesh_id.clone() }),
+    }
 }
 
 /// The file key of the row at `(path, name)`: each part with every byte outside `[A-Za-z0-9._]`
