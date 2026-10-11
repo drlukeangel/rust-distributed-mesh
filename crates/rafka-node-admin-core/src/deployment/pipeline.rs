@@ -710,6 +710,9 @@ pub struct MeshLeaveEvent {
 }
 
 /// Publishes the lifecycle events of a removal or a restart.
+///
+/// Every method is required: an implementation states what it does with each event, so a wrapper
+/// cannot drop one silently by leaving it to a default.
 #[async_trait::async_trait]
 pub trait LifecycleEvents: Send + Sync {
     /// The removal is under way.
@@ -720,22 +723,22 @@ pub trait LifecycleEvents: Send + Sync {
     async fn restarting(&self, op: &LifecycleOp);
     /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
     /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
-    async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn stopped(&self, op: &LifecycleOp);
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
     /// channel and the backbone.
-    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn draining(&self, op: &LifecycleOp);
     /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
     /// and the backbone.
-    async fn leaving(&self, _op: &LifecycleOp) {}
+    async fn leaving(&self, op: &LifecycleOp);
     /// The accepted `leave-mesh` command's hook: `mesh-leaving`, authored by the fabric-primary on
     /// the backbone and its own mesh channel.
-    async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_leaving(&self, event: &MeshLeaveEvent);
     /// The `mesh-leave` handoff call's hook: authored by the still-running mesh-primary on the
     /// backbone and its own mesh channel.
-    async fn mesh_leave(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_leave(&self, event: &MeshLeaveEvent);
     /// The completed workflow's hook: `mesh-left`, authored by the fabric-primary after every exact
     /// exit is proven.
-    async fn mesh_left(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_left(&self, event: &MeshLeaveEvent);
     /// The Rafka-time the events are stamped with (`event_at_rafka_ms`): the clock the process
     /// composed for its membership, never a clock of the pipeline's own.
     fn now_rafka_ms(&self) -> u64;
@@ -749,6 +752,12 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleting(&self, _op: &LifecycleOp) {}
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
+    async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn leaving(&self, _op: &LifecycleOp) {}
+    async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_leave(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_left(&self, _event: &MeshLeaveEvent) {}
     /// A pipeline with no membership holds no rafka-time: its events carry zero, and no OS clock
     /// stands in for one.
     fn now_rafka_ms(&self) -> u64 {

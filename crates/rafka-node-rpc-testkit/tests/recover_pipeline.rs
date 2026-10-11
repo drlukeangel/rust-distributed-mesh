@@ -67,6 +67,14 @@ impl LifecycleEvents for Recorder {
     async fn restarting(&self, op: &LifecycleOp) {
         self.0.lock().unwrap().push(format!("NodeRestarting:{}", op.node_id));
     }
+    // A recovery publishes no stop, drain, leaving or mesh-leave event; this cell records the removal
+    // and restart events it asserts, and states the rest as not recorded.
+    async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn leaving(&self, _op: &LifecycleOp) {}
+    async fn mesh_leaving(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
+    async fn mesh_leave(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
+    async fn mesh_left(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
     fn now_rafka_ms(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
     }
