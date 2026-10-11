@@ -3506,7 +3506,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             // a host process stays a process (it then cannot be failed over by a container admin,
             // which refuses Ready by name).
             let in_container = (prepared.provider.kind() == ProviderKind::Container && rafka_mesh_entity::runtime::this_container_id().is_some()).then(|| prepared.provider.control_domain());
-            let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).map_err(|e| e.to_string())?;
+            let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).await.map_err(|e| e.to_string())?;
             let f = a.fact().clone();
             adoption = Some(a);
             f
@@ -3635,11 +3635,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         })
     };
     if let Some(a) = adoption {
-        a.publish(|f, dir| {
+        let digest = digest.clone();
+        a.publish(move |f, dir| {
             let mut d = digest.lock().unwrap();
             d.node.runtime = Some(f.clone());
             d.data_dir = Some(dir);
         })
+        .await
         .map_err(|e| e.to_string())?;
     }
     let _ = entry.set(EntryState {
@@ -3888,7 +3890,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     .collect();
                 let mut blocked = authority_blockers(&held, &*provider);
                 if let Some(dir) = &day0 {
-                    blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
+                    match adoption_missing(dir).await {
+                        Ok(missing) => blocked.extend(missing.into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}"))),
+                        Err(e) => blocked.push(format!("{me}: its own adoption receipts cannot be read: {e}")),
+                    }
                 }
                 if entering_existing_mesh && sweep_slot_gate.get().is_none() {
                     blocked.push(format!("{me}: the own-mesh sweep on entering the mesh has not finished"));
