@@ -380,8 +380,10 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
 }
 
 /// The declarations an admin owes from its view and its own state, derived each round so a
-/// successor or a restarted admin owes the same ones from the same facts.
-pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &str, own_ready: bool, mesh_round_done: bool, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
+/// successor or a restarted admin owes the same ones from the same facts. `own_mesh_held` is the
+/// state this admin's own committed Mesh status row holds for its mesh, when it holds one.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &str, own_ready: bool, mesh_round_done: bool, own_mesh_held: Option<MeshState>, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, once it is ready: to the fabric-primary.
     if own_ready {
         if let Some(my) = view.own(me_id) {
@@ -707,14 +709,41 @@ mod tests {
         let d = Declarer::new();
         let ids: BTreeMap<String, String> = [("mesh1".to_string(), MeshId::mint().to_string())].into();
         let none = BTreeSet::new();
-        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", false, false, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", false, false, None, &v, &ids);
         assert!(d.due(&NodeId::mint(), &v, &none).is_empty(), "not ready, gate closed: nothing is owed");
-        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", true, false, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", true, false, None, &v, &ids);
         let own: Vec<Key> = d.due(&NodeId::mint(), &v, &none).into_iter().map(|(p, _)| p.key).collect();
         assert_eq!(own, vec![Key::OwnState("inc".into(), NodeState::ReadyForTraffic)], "own readiness owes its birth");
-        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", true, true, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", true, true, None, &v, &ids);
         let both = d.due(&NodeId::mint(), &v, &none).len();
         assert_eq!(both, 2, "the gate opening owes the Mesh declaration");
+    }
+
+    /// CONTRACT (states.md: "One commit stores the row, applies it, gossips it and answers the op";
+    /// fabric-mesh-ops.md: "`DeclareNodeState` and `DeclareMeshState` report committed state
+    /// upward"): a mesh primary whose own Mesh status row is committed Leaving (leave-mesh admitted)
+    /// owes `DeclareMeshState(Leaving)` to the fabric-primary, whether or not its round is done, so
+    /// the fabric-primary's map holds the mesh's Leaving and hands it to an admin it creates for the
+    /// mesh. An admin that is not its mesh's primary owes none: the Mesh declaration is the seat's.
+    #[test]
+    fn a_mesh_primary_whose_own_mesh_row_is_leaving_owes_the_fabric_primary_its_leaving() {
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        let v = view("mesh1.admin.1", "mesh1.admin.1");
+        let mesh2 = v.meshes.iter().find(|m| m.name == "mesh2").unwrap().id.clone().unwrap();
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let none = BTreeSet::new();
+        let d = Declarer::new();
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", false, false, Some(MeshState::Leaving), &v, &ids);
+        let due: Vec<(Key, StatusRequest)> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, _)| (p.key, p.request)).collect();
+        assert_eq!(
+            due,
+            vec![(Key::Mesh(mesh2.to_string(), MeshState::Leaving), StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Leaving })],
+            "the leaving mesh's primary owes its committed Leaving to the fabric-primary"
+        );
+        let other: PathName = "mesh1.admin.2".parse().unwrap();
+        let d = Declarer::new();
+        owed_from_view(&d, &other, &id_of(&other.to_string()), "inc", false, false, Some(MeshState::Leaving), &v, &ids);
+        assert_eq!(d.owed(), 0, "an admin that is not its mesh's primary owes no Mesh declaration");
     }
 
     /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
@@ -737,7 +766,7 @@ mod tests {
         assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds the fabric seat in this view");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &reborn.node_id, "inc", false, true, &v, &ids);
+        owed_from_view(&d, &me, &reborn.node_id, "inc", false, true, None, &v, &ids);
         assert_eq!(d.owed(), 0, "the retired birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
         d.owe(mesh_key(), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic });
         d.withdraw_unowned(&me, &reborn.node_id, &v);
