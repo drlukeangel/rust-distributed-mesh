@@ -67,7 +67,7 @@ impl Capture {
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
-                json!({"name": s.name, "attributes": attributes})
+                json!({"name": s.name, "trace_id": s.span_context.trace_id().to_string(), "attributes": attributes})
             })
             .collect()
     }
@@ -628,6 +628,73 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
     assert_eq!(first[1..], [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "{first:?}");
     assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
+}
+
+/// CONTRACT (node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat submit answers
+/// AlreadyApplied or BuildInProgress, never a second recovery"): over op `0x20`, a recovery submit
+/// for an exited birth already recovered answers `Started { AlreadyApplied }` naming the Build and
+/// attempt whose `recover-node` operation recovered it, then the terminal `Complete` of that attempt
+/// and nothing else. Must NOT happen: a drive made or started for the Build (a drive of an ended
+/// Build claims its next attempt), or an attempt opened.
+#[test]
+fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_the_wire_and_drives_nothing() {
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
+    let cap = capture();
+    let (opened_before, opened_after, b0, recovering, stream, frames, drive) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let door = door(&rig, Duration::from_secs(30)).await;
+        let cp = door.control.clone();
+        let path: PathName = "mesh1.rpc.2".parse().unwrap();
+        let exited = cp.topology.read().await.node(&path).unwrap().clone();
+        let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
+        let b0 = cp.accepted.build_id().await.unwrap();
+        let settle = |attempt: u32| {
+            let (builds, b0) = (rig.builds.clone(), b0.clone());
+            async move {
+                builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+                builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+            }
+        };
+        settle(1).await;
+        let recovering = match cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await {
+            Ok(rafka_node_admin_core::http::Recovery::Opened(o)) => o,
+            other => panic!("the first recovery is admitted: {other:?}"),
+        };
+        rig.builds
+            .append_step_receipt(&BuildStepReceipt {
+                build_id: b0.clone(),
+                attempt: recovering.attempt,
+                operation: format!("recover-node:{path}"),
+                step: "Complete".into(),
+                outcome: StepOutcome::Complete,
+                output: Some(json!({ "node_id": node_id, "incarnation": birth })),
+                executor: Some("mesh1.admin.1".into()),
+            })
+            .await
+            .unwrap();
+        settle(recovering.attempt).await;
+        let opened = |facts: Vec<BuildFact>| facts.iter().filter(|f| matches!(f, BuildFact::Opened(_))).count();
+        let opened_before = opened(rig.builds.facts().await.unwrap());
+        let served = serve(door.clone()).await;
+        let mut stream = served.carrier.create(rafka_node_rpc_contract::build::BuildChange::Recover { node: path.clone(), node_id: node_id.clone(), incarnation: birth.clone() }).await.expect("the repeat is answered with a stream");
+        let head = (stream.build_id().0.clone(), stream.attempt(), stream.disposition());
+        let mut frames = Vec::new();
+        while let Some(f) = tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the answer ends") {
+            frames.push(f);
+        }
+        let opened_after = opened(rig.builds.facts().await.unwrap());
+        let drive = door.drives.get(&b0).is_some();
+        (opened_before, opened_after, b0, recovering, head, frames, drive)
+    });
+    assert_eq!(stream, (b0.0.clone(), recovering.attempt, rafka_node_rpc_contract::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
+    assert_eq!(frames.len(), 1, "one terminal and nothing else: {frames:?}");
+    assert!(matches!(&frames[0], Ok(rafka_node_admin_client::BuildFrame::Complete { attempt }) if *attempt == recovering.attempt), "{frames:?}");
+    assert_eq!(opened_after, opened_before, "no attempt is opened");
+    assert!(!drive, "no drive is made for the Build");
+    let spans = cap.spans();
+    let applied = spans_named(&spans, "rdm.node_admin.build.reject.via-recovery-already-applied");
+    assert_eq!(applied.len(), 1, "the repeat is answered from the receipt that recovered the birth");
+    eprintln!("span rdm.node_admin.build.reject.via-recovery-already-applied {}", applied[0]);
 }
 
 /// CONTRACT (R-ON8): a fabric-primary that took the seat after a Build ended holds no frame of it.
