@@ -1,9 +1,14 @@
 //! The gate a parked node-admin's background tasks stop at.
 //!
 //! A node-admin that is stopped keeps its process, its endpoint and everything it holds, and does
-//! nothing outward until it is started again. Each task it runs is spawned through its gate: while
-//! the gate is parked the task's future is not polled, so it holds its place at the await it was at
-//! and resumes from there. The gate neither cancels nor restarts a task.
+//! nothing outward until it is started again. Its tasks are held two ways:
+//! - a task that takes the view lock, or any other lock a handler of the parked admin needs, waits
+//!   at its own wait point for the gate to open ([`ParkGate::opened`]), where it holds nothing. It
+//!   is never held mid-critical-section, so the parked admin always serves its start (node-start:
+//!   start is the only exit from stopped Leaving), and each turn waits before it sends;
+//! - a task that takes no such lock is spawned through the gate ([`ParkGate::spawn`]): while the
+//!   gate is parked its future is not polled, so it holds its place at the await it was at.
+//! The gate neither cancels nor restarts a task.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -50,7 +55,9 @@ impl ParkGate {
         let _ = rx.wait_for(|p| !*p).await;
     }
 
-    /// Spawn `task` behind this gate.
+    /// Spawn `task` behind this gate: held wherever it stands while the gate is parked. Only for a
+    /// task that takes no lock another task or handler needs (a task held while waiting on, or
+    /// holding, such a lock keeps it from them); every other task waits at [`ParkGate::opened`].
     pub fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
