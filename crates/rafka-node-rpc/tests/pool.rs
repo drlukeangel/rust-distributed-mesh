@@ -11,14 +11,17 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
+use opentelemetry::trace::TraceContextExt;
+use opentelemetry_sdk::export::trace::SpanData;
 use rafka_mesh_entity::{IncarnationId, NodeId};
-use rafka_node_rpc::{Budget, CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rafka_node_rpc::{Budget, CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 fn echo(p: &[u8]) -> PingRequest {
     PingRequest::Ping { payload: p.to_vec() }
@@ -104,6 +107,22 @@ fn superseded(out: &RpcOutcome<PingReply>) -> bool {
     matches!(out, RpcOutcome::RejectedStale(_)) && out.proves_not_dispatched()
 }
 
+/// A reply budget the `slow` and `hang` handlers outlast.
+const REPLY_BUDGET: Budget = Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(200) };
+
+fn spans() -> crate::common::Spans {
+    crate::common::spans_exporter()
+}
+
+/// The finished spans named `named` in the trace `trace`.
+fn in_trace(trace: &str, named: &str) -> Vec<SpanData> {
+    spans().get_finished_spans().unwrap().into_iter().filter(|s| s.name == named && s.span_context.trace_id().to_string() == trace).collect()
+}
+
+fn attr(s: &SpanData, key: &str) -> Option<String> {
+    s.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.as_str().into_owned())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewhere_does_not() {
     let key = SecretKey::generate();
@@ -177,34 +196,52 @@ async fn late_superseded_dial_never_pools() {
     assert!(r.client.pooled().is_empty(), "the late connection is never pooled: {:?}", r.client.pooled());
 }
 
+/// CONTRACT (node-rpc session rulings 2026-10-03 §4.3; node-rpc.md §21): a reply deadline is not
+/// evidence about the connection. With the same birth and a handler holding its reply past the
+/// caller's reply budget, three calls in a row each end `Indeterminate(ReplyDeadline)` on the one
+/// pooled connection, each of them reused; the connection stays pooled and the next call is
+/// answered on it. The caller's trace holds no `evict.via-timeout-strikes` span and no
+/// `create.via-dial` span: those reply timeouts evicted nothing and caused no redial.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeated_timeout_evicts_poisoned_connection_without_marking_node_unreachable() {
+async fn three_reply_deadlines_leave_the_pooled_connection_in_place_and_reused() {
+    spans();
     let n = node().await;
     let r = rig(n.resolved.clone()).await;
-    let (_, first) = r.ping().await;
-    // A long call already riding the pooled connection.
-    let (slow, on0) = (echo(b"slow"), CallOptions::default());
-    let long = r.client.call::<Ping>(&r.target, &slow, &on0);
-    let strikes = async {
-        let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(200) }, ..Default::default() };
-        let mut seen = Vec::new();
-        for _ in 0..2 {
-            let (out, ev) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
-            assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
-            seen.push(ev.unwrap());
-        }
-        // The long call is answered only after both timeouts evicted the connection it rides.
-        n.release.send_replace(true);
-        seen
-    };
-    let ((long_out, _), seen) = tokio::join!(long, strikes);
-    assert!(seen.iter().all(|e| e.connection == first.connection), "both timeouts rode the pooled connection");
-    assert!(long_out.reply().is_some(), "eviction never closes a connection a call is still using: {long_out:?}");
-    // The node is still resolvable and served: the next call dials anew and gets a reply.
-    let (out, next) = r.ping().await;
+    let (out, first) = r.ping().await;
     assert!(out.reply().is_some(), "{out:?}");
-    assert!(!next.reused && next.connection != first.connection, "the poisoned connection was evicted");
-    assert_eq!(next.node_id, r.node_id);
+    let caller = tracing::info_span!("test.caller");
+    let trace = caller.context().span().span_context().trace_id().to_string();
+    let opts = CallOptions { budget: REPLY_BUDGET, ..Default::default() };
+    let (late, (next_out, next)) = tracing::Instrument::instrument(
+        async {
+            let mut late = Vec::new();
+            for _ in 0..3 {
+                let (out, ev) = r.client.call::<Ping>(&r.target, &echo(b"slow"), &opts).await;
+                late.push((out, ev.expect("a resolved call carries evidence")));
+            }
+            // The held replies go now, onto streams their callers left; then a call answered at once.
+            n.release.send_replace(true);
+            (late, r.ping().await)
+        },
+        caller.clone(),
+    )
+    .await;
+    drop(caller);
+    let calls = in_trace(&trace, "rdm.node_rpc.request.update.via-call");
+    let strikes = in_trace(&trace, "rdm.node_rpc.connection.evict.via-timeout-strikes");
+    let dials = in_trace(&trace, "rdm.node_rpc.connection.create.via-dial");
+    let rows: Vec<String> = calls.iter().map(|s| format!("via-call outcome={:?} reason={:?} reused={:?}", attr(s, "outcome"), attr(s, "reason"), attr(s, "reused"))).collect();
+    eprintln!("trace {trace}: {rows:?}; evict.via-timeout-strikes={}; create.via-dial={}; pooled={}", strikes.len(), dials.len(), r.client.pooled().len());
+    assert!(strikes.is_empty(), "no reply deadline evicts the pooled connection: trace {trace} {rows:?}");
+    assert!(dials.is_empty(), "no redial caused by those reply timeouts: trace {trace} {rows:?}");
+    for (i, (out, ev)) in late.iter().enumerate() {
+        assert!(matches!(out, RpcOutcome::Indeterminate(x) if *x.reason() == IndeterminateReason::ReplyDeadline), "call {i}: {out:?}");
+        assert!(ev.reused && ev.connection == first.connection, "call {i} rode the pooled connection: {ev:?} (first {:?})", first.connection);
+    }
+    assert!(next_out.reply().is_some(), "{next_out:?}");
+    assert!(next.reused && next.connection == first.connection, "the next call is answered on the same pooled connection: {next:?}");
+    assert_eq!(r.client.pooled().len(), 1, "the one connection is still pooled");
+    assert_eq!(calls.len(), 4, "three late calls and the answered one: {rows:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -336,23 +373,56 @@ async fn a_dial_that_outlives_its_callers_deadline_reports_connected_once_when_i
     assert_eq!(told.0.lock().unwrap().clone(), told_open, "reuse is not a new fact");
 }
 
-/// CONTRACT: when two reply deadlines evict the pooled connection (a post-commit loss), the writer is
-/// told the edge is broken through the observer's `direct_broken`, once, so the held Direct fact leaves
-/// Connected; the connection is reported neither before the second strike nor again afterwards.
+/// CONTRACT (node-rpc session rulings 2026-10-03 §4.3; connections.md sections 9 and 10): reply
+/// deadlines on a pooled connection are not a broken Direct edge. After three calls end
+/// `Indeterminate(ReplyDeadline)` the connections writer has heard `connected` once, from the dial
+/// that opened the connection, and `broken` never; the connection is still the one pooled.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_reply_deadlines_that_evict_the_pooled_connection_report_it_broken() {
+async fn three_reply_deadlines_report_nothing_broken_to_the_connections_writer() {
     let n = node().await;
     let (r, told) = observed_rig(n.resolved.clone()).await;
-    let (out, _) = r.ping().await;
-    assert!(out.reply().is_some());
-    let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(200) }, ..Default::default() };
-    let (first, _) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
-    assert!(matches!(&first, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{first:?}");
-    assert!(!told.0.lock().unwrap().iter().any(|e| e.starts_with("broken")), "one strike evicts nothing: {:?}", told.0.lock().unwrap());
-    let (second, _) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
-    assert!(matches!(&second, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{second:?}");
-    assert!(r.client.pooled().is_empty(), "the second strike evicted the connection");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (out, first) = r.ping().await;
+    assert!(out.reply().is_some(), "{out:?}");
+    let opts = CallOptions { budget: REPLY_BUDGET, ..Default::default() };
+    for i in 0..3 {
+        let (out, ev) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
+        assert!(matches!(&out, RpcOutcome::Indeterminate(x) if *x.reason() == IndeterminateReason::ReplyDeadline), "call {i}: {out:?}");
+        assert_eq!(ev.unwrap().connection, first.connection, "call {i} rode the pooled connection");
+    }
     let told = told.0.lock().unwrap().clone();
-    assert_eq!(told.iter().filter(|e| e.starts_with("broken")).count(), 1, "the eviction is reported broken, once: {told:?}");
+    assert_eq!(told, vec![format!("connected {}", r.record.incarnation.0)], "the dial's connected, once, and nothing broken: {told:?}");
+    assert_eq!(r.client.pooled().len(), 1, "the connection is still pooled");
+}
+
+/// CONTRACT (node-rpc.md §21: Iroh reports the connection closed/unusable): a pooled connection the
+/// peer closes under a committed call is structural evidence. The call ends
+/// `Indeterminate(ReplyLost)`, the connection leaves the pool, the connections writer hears `broken`
+/// once, and the next call dials afresh and is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connection_closed_under_a_committed_call_is_evicted_and_reported_broken_once() {
+    let n = node().await;
+    let (r, told) = observed_rig(n.resolved.clone()).await;
+    let (out, first) = r.ping().await;
+    assert!(out.reply().is_some(), "{out:?}");
+    let stats = n._server.stats();
+    let before = ServerStats::get(&stats.dispatched);
+    let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(10) }, ..Default::default() };
+    let hang = echo(b"hang");
+    let held = r.client.call::<Ping>(&r.target, &hang, &opts);
+    let cut = async {
+        // The peer closes the connection once the held call is dispatched there (no timer).
+        while ServerStats::get(&stats.dispatched) == before {
+            tokio::task::yield_now().await;
+        }
+        n._server.close_connections_except(None, "test.cut")
+    };
+    let ((out, _), closed) = tokio::join!(held, cut);
+    assert_eq!(closed, 1, "the peer closed the one connection");
+    assert!(matches!(&out, RpcOutcome::Indeterminate(x) if matches!(x.reason(), IndeterminateReason::ReplyLost(_))), "{out:?}");
+    assert!(r.client.pooled().is_empty(), "the closed connection left the pool: {:?}", r.client.pooled());
+    let broken: Vec<String> = told.0.lock().unwrap().iter().filter(|e| e.starts_with("broken")).cloned().collect();
+    assert_eq!(broken.len(), 1, "the closed connection is reported broken, once: {:?}", told.0.lock().unwrap());
+    let (out, next) = r.ping().await;
+    assert!(out.reply().is_some(), "{out:?}");
+    assert!(!next.reused && next.connection != first.connection, "the next call dialled afresh: {next:?}");
 }
