@@ -4421,6 +4421,56 @@ mod tests {
         }
     }
 
+    /// `mesh`'s status as its primary published it, held by `book` (the frame a peer receives).
+    fn hold_mesh_status(book: &DigestBook, mesh: &str, status: &str, changed_at_rafka_ms: u64) {
+        let f = Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: format!("{mesh}.admin.1"), forwarded_by: None, changed_at_rafka_ms };
+        assert!(book.statuses.take(&f, &FabricId::parse("fab000000001").unwrap()), "{f:?}");
+    }
+
+    /// CONTRACT (states.md "Routing"): application routing selects a birth only while it is
+    /// ready-for-traffic and its mesh is ready-for-traffic; anything else is a routing stop, and a
+    /// later ready-for-traffic for the same exact birth restores selection. A `Pending` birth of a
+    /// ready mesh is not selected; its own ready-for-traffic selects it; its `Draining` stops it; the
+    /// same birth saying ready-for-traffic again selects it again. Must NOT happen: a `Pending`
+    /// birth selected, or a stop that outlives the birth's later ready-for-traffic.
+    #[test]
+    fn a_birth_is_routable_only_while_it_says_ready_for_traffic_and_a_later_ready_restores_it() {
+        let book = DigestBook::default();
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 100)));
+        assert!(!book.routable(id.as_str()), "a Pending birth is a routing stop");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 110)));
+        assert!(book.routable(id.as_str()), "the birth and its mesh are ready-for-traffic");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 120)));
+        assert!(!book.routable(id.as_str()), "a Draining birth is a routing stop");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 130)), "the same birth's later ready-for-traffic is taken");
+        assert!(book.routable(id.as_str()), "a routing stop is no barrier: the later ready-for-traffic restores selection");
+    }
+
+    /// CONTRACT (states.md "Routing"): a ready-for-traffic birth is selected only while its mesh's
+    /// status this node holds is ready-for-traffic. No mesh status held, a mesh `pending`, `leaving`
+    /// or `dead`, or another mesh's ready-for-traffic: not selected. The mesh's later
+    /// ready-for-traffic restores selection from the moment it is held. Must NOT happen: a birth of a
+    /// mesh not held ready-for-traffic selected.
+    #[test]
+    fn a_ready_birth_is_routable_only_while_its_mesh_is_held_ready_for_traffic() {
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(!book.routable(id.as_str()), "no status of mesh1 is held: mesh1 is not held ready-for-traffic");
+        hold_mesh_status(&book, "mesh2", "ready-for-traffic", 5);
+        assert!(!book.routable(id.as_str()), "another mesh's ready-for-traffic selects nothing in mesh1");
+        hold_mesh_status(&book, "mesh1", "pending", 10);
+        assert!(!book.routable(id.as_str()), "a pending mesh is a routing stop");
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 20);
+        assert!(book.routable(id.as_str()), "the mesh's ready-for-traffic, received, restores selection");
+        hold_mesh_status(&book, "mesh1", "leaving", 30);
+        assert!(!book.routable(id.as_str()), "a leaving mesh is a routing stop on receipt, whatever its member says");
+        hold_mesh_status(&book, "mesh1", "dead", 40);
+        assert!(!book.routable(id.as_str()), "a dead mesh is a routing stop");
+    }
+
     #[test]
     fn a_deleting_overlay_keeps_the_node_held_and_not_routable_and_a_departure_removes_it() {
         let book = DigestBook::default();

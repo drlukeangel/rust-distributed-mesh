@@ -6716,6 +6716,37 @@ mod tests {
         assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()], "the held stopped digest keeps the name the node last published");
     }
 
+    /// CONTRACT (states.md "Routing"): the view's `routable` is application routing's answer: a
+    /// birth is routable only while it is ready-for-traffic and its mesh is ready-for-traffic, as this
+    /// admin holds them. A `Pending` birth of a ready mesh, and a ready birth of a mesh this admin
+    /// holds `pending` or `leaving` (or holds no status of), are listed and not routable; a ready
+    /// birth of a ready mesh is routable. Must NOT happen: a listed status other than
+    /// ready-for-traffic, or a mesh not held ready-for-traffic, answering routable.
+    #[test]
+    fn the_view_routes_a_birth_only_while_it_and_its_mesh_are_ready_for_traffic() {
+        use rafka_mesh_transport::membership::Frame;
+        let book = DigestBook::default();
+        let held = |mesh: &str, status: &str| {
+            let f = Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: format!("{mesh}.admin.1"), forwarded_by: None, changed_at_rafka_ms: 10 };
+            assert!(book.statuses.take(&f, &fabric1()), "{f:?}");
+        };
+        held("mesh1", "ready-for-traffic");
+        held("mesh2", "pending");
+        held("mesh3", "leaving");
+        let (ready, pending) = (digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.2", MemberStatus::Pending));
+        let (of_pending_mesh, of_leaving_mesh, of_unheard_mesh) = (digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh3.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh4.rpc.1", MemberStatus::ReadyForTraffic));
+        for d in [&ready, &pending, &of_pending_mesh, &of_leaving_mesh, &of_unheard_mesh] {
+            assert!(book.record(d.clone()));
+        }
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let routable = |d: &MeshDigest| t.node(&d.node.name).unwrap_or_else(|| panic!("{} is listed", d.node.name)).routable;
+        assert!(routable(&ready), "a ready-for-traffic birth of a ready-for-traffic mesh is routable");
+        assert!(!routable(&pending), "a Pending birth is a routing stop");
+        assert!(!routable(&of_pending_mesh), "a birth of a pending mesh is a routing stop");
+        assert!(!routable(&of_leaving_mesh), "a birth of a leaving mesh is a routing stop");
+        assert!(!routable(&of_unheard_mesh), "a birth of a mesh this admin holds no status of is not held ready-for-traffic");
+    }
+
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
     /// node's digest, only the stop overlay the mesh topology carries (`Members.in_flight`, read
     /// by `GetTopology`). Its view lists the node `Leaving` and parked from that overlay.
