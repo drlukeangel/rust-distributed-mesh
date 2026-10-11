@@ -1428,8 +1428,9 @@ fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again(
 }
 
 /// CONTRACT (R11; mesh-leave.md, "Resume after the primary's loss"): a removed mesh whose leave was
-/// admitted and whose every node-admin went silent, so the ladder holds the mesh unheard, still has
-/// its shutdown planned again. The resume carries its own proof: it records the lost final
+/// admitted (its AcceptedRoster recorded, no MeshLeft) and whose every birth went silent to this
+/// fabric-primary, so the ladder holds the mesh unheard and the view holds none of its births live,
+/// still has its shutdown planned again. The resume carries its own proof: it records the lost final
 /// primary's exact provider Exited before anything is created for the mesh, and refuses by name
 /// when the exit is unproven (R-D1: unheard is not dead). The unheard hold fences restart, replace
 /// and NodeDeleted of the mesh's births; it never fences the shutdown's resume, which with no
@@ -1452,10 +1453,21 @@ fn a_removed_mesh_held_unheard_with_no_live_admin_opens_its_shutdown_again() {
         e.builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: fp.clone() }).await.unwrap();
         let leaving_id = e.view.read().await.meshes.iter().find(|m| m.name == leaving).and_then(|m| m.id.clone()).unwrap();
         let outer = rafka_node_admin_core::mesh_leave::operation(&leaving_id);
-        // Its node-admins are silent past the floor; its ordinary nodes still run.
+        // The leave was admitted: its roster, with a node-admin as final primary, is recorded.
+        let members: Vec<Node> = e.view.read().await.nodes.iter().filter(|n| n.mesh == leaving).cloned().collect();
+        let roster: Vec<rafka_node_admin_core::mesh_leave::RosterBirth> = members.iter().map(|n| rafka_node_admin_core::mesh_leave::RosterBirth::of(n).unwrap()).collect();
+        let last = roster.iter().find(|b| b.node.contains(".admin.")).cloned().unwrap();
+        let proof = rafka_node_admin_core::deployment::pipeline::RuntimeProof { deployment_id: format!("dep-{}", last.node), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: last.incarnation_id.clone() };
+        let accepted_roster = rafka_node_admin_core::mesh_leave::ExitManifest { mesh_id: leaving_id.to_string(), roster, final_primary: last, final_runtime: Some(proof), receipts: vec![] };
+        e.builds
+            .append_step_receipt(&rafka_node_admin_core::build_state::BuildStepReceipt { build_id: build_id.clone(), attempt: 1, operation: outer.clone(), step: rafka_node_admin_core::mesh_leave::STEP_ACCEPTED_ROSTER.into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(serde_json::to_value(&accepted_roster).unwrap()), executor: Some(fp.clone()) })
+            .await
+            .unwrap();
+        // Every birth of it is silent past the floor here: its admins were lost, and its ordinary
+        // nodes reached this fabric-primary only through an admin of their own mesh.
         {
             let mut v = e.view.write().await;
-            for n in v.nodes.iter_mut().filter(|n| n.mesh == leaving && n.kind == NodeKind::NodeAdmin) {
+            for n in v.nodes.iter_mut().filter(|n| n.mesh == leaving) {
                 n.status = NodeStatus::PendingReconnect;
                 n.is_primary = false;
             }
