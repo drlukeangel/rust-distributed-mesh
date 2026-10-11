@@ -105,6 +105,8 @@ pub struct StatusAuthority {
     /// This admin's rounds (commit-state, open-traffic); filled once the admin holds the handles
     /// they act through.
     pub rounds: Arc<OnceLock<Arc<crate::fabric_rounds::FabricRounds>>>,
+    /// The fabric-primary's `node.config.update` door; filled once the admin's node-RPC client exists.
+    pub configs: crate::node_config::NodeConfigsSlot,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -276,6 +278,12 @@ impl StatusAuthority {
                 return match self.rounds.get() {
                     Some(rounds) => rounds.serve(&view, sender.as_ref(), req, self.own.get()).await,
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
+                };
+            }
+            StatusRequest::UpdateNodeConfig { .. } => {
+                return match self.configs.get() {
+                    Some(configs) => configs.update(&self.me, &view, &*self.nodes_storage, req).await,
+                    None => StatusReply::NotReady { reason: format!("{} has no node-RPC client yet; {} is refused", self.me, req.op()) },
                 };
             }
             _ => {}

@@ -39,6 +39,7 @@ pub mod lifecycle;
 pub mod mesh_leave;
 pub mod model;
 pub mod node_commands;
+pub mod node_config;
 pub mod node_rpc;
 pub mod node_self;
 pub mod park_gate;
