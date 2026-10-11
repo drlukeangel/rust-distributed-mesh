@@ -4339,8 +4339,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
                 // The seat records are read once per decision: the projection elects from them and
                 // the announcement below supersedes only them (`seat_announcements`).
-                let decided = incumbency_of(&view_book, &records);
-                let t = records.install_projected(&topology, || project_decided(&view_fabric, &view_fabric_id, view_provider, &view_book, &records, &decided)).await;
+                // Read under the view's write lock, as the projection always was: the installed
+                // view is never older than the records it replaces.
+                let mut decided = crate::election::Incumbency::default();
+                let t = records
+                    .install_projected(&topology, || {
+                        decided = incumbency_of(&view_book, &records);
+                        project_decided(&view_fabric, &view_fabric_id, view_provider, &view_book, &records, &decided)
+                    })
+                    .await;
                 // The accepted Build is the authority on which meshes the fabric has: the book
                 // takes no old aggregate of a mesh it does not name, and a mesh it does not name
                 // that has no member left keeps no recorded id (a name added again is a new mesh).
