@@ -23,10 +23,10 @@
 //! whichever reaches this admin first. A successor the view holds before the move waits on it
 //! (`awaits-rename`), and the move, once made, claims the path.name for the node the view holds there.
 
-use crate::model::{Node, NodeStatus, PathName};
+use crate::model::{IncarnationId, Node, NodeId, NodeStatus, PathName};
 use crate::storage::{Claimed, NodeRow, NodesStorage};
 use crate::topology::Topology;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
@@ -40,12 +40,16 @@ pub struct NodeRows {
     /// The record held when each removal was announced (`NodeDeleting`), by operation, until its
     /// `NodeDeleted` writes it.
     announced: Mutex<HashMap<String, Node>>,
+    /// The births this admin's views have held in its current fabric-primary seat (`None` outside
+    /// a seat): each is claimed once, when a view first holds it, and a later view install that
+    /// holds it again is not an arrival.
+    held: Mutex<Option<HashSet<(NodeId, IncarnationId)>>>,
 }
 
 impl NodeRows {
     /// The writer of the admin `me` over `storage`, the fabric-primary's nodes store.
     pub fn new(me: PathName, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, storage, configs: None, announced: Mutex::new(HashMap::new()) }
+        Self { me, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(None) }
     }
 
     /// Tell each birth whose row is seeded its config through `configs`, the fabric-primary's
@@ -183,18 +187,25 @@ impl NodeRows {
     /// The births of `now`, the view being installed over `prev`, whose rows this admin claims:
     /// none unless `now` names it the fabric-primary; every member when `prev` did not (the seat was
     /// just taken: the rebuild after a handover, which never overwrites a row a node holds); else
-    /// each member birth `prev` did not hold. Read under the view lock, so of two installs each
+    /// each member birth this seat's views have not held before. A birth is an arrival once per
+    /// seat: one the view dropped and holds again (a forwarded copy of a peer mesh's view put it
+    /// back) was claimed when it first arrived. Read under the view lock, so of two installs each
     /// sees the arrivals its own change made.
     pub fn arrivals(&self, prev: &Topology, now: &Topology) -> Vec<Node> {
+        let births = |t: &Topology| t.members().filter_map(|n| n.incarnation_id.clone().map(|inc| (n.node_id.clone(), inc))).collect::<HashSet<_>>();
+        let mut held = self.held.lock().unwrap();
         if now.fabric_primary().map(|n| &n.name) != Some(&self.me) {
+            *held = None;
             return Vec::new();
         }
         let took_seat = prev.fabric_primary().map(|n| &n.name) != Some(&self.me);
-        now.members()
-            .filter(|n| n.incarnation_id.is_some())
-            .filter(|n| took_seat || !prev.members().any(|p| p.node_id == n.node_id && p.incarnation_id == n.incarnation_id))
-            .cloned()
-            .collect()
+        // The seat began with this install (every member arrives), or before this admin installed
+        // any view through this door (the births `prev` holds were held in the seat already).
+        let seat = held.get_or_insert_with(|| if took_seat { HashSet::new() } else { births(prev) });
+        if took_seat {
+            seat.clear();
+        }
+        now.members().filter(|n| n.incarnation_id.clone().is_some_and(|inc| seat.insert((n.node_id.clone(), inc)))).cloned().collect()
     }
 
     /// Claim the row of each birth in `arrivals`, the fabric-primary's view `now` having first held
