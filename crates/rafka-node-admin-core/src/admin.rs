@@ -489,7 +489,7 @@ impl Records {
     /// it was named from. A birth the view lists at a moved row's name for the first time is one span.
     pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, book: &DigestBook, fabric_id: &FabricId, project: impl FnOnce(&RowNames) -> Topology) -> Topology {
         let held = topology.write().await;
-        let rows = RowNames::read(book, self, fabric_id, std::time::Instant::now()).await;
+        let rows = RowNames::read(me, book, self, fabric_id, std::time::Instant::now()).await;
         let t = project(&rows);
         for (node_id, incarnation, published, name) in rows.moved() {
             let listed = |v: &Topology| v.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation) && &n.name == name);
@@ -702,8 +702,8 @@ impl RowNames {
     }
 
     /// The row of every birth of `fabric_id` in `book` that does not publish its own name as of `at`,
-    /// read from `records`' nodes store (no store: nothing is read).
-    pub async fn read(book: &DigestBook, records: &Records, fabric_id: &FabricId, at: std::time::Instant) -> Self {
+    /// read by the admin `me` from `records`' nodes store (no store: nothing is read).
+    pub async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId, at: std::time::Instant) -> Self {
         let mut rows = Self::none_at(at);
         let Some(store) = records.contacts.get().cloned() else { return rows };
         let mut quiet: Vec<(NodeId, IncarnationId, PathName)> = Vec::new();
@@ -716,7 +716,7 @@ impl RowNames {
         quiet.extend(book.parked().into_iter().filter(|d| &d.fabric_id == fabric_id).map(|d| (d.node.node_id, d.node.incarnation, d.node.name)));
         quiet.extend(book.parked_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
         for (node_id, incarnation, published) in quiet {
-            let name = row_name(&*store, &node_id, &incarnation, &published).await;
+            let name = row_name(me, &*store, &node_id, &incarnation, &published).await;
             rows.names.insert((node_id, incarnation), (published, name));
         }
         rows
@@ -749,9 +749,10 @@ fn publishes(book: &DigestBook, records: &Records, node_id: &NodeId, incarnation
     age <= book.staleness_floor() && !records.is_exited(node_id, incarnation) && !records.offline.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
 }
 
-/// Where the row of the birth `(node_id, incarnation)`, which last published `published`, stands: a
-/// point read of each key a move reaches, the published name first.
-async fn row_name(store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> RowName {
+/// Where the row of the birth `(node_id, incarnation)`, which last published `published`, stands, as
+/// the admin `me` reads it: a point read of each key a move reaches, the published name first. A key
+/// that cannot be read is one span on every projection that reads it, until it can be read.
+async fn row_name(me: &PathName, store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> RowName {
     let base = published.base();
     let mut keys = vec![published.clone()];
     for key in [base.clone(), base.renamed(), base.successor()] {
@@ -764,7 +765,7 @@ async fn row_name(store: &dyn crate::storage::NodesStorage, node_id: &NodeId, in
             Ok(Some(row)) if &row.node_id == node_id => return RowName::At(key),
             Ok(_) => {}
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", subject = %published, node_id = %node_id, incarnation_id = %incarnation.0, key = %key, detail = %e)
+                tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", node = %me, subject = %published, node_id = %node_id, incarnation_id = %incarnation.0, key = %key, detail = %e)
                     .in_scope(|| tracing::info!("the birth's row could not be read at {key}: its name is not known and the view does not list it"));
                 return RowName::Unreadable;
             }
@@ -4275,11 +4276,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let _ = control.absence.set(Arc::new(move |name: &PathName| describe_absence(&book, &records, name)));
     }
     {
-        let (book, records, fabric, fabric_id, provider) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
+        let (me, book, records, fabric, fabric_id, provider) = (name.clone(), book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
         let _ = control.view_now.set(Arc::new(move || {
-            let (book, records, fabric, fabric_id) = (book.clone(), records.clone(), fabric.clone(), fabric_id.clone());
+            let (me, book, records, fabric, fabric_id) = (me.clone(), book.clone(), records.clone(), fabric.clone(), fabric_id.clone());
             Box::pin(async move {
-                let rows = RowNames::read(&book, &records, &fabric_id, std::time::Instant::now()).await;
+                let rows = RowNames::read(&me, &book, &records, &fabric_id, std::time::Instant::now()).await;
                 project_with(&fabric, &fabric_id, provider, &book, &records, &rows)
             })
         }));
@@ -6870,6 +6871,51 @@ mod tests {
         view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
         let t = topology.read().await.clone();
         assert!(t.node(&held.node.name).is_some_and(|n| n.node_id == held.node.node_id && n.parked) && t.node(&to).is_none(), "{:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// CONTRACT (CLAUDE.md error rule: "never written" and "could not be read" are different facts):
+    /// a parked birth whose row cannot be read (the file at its `path.name` key is not a record this
+    /// build reads) is not listed by the view, its name being unknown, and the refused read is one
+    /// span naming the reading admin, the birth, the key and the store's own cause. What must NOT
+    /// happen: the birth listed at the name its digest last published as if no row had moved it, or
+    /// the refusal silent.
+    #[tokio::test]
+    async fn a_parked_birth_whose_row_cannot_be_read_is_not_listed_and_the_refusal_is_spanned() {
+        let d = crate::record_store::tempdir("row-name-unreadable");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).unwrap());
+        let book = DigestBook::default();
+        let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(held.clone());
+        assert!(book.stopped(rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "stop-node:mesh1.rpc.1".into(),
+            node_id: held.node.node_id.clone(),
+            incarnation: held.node.incarnation.clone(),
+            name: held.node.name.clone(),
+            event_at_rafka_ms: 1,
+        }));
+        let file = root.nodes("mesh1").join("rows").join("mesh1.rpc.1.json");
+        std::fs::write(&file, b"not a node row").unwrap();
+        let records = Arc::new(Records::default());
+        let _ = records.contacts.set(mine);
+        let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
+        let capture = crate::span_capture::Capture::new("row-name-unreadable");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            view_projector("mesh1.admin.2".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
+        }
+        let t = topology.read().await.clone();
+        assert!(t.births().all(|n| n.node_id != held.node.node_id), "a birth whose row cannot be read is not listed: {:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
+        let spans = capture.named("rdm.node_admin.topology.reject.via-row-unreadable");
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        let a = &spans[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("node"), attr("subject"), attr("key"), attr("node_id")), ("mesh1.admin.2".to_string(), "mesh1.rpc.1".to_string(), "mesh1.rpc.1".to_string(), held.node.node_id.to_string()), "{a:?}");
+        assert!(attr("detail").contains(&file.display().to_string()), "the store's cause names the file: {a:?}");
+        eprintln!("span rdm.node_admin.topology.reject.via-row-unreadable trace_id={} {a:?}", spans[0].trace_id);
         let _ = std::fs::remove_dir_all(&d);
     }
 
