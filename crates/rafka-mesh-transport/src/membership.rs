@@ -51,7 +51,9 @@ pub fn backbone_topic(fabric: &FabricId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-backbone:{fabric}").as_bytes()).as_bytes())
 }
 
-/// Tell `endpoint` where `peers` are (no discovery service runs).
+/// Tell `endpoint` where `peers` are (no discovery service runs): a lookup of its own that only
+/// adds. For a raw gossip observer with no [`Membership`]; an endpoint that holds a
+/// [`LocationBook`] installs every address through that book.
 pub fn learn_addresses(endpoint: &Endpoint, peers: &[EndpointAddr]) -> Result<()> {
     let lookup = MemoryLookup::new();
     for p in peers {
