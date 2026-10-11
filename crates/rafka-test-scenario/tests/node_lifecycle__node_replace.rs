@@ -107,11 +107,26 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     // exit code is the provider's, not read back from the exit record in the data dir.
     assert_eq!(s(&recovery["attributes"]["exit_proof"]), "provider", "{recovery}");
     assert_eq!(s(&recovery["attributes"]["build_id"]), birth_build, "the recovery is an attempt of the accepted Build: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["disposition"]), "created", "op 0x20 opened it, spelled as the in-process door spells it: {recovery}");
     let attempt = s(&recovery["attributes"]["attempt"]);
     // The submit followed the recovery to its terminal frame and records it (never "submitted").
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "the recovery's terminal: {recovery}");
     let build = estate.await_build(&birth_build, SETTLE).await;
     assert_eq!(build["build_id"], birth_build.as_str(), "no Build was minted: {build}");
+    // The fabric-primary heard the recovery's receipts on the Build topic (its recovery dedup reads
+    // them): NodeDeleted naming the exited birth, and the operation's Complete.
+    let fp_api = s(&primary["admin_api_base"]);
+    let operation = format!("recover-node:{node_path}");
+    let heard = wait_for("the fabric-primary holds the recovery's receipts", Duration::from_secs(30), || async {
+        let (_, b) = estate.http_get(&fp_api, &format!("/api/builds?id={birth_build}")).await;
+        let steps = b["steps"].as_array().cloned().unwrap_or_default();
+        let at = |step: &str| steps.iter().find(|r| r["operation"] == operation.as_str() && r["step"] == step && r["attempt"].to_string() == attempt && r["outcome"] == "complete").cloned();
+        Some((at("NodeDeleted")?, at("Complete")?))
+    })
+    .await;
+    assert_eq!(heard.0["output"]["node_id"], before["node_id"], "the fabric-primary's NodeDeleted names the exited node: {:?}", heard.0);
+    assert_eq!(heard.0["output"]["incarnation"], before["incarnation_id"], "and its exact birth: {:?}", heard.0);
+    assert!(heard.1["output"].is_null(), "Complete commits no output: {:?}", heard.1);
 
     let spans = wait_for("the recovery operation's last step is exported", SETTLE, || async {
         let spans = estate.spans();
