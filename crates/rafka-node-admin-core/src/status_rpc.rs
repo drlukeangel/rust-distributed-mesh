@@ -186,7 +186,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
             (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, None)
         }
         // Commands and completions are answered before the decision (`StatusAuthority::apply`).
-        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
+        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::ApplyNodeConfig { .. } => {
             (StatusReply::NotReady { reason: format!("{} reached the declaration decision, which does not decide {}", auth.me, req.op()) }, None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -475,7 +475,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
         S::ReadyForTraffic => NodeState::ReadyForTraffic,
         S::Draining => NodeState::Draining,
         // A birth under restart is leaving; the frozen status vocabulary has no Restarting.
-        S::Leaving | S::Restarting | S::PendingReconnect | S::Dead => NodeState::Leaving,
+        S::Leaving | S::Restarting | S::PendingReconnect | S::Dead | S::Deleted => NodeState::Leaving,
     }
 }
 

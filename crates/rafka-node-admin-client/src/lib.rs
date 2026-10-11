@@ -65,6 +65,8 @@ pub enum NodeStatus {
     /// True offline: the mesh primary's connect found no path on two rounds a staleness floor
     /// apart. Inferred by an observer, never announced by the node.
     Dead,
+    /// Deleted: identity and name released; only the node's row carries it.
+    Deleted,
 }
 
 /// The lifecycle state of a mesh or of a fabric.
