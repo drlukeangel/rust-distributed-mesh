@@ -983,9 +983,14 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
     for op in book.departed() {
         heard.insert(op.incarnation.clone());
     }
-    for (name, r) in recorded {
+    for (name, mut r) in recorded {
         if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) || book.is_departed(r.node_id.as_str()) {
             continue;
+        }
+        // Its exit-proof row read: the birth is Dead, whatever its record last held.
+        if r.incarnation_id.as_ref().is_some_and(|i| records.is_exited(&r.node_id, i)) {
+            r.status = NodeStatus::Dead;
+            r.routable = false;
         }
         nodes.entry(name).or_insert(r);
     }
