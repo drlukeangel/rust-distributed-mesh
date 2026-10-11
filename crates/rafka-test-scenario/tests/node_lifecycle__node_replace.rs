@@ -60,67 +60,86 @@ async fn drift_span(estate: &Estate, build: &str, node: &str, action: &str) -> V
     .await
 }
 
-/// CONTRACT: a rpc node whose mesh transport stops for good exits with the reserved code 4 and
-/// records that reason in its data dir; the fabric-primary proves the exit from the provider and
-/// the record, and the next attempt of the same Build (reason proven drift, action restart, no
-/// Build minted) brings the SAME node back: same NodeId, same transport key, same data dir, a new
-/// incarnation. No departure is published for it, and no other node changes.
+/// The mesh-primary's recovery submit for `node`, once exported (node-recovery.md: the tickle,
+/// the TRUE OFFLINE mark, the provider inspection and the submit each have a span on the
+/// mesh-primary).
+async fn recovery_span(estate: &Estate, node: &str, node_id: &Value) -> Value {
+    wait_for(&format!("the mesh-primary's recovery submit for {node} is exported"), Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["node"] == node && sp["attributes"]["node_id"] == *node_id).cloned()
+    })
+    .await
+}
+
+/// CONTRACT: a rpc node whose mesh transport stops for good exits (reserved code 4, recorded in
+/// its data dir). Its mesh-primary (node-recovery.md), not the fabric-primary, proves the exit:
+/// it marks the node TRUE OFFLINE, asks the provider about the exact runtime, and on Exited
+/// submits one recovery to the fabric-primary keyed on the exited birth; the recovery is the next
+/// attempt of the accepted Build (no Build minted), run by that mesh-primary: node.delete of the
+/// exited instance (node.deleted from the exit proof, once, named by the exact birth), then
+/// node.create at the same path.name over the inherited data dir. The path comes back with the
+/// SAME transport key and data dir and a NEW node.id and incarnation. No other node changes, and
+/// the fabric-primary's drift check opens nothing for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let (estate, birth_build) = two_mesh_estate("a_transport_stopped_exit_is_restarted_as_the_same_node").await;
-    // The node lives in the mesh that does NOT hold the fabric-primary: its mesh's admin launched it, so the
-    // fabric-primary has no child handle and proves its exit from the provider and the runtime's own record.
-    let primary = estate.nodes().await.into_iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary");
-    let node = format!("{}.rpc.1", if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" });
+    // The node lives in the mesh that does NOT hold the fabric-primary: its own mesh-primary is the
+    // reconciler, and it submits the recovery across meshes to the fabric-primary.
+    let nodes = estate.nodes().await;
+    let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
+    let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
+    let node = format!("{mesh}.rpc.1");
     let node_path = node.as_str();
+    let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the node's mesh-primary")["name"]);
     let before = estate.node(node_path).await;
     let data_dir = estate.data_dir_of(node_path).await;
-    let others: Vec<(String, String)> = estate.nodes().await.iter().filter(|n| n["name"] != node_path).map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    let others: Vec<(String, String)> = nodes.iter().filter(|n| n["name"] != node_path).map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
 
     // The real transport-stop path: the testkit door marks the transport stopped; the process exits through it.
     let marked = estate.probe(&["stop-transport", "--target", &format!("path:{node_path}"), "--key", "x"]);
     assert_eq!(marked["outcome"], "Reply", "{marked}");
 
-    let after = wait_for(&format!("{node_path} ready under a new incarnation"), SETTLE, || async {
+    let after = wait_for(&format!("{node_path} ready as a new node"), SETTLE, || async {
         let n = estate.node_opt(node_path).await?;
-        (ready(&n) && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
     })
     .await;
-    assert_eq!(after["node_id"], before["node_id"], "the same NodeId");
-    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key");
+    assert_ne!(after["node_id"], before["node_id"], "recovery creates a new node.id");
+    assert_ne!(after["incarnation_id"], before["incarnation_id"], "and a new incarnation");
+    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
     assert_eq!(estate.data_dir_of(node_path).await, data_dir, "the same data dir");
     assert_ne!(after["deployment_id"], before["deployment_id"], "a new runtime");
 
-    // The record the exiting runtime wrote is keyed to the birth that wrote it (the new birth cleared it at spawn).
-    let drift = drift_span(&estate, &birth_build, node_path, "restart").await;
-    assert_eq!(s(&drift["attributes"]["exit_code"]), "4", "the proof names TRANSPORT_STOPPED: {drift}");
-    // mesh2's admin launched the node, so the fabric-primary has no child handle: the code 4 is the
-    // runtime's own record in its data dir, keyed to its deployment and incarnation.
-    assert_eq!(s(&drift["attributes"]["exit_proof"]), "exit-record", "{drift}");
-    assert_eq!(s(&drift["attributes"]["reason"]), "proven-drift");
-    // The node is Ready before the attempt closes; the same Build settles with the repair as its attempt.
+    // The mesh-primary proved the exit and submitted the recovery, keyed on the exited birth.
+    let recovery = recovery_span(&estate, node_path, &before["node_id"]).await;
+    assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "the node's own mesh-primary submits: {recovery}");
+    assert_eq!(recovery["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["exit_code"]), "4", "the proof names TRANSPORT_STOPPED: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["exit_proof"]), "exit-record", "{recovery}");
+    assert_eq!(s(&recovery["attributes"]["build_id"]), birth_build, "the recovery is an attempt of the accepted Build: {recovery}");
+    let attempt = s(&recovery["attributes"]["attempt"]);
     let build = estate.await_build(&birth_build, SETTLE).await;
-    assert_eq!(build["build_id"], birth_build.as_str(), "the same Build carries the repair: {build}");
-    assert_eq!(s(&build["reason"]), "proven-drift", "{build}");
-    // The restart's own span closes when its attempt ends: read the evidence once it is exported,
-    // never from a snapshot taken before the Build settled.
-    let spans = wait_for("the restart attempt's spans are exported", SETTLE, || async {
+    assert_eq!(build["build_id"], birth_build.as_str(), "no Build was minted: {build}");
+
+    let spans = wait_for("the recovery operation's last step is exported", SETTLE, || async {
         let spans = estate.spans();
-        named(&spans, "rdm.node_admin.node.update.via-build")
-            .into_iter()
-            .any(|sp| sp["attributes"]["node"] == node_path && s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == s(&drift["attributes"]["attempt"]))
-            .then_some(spans)
+        step_span(&spans, &birth_build, &attempt, node_path, "Complete").is_some().then_some(spans)
     })
     .await;
-
-    // Restart, not replace: the NodeId never departs, and the node's logs say why it exited.
-    let departed: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
-    assert!(departed.is_empty(), "a restart emits no NodeDeleted for the same node: {departed:?}");
-    let stopped = named(&spans, "rdm.mesh.node.delete.via-transport-stopped");
-    assert!(!stopped.is_empty(), "the exiting runtime's own span names the reason");
-    let restarts = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().filter(|sp| sp["attributes"]["node"] == node_path && s(&sp["attributes"]["build_id"]) == birth_build).collect::<Vec<_>>();
-    assert!(restarts.iter().any(|r| descends_from(&spans, r, &drift) || s(&r["attributes"]["attempt"]) == s(&drift["attributes"]["attempt"])), "the restart ran under the drift attempt: {restarts:?}");
-    estate.record_trace_url(drift["trace_id"].as_str().unwrap_or(""));
+    // Delete, then create: the exited birth departs once, named by its exact birth, before the new node boots.
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
+    assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
+    assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
+    let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
+    assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (fenced) before the new node joins");
+    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor"] {
+        assert!(step_span(&spans, &birth_build, &attempt, node_path, step).is_none(), "no RPC to the exited process and no .old rename: {step} ran");
+    }
+    assert!(!named(&spans, "rdm.mesh.node.delete.via-transport-stopped").is_empty(), "the exiting runtime's own span names the reason");
+    // The fabric-primary's drift check opens nothing for a member: its mesh-primary recovers it.
+    let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(&format!("exited: {node_path}"))).collect();
+    assert!(drift.is_empty(), "the fabric-primary opened a drift attempt for a member: {drift:?}");
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
 
     // Nothing else moved.
     for (name, id) in others {
