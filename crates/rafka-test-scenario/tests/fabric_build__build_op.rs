@@ -500,14 +500,16 @@ fn knob_attempts(knob: &std::path::Path, node: &str, reason: &str) -> usize {
 
 /// CONTRACT (node-start.md step 3; node-rpc-envelope.md frame table, Blocked "emitted on a new
 /// blocker or reason change, never on a timer"): a birth whose `hydrate_before_ready` is Blocked
-/// answers its executor's `ProbeNodeState` `NotReady` carrying the hook's blocker, and the Build
-/// stream carries `Blocked { WaitForNodeReady, reason }` once per reason. The hook here runs again
+/// answers its executor's `ProbeNodeState` with Status `Blocked { node_id, incarnation, reason,
+/// retry_on }`, and the Build stream carries `Blocked { WaitForNodeReady, reason }` once per reason. The hook here runs again
 /// every time its authority addresses it, so it is blocked again for the same reason many times;
 /// none of those reruns frames anything. A changed reason frames once more; when the hook passes the
 /// birth is Ready, the step completes and the Build is `Complete` with no further Blocked. The Builds
-/// that birthed the shape, whose births register no hook (plain Pending until Ready), frame no
-/// Blocked. What must NOT happen: a Blocked frame for a plain Pending birth, a repeat for an unchanged
-/// reason, or a Blocked frame after the hook passed.
+/// that birthed the shape, whose births register no hook (plain Pending until Ready, a node-admin's
+/// door answering `NotReady` until its authority is filled), frame no Blocked: a `NotReady` is the
+/// door not serving yet and never a blocker. What must NOT happen: a Blocked frame for a plain
+/// Pending birth or a door's `NotReady`, a repeat for an unchanged reason, or a Blocked frame after
+/// the hook passed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes() {
     let test = "a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_the_hook_passes";
@@ -551,7 +553,8 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     let spans = estate.spans();
     // The flame: the blocked birth's probe answers, each naming its blocker.
     let probes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == BLOCKED && s(&sp["attributes"]["state"]) == "blocked").collect();
-    assert!(probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(A)) && probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(B)), "the birth answered both blockers NotReady");
+    assert!(probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(A)) && probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(B)), "the birth answered both blockers Blocked");
+    assert!(probes.iter().all(|sp| s(&sp["attributes"]["retry_on"]) == "authority-addressed"), "every Blocked answer names the hook's retry event");
     estate.artifact("blocked-probes", &json!({ "a_reruns": a_reruns, "blocked_probe_answers": probes.len() }));
     estate.record_trace_url(probes[0]["trace_id"].as_str().unwrap_or(""));
 }

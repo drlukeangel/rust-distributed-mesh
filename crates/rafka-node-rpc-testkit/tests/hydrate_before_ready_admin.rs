@@ -81,8 +81,8 @@ fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_st
 /// The Day-0 admin's own hook is held, so its pull gate is closed: the joining admin's pull is
 /// answered typed `NotReady`, its hook is `Blocked { AuthorityReady }`, the Ready check names that
 /// blocker (`rdm.node_admin.runtime.reject.via-not-authority-capable`) and it publishes Pending.
-/// Its executor's `ready_blocker` (a `ProbeNodeState` to the exact birth) is answered `NotReady`
-/// carrying that blocker with no attempt counter (node-start.md step 3). When the Day-0 admin's hook returns and it publishes ReadyForTraffic, the joining admin's hook
+/// Its executor's `ready_blocker` (a `ProbeNodeState` to the exact birth) is answered Status
+/// `Blocked` carrying that blocker, named with no attempt counter (node-start.md step 3). When the Day-0 admin's hook returns and it publishes ReadyForTraffic, the joining admin's hook
 /// runs again, pulls the rows and it publishes ReadyForTraffic after its authority. What must NOT
 /// happen: the joining admin Ready while its hook is blocked, or its probe answered `Current`.
 #[test]
@@ -177,7 +177,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         assert_eq!(joiner.digest.lock().unwrap().status, MemberStatus::Pending, "a blocked admin is Pending");
         assert_eq!(pull.answered(), 0, "the Day-0 admin answered no rows before its own hook passed");
         // node-start.md step 3: while Blocked, the node answers its executor's ProbeNodeState with
-        // NotReady { reason } carrying the hook's blocker, and the executor's `ready_blocker` returns it.
+        // Blocked { node_id, incarnation, reason, retry_on }, and the executor's `ready_blocker` names it.
         let HydrationState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
         let joiner_digest = joiner.digest.lock().unwrap().clone();
         let mut subject = rafka_node_admin_core::model::Node::allocated(joiner_digest.node.name.clone());

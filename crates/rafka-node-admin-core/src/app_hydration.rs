@@ -144,30 +144,9 @@ impl HydrateCtx {
     }
 }
 
-/// The event a blocked hook waits for.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RetryOn {
-    /// The authority's birth changed or departed.
-    AuthorityChanged,
-    /// This node became reachable again (heard after silence, or first heard).
-    TargetReachable(NodeId),
-    /// The authority published ReadyForTraffic.
-    AuthorityReady,
-    /// The authority addressed this node (it sent a down op).
-    AuthorityAddressed,
-}
-
-impl RetryOn {
-    /// The event's name in spans.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::AuthorityChanged => "authority-changed",
-            Self::TargetReachable(_) => "target-reachable",
-            Self::AuthorityReady => "authority-ready",
-            Self::AuthorityAddressed => "authority-addressed",
-        }
-    }
-}
+/// The event a blocked hook waits for: the envelope's typed `RetryOn` (node-rpc-envelope.md, Status
+/// op 0x1B), the same value a probe of a blocked birth answers in `Blocked`.
+pub use rafka_node_rpc_contract::status::RetryOn;
 
 /// What the hook returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,7 +285,7 @@ impl Events {
 
     fn holds(&self, on: &RetryOn, authority: Option<&AcceptingAuthority>, mark: &Mark) -> bool {
         let moved = *self.book.heard_changes().borrow() > mark.heard;
-        if let RetryOn::TargetReachable(id) = on {
+        if let RetryOn::TargetReachable { node_id: id } = on {
             return moved && self.book.current(self.book.staleness_floor()).iter().any(|d| &d.node.node_id == id);
         }
         // An authority event of a birth with no authority never happens; the attempt refuses such a
@@ -317,7 +296,7 @@ impl Events {
                 self.book.is_departed(authority.node_id.as_str()) || self.book.get(authority.node_id.as_str()).map(|(d, _)| d.node.incarnation) != mark.authority_incarnation
             }
             RetryOn::AuthorityReady => moved && self.book.get(authority.node_id.as_str()).is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
-            RetryOn::TargetReachable(_) => unreachable!("answered above"),
+            RetryOn::TargetReachable { .. } => unreachable!("answered above"),
             RetryOn::AuthorityAddressed => self.addressed.count(&authority.node_id) > mark.addressed,
         }
     }
@@ -379,13 +358,13 @@ impl HydrationState {
         }
     }
 
-    /// What a `ProbeNodeState` is answered `NotReady` with while the hook is `Blocked`
-    /// (node-start.md step 3), `None` in every other state. The text names the birth, the hook's own
-    /// reason and the event it runs again on, and no attempt counter: a rerun blocked for the same
-    /// reason answers the same text, so the executor frames a new `Blocked` only on a new reason.
-    pub fn probe_blocker(&self, me: &PathName) -> Option<String> {
+    /// What a `ProbeNodeState` is answered `Blocked` with while the hook is `Blocked`
+    /// (node-start.md step 3): the hook's own reason and the event it runs again on, `None` in every
+    /// other state. No attempt counter: a rerun blocked for the same reason answers the same blocker,
+    /// so the executor frames a new `Blocked` only on a new reason.
+    pub fn probe_blocker(&self) -> Option<(String, RetryOn)> {
         match self {
-            Self::Blocked { reason, retry_on, .. } => Some(format!("{me}: hydrate_before_ready is blocked: {reason}; it runs again on {}", retry_on.name())),
+            Self::Blocked { reason, retry_on, .. } => Some((reason.clone(), retry_on.clone())),
             Self::Running { .. } | Self::Passed | Self::Failed(_) | Self::Retired => None,
         }
     }
@@ -522,7 +501,7 @@ impl HookDriver {
                 Step::Passed
             }
             Some(HookOutcome::Blocked { reason, retry_on }) => {
-                if self.ctx.authority.accepted().is_none() && !matches!(retry_on, RetryOn::TargetReachable(_)) {
+                if self.ctx.authority.accepted().is_none() && !matches!(retry_on, RetryOn::TargetReachable { .. }) {
                     let why = format!("the hook asked to wait for {} but this birth has no authority ({}): {reason}", retry_on.name(), match &self.ctx.authority { Authority::None(w) => w.reason(), Authority::Accepted(_) => "" });
                     span.record("outcome", "failed");
                     span.record("reason", why.as_str());
@@ -610,20 +589,19 @@ impl HookDriver {
 mod tests {
     use super::*;
 
-    /// CONTRACT (node-start.md step 3): the probe's `NotReady` text is the hook's blocker while
-    /// Blocked and nothing otherwise; two attempts blocked for the same reason answer the same text,
-    /// and a changed reason a different one. What must NOT happen: an attempt counter in the text,
-    /// which would frame a new `Blocked` on every rerun.
+    /// CONTRACT (node-start.md step 3): the probe's `Blocked` answer is the hook's own reason and
+    /// retry event while Blocked and nothing otherwise; two attempts blocked for the same reason
+    /// answer the same blocker, and a changed reason a different one. What must NOT happen: an
+    /// attempt counter in the blocker, which would frame a new `Blocked` on every rerun.
     #[test]
-    fn a_rerun_blocked_for_the_same_reason_answers_the_same_probe_text() {
-        let me: PathName = "mesh1.rpc.1".parse().unwrap();
+    fn a_rerun_blocked_for_the_same_reason_answers_the_same_probe_blocker() {
         let blocked = |attempt, reason: &str| HydrationState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::AuthorityAddressed };
-        let first = blocked(1, "rows not yet published").probe_blocker(&me).expect("blocked answers its blocker");
-        assert_eq!(Some(first.clone()), blocked(7, "rows not yet published").probe_blocker(&me), "the attempt is not part of the blocker");
-        assert_ne!(Some(first.clone()), blocked(8, "the authority is draining").probe_blocker(&me), "a changed reason is a new blocker");
-        assert!(first.contains("mesh1.rpc.1") && first.contains("rows not yet published") && first.contains("authority-addressed"), "{first}");
+        let first = blocked(1, "rows not yet published").probe_blocker().expect("blocked answers its blocker");
+        assert_eq!(first, ("rows not yet published".to_string(), RetryOn::AuthorityAddressed), "the hook's own reason and event");
+        assert_eq!(Some(first.clone()), blocked(7, "rows not yet published").probe_blocker(), "the attempt is not part of the blocker");
+        assert_ne!(Some(first), blocked(8, "the authority is draining").probe_blocker(), "a changed reason is a new blocker");
         for other in [HydrationState::Running { attempt: 2 }, HydrationState::Passed, HydrationState::Failed("x".into()), HydrationState::Retired] {
-            assert_eq!(other.probe_blocker(&me), None, "only Blocked answers NotReady: {other:?}");
+            assert_eq!(other.probe_blocker(), None, "only Blocked answers Blocked: {other:?}");
         }
     }
 }

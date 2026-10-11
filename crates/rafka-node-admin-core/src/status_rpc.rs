@@ -114,7 +114,7 @@ pub struct StatusAuthority {
     /// carrying it; filled once its digest exists.
     pub configure: Configure,
     /// Where this admin's own `hydrate_before_ready` stands (the cell its start writes): while it is
-    /// Blocked, a probe naming this admin is answered `NotReady` carrying its blocker.
+    /// Blocked, a probe naming this admin is answered `Blocked` carrying its blocker.
     pub hydration: Hydrating,
 }
 
@@ -508,8 +508,9 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// other than itself (an apply); `None` for every other request.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
-/// re-publishes its presence and answers its current state; no transition.
-/// `ApplyNodeState` is not served: a drain is `drain-node` and a stop is `stop-node`.
+/// re-publishes its presence and answers its current state; no transition. While its
+/// `hydrate_before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
+/// re-publishes nothing. `ApplyNodeState` is not served: a drain is `drain-node` and a stop is `stop-node`.
 async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, configure: &Configure, hydration: &Hydrating, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let (node_id, incarnation) = match req {
         StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } => (node_id, incarnation),
@@ -535,7 +536,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
         StatusRequest::ProbeNodeState { .. } => {
             // The hook's blocker as it stood when the probe arrived, before the probe addresses
             // this admin (a hook blocked on its authority's word runs again on it).
-            let blocker = hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker(&me.name));
+            let blocker = hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             // The authority addressed this admin (R-S3's down op): every declaration owed to it is
             // sent again, whatever its last outcome.
             if let Some(from) = sender {
@@ -547,15 +548,18 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                     .in_scope(|| tracing::info!("probed by a node-admin: parked, nothing re-published"));
                 return Some(StatusReply::CurrentParked { node_id: me.node_id.clone(), incarnation: held.clone() });
             }
+            // node-start.md step 3: while its hook is Blocked, the probe served this exact birth and
+            // found an active readiness blocker; it answers Blocked with the hook's own reason and
+            // retry event, before any republish, so a polled blocked birth republishes nothing.
+            if let Some((reason, retry_on)) = blocker {
+                let on = retry_on.name();
+                let reply = StatusReply::blocked(me.node_id.clone(), held.clone(), &reason, retry_on);
+                tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
+                return Some(reply);
+            }
             if let Some(republish) = republish.get() {
                 republish().await;
-            }
-            // node-start.md step 3: while its hook is Blocked, the node answers NotReady carrying the
-            // hook's blocker, so its executor can frame it.
-            if let Some(reason) = blocker {
-                tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "blocked", blocker = %reason, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, the hook's blocker answered NotReady"));
-                return Some(StatusReply::NotReady { reason });
             }
             let state = node_state_of(me.status);
             tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = ?state, "otel.kind" = "internal")

@@ -6,7 +6,7 @@
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
 fn mesh() -> MeshId { MeshId::parse("1123456789ab").unwrap() }
@@ -64,7 +64,7 @@ fn requests_match_the_frozen_nineteen_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_twenty_five_variant_wire_schema() {
+fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -92,6 +92,7 @@ fn replies_match_the_frozen_twenty_five_variant_wire_schema() {
         (RejectedConfig { over: rafka_mesh_entity::ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, "16210a208010"),
         (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),
         (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
+        (Blocked { node_id: node(), incarnation: birth(), reason: "r".into(), retry_on: RetryOn::TargetReachable { node_id: node() } }, "190c3031323334353637383961620562697274680172010c303132333435363738396162"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -159,4 +160,8 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(MalformedKind::TooLarge, "00");
     golden(MalformedKind::UnknownVariant, "01");
     golden(MalformedKind::Corrupt, "02");
+    golden(RetryOn::AuthorityChanged, "00");
+    golden(RetryOn::TargetReachable { node_id: node() }, "010c303132333435363738396162");
+    golden(RetryOn::AuthorityReady, "02");
+    golden(RetryOn::AuthorityAddressed, "03");
 }
