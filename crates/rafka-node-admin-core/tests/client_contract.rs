@@ -142,10 +142,10 @@ async fn refusals_keep_their_status_and_named_reason() {
 fn client_status_enums_decode_every_state_the_core_publishes() {
     use rafka_node_admin_core::model::{NodeStatus as Core, ScopeStatus as CoreScope};
     // Exhaustive matches: a new core variant stops this compiling until the client carries it.
-    let nodes = [Core::Pending, Core::ReadyForTraffic, Core::Draining, Core::Leaving, Core::PendingReconnect, Core::Restarting, Core::Dead];
+    let nodes = [Core::Pending, Core::ReadyForTraffic, Core::Draining, Core::Leaving, Core::PendingReconnect, Core::Restarting, Core::Dead, Core::Deleted];
     for s in nodes {
         match s {
-            Core::Pending | Core::ReadyForTraffic | Core::Draining | Core::Leaving | Core::PendingReconnect | Core::Restarting | Core::Dead => {}
+            Core::Pending | Core::ReadyForTraffic | Core::Draining | Core::Leaving | Core::PendingReconnect | Core::Restarting | Core::Dead | Core::Deleted => {}
         }
         let wire = serde_json::to_value(s).unwrap();
         serde_json::from_value::<NodeStatus>(wire.clone()).unwrap_or_else(|e| panic!("the client cannot decode node status {wire}: {e}"));

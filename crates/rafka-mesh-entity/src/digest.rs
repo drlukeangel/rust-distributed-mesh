@@ -141,3 +141,36 @@ mod tests {
         assert_eq!(back, a);
     }
 }
+
+/// The most keys a node's config holds: it rides every heartbeat, so it is bounded.
+pub const MAX_CONFIG_KEYS: usize = 32;
+/// The most bytes (every key and every value) a node's config holds.
+pub const MAX_CONFIG_BYTES: usize = 2048;
+
+/// A config past its cap, naming the measure and the bound that was crossed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigOverCap {
+    /// Keys in the refused config.
+    pub keys: u32,
+    /// Bytes (keys plus values) in the refused config.
+    pub bytes: u32,
+    /// The key bound.
+    pub max_keys: u32,
+    /// The byte bound.
+    pub max_bytes: u32,
+}
+
+impl std::fmt::Display for ConfigOverCap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "node config of {} keys and {} bytes is over its cap of {} keys and {} bytes", self.keys, self.bytes, self.max_keys, self.max_bytes)
+    }
+}
+
+/// `config` within its cap, or the refusal that names the cap crossed.
+pub fn check_config(config: &BTreeMap<String, String>) -> Result<(), ConfigOverCap> {
+    let bytes: usize = config.iter().map(|(k, v)| k.len() + v.len()).sum();
+    if config.len() > MAX_CONFIG_KEYS || bytes > MAX_CONFIG_BYTES {
+        return Err(ConfigOverCap { keys: config.len() as u32, bytes: bytes as u32, max_keys: MAX_CONFIG_KEYS as u32, max_bytes: MAX_CONFIG_BYTES as u32 });
+    }
+    Ok(())
+}

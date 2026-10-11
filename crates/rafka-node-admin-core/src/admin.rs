@@ -640,6 +640,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         n.routable = n.status.is_live() && book.routable(d.node.node_id.as_str());
         n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
+        n.config = d.config.clone();
         // A node-admin's control API is its one listener: the view carries it, so whichever admin
         // restarts it keeps the address its launch was assigned.
         if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
@@ -682,6 +683,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         n.routable = false;
         n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
+        n.config = d.config.clone();
         if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
             n.listeners = vec![("control".to_string(), addr)];
         }

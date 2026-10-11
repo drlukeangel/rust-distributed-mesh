@@ -310,11 +310,6 @@ impl Nodes {
         CallEnd::NotBackedToday { op: NodeOp::ConfigGet, why: "no op carries node config" }
     }
 
-    /// `node.config.update`.
-    pub fn config_update(&self) -> CallEnd {
-        CallEnd::NotBackedToday { op: NodeOp::ConfigUpdate, why: "no op carries node config" }
-    }
-
     /// `node.create(spec)`: add a node to a mesh. The stream is `Started`, then the step events
     /// of the create, ending `Complete` or `Failed { step, reason }`.
     pub async fn create(&self, spec: &NodeSpec) -> Result<WorkflowStream, CallEnd> {

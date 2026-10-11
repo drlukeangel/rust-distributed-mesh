@@ -27,7 +27,8 @@
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, RuntimeFact};
+use rafka_mesh_entity::{ConfigOverCap, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact};
+use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// The Status protocol: declare, apply and probe lifecycle state.
@@ -307,6 +308,27 @@ pub enum StatusRequest {
         /// The operation: `start-node:<path>`.
         operation: String,
     },
+    /// Upward: a caller asks the fabric-primary to put the exact birth's whole config (`node.config.update`).
+    /// The fabric-primary writes the node's row, tells the node, and answers [`StatusReply::ConfigUpdated`]
+    /// (`node.config.updated`); a config past its cap is [`StatusReply::RejectedConfig`]. A single call, never a Build.
+    UpdateNodeConfig {
+        /// The birth whose config is put.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The whole config: a put replaces, it never merges.
+        config: BTreeMap<String, String>,
+    },
+    /// Downward: the fabric-primary tells the exact birth its config; the birth holds it and carries it in
+    /// its next digest. Answered `Applied`.
+    ApplyNodeConfig {
+        /// The birth told.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The whole config.
+        config: BTreeMap<String, String>,
+    },
 }
 
 /// The longest `receipt_manifest` reference a `MeshLeave` carries.
@@ -333,6 +355,8 @@ impl StatusRequest {
             Self::OpenTraffic { .. } => "open-traffic",
             Self::TrafficOpened { .. } => "traffic-opened",
             Self::StartNode { .. } => "start-node",
+            Self::UpdateNodeConfig { .. } => "update-node-config",
+            Self::ApplyNodeConfig { .. } => "apply-node-config",
         }
     }
 }
@@ -509,6 +533,19 @@ pub enum StatusReply {
         /// The answering birth's incarnation.
         incarnation: IncarnationId,
     },
+    /// The reply of an `UpdateNodeConfig`: the fabric-primary wrote the node's row and the exact birth holds
+    /// the config (`node.config.updated`).
+    ConfigUpdated {
+        /// The birth whose config was put.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+    },
+    /// The config put was refused: the cap it crossed.
+    RejectedConfig {
+        /// The keys and bytes of the refused config and the bounds.
+        over: ConfigOverCap,
+    },
 }
 
 impl StatusReply {
@@ -536,6 +573,8 @@ impl StatusReply {
             Self::Started => "started",
             Self::StartFailed { .. } => "start-failed",
             Self::CurrentParked { .. } => "current-parked",
+            Self::ConfigUpdated { .. } => "config-updated",
+            Self::RejectedConfig { .. } => "rejected-config",
         }
     }
 }
@@ -543,14 +582,14 @@ impl StatusReply {
 impl NodeProtocol for Status {
     const OP: u8 = 0x1B;
     const NAME: &'static str = "status";
-    const MAX_REQUEST_FRAME_BYTES: usize = 1024;
+    const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// A declaration travels the ordinary Direct/ViaPeer route like any other call.
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 17;
-    const REPLY_VARIANTS: u32 = 21;
+    const REQUEST_VARIANTS: u32 = 19;
+    const REPLY_VARIANTS: u32 = 23;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -562,6 +601,7 @@ impl NodeProtocol for Status {
             | StatusReply::NodeDrainingApplied { .. }
             | StatusReply::Current { .. }
             | StatusReply::CurrentParked { .. }
+            | StatusReply::ConfigUpdated { .. }
             | StatusReply::Stopped { .. }
             | StatusReply::Started => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
@@ -571,7 +611,8 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedInvalidNodeTransition { .. }
             | StatusReply::RejectedInvalidMeshTransition { .. }
             | StatusReply::RejectedUnmatchedCompletion { .. }
-            | StatusReply::StartFailed { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::StartFailed { .. }
+            | StatusReply::RejectedConfig { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -653,6 +694,8 @@ mod tests {
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
+            (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
+            (StatusReply::RejectedConfig { over: ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -687,6 +730,8 @@ mod tests {
             StatusRequest::OpenTraffic { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
             StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
             StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() },
+            StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
+            StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
