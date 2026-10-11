@@ -226,9 +226,9 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
     assert_eq!((s(&update["attributes"]["outcome"]), s(&update["attributes"]["traffic"]), s(&update["attributes"]["from"])), ("node-updated".into(), "Stopped".into(), path.to_string()), "{update:#?}");
     let back = named(&spans, "rdm.node_admin.node.update.via-update-node").into_iter().find(|sp| s(&sp["attributes"]["to"]) == path.to_string()).expect("the mesh-primary served the rename back");
     assert_eq!((s(&back["attributes"]["outcome"]), s(&back["attributes"]["from"])), ("node-updated".into(), renamed.to_string()), "{back:#?}");
-    let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the rejoin was installed");
-    assert_eq!(s(&join["attributes"]["admitted_as"]), path.to_string(), "{join:#?}");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && sp["attributes"]["node"] == path.to_string()).expect("the start command was sent");
+    let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");
+    assert_eq!(s(&join["attributes"]["admitted_as"]), path.to_string(), "{join:#?}");
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a renamed parked node is not drift");
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
