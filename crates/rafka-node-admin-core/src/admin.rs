@@ -958,7 +958,8 @@ const VIEW_POLL: Duration = Duration::from_millis(200);
 /// The view's next rebuild is due: at once when a routing fact the book holds moved since the last
 /// rebuild read it (a birth's status, an overlay, a departure, a mesh status: states.md "Routing",
 /// applied on receipt), else after `poll`.
-pub(crate) async fn view_rebuild_due(facts: &mut rafka_mesh_transport::membership::RoutingWatch, poll: Duration) {
+pub(crate) async fn view_rebuild_due(facts: &mut rafka_mesh_transport::membership::RoutingWatch, poll: Duration, gate: &crate::park_gate::ParkGate) {
+    let _ = gate;
     tokio::select! {
         _ = tokio::time::sleep(poll) => {}
         _ = facts.moved() => {}
@@ -5317,6 +5318,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let elections = ElectionLog::new(name.clone());
         let me = name.clone();
         let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
+        let rebuild_gate = park_gate.clone();
         tasks.push(park_gate.spawn(async move {
             let mut held: BTreeSet<PathName> = BTreeSet::new();
             let mut facts = book.routing_watch();
@@ -5337,7 +5339,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 if authority.get().is_some() && held.contains(&me) {
                     rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
-                view_rebuild_due(&mut facts, VIEW_POLL).await;
+                view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
             }
         }));
     }
@@ -6819,24 +6821,50 @@ mod tests {
         assert!(book.record(rpc.clone()));
         let hour = Duration::from_secs(3600);
         let mut facts = book.routing_watch();
+        let gate = crate::park_gate::ParkGate::new();
 
         facts.seen();
         let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
         assert!(book.statuses.take(&f, &fabric1()));
-        assert!(view_rebuild_due(&mut facts, hour).now_or_never().is_some(), "a mesh status taken makes the rebuild due at once");
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a mesh status taken makes the rebuild due at once");
 
         facts.seen();
-        assert!(view_rebuild_due(&mut facts, hour).now_or_never().is_none(), "nothing moved: the rebuild waits for its poll");
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_none(), "nothing moved: the rebuild waits for its poll");
         let mut draining = rpc.clone();
         draining.status = MemberStatus::Draining;
         draining.digest_seq += 1;
         assert!(book.record(draining));
-        assert!(view_rebuild_due(&mut facts, hour).now_or_never().is_some(), "a birth saying Draining makes the rebuild due at once");
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a birth saying Draining makes the rebuild due at once");
 
         facts.seen();
         let stop = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1 };
         assert!(book.stopped(stop));
-        assert!(view_rebuild_due(&mut facts, hour).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
+    }
+
+    /// CONTRACT (node.stop: a parked admin's tasks are held; states.md "Routing"): the view rebuild
+    /// is held at its own wait, never inside the view's lock. While the admin's gate is parked a
+    /// routing fact makes no rebuild due; the gate opening does, at once. Must NOT happen: a parked
+    /// admin rebuilding its view, or a rebuild held where it waits on the view's lock (a gated task
+    /// stops where it stands, and one stopped queued on the lock holds it from every reader: the
+    /// parked admin then never serves the start that would open it).
+    #[tokio::test(start_paused = true)]
+    async fn a_parked_admins_view_rebuild_is_held_at_its_own_wait_and_resumes_when_the_gate_opens() {
+        use futures_util::FutureExt;
+        use rafka_mesh_transport::membership::Frame;
+        let book = DigestBook::default();
+        let mut facts = book.routing_watch();
+        let gate = crate::park_gate::ParkGate::new();
+        let hour = Duration::from_secs(3600);
+        facts.seen();
+        gate.park();
+        let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        assert!(book.statuses.take(&f, &fabric1()));
+        let due = view_rebuild_due(&mut facts, hour, &gate);
+        tokio::pin!(due);
+        assert!((&mut due).now_or_never().is_none(), "parked: a routing fact makes no rebuild due");
+        gate.resume();
+        assert!((&mut due).now_or_never().is_some(), "the gate opening makes the held rebuild due at once");
     }
 
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
