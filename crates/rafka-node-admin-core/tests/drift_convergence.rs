@@ -482,34 +482,54 @@ async fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced
     assert_eq!(e.world.of(&frozen).unwrap().status, DeploymentStatus::Running, "the frozen runtime still runs");
 }
 
+/// CONTRACT (mesh-recovery.md: "A lost member of a mesh with a live mesh-primary is node recovery,
+/// driven by that mesh-primary"; node-recovery.md): a peer mesh's primary admin is lost while its
+/// second admin lives, so the second admin holds the mesh's seat and the loss is node recovery. The
+/// fabric-primary's drift opens nothing; the new mesh-primary's recovery submit opens the next
+/// attempt of the same Build, dispatched back to that mesh-primary, and exactly the lost path gets a
+/// new node.id. Must NOT happen: a proven-drift Replace of the lost admin.
 #[tokio::test]
-async fn a_lost_mesh_primary_admin_is_reborn_and_only_it() {
+async fn a_lost_mesh_primary_admin_is_recovered_by_the_admin_its_mesh_seats_and_only_it() {
     let e = estate().await;
+    let before = e.accepted.current(&*e.builds).await.unwrap();
     let fp = e.fabric_primary().await;
     let fp_mesh = fp.split('.').next().unwrap().to_string();
     let other = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" };
     // The other mesh's primary admin is lost.
     let primary = e.view.read().await.cohort_primary(other, NodeKind::NodeAdmin).unwrap().name.to_string();
-    e.world.kill(&e.node_id(&primary).await);
+    let old = e.node_id(&primary).await;
+    e.world.kill(&old);
     e.unheard(&[&primary]).await;
-    assert_ne!(e.view.read().await.cohort_primary(other, NodeKind::NodeAdmin).unwrap().name.to_string(), primary, "the surviving admin holds its mesh's seat");
-    e.drift().await.expect("a proven loss opens the next attempt");
-    e.converge().await;
-    assert_eq!(e.born(), vec![primary.clone()], "exactly the lost admin is reborn");
+    let seated = e.mesh_primary_of(&primary).await;
+    assert_ne!(seated, primary, "the surviving admin holds its mesh's seat");
+    assert_eq!(e.drift().await, None, "the fabric-primary repairs no node-admin of a mesh with a live mesh-primary");
+    let opened = e.recover(&primary).await;
+    assert_eq!((opened.build_id, opened.attempt), (before.build_id.clone(), before.attempt + 1), "the same Build, one more attempt");
+    assert_eq!(e.dispatch.dispatched.lock().unwrap().clone(), vec![(seated, before.attempt + 1)], "the recovery ran on the mesh's new primary");
+    assert_eq!(e.born(), vec![primary.clone()], "exactly the lost admin is recovered");
+    assert_ne!(e.node_id(&primary).await, old, "a new node.id");
     e.holds_the_shape().await;
 }
 
+/// CONTRACT (node-recovery.md, mesh-recovery.md:8-9): a lost fabric-primary whose mesh keeps a second
+/// admin is a lost member of a mesh with a live mesh-primary: the successor's drift opens nothing for
+/// it, and the admin its mesh seats recovers it as a new node.id at the same path.
 #[tokio::test]
-async fn a_lost_fabric_primary_is_proven_and_reborn_by_its_successor() {
+async fn a_lost_fabric_primary_is_recovered_by_its_own_meshs_new_primary() {
     let e = estate().await;
     let fp = e.fabric_primary().await;
-    e.world.kill(&e.node_id(&fp).await);
+    let old = e.node_id(&fp).await;
+    e.world.kill(&old);
     e.unheard(&[&fp]).await;
     let successor = e.fabric_primary().await;
     assert!(!successor.is_empty() && successor != fp, "the seat moved: {successor}");
-    e.drift().await.expect("the successor proves the loss and opens the next attempt");
-    e.converge().await;
-    assert_eq!(e.born(), vec![fp.clone()], "exactly the lost fabric primary's path is reborn");
+    let seated = e.mesh_primary_of(&fp).await;
+    assert_ne!(seated, fp, "its mesh's second admin holds the mesh's seat");
+    assert_eq!(e.drift().await, None, "the successor's drift repairs no node-admin of a mesh with a live mesh-primary");
+    let opened = e.recover(&fp).await;
+    assert_eq!(e.dispatch.dispatched.lock().unwrap().clone(), vec![(seated, opened.attempt)], "the recovery ran on the lost admin's own mesh-primary");
+    assert_eq!(e.born(), vec![fp.clone()], "exactly the lost fabric primary's path is recovered");
+    assert_ne!(e.node_id(&fp).await, old, "a new node.id");
     e.holds_the_shape().await;
 }
 
@@ -599,28 +619,42 @@ async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
     assert_eq!((after.build_id, after.attempt, after.state), (before.build_id, before.attempt + 1, BuildState::Complete));
 }
 
-/// CONTRACT (node-restart.md: a restart parks a live process, "no relaunch or exact-exit receipt";
-/// R-RC1: the fabric-primary's drift opens no Restart): a node-admin whose exit carries the
-/// TRANSPORT_STOPPED code (4) is replaced by the fabric-primary's drift like any other proven-exited
-/// node-admin: the next attempt's action is Replace of that exact birth, and the path is reborn.
+/// CONTRACT (mesh-recovery.md:8-9 "A lost member of a mesh with a live mesh-primary is node
+/// recovery, driven by that mesh-primary"; node-restart.md: a restart parks a live process, so a
+/// proven exit is never restarted): a secondary node-admin of a peer mesh (its mesh-primary live and
+/// not the fabric-primary) that exits, with the TRANSPORT_STOPPED code (4) and with another code
+/// (137), is recovered by its mesh-primary: the fabric-primary's drift opens nothing, the recovery
+/// is the next attempt of the same Build keyed on the exact exited birth, dispatched back to that
+/// mesh-primary, and the path gets a new node.id. Must NOT happen: a proven-drift Replace or a Restart.
 #[tokio::test]
-async fn a_transport_stopped_node_admin_is_replaced_never_restarted() {
-    let e = estate().await;
-    let admin = e.sibling_admin().await;
-    let id = e.node_id(&admin).await;
-    let incarnation = e.view.read().await.node(&admin.parse().unwrap()).and_then(|n| n.incarnation_id.clone()).unwrap();
-    e.world.exit_with(&id, Some(rafka_mesh_entity::runtime::TRANSPORT_STOPPED_EXIT_CODE));
-    e.unheard(&[&admin]).await;
-    e.drift().await.expect("the proven exit opens the next attempt");
-    let opened = e.accepted.current(&*e.builds).await.unwrap();
-    assert!(
-        matches!(&opened.action, Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, from_incarnation }) if path.to_string() == admin && *from_incarnation == incarnation),
-        "a Replace of the exact exited birth, never a Restart: {:?}",
-        opened.action
-    );
-    e.converge().await;
-    assert_eq!(e.born(), vec![admin.clone()], "exactly the lost admin is reborn");
-    e.holds_the_shape().await;
+async fn a_secondary_node_admins_exit_is_recovered_by_its_mesh_primary_whatever_its_code() {
+    for code in [Some(rafka_mesh_entity::runtime::TRANSPORT_STOPPED_EXIT_CODE), Some(137)] {
+        let e = estate().await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let fp = e.fabric_primary().await;
+        let peer = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+        let mp = e.view.read().await.cohort_primary(peer, NodeKind::NodeAdmin).unwrap().name.to_string();
+        let admin = e.view.read().await.cohort(peer, NodeKind::NodeAdmin).map(|n| n.name.to_string()).find(|n| *n != mp).unwrap();
+        let id = e.node_id(&admin).await;
+        let incarnation = e.view.read().await.node(&admin.parse().unwrap()).and_then(|n| n.incarnation_id.clone()).unwrap();
+        e.world.exit_with(&id, code);
+        e.unheard(&[&admin]).await;
+        assert_eq!(e.mesh_primary_of(&admin).await, mp, "{code:?}: the mesh keeps its live primary");
+        assert_eq!(e.drift().await, None, "{code:?}: the fabric-primary opens nothing for a secondary node-admin");
+        let opened = e.recover(&admin).await;
+        assert_eq!((opened.build_id.clone(), opened.attempt), (before.build_id.clone(), before.attempt + 1), "{code:?}: the same Build, one more attempt");
+        let current = e.accepted.current(&*e.builds).await.unwrap();
+        assert_eq!(current.reason, rafka_node_admin_core::build_state::AttemptReason::Recovery, "{code:?}");
+        assert!(
+            matches!(&current.action, Some(rafka_node_admin_core::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) if path.to_string() == admin && node_id.as_str() == id && *from_incarnation == incarnation),
+            "{code:?}: a Recover of the exact exited birth: {:?}",
+            current.action
+        );
+        assert_eq!(e.dispatch.dispatched.lock().unwrap().clone(), vec![(mp.clone(), before.attempt + 1)], "{code:?}: executed by its mesh-primary");
+        assert_eq!(e.born(), vec![admin.clone()], "{code:?}: exactly the lost admin is recovered");
+        assert_ne!(e.node_id(&admin).await, id, "{code:?}: a new node.id");
+        e.holds_the_shape().await;
+    }
 }
 
 /// CONTRACT: every exit, whatever its code (1, unknown, 137), is recovered by the mesh-primary, one
@@ -659,8 +693,15 @@ async fn every_exit_is_recovered_one_birth_per_attempt_and_a_submit_waits_for_th
 async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row() {
     let e = estate().await;
     let before = e.accepted.current(&*e.builds).await.unwrap();
-    // mesh1's cohort is lost; its second admin is one the successor never heard.
-    let lost = "mesh1.admin.2";
+    // A peer mesh's node-admin cohort is lost (its first admin hung and silent, so no live
+    // mesh-primary is left to recover anything: mesh recovery); its second admin is one the
+    // successor never heard.
+    let peer = if e.fabric_primary().await.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+    let lost = format!("{peer}.admin.2");
+    let lost = lost.as_str();
+    let hung = format!("{peer}.admin.1");
+    e.world.freeze(&e.node_id(&hung).await);
+    e.unheard(&[hung.as_str()]).await;
     let old = e.node_id(lost).await;
     let row = {
         let (d, _) = e.book.get(&old).unwrap();
@@ -680,6 +721,8 @@ async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row()
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
     let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
+    let action = e.accepted.current(&*e.builds).await.unwrap().action;
+    assert!(matches!(&action, Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, .. }) if path.to_string() == lost), "the mesh-recovery repair of the durable row's birth: {action:?}");
 }
 
 #[tokio::test]
@@ -778,14 +821,18 @@ mod one_attempt_number {
         Arc::new(cp)
     }
 
-    /// The fabric-primary's sibling node-admin is lost: its runtime exited and the view holds it
-    /// unheard, so the drift pass has a birth to prove (a node-admin's repair stays with the drift;
-    /// an ordinary member is its mesh-primary's). Returns the Build's attempt before anything opens.
+    /// A peer mesh loses every node-admin: their runtimes exited and the view holds them unheard, so
+    /// no mesh-primary is left to recover them and the drift pass has a birth to prove (mesh
+    /// recovery; a member of a mesh with a live mesh-primary is that mesh-primary's). Returns the
+    /// Build's attempt before anything opens.
     async fn lose_a_node(e: &Estate) -> u32 {
         let before = e.accepted.current(&*e.builds).await.unwrap();
-        let lost = e.sibling_admin().await;
-        e.world.kill(&e.node_id(&lost).await);
-        e.unheard(&[lost.as_str()]).await;
+        let peer = if e.fabric_primary().await.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+        let lost = [format!("{peer}.admin.1"), format!("{peer}.admin.2")];
+        for l in &lost {
+            e.world.kill(&e.node_id(l).await);
+        }
+        e.unheard(&[lost[0].as_str(), lost[1].as_str()]).await;
         before.attempt
     }
 
@@ -995,8 +1042,11 @@ mod unheard_mesh_hold {
         let mut held = Held::new();
         let mut started = HashSet::new();
         let opened = pass(&e, &mut started, &mut held, &|_| UNHEARD).await;
-        assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the own mesh is heard by definition");
-        assert!(held.is_empty());
+        assert_eq!(opened, None, "the own mesh's secondary node-admin is its mesh-primary's to recover, never the drift's");
+        assert!(held.is_empty(), "the own mesh is heard by definition: nothing of it is held");
+        let o = e.recover(&path).await;
+        assert_eq!((o.build_id, o.attempt), (before.build_id.clone(), before.attempt + 1));
+        assert_eq!(e.born(), vec![path.clone()], "its mesh-primary's recovery puts the path back");
     }
 
     #[tokio::test]

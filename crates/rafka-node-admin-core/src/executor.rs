@@ -325,17 +325,29 @@ mod tests {
     }
 
     /// CONTRACT (#3051, node-recovery.md "Execution": the fabric-primary dispatches the recovery
-    /// Build to the mesh-primary as executor): a member's `recover-node` is executed by its own
-    /// mesh's primary admin, never by the fabric-primary of another mesh; a node-admin is never
-    /// node-recovered, so no admin executes one. Must NOT happen: a `recover-node` routed to the
-    /// fabric-primary by a fall-through arm.
+    /// Build to the mesh-primary as executor; mesh-recovery.md: "A lost member of a mesh with a live
+    /// mesh-primary is node recovery, driven by that mesh-primary"): a member's `recover-node`, a
+    /// secondary node-admin's included, is executed by its own mesh's primary admin, never by the
+    /// fabric-primary of another mesh. A mesh primary's own recovery is executed by the admin its mesh
+    /// seats in its place. A node-admin with no other admin in its mesh is no node recovery (its mesh
+    /// lost its mesh-primary: the fabric-primary's mesh recovery), so no admin executes one.
+    /// Must NOT happen: a `recover-node` routed to the fabric-primary by a fall-through arm.
     #[test]
-    fn a_members_recovery_is_executed_by_its_mesh_primary_and_a_node_admins_by_no_one() {
+    fn a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included() {
         let t = mm(true);
         let recover = |n: &str| BuildOperation::RecoverNode { node: n.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
         assert_eq!(who(&recover("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member of mesh2 is recovered by mesh2's primary");
         assert_eq!(who(&recover("mesh1.rpc.1"), &t), "mesh1.admin.1", "a member of the fabric-primary's own mesh is recovered by that mesh's primary");
-        assert_eq!(who(&recover("mesh2.admin.1"), &t), "", "a node-admin is never node-recovered");
+        assert_eq!(who(&recover("mesh2.admin.1"), &t), "", "mesh2's only node-admin: its loss is mesh recovery, never node recovery");
+        let mut t3 = mm(true);
+        t3.nodes.push(node("mesh2.admin.2", false, false));
+        t3.nodes.push(node("mesh1.admin.2", false, false));
+        assert_eq!(who(&recover("mesh2.admin.2"), &t3), "mesh2.admin.1", "a secondary node-admin is recovered by its mesh's primary");
+        assert_eq!(who(&recover("mesh1.admin.2"), &t3), "mesh1.admin.1", "the fabric-primary's own secondary admin, by its mesh-primary seat");
+        assert_eq!(who(&recover("mesh2.admin.1"), &t3), "mesh2.admin.2", "a mesh primary's own recovery is executed by the admin its mesh seats in its place");
+        let mut silent = t3.clone();
+        silent.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1").for_each(|n| n.status = NodeStatus::PendingReconnect);
+        assert_eq!(who(&recover("mesh2.admin.2"), &silent), "", "no live node-admin of mesh2 is left to recover it: mesh recovery");
     }
 
     #[test]
