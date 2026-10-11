@@ -346,6 +346,17 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
+    /// `node.update` of the exact birth's name, the caller's single call to the node's mesh-primary
+    /// `mesh_primary` (R13; node-rpc-envelope.md "Meta and config"): it validates from its held record,
+    /// claims the name in its store adapter, writes the row, tells a live birth `ApplyNodeName` and
+    /// answers `NodeUpdated` after the apply answered; a stopped birth is told nothing. `route` is the
+    /// caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward `0x1A`),
+    /// executed exactly as chosen (`NodeRpcClient::call_routed`).
+    pub async fn node_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let _ = (mesh_primary, route, birth, name, opts);
+        Err(CallEnd::NotBackedToday { op: NodeOp::Update, why: "the meta put" })
+    }
+
     /// The mesh-primary's call to the exact birth, after it wrote the renamed row: take this name and carry
     /// it in every digest from now on (`ApplyNodeName`, R12/R13). `Applied` once the birth holds and
     /// published it, `AlreadyApplied` for the name it holds, `Busy` naming its in-flight count while it
