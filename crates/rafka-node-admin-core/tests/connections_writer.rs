@@ -391,3 +391,33 @@ async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
     assert_eq!(index.len(), 1);
     assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 3)), "the index holds the latest observation: {index:?}");
 }
+
+/// CONTRACT (fabric-node-lifecycle.md §8: `source_node_id` is the instance at each end when the
+/// entry was written; connections.md §13 C, the backoff survives a restart): a restarted birth of
+/// `mesh1.rpc.1` (same node id, next incarnation) hydrates the previous birth's failing Direct and
+/// its next failure continues the series one ordinal up in the same epoch, naming its OWN birth as
+/// the source. What must NOT happen: the continued row naming the previous birth's incarnation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
+    let dir = data_dir("restart-series");
+    let (previous, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let me = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..previous.clone() };
+    let open = || FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap();
+    {
+        let storage = open();
+        let mut failed = row(&previous, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
+        failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 4, attempt_ordinal: 2 });
+        storage.append_history(&failed).await.unwrap();
+        storage.put_connection(&failed).await.unwrap();
+    }
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(open());
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
+    assert_eq!(writer.hydrate().await.unwrap(), 1);
+    writer.direct_failed(&resolved(&dest), "refused after the restart");
+    writer.drain().await;
+    let history = storage.history().await.unwrap();
+    let next = history.last().unwrap();
+    assert_eq!(next.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((4, 3)), "the series continues: {next:?}");
+    assert_eq!(next.source, me, "the continued row names the birth that wrote it: {next:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
