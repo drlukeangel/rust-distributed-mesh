@@ -29,6 +29,8 @@ pub struct NodeRows {
     /// This admin's `path.name`: it writes only while its view names it the fabric-primary.
     me: PathName,
     storage: Arc<dyn NodesStorage>,
+    /// The config door a seeded birth is told its config through (`crate::node_config`).
+    configs: Option<crate::node_config::NodeConfigsSlot>,
     /// The record held when each removal was announced (`NodeDeleting`), by operation, until its
     /// `NodeDeleted` writes it.
     announced: Mutex<HashMap<String, Node>>,
@@ -37,7 +39,14 @@ pub struct NodeRows {
 impl NodeRows {
     /// The writer of the admin `me` over `storage`, the fabric-primary's nodes store.
     pub fn new(me: PathName, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, storage, announced: Mutex::new(HashMap::new()) }
+        Self { me, storage, configs: None, announced: Mutex::new(HashMap::new()) }
+    }
+
+    /// Tell each birth whose row is seeded its config through `configs`, the fabric-primary's
+    /// config door.
+    pub fn with_configs(mut self, configs: crate::node_config::NodeConfigsSlot) -> Self {
+        self.configs = Some(configs);
+        self
     }
 
     /// The store the rows are written to.

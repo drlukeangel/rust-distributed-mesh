@@ -316,6 +316,8 @@ async fn a_draining_authority_accepts_upward_status_but_still_refuses_an_imposto
 struct ServedNode {
     resolved: ResolvedNode,
     seen: Arc<Mutex<Vec<StatusRequest>>>,
+    /// Notified once per request served (a permit is kept when nobody waits yet).
+    heard: Arc<tokio::sync::Notify>,
     _router: Router,
 }
 
@@ -327,12 +329,14 @@ async fn serve_node(b: &Birth) -> ServedNode {
 async fn serve_node_answering(b: &Birth, reply: StatusReply) -> ServedNode {
     use rafka_node_rpc_contract::catalog::OpOwner;
     let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
-    let s = seen.clone();
+    let heard: Arc<tokio::sync::Notify> = Arc::default();
+    let (s, h) = (seen.clone(), heard.clone());
     let server = ServerBuilder::new()
         .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
-            let (s, reply) = (s.clone(), reply.clone());
+            let (s, h, reply) = (s.clone(), h.clone(), reply.clone());
             async move {
                 s.lock().unwrap().push(req);
+                h.notify_one();
                 Ok(reply)
             }
         })
@@ -342,7 +346,7 @@ async fn serve_node_answering(b: &Birth, reply: StatusReply) -> ServedNode {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
     let resolved = ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
-    ServedNode { resolved, seen, _router: router }
+    ServedNode { resolved, seen, heard, _router: router }
 }
 
 /// The fabric-primary's config door, telling births through a client that resolves `node`.
@@ -658,4 +662,48 @@ async fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
     assert_eq!(reply(&from_admin2.call::<Status>(&fp, &told(IncarnationId::mint(), config.clone()), &CallOptions::default()).await.0), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
     assert!(matches!(reply(&from_rpc1.call::<Status>(&fp, &told(me.incarnation_id.clone().unwrap(), config), &CallOptions::default()).await.0), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its config");
     assert_eq!(held.lock().unwrap().len(), 1, "neither refusal held anything");
+}
+
+/// CONTRACT (ops-naming "Node data": a node created at a path.name seeds its config from the
+/// previous row at that path.name, and the node applies it and carries it): a birth that enters the
+/// fabric-primary's view at a `Deleted` row's path.name claims its row seeded with that row's config,
+/// and the fabric-primary tells the birth that config through its config door (`ApplyNodeConfig`,
+/// the whole map, naming the exact birth), so the node holds it in its own answer.
+#[test]
+fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
+    let cap = capture();
+    let trace = cap.run(async {
+        let (rig, _b) = rig().await;
+        let newcomer = birth("mesh1.rpc.3", NodeKind::RpcNode, "mesh1", false, false);
+        let seeded: BTreeMap<String, String> = [("zone".to_string(), "b".to_string()), ("tags".to_string(), "edge".to_string())].into();
+        rig.storage
+            .put_node_row(&rafka_node_admin_core::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone() })
+            .await
+            .unwrap();
+        let node = serve_node(&newcomer).await;
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(node.resolved.clone());
+        let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
+        let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))));
+        let records = rafka_node_admin_core::admin::Records::default();
+        records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.storage.clone()).with_configs(configs)));
+        let mut t = rig.topology.read().await.clone();
+        t.nodes.push(newcomer.node.clone());
+        records.install_projected(&rig.topology, || t).await;
+        tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("the fabric-primary told the birth its seeded config");
+        assert_eq!(
+            node.seen.lock().unwrap().clone(),
+            vec![StatusRequest::ApplyNodeConfig { node_id: newcomer.node.node_id.clone(), incarnation: newcomer.node.incarnation_id.clone().unwrap(), config: seeded.clone() }],
+            "the birth was told the Deleted row's whole config, once"
+        );
+        let row = rig.storage.node_row_at(&newcomer.node.name).await.unwrap().expect("the birth's row");
+        assert_eq!((row.node_id, row.config), (newcomer.node.node_id.clone(), seeded), "the birth holds the row with the seeded config");
+    });
+    let _ = trace;
+    let spans = cap.spans("rdm.node_admin.node.create.via-node-row");
+    let ours: Vec<_> = spans.iter().filter(|(_, a)| a.get("subject").map(String::as_str) == Some("mesh1.rpc.3")).collect();
+    assert_eq!(ours.len(), 1, "{spans:?}");
+    assert_eq!(ours[0].1.get("outcome").map(String::as_str), Some("row-seeded"), "{ours:?}");
+    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.3 outcome=row-seeded, then ApplyNodeConfig to the birth", ours[0].0);
 }
