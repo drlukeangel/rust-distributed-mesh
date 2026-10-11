@@ -356,26 +356,40 @@ fn exact(b: &Birth) -> rafka_node_admin_client::ExactBirth {
     rafka_node_admin_client::ExactBirth { target: NodeTarget::ExactNode(b.node.node_id.clone()), node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap() }
 }
 
-/// CONTRACT (ops-naming "Node data": a config update is a single call, not a Build): a caller's
-/// `node.config.update` to the fabric-primary ends `node.config.updated` (`ConfigUpdated` naming the
-/// exact birth), and the birth was told the whole map exactly once (`ApplyNodeConfig`), before the
-/// fabric-primary answered. The birth holds what it was told: the node carries the config.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_config_update_at_the_fabric_primary_ends_updated_and_the_node_carries_it() {
-    let (rig, b) = rig().await;
-    let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
-    let node = serve_node(rpc1).await;
-    configs_door(&rig, &node).await;
-    let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
-    let client = client_of(&rig, admin2).await;
-    let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
-    let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
-    assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
-    assert_eq!(
-        node.seen.lock().unwrap().clone(),
-        vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
-        "the birth was told the whole config once, before the update was answered"
-    );
+/// CONTRACT (ops-naming "Node data": a config update is a single call, not a Build; the fabric-primary
+/// is the only writer and writes the whole row): a caller's `node.config.update` to the fabric-primary
+/// ends `node.config.updated` (`ConfigUpdated` naming the exact birth); the node's record at its
+/// path.name holds the config; the birth was told the whole map exactly once (`ApplyNodeConfig`) before
+/// the fabric-primary answered; and one `rdm.node_admin.node.update.via-config` span says
+/// `config-updated` over a direct route (the fabric-primary is mesh1's primary).
+#[test]
+fn a_config_update_at_the_fabric_primary_ends_updated_and_the_node_carries_it() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
+        let client = client_of(&rig, admin2).await;
+        let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
+        let row = rig.storage.node_row_at(&rpc1.node.name).await.unwrap().expect("the fabric-primary wrote the node's row");
+        assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.rpc.1 is this node with the whole config");
+        assert_eq!(
+            node.seen.lock().unwrap().clone(),
+            vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
+            "the birth was told the whole config once, before the update was answered"
+        );
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let (trace_id, attrs) = &spans[0];
+    assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-updated"), "{attrs:?}");
+    assert_eq!(attrs.get("subject").map(String::as_str), Some("mesh1.rpc.1"), "{attrs:?}");
+    assert_eq!(attrs.get("route").map(String::as_str), Some("direct"), "{attrs:?}");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config subject=mesh1.rpc.1 route=direct outcome=config-updated");
 }
 
 /// CONTRACT (ops-naming "Node data": config is capped in key count and bytes, refused by name past
@@ -439,42 +453,56 @@ impl NodesStorage for RefusingRows {
 /// when the birth does not apply the config, the update ends `ConfigNotApplied`, naming the node and
 /// the birth's answer by name; the row was written first, so the node's record at its path.name holds
 /// the new config. Not `NotReady`: the fabric-primary is ready, the birth refused.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
-    let (rig, b) = rig().await;
-    let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
-    let node = serve_node_answering(rpc1, StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }).await;
-    configs_door(&rig, &node).await;
-    let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
-    let client = client_of(&rig, admin2).await;
-    let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
-    let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
-    assert!(
-        matches!(&reply, StatusReply::ConfigNotApplied { node, answered, .. } if node == "mesh1.rpc.1" && answered == "rejected-stale-incarnation"),
-        "the row is written and the birth refused: {reply:?}"
-    );
-    assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
-    let row = rig.storage.node_row_at(&rpc1.node.name).await.unwrap().expect("the fabric-primary wrote the row before telling the birth");
-    assert_eq!(row.config, config);
+#[test]
+fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+        let node = serve_node_answering(rpc1, StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }).await;
+        configs_door(&rig, &node).await;
+        let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
+        let client = client_of(&rig, admin2).await;
+        let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        assert!(
+            matches!(&reply, StatusReply::ConfigNotApplied { node, answered, .. } if node == "mesh1.rpc.1" && answered == "rejected-stale-incarnation"),
+            "the row is written and the birth refused: {reply:?}"
+        );
+        assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
+        let row = rig.storage.node_row_at(&rpc1.node.name).await.unwrap().expect("the fabric-primary wrote the row before telling the birth");
+        assert_eq!(row.config, config);
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    assert_eq!(spans[0].1.get("outcome").map(String::as_str), Some("config-not-applied"), "{spans:?}");
+    eprintln!("trace {}: rdm.node_admin.node.update.via-config outcome=config-not-applied", spans[0].0);
 }
 
 /// CONTRACT (ops-naming "Node data": the fabric-primary writes the record, then tells the node): when
 /// the nodes store refuses the row, the update ends `ConfigRowRefused` naming the node and the store's
 /// refusal, and nothing is told to the birth.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
-    let (rig, b) = rig().await;
-    let rpc1 = &b["rpc1"];
-    let node = serve_node(rpc1).await;
-    configs_door(&rig, &node).await;
-    let view = rig.topology.read().await.clone();
-    let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
-    let reply = rig.authority.configs.get().unwrap().update(&rig.admin.node.name, &view, &RefusingRows::default(), &req).await;
-    assert!(
-        matches!(&reply, StatusReply::ConfigRowRefused { node, reason } if node == "mesh1.rpc.1" && reason.contains("disk refused the write")),
-        "the store refused the row: {reply:?}"
-    );
-    assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the birth when its row was not written");
+#[test]
+fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let rpc1 = &b["rpc1"];
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        let view = rig.topology.read().await.clone();
+        let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
+        let reply = rig.authority.configs.get().unwrap().update(&rig.admin.node.name, &view, &RefusingRows::default(), &req).await;
+        assert!(
+            matches!(&reply, StatusReply::ConfigRowRefused { node, reason } if node == "mesh1.rpc.1" && reason.contains("disk refused the write")),
+            "the store refused the row: {reply:?}"
+        );
+        assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the birth when its row was not written");
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    assert_eq!(spans[0].1.get("outcome").map(String::as_str), Some("config-row-refused"), "{spans:?}");
+    eprintln!("trace {}: rdm.node_admin.node.update.via-config outcome=config-row-refused", spans[0].0);
 }
 
 /// The spans a cell's own run exported, with their trace ids.
