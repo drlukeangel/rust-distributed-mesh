@@ -145,11 +145,12 @@ mod tests {
             .unwrap_or_else(|| panic!("no enum {name} in {file}"))
     }
 
-    /// `file:line` of the first line of `file` that starts with `prefix`, read from the source.
+    /// The `| file | line |` cells of the first line of `file` that starts with `prefix`, read from
+    /// the source.
     fn line_of(root: &Path, file: &str, prefix: &str) -> String {
         let text = std::fs::read_to_string(root.join(file)).unwrap();
         let line = text.lines().position(|l| l.starts_with(prefix)).unwrap_or_else(|| panic!("no line starting {prefix:?} in {file}")) + 1;
-        format!("{file}:{line}")
+        format!("`{file}` | {line}")
     }
 
     fn positions(names: &[String]) -> Vec<(String, String)> {
@@ -170,20 +171,65 @@ mod tests {
         assert!(!wire.contains("[`FORWARD_REPLY_RESERVE`]") && wire.contains("`FORWARD_REPLY_RESERVE`"), "the wire page names the const without an intra-doc link");
     }
 
-    /// Whether `text` names a source line: `<file>.rs:<digit>`.
-    fn names_a_line(text: &str) -> Option<&str> {
-        text.lines().find(|l| l.match_indices(".rs:").any(|(i, _)| l[i + 4..].starts_with(|c: char| c.is_ascii_digit())))
+    /// The texts of `line` that rafka-v2's doc citation gate reads as a citation, in its two forms
+    /// (rafka-v2 scripts/doc_citations.py `CITE`, scripts/check-doc-symbols.py `SYMBOL_CITE`):
+    /// a `:<digits>` after `<path>.<ext>`, or after a character that is not a word character, `/`
+    /// or `.` (LINE); and `<path>.<ext>::<ident>` (a symbol citation). The oracle, written here
+    /// from the gate's own patterns.
+    fn gate_citations(line: &str) -> Vec<String> {
+        const EXTS: [&str; 5] = ["rs", "json", "yaml", "sh", "py"];
+        let path_char = |c: char| c.is_alphanumeric() || matches!(c, '_' | '/' | '.' | '-');
+        let chars: Vec<char> = line.chars().collect();
+        // Whether chars[..end] ends with `<path chars>+.<ext>`.
+        let ends_with_path = |end: usize| {
+            EXTS.iter().any(|ext| {
+                let tail: Vec<char> = format!(".{ext}").chars().collect();
+                end > tail.len() && chars[end - tail.len()..end] == tail[..] && path_char(chars[end - tail.len() - 1])
+            })
+        };
+        let around = |i: usize, after: usize| chars[i.saturating_sub(40)..(i + after).min(chars.len())].iter().collect::<String>();
+        let mut out = Vec::new();
+        for i in (0..chars.len()).filter(|&i| chars[i] == ':') {
+            if chars.get(i + 1).is_some_and(char::is_ascii_digit) {
+                let after_free = i == 0 || !(chars[i - 1].is_alphanumeric() || matches!(chars[i - 1], '_' | '/' | '.'));
+                if after_free || ends_with_path(i) {
+                    out.push(format!("LINE: {}", around(i, 6)));
+                }
+            }
+            if chars.get(i + 1) == Some(&':') && chars.get(i + 2).is_some_and(|c| c.is_ascii_alphabetic() || *c == '_') && ends_with_path(i) {
+                out.push(format!("SYMBOL: {}", around(i, 12)));
+            }
+        }
+        out
     }
 
     #[test]
-    fn the_wire_frames_and_statuses_pages_name_no_source_line() {
+    fn no_generated_page_carries_a_rafka_v2_citation_form() {
         let root = rafka_mesh_audit::workspace_root();
         let pages = pages(&root).unwrap();
-        for p in ["wire.md", "frames.md", "statuses.md"] {
-            assert_eq!(names_a_line(page(&pages, p)), None, "{p} changes only when a wire body or a status changes, so it names no source line");
+        for p in &pages {
+            let found: Vec<String> = p.body.lines().flat_map(gate_citations).collect();
+            assert!(found.is_empty(), "{}: an RDM location never resolves in rafka-v2, so a page shows it as columns, never a citation form: {:?}", p.file, &found[..found.len().min(5)]);
         }
-        for p in ["spans.md", "config.md"] {
-            assert!(names_a_line(page(&pages, p)).is_some(), "{p} keeps each site's file:line");
+        for p in ["wire.md", "frames.md", "statuses.md"] {
+            assert!(!page(&pages, p).contains("| line |"), "{p} changes only when a wire body or a status changes, so it carries no line column");
+        }
+        assert!(page(&pages, "spans.md").contains("| span | file | line |"), "spans.md keeps each site's line, in its own column");
+        assert!(page(&pages, "config.md").contains("| name | file | line | in | via |"), "config.md keeps each site's line, in its own column");
+    }
+
+    #[test]
+    fn a_citation_form_in_a_doc_line_is_written_out() {
+        for (raw, want) in [
+            ("started at admin.rs:4680 (boot)", "started at admin.rs line 4680 (boot)"),
+            ("the stop's line (`:502`) only", "the stop's line (`line 502`) only"),
+            ("see `admin.rs::start_booted` there", "see `admin.rs :: start_booted` there"),
+            ("a ratio 1:2 and a port 127.0.0.1:41000 stay", "a ratio 1:2 and a port 127.0.0.1:41000 stay"),
+            ("`crate::wire::digest` and `Self::Applied` stay", "`crate::wire::digest` and `Self::Applied` stay"),
+        ] {
+            let got = render::doc(raw);
+            assert_eq!(got, want, "{raw:?}");
+            assert!(gate_citations(&got).is_empty(), "{got:?} carries no citation form");
         }
     }
 
@@ -237,7 +283,7 @@ mod tests {
         let pages = pages(&root).unwrap();
         let config = page(&pages, "config.md");
         let site = line_of(&root, "crates/rafka-mesh-entity/src/launch.rs", "pub const ENV_FABRIC:");
-        assert!(config.contains(&format!("| `RDM_FABRIC` | `{site}` | const `ENV_FABRIC` |")), "a launch env const is listed at its declaration {site}:\n{config}");
+        assert!(config.contains(&format!("| `RDM_FABRIC` | {site} | const `ENV_FABRIC` |")), "a launch env const is listed at its declaration {site}:\n{config}");
         assert!(config.lines().any(|l| l.starts_with("| `RDM_STALENESS_MS` |")), "the staleness env is listed");
         assert!(!config.contains("RDM_NOT_YET_INVENTED"), "a test-only literal is not config");
     }
@@ -308,7 +354,7 @@ mod tests {
                 + "\n"
         });
         let after = pages(&copy.0).unwrap();
-        let row = |name: &str| format!("| `{name}` | `{}:{}` |", e.file, e.line);
+        let row = |name: &str| format!("| `{name}` | `{}` | {} |", e.file, e.line);
         assert!(page(&before, "spans.md").contains(&row(&e.name)), "the span is listed at its site before");
         assert!(!page(&after, "spans.md").contains(&row(&e.name)), "the old name is gone after the rename");
         assert!(page(&after, "spans.md").contains(&row(&renamed)), "the new name is listed at the same site");
