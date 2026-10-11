@@ -929,15 +929,23 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         let degraded = records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() || records.published_degraded();
         topology.fabric.status = if held == crate::fabric_state::FabricState::ReadyForTraffic && degraded { ScopeStatus::Degraded } else { held.scope() };
     }
+    let declared_meshes = records.declared.lock().unwrap().meshes.clone();
     for m in mesh_names {
         // A mesh becomes ready-for-traffic when every node of the mesh is (states.md); once heard
         // ready it stays ready while it has a primary, because a lost node is a degraded fabric and
         // a round for the primary that takes over, never a mesh gone back to pending.
         let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some());
         let id = mesh_ids.get(&m).cloned();
-        // Mesh leaving is known only to the mesh's own primary (R4): a mesh shows no Leaving here;
-        // its members' own Draining and Leaving do.
-        let status = if ready { ScopeStatus::ReadyForTraffic } else { ScopeStatus::Pending };
+        // A mesh past ready-for-traffic is the state its row holds (states.md: pending ->
+        // ready-for-traffic -> leaving -> dead): the leaving mesh's primary commits Leaving at
+        // leave-mesh, and this projection is what that primary announces on its MeshStatus send.
+        let row = id.as_ref().and_then(|id| declared_meshes.get(id).copied());
+        let status = match row {
+            Some(rafka_node_rpc_contract::status::MeshState::Leaving) => ScopeStatus::Leaving,
+            Some(rafka_node_rpc_contract::status::MeshState::Dead) => ScopeStatus::Dead,
+            _ if ready => ScopeStatus::ReadyForTraffic,
+            _ => ScopeStatus::Pending,
+        };
         topology.meshes.push(Mesh { id, name: m, status });
     }
     topology
