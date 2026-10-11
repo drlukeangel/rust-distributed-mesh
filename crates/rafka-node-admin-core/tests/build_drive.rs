@@ -46,6 +46,8 @@ struct Switch {
     successor: Mutex<Option<String>>,
     /// Set with `fenced` by a cell that fences while a dispatch is in flight.
     fence_tx: tokio::sync::watch::Sender<bool>,
+    /// What the peer-mesh investigation holds per mesh, when the cell sets it.
+    peer: Mutex<std::collections::HashMap<String, rafka_node_admin_core::investigate::PeerMesh>>,
 }
 
 impl Switch {
@@ -71,6 +73,9 @@ impl Gate for Switch {
     }
     async fn fence_set(&self) {
         let _ = self.fence_tx.subscribe().wait_for(|f| *f).await;
+    }
+    fn peer_mesh(&self, mesh: &str) -> Option<rafka_node_admin_core::investigate::PeerMesh> {
+        self.peer.lock().unwrap().get(mesh).copied()
     }
 }
 
@@ -111,7 +116,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let ran = Arc::new(Creates(Mutex::new(Vec::new())));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0 });
+    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, peer: Mutex::new(Default::default()) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
     let env = Arc::new(DriveEnv {
         me: me.clone(),
@@ -341,6 +346,60 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh2.admin.2".to_string(), 2)], "attempt 2 is the same-mesh successor's");
     assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 1);
+}
+
+/// CONTRACT (R-D1, Luke 10-08: "Loss of peer-mesh control-plane visibility fences lifecycle
+/// mutation for every node in that mesh ... Only the peer-mesh investigation may authorize
+/// restoration of the mesh's first recovering node-admin; once mesh authority is restored, that mesh
+/// performs its own ordinary-node reconciliation"; mesh-investigation.md steps 5-6): mesh2's only
+/// node-admin is proven exited, so the fabric-primary of mesh1 is the executor of mesh2's work in
+/// its view, and the investigation holds mesh2 unheard. While no rebirth is decided the drive claims
+/// nothing and dispatches nothing for mesh2, and says so on its own span naming the mesh, the
+/// operation and how long the mesh is unheard. Once the investigation decides the rebirth, the
+/// mesh's first recovering node-admin, and only it, is claimed and run; mesh2's ordinary node waits
+/// until the mesh is heard again, and is then run.
+#[tokio::test]
+async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_then_only_its_first_admin() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    let mut lost = node("mesh2.admin.1", false, false);
+    lost.status = NodeStatus::Dead;
+    t.nodes.push(lost);
+    t.nodes.push(node("mesh2.rpc.1", true, false));
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let r = rig_for(t, change, |ran, _| ran).await;
+    let held = |rebirth_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(31_000), rebirth_decided };
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-unheard-mesh-drive");
+    let drive = Drive::detached(r.build.clone());
+
+    // Held unheard, no rebirth decided: nothing is claimed or dispatched for mesh2.
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("31000"), "the stall names the mesh and how long it is unheard: {why}"),
+        other => panic!("the fabric-primary claims nothing for a peer mesh held unheard: {other:?}"),
+    }
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, None), "no attempt is claimed across the fence");
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty() && r.ran.0.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
+    let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
+    assert_eq!(fenced.len(), 1, "the fence is named once: {fenced:?}");
+    let a = &fenced[0].1;
+    assert_eq!((a.get("mesh").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("rebirth_decided").map(String::as_str)), (Some("mesh2"), Some("31000"), Some("false")), "{a:?}");
+    assert!(a.get("operation").is_some_and(|o| o.contains("mesh2.")), "{a:?}");
+    eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {a:?}", fenced[0].0);
+
+    // The investigation decided the rebirth: the first recovering node-admin, and only it, runs.
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("mesh2.rpc.2") && why.contains("mesh2"), "the ordinary node still waits for the mesh to be heard: {why}"),
+        other => panic!("mesh2's ordinary node waits until the mesh is heard again: {other:?}"),
+    }
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.2".to_string()], "only the first recovering node-admin ran");
+
+    // Heard again: the mesh's ordinary node is run.
+    r.switch.peer.lock().unwrap().remove("mesh2");
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.2".to_string(), "create-node:mesh2.rpc.2".to_string()]);
 }
 
 /// CONTRACT: an executor runs the first operation of the attempt the fabric-primary claimed for it

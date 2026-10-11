@@ -54,6 +54,12 @@ pub trait Gate: Send + Sync {
     async fn fence_set(&self) {
         std::future::pending::<()>().await
     }
+    /// What the peer-mesh investigation holds of `mesh` now (`crate::investigate::Ladder::peer_mesh`),
+    /// read when asked: a node of a peer mesh held unheard is not claimed or dispatched for (R-D1),
+    /// except the mesh's first recovering node-admin once the investigation decided its rebirth.
+    fn peer_mesh(&self, _mesh: &str) -> Option<crate::investigate::PeerMesh> {
+        None
+    }
 }
 
 /// A gate that is always open: a fixture with no membership and no seat fence.
