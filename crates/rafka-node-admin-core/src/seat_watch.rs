@@ -256,9 +256,7 @@ pub async fn run(w: Watch) {
             Some(h) if h.is_birth(&me_birth.0, &me_birth.1) => held_the_fabric_seat = true,
             Some(h) if held_the_fabric_seat => {
                 let by = format!("the seat is now {} {}", h.mesh, h.node_id);
-                if let Err(e) = w.builds.yield_seat(&by).await {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-seat-fence-unsent", node = %w.me, error = %e).in_scope(|| tracing::info!("the fence is set; the committed Build facts could not all be handed on"));
-                }
+                w.builds.yield_seat(&by).await;
                 held_the_fabric_seat = false;
             }
             _ => {}

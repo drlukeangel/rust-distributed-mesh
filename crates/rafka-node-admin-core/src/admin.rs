@@ -2917,10 +2917,7 @@ impl Running {
     async fn leave_with(self, say_draining: bool) {
         // A leaving holder yields before it says anything: its Build log decides nothing after
         // this, and the committed facts are with the neighbours before the new holder acts.
-        if let Err(e) = self.builds.yield_seat("leaving").await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-seat-fence-unsent", node = %self.digest.lock().unwrap().node.name, error = %e)
-                .in_scope(|| tracing::info!("the fence is set; the committed Build facts could not all be handed on"));
-        }
+        self.builds.yield_seat("leaving").await;
         self.executor.abort();
         self.hierarchy.abort();
         self.publisher.abort();
@@ -4294,9 +4291,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let (builds, membership, node_id, incarnation) = (builds.clone(), membership.clone(), node_id.clone(), incarnation.clone());
                 Box::pin(async move {
                     if membership.seats().fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
-                        if let Err(e) = builds.yield_seat(by).await {
-                            tracing::info_span!("rdm.node_admin.build.reject.via-seat-fence-unsent", node = %node_id, error = %e).in_scope(|| tracing::info!("the fence is set; the committed Build facts could not all be handed on"));
-                        }
+                        builds.yield_seat(by).await;
                     }
                 })
             })
