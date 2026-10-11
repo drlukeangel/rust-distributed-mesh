@@ -250,7 +250,10 @@ pub enum TerminationMode {
 pub async fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: Option<&std::path::Path>, incarnation: &str) -> Result<DeploymentStatus, String> {
     match (status, fact.provider, data_dir) {
         (DeploymentStatus::Exited { code: None }, RuntimeProvider::Process, Some(dir)) => {
-            Ok(DeploymentStatus::Exited { code: rafka_mesh_entity::runtime::ExitRecord::proven_code(dir, &fact.deployment_id, incarnation) })
+            // Read on the blocking pool (`record_store::blocking_io`).
+            let (dir, deployment, incarnation) = (dir.to_path_buf(), fact.deployment_id.clone(), incarnation.to_string());
+            let code = crate::record_store::blocking_io(move || rafka_mesh_entity::runtime::ExitRecord::proven_code(&dir, &deployment, &incarnation)).await?;
+            Ok(DeploymentStatus::Exited { code })
         }
         (other, _, _) => Ok(other),
     }
@@ -346,9 +349,15 @@ pub trait DeploymentProvider: Send + Sync {
     }
 
     /// The runtime's last words, for a named failure when it stopped early.
-    /// Default: the tail of `stderr.log` in its data dir.
+    /// Default: the tail of `stderr.log` in its data dir, read on the blocking pool; a log that
+    /// cannot be read is named, never an empty detail.
     async fn failure_detail(&self, _handle: &DeploymentHandle, data_dir: &std::path::Path) -> String {
-        tail(&std::fs::read_to_string(data_dir.join("stderr.log")).unwrap_or_default(), 5)
+        let path = data_dir.join("stderr.log");
+        crate::record_store::blocking_io(move || match std::fs::read_to_string(&path) {
+            Ok(text) => tail(&text, 5),
+            Err(e) => format!("{}: {e}", path.display()),
+        })
+        .await
     }
 }
 

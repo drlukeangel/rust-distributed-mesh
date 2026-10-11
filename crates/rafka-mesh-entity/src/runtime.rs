@@ -438,15 +438,28 @@ impl ExitRecord {
 
     /// The exit code `dir` proves for exactly this `deployment_id` and `incarnation`: `None` when
     /// no record is written or the record is another birth's.
-    pub fn proven_code(dir: &Path, deployment_id: &str, incarnation: &str) -> Option<i32> {
-        let raw = std::fs::read(dir.join(EXIT_FILE)).ok()?;
-        let r: Self = serde_json::from_slice(&raw).ok()?;
-        (r.deployment_id == deployment_id && r.incarnation == incarnation).then_some(r.code)
+    /// `Ok(None)` when no record is written, or it is another birth's; a record that cannot be
+    /// read or parsed is an error naming the file, never an unknown code.
+    pub fn proven_code(dir: &Path, deployment_id: &str, incarnation: &str) -> Result<Option<i32>, String> {
+        let path = dir.join(EXIT_FILE);
+        let raw = match std::fs::read(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        let r: Self = serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok((r.deployment_id == deployment_id && r.incarnation == incarnation).then_some(r.code))
     }
 
     /// Remove `dir`'s exit record (a new birth in the data dir starts without its predecessor's).
-    pub fn clear(dir: &Path) {
-        let _ = std::fs::remove_file(dir.join(EXIT_FILE));
+    /// A record that cannot be removed is an error naming the file.
+    pub fn clear(dir: &Path) -> Result<(), String> {
+        let path = dir.join(EXIT_FILE);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
     }
 }
 
@@ -492,13 +505,13 @@ mod exit_record_tests {
     fn an_exit_record_proves_its_own_birth_and_no_other() {
         let dir = std::env::temp_dir().join(format!("rafka-exit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), None);
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(None));
         ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "gossip refused".into() }.write(&dir).unwrap();
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Some(4));
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-b", "inc-a"), None, "another deployment's record proves nothing");
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-b"), None, "another incarnation's record proves nothing");
-        ExitRecord::clear(&dir);
-        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), None);
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(Some(4)));
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-b", "inc-a"), Ok(None), "another deployment's record proves nothing");
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-b"), Ok(None), "another incarnation's record proves nothing");
+        ExitRecord::clear(&dir).unwrap();
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Ok(None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
