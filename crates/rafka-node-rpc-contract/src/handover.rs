@@ -18,6 +18,8 @@
 //! The doc's reply enum holds nine variants. The family sits on the framework's six outcomes, so
 //! `PeerUnresolved`, `Busy`, `Draining` and `Unauthorized` are appended after the doc's nine;
 //! positions 0..=8 are the doc's order, and the seat transfer's two replies follow at 13 and 14.
+//! A seat epoch at `u64::MAX` that a call would advance is [`FabricPrimaryHandoverReply::RejectedEpochOverflow`],
+//! at 15.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
@@ -174,6 +176,15 @@ pub enum FabricPrimaryHandoverReply {
         /// The epoch the holder holds.
         current: u64,
     },
+    /// A seat's epoch cannot advance: it is at `u64::MAX`, so no transfer can commit at its next
+    /// epoch (node-rpc-envelope.md: "Epoch overflow cannot commit and is refused by name with a
+    /// typed refusal"). Nothing is written.
+    RejectedEpochOverflow {
+        /// The seat whose epoch cannot advance.
+        seat: Seat,
+        /// The epoch it is at.
+        epoch: u64,
+    },
 }
 
 impl FabricPrimaryHandoverReply {
@@ -195,6 +206,7 @@ impl FabricPrimaryHandoverReply {
             Self::Unauthorized { .. } => "unauthorized",
             Self::SeatsCommitted { .. } => "seats-committed",
             Self::RejectedStaleSeat { .. } => "rejected-stale-seat",
+            Self::RejectedEpochOverflow { .. } => "rejected-epoch-overflow",
         }
     }
 }
@@ -214,7 +226,7 @@ impl NodeProtocol for FabricPrimaryHandover {
     /// identical retry is answered from the row.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 3;
-    const REPLY_VARIANTS: u32 = 15;
+    const REPLY_VARIANTS: u32 = 16;
 
     type Request = FabricPrimaryHandoverRequest;
     type Reply = FabricPrimaryHandoverReply;
@@ -223,7 +235,7 @@ impl NodeProtocol for FabricPrimaryHandover {
         use FabricPrimaryHandoverReply::*;
         match reply {
             Applied | AlreadyApplied | SeatsCommitted { .. } => ReplyKind::Success,
-            RejectedStaleEpoch { .. } | RejectedWrongBirth { .. } | RejectedNotAuthority | RejectedNotEligible { .. } | RejectedConflict { .. } | RejectedStaleSeat { .. } => ReplyKind::ProtocolRefusal,
+            RejectedStaleEpoch { .. } | RejectedWrongBirth { .. } | RejectedNotAuthority | RejectedNotEligible { .. } | RejectedConflict { .. } | RejectedStaleSeat { .. } | RejectedEpochOverflow { .. } => ReplyKind::ProtocolRefusal,
             NotReady { .. } => ReplyKind::NotReady,
             Malformed { kind } => ReplyKind::Malformed(*kind),
             PeerUnresolved { .. } => ReplyKind::PeerUnresolved,

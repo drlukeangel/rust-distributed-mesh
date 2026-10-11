@@ -516,6 +516,26 @@ impl DrainReceipt {
     }
 }
 
+/// The round of one mesh.delete, as a `LeaveMesh` or `MeshLeave` names it: its workflow identity
+/// `(mesh_id, build_id, attempt, operation)` (node-rpc-envelope.md, "Mesh delete command pair") less
+/// the mesh id, which the call itself names. A round refusal carries the round the receiver holds and
+/// the one offered, so the mismatch is named whole.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeshDeleteRound {
+    /// The Build the round belongs to.
+    pub build_id: String,
+    /// The Build attempt.
+    pub attempt: u32,
+    /// The operation key, `<op>:<mesh_id>`.
+    pub operation: String,
+}
+
+impl std::fmt::Display for MeshDeleteRound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (build {}, attempt {})", self.operation, self.build_id, self.attempt)
+    }
+}
+
 /// The typed result of a Status call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StatusReply {
@@ -736,6 +756,37 @@ pub enum StatusReply {
         /// Why, by name.
         reason: String,
     },
+    /// A `LeaveMesh` or `MeshLeave` names an earlier attempt of the round the receiver holds for the
+    /// mesh: same Build and operation, a lower attempt (node-rpc-envelope.md, "Mesh delete command
+    /// pair": "A stale/conflicting round ... is refused by name"). Nothing is admitted or accepted.
+    RejectedStaleRound {
+        /// The round the receiver holds for the mesh.
+        held: MeshDeleteRound,
+        /// The round the call names.
+        offered: MeshDeleteRound,
+    },
+    /// A `LeaveMesh` or `MeshLeave` names a round of the mesh the receiver does not hold and that is
+    /// no earlier attempt of the one it holds: another Build or operation, or (for `MeshLeave`) an
+    /// attempt the receiver never opened. Nothing is admitted or accepted.
+    RejectedConflictingRound {
+        /// The round the receiver holds for the mesh.
+        held: MeshDeleteRound,
+        /// The round the call names.
+        offered: MeshDeleteRound,
+    },
+    /// A `MeshLeave` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest
+    /// for the round, so the member workflows are incomplete and the open leave ends
+    /// (node-rpc-envelope.md, "Mesh delete command pair": "A ... incomplete manifest is refused by
+    /// name with a typed Status refusal naming the mismatch").
+    RejectedIncompleteManifest {
+        /// How many roster births, the final primary aside, hold no exact Exited receipt.
+        missing: u32,
+        /// `<path.name> <incarnation>` of each such birth, at most [`MAX_WITHOUT_EXIT_BIRTHS`] of
+        /// them (each within [`MAX_WITHOUT_EXIT_BIRTH_BYTES`]); fewer than `missing` when cut.
+        without_exit: Vec<String>,
+        /// What the receiver read and found missing, within [`MAX_INCOMPLETE_REASON_BYTES`].
+        reason: String,
+    },
 }
 
 /// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -786,6 +837,16 @@ pub const MAX_REFUSAL_ANSWERED_BYTES: usize = 64;
 /// variant (one byte), the other fields at their budgets and a two-byte length prefix on each string.
 pub const MAX_REFUSAL_REASON_BYTES: usize = 1024 - 1 - (2 + MAX_REFUSAL_NODE_BYTES) - (2 + MAX_REFUSAL_ANSWERED_BYTES) - 2;
 
+/// The most bytes of detail a `RejectedIncompleteManifest` carries.
+pub const MAX_INCOMPLETE_REASON_BYTES: usize = 4096;
+/// The most bytes of one birth a `RejectedIncompleteManifest` names (`<path.name> <incarnation>`).
+pub const MAX_WITHOUT_EXIT_BIRTH_BYTES: usize = 192;
+/// The most births a `RejectedIncompleteManifest` names: what is left of the reply bound after the
+/// variant (one byte), the count (a varint, at most five bytes), the list length (a varint, at most
+/// three bytes) and the reason at its budget with a two-byte length prefix, each birth at its budget
+/// with a two-byte length prefix.
+pub const MAX_WITHOUT_EXIT_BIRTHS: usize = (64 * 1024 - 1 - 5 - 3 - (2 + MAX_INCOMPLETE_REASON_BYTES)) / (2 + MAX_WITHOUT_EXIT_BIRTH_BYTES);
+
 /// `s` cut to at most `max` bytes at a character boundary; a cut detail ends with `…` so the reader
 /// knows it was cut.
 fn within(s: &str, max: usize) -> String {
@@ -828,6 +889,17 @@ impl StatusReply {
         Self::NameNotApplied { node: within(node, MAX_REFUSAL_NODE_BYTES), answered: within(answered, MAX_REFUSAL_ANSWERED_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
+    /// `RejectedIncompleteManifest` naming every birth in `without_exit` (each a roster birth
+    /// without an exact Exited receipt), cut to its budgets so the reply always fits the Status reply
+    /// bound; `missing` keeps the whole count when the list is cut.
+    pub fn incomplete_manifest(without_exit: &[String], reason: &str) -> Self {
+        Self::RejectedIncompleteManifest {
+            missing: u32::try_from(without_exit.len()).unwrap_or(u32::MAX),
+            without_exit: without_exit.iter().take(MAX_WITHOUT_EXIT_BIRTHS).map(|b| within(b, MAX_WITHOUT_EXIT_BIRTH_BYTES)).collect(),
+            reason: within(reason, MAX_INCOMPLETE_REASON_BYTES),
+        }
+    }
+
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -864,6 +936,9 @@ impl StatusReply {
             Self::NameNotApplied { .. } => "name-not-applied",
             Self::ConnectionsDeleted { .. } => "connections-deleted",
             Self::RejectedConnectionScope { .. } => "rejected-connection-scope",
+            Self::RejectedStaleRound { .. } => "rejected-stale-round",
+            Self::RejectedConflictingRound { .. } => "rejected-conflicting-round",
+            Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
         }
     }
 }
@@ -881,7 +956,7 @@ impl NodeProtocol for Status {
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 22;
-    const REPLY_VARIANTS: u32 = 33;
+    const REPLY_VARIANTS: u32 = 36;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -914,7 +989,10 @@ impl NodeProtocol for Status {
             | StatusReply::NameHeld { .. }
             | StatusReply::NodeRowRefused { .. }
             | StatusReply::NameNotApplied { .. }
-            | StatusReply::RejectedConnectionScope { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::RejectedConnectionScope { .. }
+            | StatusReply::RejectedStaleRound { .. }
+            | StatusReply::RejectedConflictingRound { .. }
+            | StatusReply::RejectedIncompleteManifest { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -1008,6 +1086,9 @@ mod tests {
             (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![] }, ReplyKind::Success),
             (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "bld_1".into(), attempt: 2, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "bld_2".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
+            (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1121,6 +1202,23 @@ mod tests {
         assert!(ConnectionScope::Connections(ids(MAX_CONNECTION_IDS + 1)).refusal().is_some_and(|r| r.contains("over the")));
         assert_eq!(ConnectionScope::All.refusal(), None);
         assert_eq!(ConnectionScope::Connections(ids(1)).refusal(), None);
+    }
+
+    /// CONTRACT (an error carries every detail it can, and still reaches the caller): an incomplete
+    /// manifest naming more births than one reply carries, each and the reason longer than its
+    /// budget, is still a reply within `MAX_REPLY_FRAME_BYTES`, its count whole; a short one is kept
+    /// whole.
+    #[test]
+    fn an_incomplete_manifest_naming_every_birth_encodes_within_the_reply_bound() {
+        let long = |i: usize| format!("{i} {}", "x".repeat(4 * MAX_WITHOUT_EXIT_BIRTH_BYTES));
+        let births: Vec<String> = (0..2 * MAX_WITHOUT_EXIT_BIRTHS).map(long).collect();
+        let r = StatusReply::incomplete_manifest(&births, &"r".repeat(4 * Status::MAX_REPLY_FRAME_BYTES));
+        let len = Status::encode_reply(&r).unwrap().len();
+        assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "rejected-incomplete-manifest encodes to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
+        let StatusReply::RejectedIncompleteManifest { missing, without_exit, .. } = r else { unreachable!() };
+        assert_eq!((missing as usize, without_exit.len()), (births.len(), MAX_WITHOUT_EXIT_BIRTHS), "the count stays whole when the list is cut");
+        let short = StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into(), "mesh2.admin.2 i2".into()], "no exit manifest");
+        assert_eq!(short, StatusReply::RejectedIncompleteManifest { missing: 2, without_exit: vec!["mesh2.rpc.1 i1".into(), "mesh2.admin.2 i2".into()], reason: "no exit manifest".into() }, "a list and reason within budget are kept whole");
     }
 
     #[test]

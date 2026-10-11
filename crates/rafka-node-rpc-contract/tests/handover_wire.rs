@@ -71,7 +71,7 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_fifteen_variant_wire_schema() {
+fn replies_match_the_frozen_sixteen_variant_wire_schema() {
     use FabricPrimaryHandoverReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -91,13 +91,15 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (SeatsCommitted { seats: vec![committed()] }, "0d 01 00  01 6e  0c 303132333435363738396364  01 6a  08"),
         // seat MeshPrimary=1 { mesh "m" } | expected | current
         (RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 3, current: 4 }, "0e 01 016d 03 04"),
+        // seat MeshPrimary=1 { mesh "m" } | epoch u64::MAX, the ten-byte varint ff×9 01
+        (RejectedEpochOverflow { seat: Seat::MeshPrimary { mesh: "m".into() }, epoch: u64::MAX }, "0f 01 016d ffffffffffffffffff01"),
     ];
     for (r, hex) in fixtures {
         assert_eq!(FabricPrimaryHandover::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(FabricPrimaryHandover::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(FabricPrimaryHandover::REPLY_VARIANTS, 15);
-    assert_eq!(FabricPrimaryHandover::decode_reply(&[15]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(FabricPrimaryHandover::REPLY_VARIANTS, 16);
+    assert_eq!(FabricPrimaryHandover::decode_reply(&[16]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
@@ -108,7 +110,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
     assert_eq!(FabricPrimaryHandover::classify_reply(&Applied), ReplyKind::Success);
     assert_eq!(FabricPrimaryHandover::classify_reply(&AlreadyApplied), ReplyKind::Success);
     assert_eq!(FabricPrimaryHandover::classify_reply(&SeatsCommitted { seats: vec![committed()] }), ReplyKind::Success);
-    for r in [RejectedStaleEpoch { expected: 1, current: 2 }, RejectedWrongBirth { role: "i".into() }, RejectedNotAuthority, RejectedNotEligible { reason: "e".into() }, RejectedConflict { operation: "o".into() }, RejectedStaleSeat { seat: Seat::FabricPrimary, expected: 1, current: 2 }] {
+    for r in [RejectedStaleEpoch { expected: 1, current: 2 }, RejectedWrongBirth { role: "i".into() }, RejectedNotAuthority, RejectedNotEligible { reason: "e".into() }, RejectedConflict { operation: "o".into() }, RejectedStaleSeat { seat: Seat::FabricPrimary, expected: 1, current: 2 }, RejectedEpochOverflow { seat: Seat::FabricPrimary, epoch: u64::MAX }] {
         assert_eq!(FabricPrimaryHandover::classify_reply(&r), ReplyKind::ProtocolRefusal, "{r:?}");
     }
 }
