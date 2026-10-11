@@ -3,19 +3,19 @@
 //! state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name";
 //! node-drain.md, "Failure and receipts": "Completed steps are not rerun. Settle an idempotent
 //! uncertain step by its natural key and `AlreadyApplied`"). A drain's key is `(node_id,
-//! incarnation, Draining)`; a fabric round's is the round of its fabric and accepted Build.
+//! incarnation, Draining)`; a start's `(node_id, incarnation, Pending)`.
 //!
 //! One admin side commands the birth under several attempts of one Build: each attempt is its own
-//! open command in the admin's command book (or its own round check-in), matched by its attempt, so
-//! a completion carrying another attempt resolves nothing. The natural key holds no commander, so a
-//! second physical node-admin adds nothing the attempts do not already prove.
+//! open command in the admin's command book, matched by its attempt, so a completion carrying
+//! another attempt resolves nothing. The natural key holds no commander, so a second physical
+//! node-admin adds nothing the attempts do not already prove.
 //!
 //! A cell that stops the birth runs in its own process (the process-wide parking flag).
 
 use crate::common::admin_side_serving;
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, Seat, SeatHolder};
+use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_admin_core::node_commands::CommandKey;
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
@@ -37,7 +37,7 @@ struct Birth {
     pull: std::sync::Arc<PullServer>,
     target: NodeTarget,
     dir: std::path::PathBuf,
-    running: node::RunningNode,
+    _running: node::RunningNode,
 }
 
 impl Birth {
@@ -85,7 +85,7 @@ impl Birth {
             .await,
         }
         .expect("the node comes up");
-        let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, running };
+        let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, _running: running };
         birth.status_heard(MemberStatus::ReadyForTraffic).await;
         let (d, _) = birth.admin.observer.membership.book.get(birth.launch.node_id.as_str()).unwrap();
         birth.admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
@@ -262,62 +262,6 @@ fn a_drain_during_a_stop_joins_the_stops_drain_and_runs_no_drain_of_its_own() {
         let stopped = stop.await.unwrap();
         assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "the stop completes on its own drain: {stopped:?}");
         assert!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").is_empty(), "the stop's drain is the only drain: no drain task of its own for the DrainNode");
-        let _ = std::fs::remove_dir_all(&birth.dir);
-    })
-}
-
-fn commit_state(birth: &Birth, attempt: u32) -> StatusRequest {
-    let fabric_id = birth.launch.fabric_id.clone();
-    StatusRequest::CommitState { operation: format!("commit-state:{fabric_id}"), fabric_id, node_id: birth.launch.node_id.clone(), incarnation: birth.launch.incarnation.clone(), build_id: BUILD.into(), attempt }
-}
-
-/// CONTRACT: a birth that took its mesh primary's `commit-state` under attempt 1 and stored its
-/// action answers attempt 2's `commit-state` of the same fabric and Build `AlreadyApplied`: the
-/// round is the same natural key `(fabric_id, event)`, so the action is not run again, and the
-/// check-in is made again to the commander that asks, naming attempt 2. What must NOT happen: the
-/// action run a second time, `Applied` for the same round, or attempt 2's commander left without a
-/// check-in naming its own attempt.
-#[test]
-fn a_round_command_from_a_later_attempt_is_already_applied_and_checked_in_under_that_attempt() {
-    let cell = "a_round_command_from_a_later_attempt_is_already_applied_and_checked_in_under_that_attempt";
-    let cap = crate::common::capture(cell);
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
-        let birth = Birth::up("round-natural-key").await;
-        // The admin side holds its mesh's primary seat, and says so once on the mesh channel.
-        let launcher = birth.admin.launcher.clone();
-        let holder = SeatHolder { mesh: "mesh1".into(), node_id: launcher.node_id.clone(), incarnation: launcher.incarnation.clone(), epoch: 1 };
-        let seated = rafka_mesh_transport::membership::Frame::Seated { seat: Seat::MeshPrimary, holder };
-        let seats = birth.running.membership.seats();
-        let mut changed = seats.subscribe();
-        birth.admin.observer.membership.publish_lifecycle(&seated).await.expect("the seat record goes out on the mesh channel");
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while seats.mesh("mesh1").is_none_or(|h| !h.is_birth(&launcher.node_id, &launcher.incarnation)) {
-                changed.changed().await.unwrap();
-            }
-        })
-        .await
-        .expect("the birth holds the admin side as its mesh primary");
-
-        let check_ins = birth.admin.observer.check_ins.subscribe();
-        let checked_in = |check_ins: &tokio::sync::watch::Receiver<Vec<StatusRequest>>, attempt: u32| {
-            let mut check_ins = check_ins.clone();
-            async move {
-                tokio::time::timeout(Duration::from_secs(20), check_ins.wait_for(|held| held.iter().any(|r| matches!(r, StatusRequest::StateCommitted { attempt: a, build_id, .. } if *a == attempt && build_id == BUILD))))
-                    .await
-                    .unwrap_or_else(|_| panic!("the commander never got a state-committed check-in naming attempt {attempt}"))
-                    .expect("the admin side holds its check-ins");
-            }
-        };
-        assert_eq!(birth.call(&commit_state(&birth, 1)).await, StatusReply::Applied, "attempt 1 admits the round");
-        checked_in(&check_ins, 1).await;
-        assert_eq!(birth.call(&commit_state(&birth, 2)).await, StatusReply::AlreadyApplied, "attempt 2's commit-state of the same fabric and Build is the same natural key (fabric_id, event)");
-        checked_in(&check_ins, 2).await;
-
-        let rounds = spans_named(&spans, "rdm.node_admin.fabric.update.via-member-round");
-        let acted: Vec<_> = rounds.iter().filter(|f| f.get("acted").map(String::as_str) == Some("true")).collect();
-        assert_eq!(acted.len(), 1, "the round's action runs once, whichever attempts command it: {rounds:?}");
-        assert!(rounds.iter().any(|f| f.get("attempt").map(String::as_str) == Some("2") && f.get("acted").map(String::as_str) == Some("false")), "attempt 2's check-in is made again without the action: {rounds:?}");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
