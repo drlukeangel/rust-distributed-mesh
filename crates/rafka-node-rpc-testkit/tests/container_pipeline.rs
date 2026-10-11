@@ -8,17 +8,21 @@
 
 use crate::common;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn admin_deploys_a_container_node_through_every_pipeline_step() {
-    if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
-        eprintln!("SKIP container smoke: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step); the process provider is the proving ground until then");
-        return;
-    }
-    match common::deploy_through_every_step("container").await {
-        common::Smoke::Passed => {}
-        common::Smoke::Unsupported(reason) if std::env::var("RDM_REQUIRE_CONTAINER").as_deref() == Ok("1") => {
-            panic!("RDM_REQUIRE_CONTAINER=1 but the container provider is unsupported here: {reason}")
+#[test]
+fn admin_deploys_a_container_node_through_every_pipeline_step() {
+    let cap = crate::common::capture("admin_deploys_a_container_node_through_every_pipeline_step");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
+            eprintln!("SKIP container smoke: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step); the process provider is the proving ground until then");
+            return;
         }
-        common::Smoke::Unsupported(reason) => eprintln!("SKIP container smoke: the container provider is unsupported on this host: {reason}"),
-    }
+        match common::deploy_through_every_step("container", &spans).await {
+            common::Smoke::Passed => {}
+            common::Smoke::Unsupported(reason) if std::env::var("RDM_REQUIRE_CONTAINER").as_deref() == Ok("1") => {
+                panic!("RDM_REQUIRE_CONTAINER=1 but the container provider is unsupported here: {reason}")
+            }
+            common::Smoke::Unsupported(reason) => eprintln!("SKIP container smoke: the container provider is unsupported on this host: {reason}"),
+        }
+    })
 }
