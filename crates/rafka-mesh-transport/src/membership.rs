@@ -2696,7 +2696,6 @@ pub struct Backbone {
     node: String,
     mesh: String,
     fabric: FabricId,
-    forwarding: Arc<AtomicBool>,
     publishing: Arc<AtomicBool>,
     status_publishing: Arc<AtomicBool>,
     membership: Membership,
@@ -2730,8 +2729,7 @@ impl Backbone {
     /// Join the backbone as `node`, whose current birth is `incarnation`: the exact identity every
     /// aggregate this admin publishes names as its publisher.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, membership: &Membership, mesh: &str, node: &str, incarnation: IncarnationId, seeds: Vec<EndpointAddr>) -> Result<Self> {
-        let forwarding = Arc::new(AtomicBool::new(false));
-        let (m, fw, me, own) = (membership.clone(), forwarding.clone(), node.to_string(), mesh.to_string());
+        let (m, me, own) = (membership.clone(), node.to_string(), mesh.to_string());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
             if matches!(frame, Frame::Members { .. } | Frame::MembersDelta { .. }) {
                 let taken = m.view.take_snapshot(&frame, &m.fabric, Side::Backbone);
@@ -2744,17 +2742,15 @@ impl Backbone {
                     register_location(&m.mesh.lookup, d);
                 }
                 // A complete snapshot of a source Mesh: the forwarding primary says what moved
-                // since it last published that source into its own Mesh.
-                if let (Some((source_mesh, publisher, version, full)), true) = (taken.source, fw.load(Ordering::Relaxed)) {
+                // since it last published that source into its own Mesh. The forward path decides
+                // nothing unless this node holds the forwarder role, read under its lock.
+                if let Some((source_mesh, publisher, version, full)) = taken.source {
                     m.forward_path.source(&me, &source_mesh, &publisher, version, &full, m.clock.now_rafka_ms());
                 }
                 return;
             }
             for d in m.view.take(&frame, &m.fabric, "backbone") {
                 m.mesh.register(&d);
-            }
-            if !fw.load(Ordering::Relaxed) {
-                return;
             }
             if let Some(f) = forward_of(frame, &me, &own) {
                 m.forward_path.carry(&me, f);
@@ -2779,7 +2775,6 @@ impl Backbone {
             node: node.to_string(),
             mesh: mesh.to_string(),
             fabric: membership.fabric.clone(),
-            forwarding,
             publishing: Arc::default(),
             status_publishing: Arc::default(),
             membership: membership.clone(),
@@ -2877,17 +2872,17 @@ impl Backbone {
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
         self.membership.view.primary.store(primary, Ordering::Relaxed);
-        if self.publishing.load(Ordering::Relaxed) != primary {
-            // A forwarder that takes (or loses) the seat has published nothing into its Mesh: the
-            // first publication of every source after taking it is a full (gossip.md §3.3).
-            self.membership.forward_path.set_role(primary);
-        }
+        // A forwarder that takes (or loses) the seat has published nothing into its Mesh: the
+        // first publication of every source after taking it is a full (gossip.md §3.3). The role,
+        // its baseline and its term switch together under the forwarder's lock.
+        let forwarder_changed = self.membership.forward_path.set_role(primary);
         self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
             tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.node, mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("mesh aggregate publication"));
         }
-        if let Some(role) = Self::role(&self.forwarding, primary) {
+        if forwarder_changed {
+            let role = if primary { "start" } else { "stop" };
             tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.node, mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("peer meshes forwarded onto this mesh's channel"));
         }
@@ -2964,9 +2959,6 @@ impl Backbone {
     /// Nothing sends it again on a timer; a held source whose peer Mesh is unheard is not
     /// re-sent, so no member's coverage is renewed by a word its primary did not receive.
     pub async fn forward_fulls(&self) {
-        if !self.forwarding.load(Ordering::Relaxed) {
-            return;
-        }
         let mut held: Vec<(String, PublisherId, u64, Full)> = self.membership.view.backbone_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
         if let Some((version, full)) = self.own.lock().unwrap().clone() {
             held.push((self.mesh.clone(), self.publisher.clone(), version, full));
