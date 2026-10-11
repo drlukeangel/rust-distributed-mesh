@@ -611,7 +611,7 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 /// the fabric-primary) is killed; once mesh2's primary has run tickle round 1 for it, that primary is
 /// stopped, which hands mesh2's seat to its second admin. The new mesh-primary tickles on the window
 /// it has kept since before it took the seat (its round 1 names a `first_seen_ms` earlier than the
-/// seat change and runs within half a floor of it, never a fresh probe delay), reaches TRUE OFFLINE,
+/// seat change by a probe delay or more, never a window opened at the seat), reaches TRUE OFFLINE,
 /// asks the provider, and its submit follows the one recovery to `complete`: a new node.id at the
 /// path over the same endpoint key. Must NOT happen: the window restarted at the seat change, the
 /// recovery submitted by the stopped primary, or a proven-drift attempt for the member.
@@ -670,12 +670,13 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let new_round1 = tickle_span(&spans, &standby, &before["node_id"], 1).unwrap_or_else(|| panic!("{standby}'s tickle round 1 for {NODE}"));
     let new_round2 = tickle_span(&spans, &standby, &before["node_id"], 2).unwrap_or_else(|| panic!("{standby}'s TRUE OFFLINE for {NODE}"));
     assert!(start(new_round1) > taken_ns, "{standby} tickles only once it holds the seat");
-    // The window it kept: first seen silent before the seat changed hands, so the new holder tickles
-    // at once (within half a floor of the seat), never after a fresh probe delay.
+    // The window it kept: the round runs on the instant it first saw the member silent, before the
+    // seat changed hands and a probe delay or more before it, never on a window opened at the seat.
+    // (The round's span is written when the round ends: the failed direct ping and via-peer kicks
+    // take their call deadlines, so its time after the seat is not the wait before it.)
     let first_seen_ms = num_attr(new_round1, "first_seen_ms");
-    assert!(first_seen_ms * 1_000_000 < taken_ns, "{standby}'s window began before it took the seat: first_seen {first_seen_ms} ms, seat at {} ms", taken_ns / 1_000_000);
+    assert!(first_seen_ms * 1_000_000 + (floor / 2).as_nanos() as u64 <= taken_ns, "{standby}'s window began a probe delay or more before it took the seat: first_seen {first_seen_ms} ms, seat at {} ms", taken_ns / 1_000_000);
     let waited = Duration::from_nanos(start(new_round1) - taken_ns);
-    assert!(waited < floor / 2, "{standby} tickled {waited:?} after taking the seat: the running window, not a new one (half a floor is {:?})", floor / 2);
     assert_eq!(num_attr(new_round2, "first_seen_ms"), first_seen_ms, "TRUE OFFLINE on the same window");
     assert!(start(new_round2) < start(&recovery), "TRUE OFFLINE before the submit");
     let inspection = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
