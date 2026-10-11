@@ -3920,6 +3920,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let hydration_cell: crate::status_rpc::Hydrating = Arc::default();
     // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
     let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
+    // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
+    let rename: crate::status_rpc::Rename = Arc::new(std::sync::OnceLock::new());
     // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
     // event rows it put, and the lifecycle state on each node row it wrote, folded into what it
     // holds as applied. A reader folds; nothing here writes a row.
@@ -3952,6 +3954,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             configs: configs_slot.clone(),
             configure: configure.clone(),
             hydration: hydration_cell.clone(),
+            rename: rename.clone(),
         }));
     }
     // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -4579,6 +4582,30 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     d.clone()
                 };
                 let _ = membership.publish(&d).await;
+            })
+        }));
+    }
+    {
+        // The name is held on this admin's own digest and by its membership, taken only with no call
+        // in flight other than the apply itself; a stopped admin holds it and publishes nothing.
+        let (membership, digest, stats) = (membership.clone(), digest.clone(), rpc_server.stats());
+        let _ = rename.set(Arc::new(move |asked: PathName| {
+            let (membership, digest, stats) = (membership.clone(), digest.clone(), stats.clone());
+            Box::pin(async move {
+                let held = digest.lock().unwrap().node.name.clone();
+                let decision = crate::node_name::decide(&held, &asked, rafka_node_rpc::ServerStats::get(&stats.in_flight).saturating_sub(1));
+                if decision == crate::node_name::NameApply::Applied {
+                    membership.set_name(asked.clone());
+                    let d = {
+                        let mut d = digest.lock().unwrap();
+                        d.node.name = asked;
+                        d.clone()
+                    };
+                    if !crate::node_self::parking().is_parked() {
+                        let _ = membership.publish(&d).await;
+                    }
+                }
+                (held, decision)
             })
         }));
     }
@@ -5844,6 +5871,7 @@ mod tests {
             configs: Default::default(),
             configure: Default::default(),
             hydration: Default::default(),
+            rename: Default::default(),
         };
         let _ = Declared::default();
 

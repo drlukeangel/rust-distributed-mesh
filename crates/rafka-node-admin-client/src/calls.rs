@@ -346,6 +346,23 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
+    /// The mesh-primary's call to the exact birth, after it wrote the renamed row: take this name and carry
+    /// it in every digest from now on (`ApplyNodeName`, R12/R13). `Applied` once the birth holds and
+    /// published it, `AlreadyApplied` for the name it holds, `Busy` naming its in-flight count while it
+    /// routes traffic. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
+    pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+        let span = NodeOp::Update.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(&birth.node_id, route, &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), route = route.token(), "an object call ended"));
+        r
+    }
+
     /// `node.get` of one exact birth: it reasserts its presence and answers its current state.
     /// No transition.
     pub async fn get(&self, birth: &ExactBirth, opts: &CallOptions) -> Result<StatusReply, CallEnd> {

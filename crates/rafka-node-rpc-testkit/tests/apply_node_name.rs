@@ -89,10 +89,10 @@ fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_
                 StatusReply::Busy { reason } => assert!(reason.contains("1 call in flight"), "Busy names the one call in flight, not the apply itself: {reason}"),
                 other => panic!("a node with a call in flight answered {other:?}"),
             }
-            let mut heard = book.heard_changes();
             let seq = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
             while book.get(launch.node_id.as_str()).unwrap().0.digest_seq == seq {
-                heard.changed().await.unwrap();
+                // The book has no per-digest signal: a fresher digest of the same birth is read on the cadence.
+            tokio::time::sleep(Duration::from_millis(50)).await;
             }
             assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
             // Nothing in flight from here: the held call answers once released.
@@ -104,11 +104,13 @@ fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_
         assert_eq!(call(apply.clone()).await, StatusReply::Applied);
         // The node published the name before it answered; the admin hears that digest.
         while book.get(launch.node_id.as_str()).unwrap().0.node.name != taken {
-            heard.changed().await.unwrap();
+            // The book has no per-digest signal: a fresher digest of the same birth is read on the cadence.
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let seq = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
         while book.get(launch.node_id.as_str()).unwrap().0.digest_seq <= seq + 1 {
-            heard.changed().await.unwrap();
+            // The book has no per-digest signal: a fresher digest of the same birth is read on the cadence.
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, taken, "later cadence digests keep the applied name");
 

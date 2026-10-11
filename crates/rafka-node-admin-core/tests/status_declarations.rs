@@ -108,6 +108,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         configs: Default::default(),
         configure: Default::default(),
         hydration: Default::default(),
+        rename: Default::default(),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
