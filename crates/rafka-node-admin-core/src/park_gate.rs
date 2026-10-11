@@ -198,6 +198,33 @@ mod tests {
         assert_eq!(gate.state().borrow().in_progress(), 0);
     }
 
+    /// CONTRACT (park_gate.rs: a task spawned through the gate is not polled while it is parked): a
+    /// task woken by its own work and by the park at the same moment is held where it stands; it
+    /// makes no step past the park. Each of the 64 trials gives the gate one fresh such moment (a
+    /// select that polled its branches in a random order would step past the park about half the
+    /// time). Must NOT happen: a parked task making one more step of its own work.
+    #[tokio::test]
+    async fn a_task_woken_by_its_own_work_and_the_park_at_once_makes_no_step_past_the_park() {
+        for trial in 0..64 {
+            let gate = ParkGate::new();
+            let (work, steps) = (Arc::new(tokio::sync::Notify::new()), Arc::new(AtomicU64::new(0)));
+            let (w, n) = (work.clone(), steps.clone());
+            let task = gate.spawn(async move {
+                loop {
+                    w.notified().await;
+                    n.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            // The task polls once and waits on its work; then its work and the park come together.
+            tokio::task::yield_now().await;
+            work.notify_one();
+            gate.park();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            assert_eq!(steps.load(Ordering::SeqCst), 0, "trial {trial}: the parked task made a step past the park");
+            task.abort();
+        }
+    }
+
     /// CONTRACT: a task behind a parked gate makes no progress and keeps its place; the same task
     /// resumes where it was when the gate opens. What must NOT happen: a parked task that keeps
     /// running, or one that starts over.
