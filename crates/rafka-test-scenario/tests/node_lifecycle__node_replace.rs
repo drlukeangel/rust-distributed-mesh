@@ -589,3 +589,112 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
     estate.shutdown().await;
 }
+
+/// The `observer`'s first offline-tickle span of `round` for `node_id` (round 1 opens the hold-down,
+/// round 2 is TRUE OFFLINE), once exported.
+fn tickle_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value, round: u8) -> Option<&'a Value> {
+    let name = if round == 1 { "rdm.node_admin.node.update.via-offline-hold-down-opened" } else { "rdm.node_admin.node.resolve.via-offline-tickle-failed" };
+    let mut found: Vec<&Value> = named(spans, name).into_iter().filter(|sp| sp["attributes"]["observer"] == observer && sp["attributes"]["node_id"] == *node_id).collect();
+    found.sort_by_key(|sp| start(sp));
+    found.into_iter().next()
+}
+
+/// A span attribute that is a number, exported as a string or a number.
+fn num_attr(sp: &Value, k: &str) -> u64 {
+    let v = &sp["attributes"][k];
+    v.as_u64().or_else(|| v.as_i64().map(|i| i as u64)).or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or_else(|| panic!("{k} is not a number: {sp}"))
+}
+
+/// CONTRACT (#3051 acceptance 2, node-recovery.md "Detection and proof" step 1: "Every node-admin
+/// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the seat mid-window
+/// continues the window already running"): a member of mesh2 (two node-admins, its mesh-primary not
+/// the fabric-primary) is killed; once mesh2's primary has run tickle round 1 for it, that primary is
+/// stopped, which hands mesh2's seat to its second admin. The new mesh-primary tickles on the window
+/// it has kept since before it took the seat (its round 1 names a `first_seen_ms` earlier than the
+/// seat change and runs within half a floor of it, never a fresh probe delay), reaches TRUE OFFLINE,
+/// asks the provider, and its submit follows the one recovery to `complete`: a new node.id at the
+/// path over the same endpoint key. Must NOT happen: the window restarted at the seat change, the
+/// recovery submitted by the stopped primary, or a proven-drift attempt for the member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery() {
+    let estate = Estate::bootstrap(owner("a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery"), "fabric1", "mesh1").await;
+    let (status, a) = estate
+        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}, {"name": "mesh2", "node_admin": 2, "rpc_node": 2}]}))
+        .await;
+    assert_eq!(status, 202, "{a}");
+    let birth_build = s(&a["build_id"]);
+    estate.await_build(&birth_build, SETTLE).await;
+    estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let nodes = estate.nodes().await;
+    let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
+    assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
+    let mp = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
+    let standby = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("mesh2's second admin")["name"]);
+    const NODE: &str = "mesh2.rpc.1";
+    let before = estate.node(NODE).await;
+    estate.kill_node(NODE).await;
+
+    // Round 1 on the mesh-primary that holds the seat now.
+    let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), floor * 3, || async { tickle_span(&estate.spans(), &mp, &before["node_id"], 1).cloned() }).await;
+    // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.
+    let (status, stop) = estate.post(&format!("/api/nodes/{mp}/stop"), &json!({})).await;
+    assert_eq!(status, 202, "the stop of {mp} is accepted: {stop}");
+    let seat = wait_for(&format!("{standby} takes mesh2's seat"), floor * 2, || async {
+        named(&estate.spans(), "rdm.mesh.election.resolve.via-mesh-primary")
+            .into_iter()
+            .find(|sp| sp["attributes"]["observer"] == standby.as_str() && sp["attributes"]["winner_path"] == standby.as_str() && start(sp) > start(&round1))
+            .cloned()
+    })
+    .await;
+
+    // The new mesh-primary's submit follows the one recovery to its end.
+    let recovery = wait_for(&format!("{standby} recovers {NODE}"), SETTLE, || async {
+        named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery")
+            .into_iter()
+            .find(|sp| sp["attributes"]["node_id"] == before["node_id"] && s(&sp["attributes"]["outcome"]).starts_with("complete: attempt"))
+            .cloned()
+    })
+    .await;
+    assert_eq!(s(&recovery["attributes"]["submitter"]), standby, "the new mesh-primary submitted the recovery: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["fabric_primary"]), fp, "{recovery}");
+    let after = wait_for(&format!("{NODE} ready as a new node"), SETTLE, || async {
+        let n = estate.node_opt(NODE).await?;
+        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
+    })
+    .await;
+    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
+
+    let spans = estate.spans();
+    let taken_ns = start(&seat);
+    let new_round1 = tickle_span(&spans, &standby, &before["node_id"], 1).unwrap_or_else(|| panic!("{standby}'s tickle round 1 for {NODE}"));
+    let new_round2 = tickle_span(&spans, &standby, &before["node_id"], 2).unwrap_or_else(|| panic!("{standby}'s TRUE OFFLINE for {NODE}"));
+    assert!(start(new_round1) > taken_ns, "{standby} tickles only once it holds the seat");
+    // The window it kept: first seen silent before the seat changed hands, so the new holder tickles
+    // at once (within half a floor of the seat), never after a fresh probe delay.
+    let first_seen_ms = num_attr(new_round1, "first_seen_ms");
+    assert!(first_seen_ms * 1_000_000 < taken_ns, "{standby}'s window began before it took the seat: first_seen {first_seen_ms} ms, seat at {} ms", taken_ns / 1_000_000);
+    let waited = Duration::from_nanos(start(new_round1) - taken_ns);
+    assert!(waited < floor / 2, "{standby} tickled {waited:?} after taking the seat: the running window, not a new one (half a floor is {:?})", floor / 2);
+    assert_eq!(num_attr(new_round2, "first_seen_ms"), first_seen_ms, "TRUE OFFLINE on the same window");
+    assert!(start(new_round2) < start(&recovery), "TRUE OFFLINE before the submit");
+    let inspection = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["inspector"] == standby.as_str())
+        .unwrap_or_else(|| panic!("{standby}'s provider inspection of {NODE}"));
+    assert_eq!(s(&inspection["attributes"]["verdict"]), "exited", "{inspection}");
+    assert!(tickle_span(&spans, &mp, &before["node_id"], 2).is_none() || !named(&spans, "rdm.node_admin.build.update.via-node-recovery").iter().any(|sp| sp["attributes"]["submitter"] == mp.as_str() && s(&sp["attributes"]["outcome"]).starts_with("complete")), "the stopped primary recovered nothing");
+    let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(NODE)).collect();
+    assert!(drift.is_empty(), "the fabric-primary opened a drift attempt for a member: {drift:?}");
+    eprintln!(
+        "acceptance 2: old mp {mp} round1 trace {} | seat {standby} at {} ms | new round1 {} (first_seen {first_seen_ms} ms, {waited:?} after the seat) | round2 {} | recovery trace {} ({})",
+        round1["trace_id"].as_str().unwrap_or(""),
+        taken_ns / 1_000_000,
+        new_round1["trace_id"].as_str().unwrap_or(""),
+        new_round2["trace_id"].as_str().unwrap_or(""),
+        recovery["trace_id"].as_str().unwrap_or(""),
+        s(&recovery["attributes"]["outcome"]),
+    );
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
+    estate.shutdown().await;
+}
