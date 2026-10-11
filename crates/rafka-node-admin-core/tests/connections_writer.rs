@@ -462,3 +462,29 @@ async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
     assert_eq!(next.source, me, "the continued row names the birth that wrote it: {next:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// CONTRACT (fabric-node-lifecycle.md §8: `destination_node_id` is the instance at that end when the
+/// entry was written; connections.md §9.1 and §9.4: a reconnect series is for the current destination
+/// incarnation): a failing series against `mesh1.rpc.3`'s birth, then a failed dial to its next
+/// birth (same node id, next incarnation), is a new incident: a new epoch at ordinal one, naming the
+/// birth that was dialled. What must NOT happen: the series of the gone birth continued one ordinal
+/// up, or a row naming the gone birth as the destination of a dial to its successor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth() {
+    let dir = data_dir("next-birth-series");
+    let (me, gone) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let next = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..gone.clone() };
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &me.name, &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
+    writer.hydrate().await.unwrap();
+    for i in 0..2 {
+        writer.direct_failed(&resolved(&gone), &format!("refused {i}"));
+        writer.drain().await;
+    }
+    writer.direct_failed(&resolved(&next), "refused by the next birth");
+    writer.drain().await;
+    let history = storage.history().await.unwrap();
+    assert_eq!(history.iter().map(|r| r.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal))).collect::<Vec<_>>(), vec![Some((1, 1)), Some((1, 2)), Some((2, 1))], "the next birth's failure is a new incident: {history:#?}");
+    assert_eq!(history[2].destination, next, "the row names the birth that was dialled: {:?}", history[2]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
