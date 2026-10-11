@@ -128,11 +128,48 @@ impl NodeRows {
             .collect()
     }
 
-    /// Claim the row of each birth in `arrivals`, the fabric-primary's view having first held it.
-    pub async fn claim_arrivals(&self, arrivals: Vec<Node>) {
+    /// Claim the row of each birth in `arrivals`, the fabric-primary's view `now` having first held
+    /// it; a birth whose row is seeded from a previous row is told that config.
+    pub async fn claim_arrivals(&self, now: &Topology, arrivals: Vec<Node>) {
         for birth in arrivals {
-            self.claim(&birth).await;
+            let span = tracing::info_span!(
+                "rdm.node_admin.node.create.via-node-row",
+                node = %self.me,
+                subject = %birth.name,
+                node_id = %birth.node_id,
+                seeded_from = tracing::field::Empty,
+                keys = tracing::field::Empty,
+                outcome = tracing::field::Empty,
+                told = tracing::field::Empty,
+                detail = tracing::field::Empty,
+                "otel.kind" = "internal",
+            );
+            if let Some(row) = tracing::Instrument::instrument(self.claim(&birth, &span), span.clone()).await {
+                self.tell(now, &birth, row, &span);
+            }
         }
+    }
+
+    /// Tell a seeded birth its config (ops-naming "Node data": the node applies it and carries it in
+    /// its next digest) through the fabric-primary's config door, which writes the record and calls
+    /// the birth through its mesh-primary. On its own task, under the claim's span: the view install
+    /// that found the birth never waits on a call to it (the join door installs the view before it
+    /// answers the joiner).
+    fn tell(&self, now: &Topology, birth: &Node, row: NodeRow, span: &tracing::Span) {
+        let Some(door) = self.configs.as_ref().and_then(|slot| slot.get().cloned()) else {
+            span.record("told", "no-config-door");
+            return;
+        };
+        let Some(incarnation) = birth.incarnation_id.clone() else { return };
+        span.record("told", "config-door");
+        let req = rafka_node_rpc_contract::status::StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation, config: row.config };
+        let (me, view, storage) = (self.me.clone(), now.clone(), self.storage.clone());
+        tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                door.update(&me, &view, &*storage, &req).await;
+            },
+            span.clone(),
+        ));
     }
 
     /// The birth's row at its `path.name`, claimed from the record the view holds (ops-naming "Node
@@ -140,19 +177,8 @@ impl NodeRows {
     /// row at that `path.name` (a `Deleted` row), read through the `path.name` key ("from the
     /// fabric-primary's held record or a point read through the `path.name` index"). A row the
     /// same node holds already is left as it is.
-    async fn claim(&self, birth: &Node) -> Option<NodeRow> {
+    async fn claim(&self, birth: &Node, span: &tracing::Span) -> Option<NodeRow> {
         let (me, name) = (&self.me, &birth.name);
-        let span = tracing::info_span!(
-            "rdm.node_admin.node.create.via-node-row",
-            node = %me,
-            subject = %name,
-            node_id = %birth.node_id,
-            seeded_from = tracing::field::Empty,
-            keys = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-            detail = tracing::field::Empty,
-            "otel.kind" = "internal",
-        );
         let previous = match self.storage.node_row_at(name).await {
             Ok(p) => p,
             Err(e) => {
