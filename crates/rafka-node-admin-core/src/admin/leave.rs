@@ -106,7 +106,7 @@ impl AdminRunner {
             }
         }
         let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.me.to_string(), &final_primary, &final_runtime, || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
-        let admitted = Admitted { roster, final_primary, final_runtime };
+        let admitted = Admitted { roster, final_primary, final_runtime, amendments: Vec::new() };
         if !admitted.roster.contains(&admitted.final_primary) {
             return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id));
         }

@@ -34,6 +34,9 @@ pub const STEP_MESH_LEFT: &str = "MeshLeft";
 pub const STEP_ACCEPTED_ROSTER: &str = "AcceptedRoster";
 /// The step at the leaving mesh-primary that records the roster its member workflows run over.
 pub const STEP_LEAVING_ROSTER: &str = "LeavingRoster";
+/// The step at the fabric-primary that admits a new final primary after the admitted one (or the
+/// last amended one) was lost mid-leave (mesh-leave.md, "Resume after the primary's loss").
+pub const STEP_ROSTER_AMENDED: &str = "RosterAmended";
 
 /// The outer operation key of `mesh_id`'s shutdown.
 pub fn operation(mesh_id: &MeshId) -> String {
@@ -259,6 +262,52 @@ pub fn accepted_row(steps: &[BuildStepReceipt], operation: &str, step: &str) -> 
     Some(r.output.clone().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| format!("the {step} receipt of {operation} (attempt {}) holds no readable roster: the accepted roster cannot be named", r.attempt)))
 }
 
+/// A roster amendment (mesh-leave.md, "Resume after the primary's loss", step 2): `final_primary`
+/// replaces `predecessor`, whose exact Exited receipt the Build already holds. `final_runtime` is the
+/// new final primary's exact runtime as the fabric-primary's provider domain holds it at the
+/// amendment, what a later resume checks the final runtime against, as `AcceptedRoster` carries the
+/// admitted one's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RosterAmended {
+    /// The final primary that was lost.
+    pub predecessor: RosterBirth,
+    /// The new final primary.
+    pub final_primary: RosterBirth,
+    /// The new final primary's exact runtime, by fingerprint.
+    pub final_runtime: RuntimeProof,
+}
+
+/// What recording an amendment did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Amended {
+    /// The amendment is recorded now.
+    Applied,
+    /// The identical amendment is already recorded.
+    AlreadyApplied,
+}
+
+/// What the fabric-primary admitted for `operation`, read from `steps`: the `AcceptedRoster` row
+/// extended by every `RosterAmended` receipt. `None` when no roster is recorded.
+pub fn admitted_of(_steps: &[BuildStepReceipt], _operation: &str) -> Option<Result<Admitted, String>> {
+    None
+}
+
+/// Record the lost final primary's exact provider Exited as its roster receipt.
+pub async fn record_predecessor_exit(_builds: &dyn BuildStateAdapter, key: &LeaveKey, _executor: &str, _terminal: &TerminalReceipt) -> Result<(), String> {
+    Err(format!("{}: a predecessor's exit receipt is not built", key.operation))
+}
+
+/// Record `amendment` under `key`'s operation.
+pub async fn amend_roster(_builds: &dyn BuildStateAdapter, key: &LeaveKey, _executor: &str, _amendment: &RosterAmended) -> Result<Amended, String> {
+    Err(format!("{}: RosterAmended is not built", key.operation))
+}
+
+/// The roster a leaving primary runs over: `roster` (its `LeavingRoster`) extended by every
+/// amendment recorded in `steps`.
+pub fn amended_roster(roster: &[RosterBirth], _steps: &[BuildStepReceipt], _operation: &str) -> Result<Vec<RosterBirth>, String> {
+    Ok(roster.to_vec())
+}
+
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
 /// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
@@ -425,6 +474,8 @@ pub struct Admitted {
     pub final_primary: RosterBirth,
     /// The final primary's exact runtime, by fingerprint, as its provider domain holds it.
     pub final_runtime: RuntimeProof,
+    /// Every roster amendment, in chain order from the admitted final primary.
+    pub amendments: Vec<RosterAmended>,
 }
 
 /// How an open leave ends at the fabric-primary: the validated manifest, or the named reason the
@@ -616,7 +667,7 @@ mod tests {
         let key = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let last = birth("mesh2.admin.1", "i3");
         let runtime = receipt(&last).runtime.unwrap();
-        let rx = book.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime });
+        let rx = book.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: Vec::new() });
         assert!(rx.borrow().is_none());
         assert!(book.incomplete(&key, "roster births without an exact Exited receipt: mesh2.rpc.1 i1".into()));
         assert_eq!(rx.borrow().clone(), Some(Err("roster births without an exact Exited receipt: mesh2.rpc.1 i1".into())), "the wait resolves now with the reason");
