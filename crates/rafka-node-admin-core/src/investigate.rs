@@ -447,7 +447,7 @@ fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
 fn restore(w: &Watch, view: &Topology) {
     let Some(recovery) = w.records.peer_recovery() else { return };
     let primary = view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin).and_then(|p| p.incarnation_id.clone());
-    let report = w.records.declared.lock().unwrap().reports.get(&recovery.mesh).cloned();
+    let report = w.records.declared.lock().unwrap().report_of(&recovery.mesh, view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin));
     if crate::round::recovered(&recovery, primary.as_ref(), report.as_ref()) {
         w.records.set_peer_recovery(None);
         tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %w.me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = recovery.verdict_rafka_ms)

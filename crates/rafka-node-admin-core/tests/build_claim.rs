@@ -181,10 +181,11 @@ async fn a_claim_put_to_a_non_primary_is_redirected_to_the_fabric_primary_it_see
     assert_eq!(q_seat.door.claim("mesh1.admin.2", &id, 1).await, reply, "a non-primary decides nothing and names the one it sees");
 }
 
-/// CONTRACT: the sender is the authenticated peer, held to the request: a request naming another
-/// birth of the executor is refused by name, and nothing is claimed.
+/// CONTRACT: the claim is decided for the executor the request names, at its exact birth as the
+/// fabric-primary's view holds it (node-rpc.md §14: never the caller): the executor's own endpoint
+/// naming another birth of it is refused by name about that subject, and nothing is claimed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_claim_naming_another_birth_than_the_caller_is_refused_by_name() {
+async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     use rafka_node_rpc_contract::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
     let reborn_birth = birth("mesh1.admin.2", false);
@@ -198,10 +199,52 @@ async fn a_claim_naming_another_birth_than_the_caller_is_refused_by_name() {
     let (out, _) = client.call::<BuildClaim>(&rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
     match out {
         rafka_node_rpc_contract::outcome::RpcOutcome::Reply(reply) => match reply.value() {
-            BuildClaimReply::Unauthorized { reason } => assert!(reason.contains("names birth"), "{reason}"),
+            BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth"), "{reason}"),
             other => panic!("{other:?}"),
         },
         other => panic!("{other:?}"),
     }
     assert_eq!(p_builds.read_build(&id).await.unwrap().attempt, 1, "nothing was claimed");
+}
+
+/// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who is calling"): a claim put from an
+/// endpoint the fabric-primary's view holds no birth for is decided for the executor the request
+/// names, at its exact birth: `Won`, the attempt claimed for that executor's path.name. A request
+/// naming a birth of the executor the view does not hold is refused by name about that subject
+/// (`PeerUnresolved`), and nothing is claimed. What must NOT happen: `Unauthorized` naming the caller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_for_the_executor_it_names() {
+    use rafka_node_rpc_contract::build_claim::{BuildClaim, BuildClaimRequest};
+    let id = BuildId::mint();
+    let executor = birth("mesh1.admin.2", false);
+    let (p, p_seat, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &executor).await;
+    open(&p_builds, &id, 2).await;
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(p_seat.resolved.clone());
+    // A fresh endpoint key, in no birth of the fabric-primary's view.
+    let stranger = SecretKey::generate();
+    let ep = rafka_node_rpc::endpoint::bind(stranger, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let client = NodeRpcClient::new(ep, resolver);
+    let call = |req: BuildClaimRequest| {
+        let client = &client;
+        let target = rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone());
+        async move {
+            match client.call::<BuildClaim>(&target, &req, &rafka_node_rpc::CallOptions::default()).await.0 {
+                rafka_node_rpc_contract::outcome::RpcOutcome::Reply(reply) => reply.value().clone(),
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    // A birth of the executor the view does not hold: refused about the subject, nothing claimed.
+    let other_birth = BuildClaimRequest::ClaimAttempt { build_id: id.0.clone(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: IncarnationId::mint() };
+    match call(other_birth).await {
+        BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth") && reason.contains("mesh1.admin.2"), "{reason}"),
+        other => panic!("a birth the view does not hold is refused about the subject: {other:?}"),
+    }
+    assert_eq!(p_builds.read_build(&id).await.unwrap().attempt, 1, "nothing was claimed");
+    // The executor's exact birth: Won, the attempt claimed for that executor.
+    let exact = BuildClaimRequest::ClaimAttempt { build_id: id.0.clone(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: executor.node.incarnation_id.clone().unwrap() };
+    assert!(matches!(call(exact).await, BuildClaimReply::Won { .. }), "the claim is decided for the executor the request names");
+    let build = p_builds.read_build(&id).await.unwrap();
+    assert_eq!((build.attempt, build.executor.as_deref()), (2, Some("mesh1.admin.2")), "attempt 2 is claimed for the executor the request names");
 }

@@ -15,7 +15,7 @@
 
 use crate::build::BuildId;
 use crate::build_state::{BuildAttemptClaim, BuildStateAdapter, ClaimOutcome};
-use crate::model::{EndpointId, NodeId, NodeKind, PathName};
+use crate::model::{EndpointId, NodeId, PathName};
 use crate::record_store::{FileRecords, StorageError};
 use crate::topology::Topology;
 use rafka_node_rpc::ServerBuilder;
@@ -150,7 +150,7 @@ impl ClaimDoor {
             BuildClaimReply::Lost { holder } => span.record("detail", holder.as_str()),
             BuildClaimReply::NotOpen { next } => span.record("detail", format!("next {next:?}").as_str()),
             BuildClaimReply::NotFabricPrimary { fabric_primary } => span.record("detail", format!("sees {fabric_primary:?}").as_str()),
-            BuildClaimReply::NotReady { reason } | BuildClaimReply::Unauthorized { reason } => span.record("detail", reason.as_str()),
+            BuildClaimReply::NotReady { reason } => span.record("detail", reason.as_str()),
             _ => &span,
         };
         span.in_scope(|| tracing::info!("attempt claim decided by the fabric-primary's log"));
@@ -174,28 +174,25 @@ impl ClaimDoor {
     }
 
     /// A request off the wire: the seat first (a receiver that is not the fabric-primary only
-    /// redirects), then the sender, taken from the authenticated peer and held to the request.
+    /// redirects), then the executor the request names, at its exact birth as this admin's view
+    /// holds it. Nothing checks who is calling (node-rpc.md §14): `peer` names the call, the claim
+    /// is decided for the executor named. A node or birth the view does not hold is refused by name
+    /// about that subject, and nothing is claimed.
     pub async fn serve(&self, peer: EndpointId, req: BuildClaimRequest) -> BuildClaimReply {
         let BuildClaimRequest::ClaimAttempt { build_id, attempt, executor_node_id, executor_incarnation } = req;
         if let Some(refusal) = self.not_fabric_primary().await {
             return refusal;
         }
-        let sender = self.topology.read().await.births().find(|n| n.endpoint_id.as_ref() == Some(&peer)).cloned();
-        let Some(sender) = sender else {
-            return BuildClaimReply::Unauthorized { reason: format!("{}: the calling endpoint {} is not a node of this admin's view", self.me, peer.0) };
+        let executor = self.topology.read().await.births().find(|n| n.node_id == executor_node_id).cloned();
+        let Some(executor) = executor else {
+            return BuildClaimReply::PeerUnresolved { reason: format!("{}: the request (from endpoint {}) names executor node {executor_node_id}, which is not in this fabric-primary's view", self.me, peer.0) };
         };
-        if sender.kind != NodeKind::NodeAdmin {
-            return BuildClaimReply::Unauthorized { reason: format!("{}: {} is a {:?}, and only a node-admin executes a Build", self.me, sender.name, sender.kind) };
-        }
-        if sender.node_id != executor_node_id {
-            return BuildClaimReply::Unauthorized { reason: format!("{}: the request names node {executor_node_id} and the caller is {} ({})", self.me, sender.name, sender.node_id) };
-        }
-        if sender.incarnation_id.as_ref() != Some(&executor_incarnation) {
-            return BuildClaimReply::Unauthorized {
-                reason: format!("{}: the request names birth {} of {} and this view holds {:?}", self.me, executor_incarnation.0, sender.name, sender.incarnation_id.as_ref().map(|i| &i.0)),
+        if executor.incarnation_id.as_ref() != Some(&executor_incarnation) {
+            return BuildClaimReply::PeerUnresolved {
+                reason: format!("{}: the request names birth {} of {} and this view holds {:?}", self.me, executor_incarnation.0, executor.name, executor.incarnation_id.as_ref().map(|i| &i.0)),
             };
         }
-        self.claim(&sender.name.to_string(), &BuildId(build_id), attempt).await
+        self.claim(&executor.name.to_string(), &BuildId(build_id), attempt).await
     }
 }
 

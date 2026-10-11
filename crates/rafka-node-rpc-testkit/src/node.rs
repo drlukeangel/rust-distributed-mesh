@@ -585,7 +585,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
     // cadence until an authority answers by name. An authority that does not yet hold this
-    // birth answers `sender-not-subject`; the next cadence carries the digest and the retry lands.
+    // birth answers `subject-unknown`; the next cadence carries the digest and the retry lands.
     // When the mesh's primary seat moves to another birth, this birth's state is owed to the new
     // holder (R-S2: a declaration is owed again when the authority is another node or a new
     // incarnation of the same node): that declaration is how the new primary learns this birth
@@ -987,8 +987,10 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// hands its peers to its mesh channel again, publishes its digest, and answers its current
 /// state; no transition. While its `hydrate_before_ready` hook is Blocked it answers `Blocked` with
-/// the hook's blocker and republishes nothing. `DrainNode` and `StopNode` from a node-admin are obeyed by
-/// `rafka_node_admin_core::node_self`. A stale incarnation is refused with the one held.
+/// the hook's blocker and republishes nothing. `DrainNode`, `StopNode` and `StartNode` are obeyed by
+/// `rafka_node_admin_core::node_self`. A stale incarnation is refused with the one held. Nothing
+/// checks who is calling (node-rpc.md §14): every request is decided on the target node id, the op
+/// and the exact birth it names; the caller is named in spans and is where a drain's completion goes.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
     b.serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: StatusRequest| {
@@ -1001,34 +1003,26 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // birth (a hook blocked on its authority's word runs again on it).
             let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
-            let from_admin = sender.as_ref().is_some_and(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin);
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default();
             if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
                 me.addressed.note(&from.node.node_id);
             }
             if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::DeleteConnections { .. }) {
-                let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) else {
-                    return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
-                };
-                let reply = me.own.serve(&from.node.node_id, Some(peer.endpoint_id), &req).await.expect("a command");
-                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+                let commander = sender.as_ref().map(|d| d.node.node_id.clone());
+                let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a node command naming this node was decided"));
                 return Ok(reply);
             }
             if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
-                // A round command is the mesh primary's: the node-admin holding this node's mesh seat.
+                // A member checks in with its mesh's primary: the node-admin holding this node's mesh
+                // seat (fabric-state-commit.md: "node → mesh-primary → fabric-primary").
                 let mesh = me.digest.node.name.mesh.clone();
-                let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.node.name.mesh == mesh) else {
-                    return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
-                };
                 let reply = match me.membership.seats().mesh(&mesh) {
                     None => StatusReply::NotReady { reason: format!("{} has not yet heard who holds the primary seat of {mesh}", me.digest.node.name) },
-                    Some(held) if !held.is_birth(&from.node.node_id, &from.node.incarnation) => {
-                        StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: from.node.name.to_string() } }
-                    }
-                    Some(_) => me.own.serve(&from.node.node_id, None, &req).await.expect("a round op"),
+                    Some(held) => me.own.serve(Some(&held.node_id), None, &req).await.expect("a round op"),
                 };
-                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a round command naming this node was decided"));
                 return Ok(reply);
             }
@@ -1036,8 +1030,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } => (node_id, incarnation),
                 _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             };
-            if *node_id != me.digest.node.node_id || !from_admin {
-                return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself, from a node-admin".into() } });
+            if *node_id != me.digest.node.node_id {
+                return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } });
             }
             if *incarnation != me.digest.node.incarnation {
                 return Ok(StatusReply::RejectedStaleIncarnation { held: me.digest.node.incarnation.clone() });
