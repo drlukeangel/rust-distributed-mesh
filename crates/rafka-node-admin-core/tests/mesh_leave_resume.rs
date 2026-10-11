@@ -965,6 +965,11 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
         let leaving = accepted_row(&steps, &outer, STEP_LEAVING_ROSTER).unwrap().unwrap().roster;
         let owner_facts = owner.facts().await.unwrap();
         let (roster, known) = admission_roster(&leaving, &steps, &outer, &survivor, || async { Ok(owner_facts) }).await.expect("the admission reads");
+        // Once its own Build facts hold the amendment naming it (gossip delivered it), the admission
+        // reads the owner for nothing and names the amended admission from its own facts.
+        let amended_steps = owner.read_build(&build_id).await.unwrap().steps;
+        let (from_own, none) = admission_roster(&leaving, &amended_steps, &outer, &survivor, || async { Err::<Vec<BuildFact>, String>("the owner is read although this admin's own facts name it final primary".into()) }).await.expect("the admission reads its own facts");
+        assert_eq!((sorted(from_own), none.len()), (sorted(roster.clone()), 0), "its own facts admit the same amended roster");
         let manifest = members_exited(&own, &key(2), OTHER_ADMIN, &roster, &survivor, survivor_runtime.clone(), &records, &known, |n: Node| {
             let ran = &ran;
             async move {
@@ -987,6 +992,7 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
     assert_eq!(births(&manifest.receipts), BTreeSet::from([FINAL.to_string()]), "the lost primary's exit receipt is in the manifest");
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     assert!(named("rdm.node_admin.mesh.resolve.via-owner-build-facts").iter().any(|s| s["attributes"]["amendments"] == "1" && s["attributes"]["me"].as_str().is_some_and(|m| m.contains(OTHER_ADMIN))), "the admission read the owner's Build facts");
+    assert!(named("rdm.node_admin.mesh.resolve.via-own-build-facts").iter().any(|s| s["attributes"]["amendments"] == "1" && s["attributes"]["me"].as_str().is_some_and(|m| m.contains(OTHER_ADMIN))), "the admission from its own facts names the amendment that admits it");
     assert!(named("rdm.node_admin.mesh.resolve.via-retained-receipts").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "1" && s["attributes"]["remaining"] == "0"));
 }
 
