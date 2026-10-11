@@ -4626,8 +4626,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     asked.push(c.name.to_string());
                                     let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
                                     let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, &kick_of(&node), &rafka_node_rpc::CallOptions::default()).await;
-                                    // The exact birth answered: its state, or its hook's blocker while that hook is Blocked.
-                                    if matches!(out.reply().map(|r| r.value()), Some(rafka_node_rpc_contract::status::StatusReply::Current { .. } | rafka_node_rpc_contract::status::StatusReply::Blocked { .. })) {
+                                    // The exact birth answered (node-recovery.md step 2): its state, parked or not, or
+                                    // its hook's blocker while that hook is Blocked.
+                                    let incarnation = node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new()));
+                                    if crate::seat_watch::birth_answered(out.reply().map(|r| r.value()), &node.node_id, &incarnation) {
                                         return crate::offline::ViaPeerVerdict::Answered { via: c.name.to_string() };
                                     }
                                 }
