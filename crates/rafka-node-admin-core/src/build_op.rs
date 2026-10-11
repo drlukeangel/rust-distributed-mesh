@@ -166,12 +166,12 @@ impl BuildDoor {
                 let opened = match self.admit_change(&change).await {
                     Ok(Admitted::Opened(o)) => o,
                     // A change keyed on a fact already applied (a recovery of a birth already
-                    // recovered): answered as a re-submit of a complete Build is, from the attempt
-                    // that applied it.
+                    // recovered): nothing runs and no drive is made or started (a drive of a Failed
+                    // Build would claim its next attempt); the terminal names the attempt whose
+                    // receipts applied it.
                     Ok(Admitted::AlreadyApplied(o)) => {
-                        let drive = self.drives.replay_of(&self.env, &o.build_id);
-                        let sink = started(sink, BuildReply::Started { build_id: o.build_id.0.clone(), attempt: o.attempt, disposition: Disposition::AlreadyApplied }).await?;
-                        return stream_frames(sink, drive.reader(o.attempt)).await;
+                        let _sink = started(sink, BuildReply::Started { build_id: o.build_id.0.clone(), attempt: o.attempt, disposition: Disposition::AlreadyApplied }).await?;
+                        return Ok(BuildReply::Complete { build_id: o.build_id.0, attempt: o.attempt });
                     }
                     Err(refusal) => return Ok(refusal),
                 };
