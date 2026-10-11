@@ -212,6 +212,22 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     // The forwarder leg: mesh2's ordinary nodes, which hear no backbone, hold it from what their
     // mesh primary forwards onto the mesh channel.
     assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
+    let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
+    // The final primary's own Draining (node-drain.md: Draining is live, so it still holds its seat and
+    // its aggregate publisher) reaches an admin outside the leaving mesh in mesh1's backbone Members.
+    let final_at_peer: Vec<&Value> = states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == final_name && s(&sp["attributes"]["node"]).starts_with("mesh2.admin.") && sp["attributes"]["channel"] == "backbone").collect();
+    assert!(final_at_peer.iter().any(|sp| s(&sp["attributes"]["status"]) == "Draining"), "a mesh2 admin held the final primary {final_name} Draining from mesh1's backbone Members: {final_at_peer:?}");
+    // Its Leaving and parked state reach every node from the stopped reply (node-stop.md steps 4-5): the
+    // owner publishes NodeStopped for it, and a mesh2 admin and a mesh2 ordinary node hold it Leaving and
+    // parked, not routable.
+    let final_parked: Vec<&Value> = leaving_states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == final_name && parked(sp)).collect();
+    assert!(final_parked.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.admin.")), "a mesh2 admin held the final primary {final_name} parked: {final_parked:?}");
+    assert!(final_parked.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.")), "a mesh2 ordinary node held the final primary {final_name} parked: {final_parked:?}");
+    // A stopped birth gossips nothing (node-stop.md step 4): once its connections are cut, the parked
+    // final primary announces no Leaving on any channel when its process is ended.
+    let cut_at = named(&spans, "rdm.node_admin.node.connections.delete.via-stop-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's connections were cut by its stop");
+    let after_cut: Vec<String> = named(&spans, "rdm.mesh.node.update.via-leave-announcement").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && start_ns(sp) > cut_at).map(|sp| format!("{}:{}", s(&sp["attributes"]["channel"]), s(&sp["attributes"]["outcome"]))).collect();
+    assert!(after_cut.is_empty(), "the parked final primary {final_name} announced nothing after its stop's cut: {after_cut:?}");
     // gossip.md, node-stopped lifecycle overlay: mesh1's primary publishes NodeStopped from each member's
     // matching stopped reply, for every member it stops. The overlay is a material change (gossip.md
     // "an in_flight overlay added or cleared" bumps topology_version), and the Members row publishes
@@ -227,7 +243,6 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     };
     let mesh1_publications: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
     let mesh1_wakes: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-material-change").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
-    let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
     assert!(!mesh1_wakes.is_empty(), "mesh1's primary's round was woken by its own projection's move");
     for m in &stopped_members {
         let at = stopped_at(m);
