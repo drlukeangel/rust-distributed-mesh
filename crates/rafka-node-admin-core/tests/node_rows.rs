@@ -260,15 +260,14 @@ fn parked(name: &str, config: &str) -> Node {
     n
 }
 
-/// CONTRACT: the node owns its name, no one else (R12): the fabric-primary's row follows a node's
-/// rename and never decides who may hold a name. A rename into a `path.name` whose row another node
-/// holds is written there, a blind put of the renaming node's held record (ops-naming "Node data":
-/// "writes the whole row from that held record"), its own config with it, and the old key is
-/// released; nothing is refused `NameHeld` at the fabric-primary (node-rpc-envelope.md "Meta and
-/// config": the insert-and-fail `NameHeld { by }` is the node's). A body that changes a field RDM
-/// owns is refused `MetaFieldIsRdmOwned` before anything is written. One `via-rename` span per call.
+/// CONTRACT: a rename into a `path.name` another node's live row holds is refused `NameHeld { by }`
+/// at the store adapter and nothing is written (R13; ops-naming "Node data": a changed name is
+/// claimed by insert-and-fail inside the store adapter; node-rpc-envelope.md "Meta and config"):
+/// the holder's row and the renaming node's row stay exactly as they were. A body that changes a
+/// field RDM owns is refused `MetaFieldIsRdmOwned` before anything is read or written. One
+/// `via-rename` span per call, its outcome the refusal's name.
 #[test]
-fn a_rename_into_a_name_another_row_holds_is_written_never_refused_name_held() {
+fn a_rename_into_a_name_another_live_row_holds_is_refused_name_held_and_nothing_is_written() {
     let cap = capture();
     cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -280,8 +279,9 @@ fn a_rename_into_a_name_another_row_holds_is_written_never_refused_name_held() {
         t.nodes.extend([holder.clone(), renaming.clone()]);
         let me_id = t.node(&me).expect("the fabric-primary is in the view").node_id.clone();
         let view = RwLock::new(t);
+        let rows_of = |n: &Node| NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone() };
         for n in [&holder, &renaming] {
-            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone() }).await.unwrap().unwrap();
+            storage.put_node_row(&rows_of(n)).await.unwrap().unwrap();
         }
         let rows = NodeRows::new(me.clone(), me_id, storage.clone());
         let held = meta_of(&renaming);
@@ -291,46 +291,49 @@ fn a_rename_into_a_name_another_row_holds_is_written_never_refused_name_held() {
         assert_eq!(rows.rename(&me, &view, &held, &exe).await, Err(RenameRefused::RdmOwned(rafka_node_admin_client::MetaFieldIsRdmOwned { field: rafka_node_admin_client::MetaField::Exe })));
         assert_eq!(storage.node_row_at(&renaming.name).await.unwrap().map(|r| r.node_id), Some(renaming.node_id.clone()), "a refused body moves nothing");
 
-        assert_eq!(rows.rename(&me, &view, &held, &body).await, Ok(()), "another node's row at the new name refuses nothing at the fabric-primary");
-        assert_eq!(storage.node_row_at(&holder.name).await.unwrap(), Some(NodeRow { name: holder.name.clone(), node_id: renaming.node_id.clone(), status: NodeStatus::Leaving, config: tier("silver") }), "the renamed node's row is at the new name with its own config");
-        assert_eq!(storage.node_row_at(&renaming.name).await.unwrap(), None, "the old key is released");
+        assert_eq!(
+            rows.rename(&me, &view, &held, &body).await,
+            Err(RenameRefused::NameHeld(rafka_node_admin_client::NameHeld { name: holder.name.clone(), by: holder.node_id.clone() })),
+            "another node's live row at the new name refuses the rename at the adapter"
+        );
+        assert_eq!(storage.node_row_at(&holder.name).await.unwrap(), Some(rows_of(&holder)), "the holder's row is untouched");
+        assert_eq!(storage.node_row_at(&renaming.name).await.unwrap(), Some(rows_of(&renaming)), "the renaming node keeps its own row: nothing is released");
     });
     let spans = cap.spans_named("rdm.node_admin.node.update.via-rename");
     let outcomes: Vec<&str> = spans.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
-    assert_eq!(outcomes, vec!["meta-field-is-rdm-owned", "renamed"], "{spans:#?}");
-    eprintln!("trace {}: rdm.node_admin.node.update.via-rename from=mesh1.rpc.1 to=mesh1.rpc.1.old outcome=renamed over another node's row", spans[1]["trace_id"].as_str().unwrap_or(""));
+    assert_eq!(outcomes, vec!["meta-field-is-rdm-owned", "name-held"], "{spans:#?}");
+    eprintln!("trace {}: rdm.node_admin.node.update.via-rename from=mesh1.rpc.1 to=mesh1.rpc.1.old outcome=name-held over another node's live row", spans[1]["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT: the fabric-primary never refuses or delays a birth's row because another node's row
-/// holds its `path.name` (R12: the node owns its name; ops-naming "Node data": the fabric-primary
-/// writes the whole row from its held record, a blind put of the `path.name` key). A birth its view
-/// holds at a name whose row another live node holds gets its row at the view install, seeded from
-/// that previous row at the `path.name`: never `name-held`, never `awaits-rename`. One `via-node-row`
-/// span names it.
+/// CONTRACT: two nodes never hold one name (R13 acceptance): a birth at a `path.name` whose row
+/// another live node holds gets no row; the store adapter's insert-and-fail refuses it `NameHeld`
+/// naming the holder, and the holder's row stays exactly as it was. One `via-node-row` span names
+/// the refusal.
 #[test]
-fn a_birth_at_a_name_another_live_nodes_row_holds_gets_its_row_at_once() {
+fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothing_is_written() {
     let cap = capture();
-    let (row, born, other) = cap.run(async {
+    let (row, born, held) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let records = Records::default();
         let topology = RwLock::new(view());
         let me_id = topology.try_read().expect("the view is free").node(&me).expect("the admin is in the view").node_id.clone();
         records.set_rows(Arc::new(NodeRows::new(me, me_id, storage.clone())));
-        let other = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: other.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver") }).await.unwrap().unwrap();
+        let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver") };
+        storage.put_node_row(&held).await.unwrap().unwrap();
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         install(&records, &topology, move |v| v.nodes.push(birth)).await;
-        (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, other)
+        (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, held)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver") }), "the birth's row is written at its path.name, seeded from the previous row there");
+    assert_eq!(row, Some(held.clone()), "the holder's row stands; nothing of the birth is written");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let ours: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
     assert_eq!(ours.len(), 1, "{spans:#?}");
     let a = &ours[0]["attributes"];
-    assert_eq!((a["outcome"].as_str(), a["seeded_from"].as_str()), (Some("row-seeded"), Some(other.as_str())), "{a:#?}");
-    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.2 outcome=row-seeded over another live node's row", ours[0]["trace_id"].as_str().unwrap_or(""));
+    assert_eq!(a["outcome"].as_str(), Some("name-held"), "{a:#?}");
+    assert!(a["detail"].as_str().is_some_and(|d| d.contains(held.node_id.as_str())), "the refusal names the holder: {a:#?}");
+    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.2 outcome=name-held over another live node's row", ours[0]["trace_id"].as_str().unwrap_or(""));
 }
 
 /// CONTRACT: the fabric-primary writes a new birth's row from the record it holds (ops-naming "Node
@@ -535,15 +538,13 @@ fn a_recovered_nodes_row_moves_to_old_ends_deleted_and_its_successor_is_seeded_f
     assert_eq!((a["subject"].as_str(), a["seeded_from"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1"), Some(pred.as_str()), Some("row-seeded")), "{a:#?}");
 }
 
-/// CONTRACT: the fabric-primary's row follows its view and never waits on a rename (R12: the node
-/// owns its name, not the fabric-primary). Here the successor enters the fabric-primary's view (a
-/// peer of the executor: its view takes the successor at the path.name, the predecessor never
-/// renamed in it) BEFORE the executor's `RenamePredecessor` frame is handled. Its row is written at
-/// that view install, seeded from the previous row at the path.name (the predecessor's): no
-/// `awaits-rename`. The `RenamePredecessor` move then writes the predecessor's row at `.old` and
-/// releases nothing of the successor's. The end rows are the ones the in-order replace leaves.
+/// CONTRACT: a successor never takes a name its predecessor's row still holds (R13: two nodes never
+/// hold one name; the store adapter's insert-and-fail refuses `NameHeld`). Here the successor enters
+/// the writer's view at the path.name before the replace's `RenamePredecessor` is handled: its row is
+/// refused `name-held` naming the predecessor, and nothing of it is written. `RenamePredecessor` then
+/// moves the predecessor's row to `.old` and lets go of the path.name, which no row holds after.
 #[test]
-fn a_successor_heard_before_the_predecessor_lets_go_gets_its_row_at_once() {
+fn a_successor_heard_before_the_predecessor_lets_go_is_refused_name_held_and_the_rename_frees_the_name() {
     let cap = capture();
     let (old_row, row, pred, succ, pred_status) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -574,17 +575,16 @@ fn a_successor_heard_before_the_predecessor_lets_go_gets_its_row_at_once() {
     });
     assert!(pred_status.is_live(), "the predecessor was held live from its DrainNode: {pred_status:?}");
     assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold") }), "the predecessor's row moved to .old, parked (its stop preceded the rename), its config kept");
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the successor holds the path.name with the .old row's config");
+    assert_eq!(row, None, "the successor was refused while the predecessor held the name, and the rename let it go");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     assert_eq!(renames.len(), 1, "{renames:#?}");
     let a = &renames[0]["attributes"];
     assert_eq!((a["from"].as_str(), a["to"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1"), Some("mesh1.rpc.1.old"), Some("renamed")), "{a:#?}");
     let claims: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == succ.as_str()).collect();
     let outcomes: Vec<&str> = claims.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
-    assert_eq!(outcomes, vec!["row-seeded"], "{claims:#?}");
-    let a = &claims[0]["attributes"];
-    assert_eq!((a["subject"].as_str(), a["seeded_from"].as_str()), (Some("mesh1.rpc.1"), Some(pred.as_str())), "{a:#?}");
-    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.1 outcome=row-seeded before the rename; trace {}: via-rename outcome=renamed", claims[0]["trace_id"].as_str().unwrap_or(""), renames[0]["trace_id"].as_str().unwrap_or(""));
+    assert_eq!(outcomes, vec!["name-held"], "{claims:#?}");
+    assert!(claims[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains(pred.as_str())), "the refusal names the predecessor: {claims:#?}");
+    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.1 outcome=name-held before the rename; trace {}: via-rename outcome=renamed", claims[0]["trace_id"].as_str().unwrap_or(""), renames[0]["trace_id"].as_str().unwrap_or(""));
 }
 
 /// CONTRACT: a fabric-primary that took the seat after the replace's first step (it holds no
