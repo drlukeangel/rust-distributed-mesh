@@ -200,4 +200,12 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(s(&new_admin["mesh"]), "mesh2");
     let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["incarnation_id"] == new_admin["incarnation_id"]).expect("the recreated mesh2.admin.1 reports ready");
     assert_eq!(s(&ready["attributes"]["mesh_id"]), s(&m2["id"]), "under the new MeshId");
+    // A mesh created again is a new mesh (R-MN1): the removed mesh's births departed at mesh-left,
+    // so its first admin enters from none of them, and each member is a create over the Deleted
+    // rows, never a replace of a removed birth.
+    let old_ids: BTreeSet<String> = regrown.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["node_id"])).collect();
+    let swept_old: Vec<&Value> = named(&spans, "rdm.node_admin.node.reject.via-entry-sweep-no-reply").into_iter().filter(|sp| old_ids.contains(&s(&sp["attributes"]["node_id"]))).collect();
+    assert!(swept_old.is_empty(), "the recreated mesh's first admin holds no birth of the removed mesh: {swept_old:?}");
+    let replaced: Vec<&Value> = spans.iter().filter(|sp| s(&sp["attributes"]["operation"]).starts_with("replace-node:mesh2.")).collect();
+    assert!(replaced.is_empty(), "no member of the recreated mesh is a replace: {:?}", replaced.iter().map(|sp| (s(&sp["name"]), s(&sp["attributes"]["operation"]))).collect::<Vec<_>>());
 }

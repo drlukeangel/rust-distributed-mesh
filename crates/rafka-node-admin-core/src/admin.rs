@@ -948,6 +948,14 @@ fn held_births(book: &DigestBook, fabric: &FabricId, me: &NodeId) -> Vec<MeshDig
     book.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
 }
 
+/// The contacts this admin drops from nodes.storage, of `written`, the contacts it holds, given
+/// `held`, the births its book holds: a contact whose birth the book no longer holds, at a path
+/// another logical node now holds.
+fn dropped_contacts(written: &HashMap<NodeId, crate::storage::NodeRecord>, held: &[MeshDigest], departed: impl Fn(&NodeId) -> bool) -> Vec<NodeId> {
+    let _ = &departed;
+    written.values().filter(|w| !held.iter().any(|d| d.node.node_id == w.node_id) && held.iter().any(|d| d.node.name == w.name)).map(|w| w.node_id.clone()).collect()
+}
+
 /// The provider's proof that the exact birth a digest or a durable row names exited: the runtime
 /// fact is the digest's (when it is of this birth) or the row's, adopted in this provider's control
 /// domain and inspected, and only the runtime's own terminal status counts. `Ok` carries the exit
@@ -4352,12 +4360,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         written.insert(r.node_id.clone(), r);
                     }
                 }
-                let replaced: Vec<NodeId> = written
-                    .values()
-                    .filter(|w| !held.iter().any(|d| d.node.node_id == w.node_id) && held.iter().any(|d| d.node.name == w.name))
-                    .map(|w| w.node_id.clone())
-                    .collect();
-                for id in replaced {
+                for id in dropped_contacts(&written, &held, |id| book.is_departed(id.as_str())) {
                     if nodes_storage.remove_contact(&id).await.is_ok() {
                         written.remove(&id);
                     }
@@ -5482,6 +5485,25 @@ mod tests {
             gossip: None,
             data_dir: None,
         }
+    }
+
+    /// CONTRACT (mesh-leave.md step 7: "Departed births resolve Gone"; R-MN1: "a mesh created again
+    /// is a new mesh"): a contact is a bootstrap hint for a birth this admin holds, never a record of
+    /// one that is gone. A birth the book holds departed (node.delete's NodeDeleted, or mesh-left,
+    /// which departs every birth of the removed mesh) is dropped from the contacts, so a maker's
+    /// stored map never hands a removed mesh's births to the first admin of a mesh created again
+    /// under the same name. A contact replaced at its path by another logical node is dropped as
+    /// before; a contact of a birth that is simply not held now (silent, not departed) is kept.
+    #[test]
+    fn a_departed_births_contact_is_dropped_and_a_silent_ones_is_kept() {
+        let record = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
+        let (departed, silent, replaced, successor) = (digest("mesh2.rpc.1", MemberStatus::Leaving), digest("mesh2.rpc.2", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic));
+        let written: HashMap<NodeId, crate::storage::NodeRecord> = [&departed, &silent, &replaced].into_iter().map(|d| (d.node.node_id.clone(), record(d))).collect();
+        let mut dropped = dropped_contacts(&written, std::slice::from_ref(&successor), |id| id == &departed.node.node_id);
+        dropped.sort();
+        let mut want = vec![departed.node.node_id.clone(), replaced.node.node_id.clone()];
+        want.sort();
+        assert_eq!(dropped, want, "the departed birth's and the replaced birth's contacts go; the silent one's stays");
     }
 
     fn view(digests: &[MeshDigest]) -> Topology {
