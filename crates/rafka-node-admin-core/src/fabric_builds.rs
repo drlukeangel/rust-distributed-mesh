@@ -27,8 +27,7 @@ use crate::build_state::{
 };
 use crate::fabric_storage::FabricRecord;
 use futures_lite::StreamExt as _;
-use iroh::address_lookup::MemoryLookup;
-use iroh::{Endpoint, EndpointAddr};
+use iroh::EndpointAddr;
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
@@ -224,7 +223,7 @@ impl FabricBuildStateAdapter {
     /// this admin in evidence.
     pub async fn join(
         gossip: &Gossip,
-        endpoint: &Endpoint,
+        book: &rafka_mesh_transport::membership::LocationBook,
         fabric: &rafka_mesh_entity::FabricId,
         peers: Vec<EndpointAddr>,
         local: Arc<dyn LocalBuildLog>,
@@ -235,11 +234,9 @@ impl FabricBuildStateAdapter {
     ) -> Result<Self, BuildStateError> {
         let io = |e: String| BuildStateError::Io(format!("fabric Build topic {fabric}: {e}"));
         let node_name = node.clone();
-        let lookup = MemoryLookup::new();
         for p in &peers {
-            lookup.add_endpoint_info(p.clone());
+            book.fill(p);
         }
-        endpoint.address_lookup().map_err(|e| io(e.to_string()))?.add(lookup);
         // Seeds are bootstrap hints, never a start barrier: a recorded seed can be dead (an admin
         // that restarted binds a new mesh port), and a dead seed must not keep this admin from the
         // point where it can take part in recovery. Subscribe locally; the seeds are dialled as the

@@ -163,8 +163,13 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
     drop(telemetry);
     let spans = spans_of(&dir);
     let refreshed: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.connection.update.via-peer-location-refreshed").collect();
-    assert!(
-        refreshed.iter().any(|s| s["attributes"]["old_socket"] == x.to_string() && s["attributes"]["new_socket"] == y.to_string()),
-        "the move is named in the trace: {refreshed:#?}"
-    );
+    for observer in ["mesh1.admin.1", "mesh1.rpc.1"] {
+        assert!(
+            refreshed.iter().any(|s| s["attributes"]["observer"] == observer
+                && s["attributes"]["old_socket"] == x.to_string()
+                && s["attributes"]["new_socket"] == y.to_string()
+                && s["attributes"]["retired"] == "true"),
+            "{observer} names the move from {x} to {y} and the retirement of the old paths: {refreshed:#?}"
+        );
+    }
 }
