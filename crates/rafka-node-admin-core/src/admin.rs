@@ -914,6 +914,7 @@ pub async fn reconcile_drift(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     builds: &dyn BuildStateAdapter,
     contexts: &crate::build_claim::AttemptContexts,
+    admission: &tokio::sync::Mutex<()>,
     durable: &[crate::storage::RuntimeRow],
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     held: &mut HashSet<(NodeId, IncarnationId)>,
@@ -1112,6 +1113,18 @@ pub async fn reconcile_drift(
         opened_by: me.to_string(),
         opened_at_ms: time.now_ms(),
     };
+    // The same admission a submitted change takes, held to the attempt's durable write: the attempt
+    // opens on the Build that is still the accepted one, still settled, at the same attempt, or
+    // nothing opens (and nothing of it is written).
+    let _admitted = admission.lock().await;
+    match accepted.current(builds).await {
+        Some(now) if now.build_id == current.build_id && now.attempt == current.attempt && !matches!(now.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) => {}
+        other => {
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route = "proven-drift", build_id = %current.build_id, attempt, scope = %scope, accepted_now = %other.map(|b| format!("{} {:?}", b.build_id, b.state)).unwrap_or_default())
+                .in_scope(|| tracing::info!("another Build was admitted first: no drift attempt"));
+            return None;
+        }
+    }
     // The attempt's context is this span, on this fabric-primary, before the attempt is open to be claimed.
     if let Err(e) = contexts.put(&current.build_id, attempt, &span.in_scope(crate::build_claim::current_context)).await {
         span.in_scope(|| tracing::info!(error = %e, "the attempt's context could not be recorded; the attempt is not opened"));
@@ -4415,6 +4428,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
         let (me, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
+        let drift_admission = control.admission.clone();
         let (drives, drive_env) = (drives.clone(), drive_env.clone());
         let frozen = shutdown_control.clone();
         let drift_time = rafka_time.clone();
@@ -4439,7 +4453,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-let opened =                     reconcile_drift(&drift_time, &me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh, round).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+let opened =                     reconcile_drift(&drift_time, &me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh, round).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                     // proven exited is not live there, and holds no seat.
                     if opened.is_some() {
