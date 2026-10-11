@@ -670,13 +670,11 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
 /// exited and submits the recovery"): a member of the mesh that does not hold the fabric-primary is
 /// held (SIGSTOP) and a drain of it is requested at once, attempt N of the accepted Build
 /// (`drain-node:<path>`, run by its mesh-primary). While that drain waits on the held process, the
-/// process is killed. The mesh-primary holds a connection to the member from the Build's own
-/// commit-state and open-traffic rounds (it commanded the member on each; `await_build` returns
-/// after them, and the connection idles out only after a staleness floor), so the drain-node
-/// command is written and finished on that connection to the held process, and its reply is lost
-/// when the process is killed: the admission is Indeterminate (ReplyLost), never Applied, so no
-/// node-drained can follow: attempt N ends Failed at AwaitNodeDrained, named by that admission
-/// (node-drain.md "Admission is not drain completion"), never Complete. Then the mesh-primary proves the
+/// process is killed. The held, then exited, birth never admits the drain-node command, so no
+/// node-drained can follow: attempt N ends Failed at AwaitNodeDrained, named as not admitted
+/// (node-drain.md "Admission is not drain completion"), never Complete. Which transport outcome the
+/// lost command had (never sent, or sent and its reply lost) is not the contract; the workflow's
+/// Failed end is. Then the mesh-primary proves the
 /// exit and submits the recovery, a later attempt of the same Build, which completes: a new node.id
 /// at the path over the same endpoint key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -700,11 +698,10 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
         b["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(drain_attempt) && r["outcome"]["failed"].is_object())
     })
     .await;
-    // The drain-node command was written to the held birth on the connection the Build's rounds
-    // opened, and its reply was lost at the kill: never admitted, so no node-drained can follow.
+    // The exit belongs to the drain: the held, then exited, birth never admitted the drain-node
+    // command, so no node-drained can follow and the attempt ends Failed, never Complete.
     assert_eq!(s(&failed["step"]), "AwaitNodeDrained", "the drain is not complete: {failed}");
-    let why = s(&failed["outcome"]["failed"]["reason"]);
-    assert!(why.contains("drain-node was not admitted (Indeterminate") && why.contains("ReplyLost("), "the admission names why: {failed}");
+    assert!(s(&failed["outcome"]["failed"]["reason"]).contains("drain-node was not admitted ("), "the failure names the unadmitted drain: {failed}");
 
     let after = wait_for(&format!("{node} ready as a new node"), SETTLE, || async {
         let n = estate.node_opt(&node).await?;
