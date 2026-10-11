@@ -8,16 +8,17 @@
 //! Exited, amends the roster with the new final primary, and finishes: completion covers the
 //! accepted roster plus the amendment, both primary births included.
 //!
-//! Two forms: (a) a surviving admin of mesh2 the election seats; (b) no admin of mesh2 survives,
-//! and the fabric-primary creates the one node-admin the leaving mesh may gain.
+//! This stem is form (a): a surviving admin of mesh2 the election seats. Form (b), no admin of mesh2
+//! survives and the fabric-primary creates the one node-admin the leaving mesh may gain, is
+//! `mesh_lifecycle__mesh_leave_no_survivor`, over the shared run and assertions here.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-fn owner(test: &str) -> Owner {
+pub(crate) fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-lifecycle".into(),
@@ -28,31 +29,31 @@ fn owner(test: &str) -> Owner {
     }
 }
 
-fn s(v: &Value) -> String {
+pub(crate) fn s(v: &Value) -> String {
     v.as_str().map(str::to_string).unwrap_or_else(|| if v.is_null() { String::new() } else { v.to_string() })
 }
 
-fn attr_u(sp: &Value, k: &str) -> u64 {
+pub(crate) fn attr_u(sp: &Value, k: &str) -> u64 {
     sp["attributes"][k].as_str().and_then(|v| v.parse().ok()).or_else(|| sp["attributes"][k].as_u64()).unwrap_or(0)
 }
 
-fn start_ns(sp: &Value) -> u64 {
+pub(crate) fn start_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
 /// What one form's run leaves to assert on.
-struct Run {
-    build: Value,
-    spans: Vec<Value>,
-    mesh2_id: String,
-    lost: (String, String),
-    b: String,
+pub(crate) struct Run {
+    pub(crate) build: Value,
+    pub(crate) spans: Vec<Value>,
+    pub(crate) mesh2_id: String,
+    pub(crate) lost: (String, String),
+    pub(crate) b: String,
 }
 
 /// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's door at rpc.2's DrainNode
 /// receipt, submit {mesh1}, kill the held primary by exact pid, and wait for the Build to complete
 /// on a later attempt.
-async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32) -> Run {
+pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32) -> Run {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let root = estate.root.clone();
@@ -120,7 +121,7 @@ async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32) -> Run {
 
 /// The receipts and spans both forms share: the lost primary's exit recorded before the
 /// amendment, one amendment admitting `next`, and a MeshLeft covering the accepted roster plus it.
-fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
+pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
     let Run { build, spans, mesh2_id, lost, b } = run;
     let outer = format!("shutdown-mesh:{mesh2_id}");
     let steps: Vec<Value> = build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["operation"] == outer.as_str()).collect();
@@ -175,21 +176,4 @@ async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_adm
     let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2).collect();
     assert!(!resumed.is_empty(), "the survivor resumed the leave's tiers on a later attempt");
     assert!(named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").is_empty(), "a surviving admin needs no created one");
-}
-
-/// CONTRACT: mesh2's only admin, killed while it holds rpc.2's drain receipt, leaves no admin of
-/// the mesh: the fabric-primary proves and records its exact Exited first, creates the one
-/// node-admin the leaving mesh may gain at a path no birth held, amends the roster for it, and
-/// the resumed attempt finishes; MeshLeft covers the four births, both primaries.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_fabric_primary_creates() {
-    let run = primary_lost_mid_leave("a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_fabric_primary_creates", 1).await;
-    let created: Vec<&Value> = named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").into_iter().filter(|sp| sp["attributes"]["outcome"] == "created").collect();
-    assert_eq!(created.len(), 1, "the fabric-primary created one admin for mesh2: {created:?}");
-    assert_eq!(s(&created[0]["attributes"]["node"]), "mesh2.admin.2", "{}", created[0]);
-    let amended = assert_resumed(&run, "mesh2.admin.2", 4);
-    assert!(start_ns(created[0]) < start_ns(&amended), "the admin is created before the amendment admits it");
-    let outer = format!("shutdown-mesh:{}", run.mesh2_id);
-    let admitted: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-owner-admitted-roster").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str()).collect();
-    assert!(admitted.iter().any(|sp| attr_u(sp, "amendments") == 1), "the created admin runs the owner's accepted roster plus the amendment: {admitted:?}");
 }
