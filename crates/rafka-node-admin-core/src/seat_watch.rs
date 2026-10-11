@@ -91,6 +91,24 @@ pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view
     }
 }
 
+/// What the committed fabric seat record says of `me`'s Build authority (node-rpc-envelope.md
+/// TakeSeats: "The row is the fence: P's execution authority ends at the row's epoch ... and no
+/// separate fence write precedes or follows it"). A record naming this birth, naming none, or naming
+/// a birth proven gone (`lost`: a vacancy the election fills before this birth's own record lands)
+/// ends nothing; a record naming another live birth ended this birth's authority at its epoch, and
+/// names that birth's path.name from `name_of` (the digest book, which holds a birth before the
+/// projected view does). Read from the record alone: no history, no write.
+pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
+    match record {
+        Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
+            let to = name_of(&h.node_id);
+            let by = format!("the fabric seat record names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.0, h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
+            crate::fabric_builds::SeatRecord::Moved { by, to }
+        }
+        _ => crate::fabric_builds::SeatRecord::Open,
+    }
+}
+
 /// The pass: `me` is this admin's exact birth, `heard` the Concerns drained since the last pass.
 pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHeard], said: &mut Said) -> Plan {
     let silent: HashSet<Birth> = view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect).filter_map(birth).collect();
