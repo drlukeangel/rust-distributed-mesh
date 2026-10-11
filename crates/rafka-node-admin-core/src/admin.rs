@@ -775,7 +775,9 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         } else {
             NodeStatus::PendingReconnect
         };
-        n.routable = n.status.is_live() && book.routable(d.node.node_id.as_str());
+        // Application routing (states.md "Routing"): the birth listed ready-for-traffic, and the book
+        // holds it and its mesh ready-for-traffic. Anything else is a routing stop.
+        n.routable = n.status == NodeStatus::ReadyForTraffic && book.routable(d.node.node_id.as_str());
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
         n.config = d.config.clone();
@@ -5161,7 +5163,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 if let Some(b) = accepted.current(&*adapter).await {
                     records.set_planned(&b.topology);
                 }
-                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == "ready-for-traffic")).cloned().collect());
+                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == rafka_mesh_transport::membership::MESH_READY_FOR_TRAFFIC)).cloned().collect());
                 // Decide on the view as it is now: a cached view can predate the seat record this admin holds
                 // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
                 // The seat records are read once per decision: the projection elects from them and

@@ -869,6 +869,10 @@ impl StatusPublisher {
     }
 }
 
+/// The mesh status a `Frame::MeshStatus` carries for a ready-for-traffic mesh (states.md: a mesh is
+/// `pending` -> `ready-for-traffic` -> `leaving` -> `dead`).
+pub const MESH_READY_FOR_TRAFFIC: &str = "ready-for-traffic";
+
 /// The statuses a node holds, each until the next change: a mesh's by its name, the fabric's. A
 /// frame older than the one held is refused by name, the same one again is taken once.
 #[derive(Debug, Clone, Default)]
@@ -3969,16 +3973,21 @@ impl DigestBook {
         (mine(self.in_flight()), mine(self.departed()))
     }
 
-    /// May application routing select this node: held, not departed, under no open lifecycle
-    /// overlay, and its own held state takes new work. A member saying Draining (live and not
-    /// routable, R-SC11) or Leaving takes none, whichever mesh it is in and however this book
-    /// learnt it (R4). The resolver never reads this.
+    /// May application routing select this node (states.md "Routing"): only while the birth is
+    /// ready-for-traffic and its mesh is ready-for-traffic, as this book holds them. Anything else is
+    /// a routing stop from the moment this book holds the fact that says so: no held digest, a
+    /// departure, an open lifecycle overlay (NodeStopped, NodeRestarting, NodeDeleting), a held
+    /// status other than ready-for-traffic, or a mesh status not held ready-for-traffic. A stop is
+    /// never a barrier: the same birth's later ready-for-traffic, or its mesh's, restores selection.
+    /// The resolver and the Node RPC client never read this; only application routing does.
     pub fn routable(&self, node_id: &str) -> bool {
-        use rafka_mesh_entity::MemberStatus::{Draining, Leaving};
         if self.is_departed(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
             return false;
         }
-        self.inner.lock().unwrap().get(node_id).is_some_and(|(d, _, _)| !matches!(d.status, Draining | Leaving))
+        let Some(mesh) = self.inner.lock().unwrap().get(node_id).filter(|(d, _, _)| d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic).map(|(d, _, _)| d.node.name.mesh.clone()) else {
+            return false;
+        };
+        self.statuses.mesh(&mesh).is_some_and(|m| m.status == MESH_READY_FOR_TRAFFIC)
     }
 
     /// Hold `d` as its member's latest word, unless it is older than what is
@@ -4474,6 +4483,7 @@ mod tests {
     #[test]
     fn a_deleting_overlay_keeps_the_node_held_and_not_routable_and_a_departure_removes_it() {
         let book = DigestBook::default();
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         assert!(book.routable(id.as_str()));
@@ -4499,6 +4509,7 @@ mod tests {
     #[test]
     fn a_restart_holds_the_birth_until_the_same_birth_rejoins() {
         let book = DigestBook::default();
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         let r = op(&id, &inc, "restart-node:mesh1.rpc.1");
@@ -4513,7 +4524,9 @@ mod tests {
         assert!(book.restart_of(id.as_str(), &inc).is_some(), "the Leaving does not end the restart");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 300)), "the same birth's start is taken");
         assert!(book.restart_of(id.as_str(), &inc).is_none(), "the same birth rejoining closes the restart");
-        assert!(book.routable(id.as_str()));
+        assert!(!book.routable(id.as_str()), "the rejoined birth is Pending: a routing stop until it says ready-for-traffic");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 310)));
+        assert!(book.routable(id.as_str()), "its ready-for-traffic restores selection");
         assert!(book.departed().is_empty(), "a restart departs nothing");
         assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, inc, "the book shows the same birth throughout");
     }
@@ -4525,6 +4538,7 @@ mod tests {
     #[test]
     fn a_stopped_birth_leaves_the_book_and_only_its_own_rejoin_brings_it_back() {
         let book = DigestBook::default();
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
@@ -4544,7 +4558,9 @@ mod tests {
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 120)), "its own rejoin is taken");
         assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, inc, "the same birth");
         assert!(book.in_flight().is_empty(), "the rejoin closes the stop");
-        assert!(book.routable(id.as_str()));
+        assert!(!book.routable(id.as_str()), "the rejoined birth is Pending: a routing stop until it says ready-for-traffic");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 125)));
+        assert!(book.routable(id.as_str()), "its ready-for-traffic restores selection");
         // A departure ends a stop for good.
         let o2 = op(&id, &inc, "stop-node:mesh1.rpc.1");
         assert!(book.stopped(LifecycleOp { attempt: 2, ..o2 }));
@@ -4598,6 +4614,7 @@ mod tests {
     #[test]
     fn an_ended_restart_or_stop_overlay_is_not_opened_again_by_a_later_copy() {
         let book = DigestBook::default();
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         let restart = op(&id, &inc, "restart-node:mesh1.rpc.1");
@@ -4606,7 +4623,8 @@ mod tests {
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 120)));
         assert!(book.restart_of(id.as_str(), &inc).is_none());
         assert!(!book.restarting(restart), "the same operation again opens nothing");
-        assert!(book.routable(id.as_str()));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 125)));
+        assert!(book.routable(id.as_str()), "no overlay holds it: the ready birth of a ready mesh is selected");
         let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
         assert!(book.stopped(stop.clone()));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 130)));
@@ -5150,6 +5168,9 @@ mod tests {
         // leaving primary's next aggregate carries its members' own Draining and Leaving.
         let primary = View::new("mesh2", "mesh2.admin.1");
         primary.primary.store(true, Ordering::Relaxed);
+        // mesh1's primary published mesh1 ready-for-traffic before the leave; the joiner learns it
+        // from the replay.
+        primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }, &fabric, "backbone");
         for (version, digests) in [(1, vec![admin.clone(), draining.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&draining, MemberStatus::Draining), said(&leaving, MemberStatus::Leaving)])] {
             let taken = primary.take_snapshot(&members(version, digests), &fabric, Side::Backbone);
             let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
@@ -5203,7 +5224,7 @@ mod tests {
         );
         assert!(!joiner.book.routable(draining.node.node_id.as_str()), "a member saying Draining takes no new work");
         assert!(!joiner.book.routable(leaving.node.node_id.as_str()), "a member saying Leaving takes no new work");
-        assert!(joiner.book.routable(admin.node.node_id.as_str()), "a member still saying ReadyForTraffic is routed by its own state: no mesh-level hold");
+        assert!(joiner.book.routable(admin.node.node_id.as_str()), "a member still saying ReadyForTraffic, of a mesh the joiner holds ready-for-traffic, is selected");
     }
 
     /// CONTRACT (gossip.md, "Snapshot, delta and top-up agreement": after mesh-left the mesh is absent
