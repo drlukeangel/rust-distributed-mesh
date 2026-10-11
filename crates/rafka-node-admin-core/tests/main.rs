@@ -68,4 +68,5 @@ mod recovery_admission;
 mod restart_hold_from_facts;
 mod seat_transfer_step;
 mod status_declarations;
+mod stopped_gc;
 mod topology_read;
