@@ -363,7 +363,7 @@ fn local_now_ms() -> u64 {
 /// down its ladder.
 pub async fn run(w: Watch) {
     let w = Arc::new(w);
-    let inv = Investigations::new(w.me.to_string(), w.ladder.clone());
+    let inv = Investigations::new(w.me.to_string(), w.ladder.clone(), w.gate.clone());
     // When this admin took the fabric-primary seat: a peer mesh it has never heard is unheard from then.
     let mut seat_since: Option<Instant> = None;
     let mut wait = w.round;
@@ -465,11 +465,13 @@ pub(crate) struct Investigations {
     probes: Mutex<tokio::task::JoinSet<()>>,
     /// Woken when a probe ends, so the step it opens (probe 2, the decision) is taken then.
     landed: Arc<tokio::sync::Notify>,
+    /// The admin's park gate: a probe in flight while the admin is parked is held where it stands.
+    gate: crate::park_gate::ParkGate,
 }
 
 impl Investigations {
-    pub(crate) fn new(me: String, ladder: Arc<Mutex<Ladder>>) -> Self {
-        Self { me, ladder, probes: Mutex::new(tokio::task::JoinSet::new()), landed: Arc::new(tokio::sync::Notify::new()) }
+    pub(crate) fn new(me: String, ladder: Arc<Mutex<Ladder>>, gate: crate::park_gate::ParkGate) -> Self {
+        Self { me, ladder, probes: Mutex::new(tokio::task::JoinSet::new()), landed: Arc::new(tokio::sync::Notify::new()), gate }
     }
 
     /// Resolves when a probe has ended since the last wake.
@@ -992,7 +994,7 @@ mod tests {
     /// runs, or a decision taken with a probe outstanding.
     #[tokio::test(start_paused = true)]
     async fn a_running_probe_never_holds_the_ladder() {
-        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))));
+        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::park_gate::ParkGate::new());
         let ended = Arc::new(Mutex::new(Vec::<(u8, u64)>::new()));
         let t0 = tokio::time::Instant::now();
         let mut log: Vec<Step> = Vec::new();
@@ -1018,6 +1020,43 @@ mod tests {
         assert!(asked(2).len() == 1 && asked(2)[0] >= end(1), "probe 2 is asked once, after probe 1 ended at {} ms: {log:?}", end(1));
         let decided: Vec<u64> = log.iter().filter_map(|s| if let Step::Decide { rebirth: true, unheard_ms, .. } = s { Some(*unheard_ms) } else { None }).collect();
         assert!(decided.len() == 1 && decided[0] >= end(2), "the decision is taken once, after probe 2 ended at {} ms: {decided:?}", end(2));
+    }
+
+    /// CONTRACT (node-stop: a stopped admin's tasks are held, and it says nothing once cut;
+    /// park_gate.rs: a task that takes no lock a handler needs is held where it stands while the gate
+    /// is parked): a probe the investigation started before its admin parked makes no step while the
+    /// admin is parked, and finishes, from where it was, once the gate opens. Must NOT happen: a
+    /// stopped admin's probe going on to its next call (a ping, a status kick through a peer) after
+    /// the stop cut its connections.
+    #[tokio::test(start_paused = true)]
+    async fn a_probe_in_flight_when_the_admin_parks_makes_no_step_until_the_gate_opens() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let gate = crate::park_gate::ParkGate::new();
+        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), gate.clone());
+        let calls = Arc::new(AtomicU32::new(0));
+        let start = |_n: u8| {
+            let calls = calls.clone();
+            async move {
+                // Its first call, then its next one a second later.
+                calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                calls.fetch_add(1, Ordering::SeqCst);
+                Found { outcome: CarrierEdgeLost, ..Found::default() }
+            }
+        };
+        let mut asked = false;
+        for unheard_ms in (0..=2_000u64).step_by(100) {
+            asked |= inv.tick("mesh2", Duration::from_millis(unheard_ms), start).await.iter().any(|s| matches!(s, Step::Probe { n: 1, .. }));
+        }
+        assert!(asked, "probe 1 was asked at its 2 s rung");
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the probe made its first call");
+        gate.park();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the admin is parked: its probe made no step");
+        gate.resume();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "the gate opened: the probe finished from where it was");
     }
 
     /// CONTRACT (mesh-investigation.md step 4: a direct backbone receipt "cancels the investigation
