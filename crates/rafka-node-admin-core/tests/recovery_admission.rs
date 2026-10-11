@@ -52,6 +52,13 @@ impl Capture {
     }
 }
 
+/// The Build `id`'s first attempt claimed and converged: it is settled.
+async fn settle_other(builds: &MemoryBuildStateAdapter, id: &rafka_node_admin_core::build::BuildId) {
+    let attempt = builds.read_build(id).await.unwrap().attempt;
+    builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+}
+
 fn opened(facts: &[BuildFact]) -> usize {
     facts.iter().filter(|f| matches!(f, BuildFact::Opened(_))).count()
 }
@@ -62,8 +69,10 @@ fn opened(facts: &[BuildFact]) -> usize {
 /// Build. A repeat while that attempt is open answers `BuildInProgress`; a repeat once its
 /// `recover-node` operation completed for that exact birth answers `AlreadyApplied` naming the
 /// attempt that recovered it; a recovery submitted while another Build runs answers that Build's
-/// `BuildInProgress`. A node-admin is never node-recovered: refused by name. Must NOT happen: a
-/// second attempt opened for a birth already recovered.
+/// `BuildInProgress`. A node-admin is never node-recovered: refused by name. A repeat after a later
+/// topology Build was accepted is still `AlreadyApplied`: the recovery is keyed on the exited birth
+/// across the Build log, not on the accepted Build's receipts. Must NOT happen: a second attempt
+/// opened for a birth already recovered.
 #[tokio::test]
 async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recovery() {
     crate::enable_callsites();
@@ -140,9 +149,19 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     let later = cp.open_recovery("build.create", path.clone(), NodeId::mint(), IncarnationId::mint()).await;
     assert!(matches!(&later, Err(Refusal::BuildInProgress(id)) if *id == other.build_id), "{later:?}");
 
+    // The topology Build settles and is the accepted Build now: the exited birth's recovery lives in
+    // an earlier Build's receipts. A repeat submit of it is still the recovery already applied,
+    // never a recovery of the path that a new node now runs.
+    settle_other(&builds, &other.build_id).await;
+    assert_eq!(cp.accepted.build_id().await.as_ref(), Some(&other.build_id), "the topology Build is the accepted one");
+    let before_late = opened(&builds.facts().await.unwrap());
+    let late = cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await;
+    assert!(matches!(&late, Ok(Recovery::AlreadyApplied(o)) if *o == first), "a repeat after a later Build was accepted names the attempt that recovered the birth: {late:?}");
+    assert_eq!(opened(&builds.facts().await.unwrap()), before_late, "no recovery attempt is opened on the later Build");
+
     let admitted = capture.spans("rdm.node_admin.build.update.via-recovery");
-    assert_eq!(admitted.iter().map(|(_, a)| a["outcome"].as_str()).collect::<Vec<_>>(), vec!["admitted", "build-in-progress", "already-applied", "refused", "build-in-progress"], "one admission span per submit, its outcome named");
-    assert_eq!(capture.spans("rdm.node_admin.build.reject.via-recovery-already-applied").len(), 1, "the duplicate is answered from the receipt that recovered the birth");
+    assert_eq!(admitted.iter().map(|(_, a)| a["outcome"].as_str()).collect::<Vec<_>>(), vec!["admitted", "build-in-progress", "already-applied", "refused", "build-in-progress", "already-applied"], "one admission span per submit, its outcome named");
+    assert_eq!(capture.spans("rdm.node_admin.build.reject.via-recovery-already-applied").len(), 2, "the duplicate is answered from the receipt that recovered the birth");
     for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-recovery-already-applied", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.reject.via-node-admin-not-node-recovered"] {
         for (trace_id, attrs) in capture.spans(name) {
             eprintln!("span {name} trace_id={trace_id} {attrs:?}");
