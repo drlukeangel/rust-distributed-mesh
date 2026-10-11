@@ -2355,6 +2355,9 @@ pub struct Membership {
     /// The config the fabric-primary last told this birth (`ApplyNodeConfig`; ops-naming "Node data"):
     /// carried in every digest this membership publishes from then on. `None` until it is told.
     config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
+    /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
+    /// digest this membership publishes from then on. `None` while the birth holds its launch name.
+    name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
 }
 
 impl Membership {
@@ -2418,7 +2421,7 @@ impl Membership {
             Box::pin(async move { channel.broadcast(&f).await })
         });
         let forward_path = ForwardPath::new(view.forwarder.clone(), Arc::default(), sink);
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default() };
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name: Arc::default() };
         me.watch_meshes(node.to_string());
         Ok(me)
     }
@@ -2573,11 +2576,20 @@ impl Membership {
         *self.config.lock().unwrap() = Some(config);
     }
 
-    /// `d` as this birth reports it: with the config it was told, when it was told one.
+    /// Hold `name` as this birth's name: every digest this membership publishes from now on carries
+    /// it (R12: the node publishes only the name its row holds).
+    pub fn set_name(&self, name: rafka_mesh_entity::PathName) {
+        *self.name.lock().unwrap() = Some(name);
+    }
+
+    /// `d` as this birth reports it: with the config and the name it was told, when it was told them.
     pub fn with_config(&self, d: &MeshDigest) -> MeshDigest {
         let mut d = d.clone();
         if let Some(c) = self.config.lock().unwrap().as_ref() {
             d.config = c.clone();
+        }
+        if let Some(n) = self.name.lock().unwrap().as_ref() {
+            d.node.name = n.clone();
         }
         d
     }
