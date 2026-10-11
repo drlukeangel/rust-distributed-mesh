@@ -850,6 +850,7 @@ mod one_attempt_number {
         let spans = collect_spans(&dir);
         let refused: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.reject.via-build-in-progress").collect();
         assert_eq!(refused.len(), 1, "the drift pass is refused once, by name: {refused:?}");
+        assert!(!spans.iter().any(|s| s["name"] == "rdm.node_admin.build.update.via-proven-drift"), "a refused drift pass opened nothing and names no attempt update");
         let created = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.create.via-rest").expect("the submitted change's span");
         assert_eq!(refused[0]["trace_id"], created["trace_id"], "the refusal and the admitted Build are one story");
         let a = &refused[0]["attributes"];
