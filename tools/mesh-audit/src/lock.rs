@@ -36,10 +36,11 @@ pub enum Ratchet {
     RdmSpansAreRdmPrefixed,
     NoJsonOnTheWire,
     NoSpanGuardAcrossAwait,
+    OneRenameWritePath,
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 21] = [
+    pub const ALL: [Ratchet; 22] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitNodeMeta,
@@ -61,6 +62,7 @@ impl Ratchet {
         Self::RdmSpansAreRdmPrefixed,
         Self::NoJsonOnTheWire,
         Self::NoSpanGuardAcrossAwait,
+        Self::OneRenameWritePath,
     ];
 
     /// The name the issue gives the ratchet.
@@ -87,6 +89,7 @@ impl Ratchet {
             Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
             Self::NoJsonOnTheWire => "no_json_on_the_wire",
             Self::NoSpanGuardAcrossAwait => "no_span_guard_across_await",
+            Self::OneRenameWritePath => "one_rename_write_path",
         }
     }
 }
@@ -150,6 +153,11 @@ pub const TRANSPORT_TAG_TOKENS: &[&str] = &[
 ];
 
 /// The runtime sources where a descriptive annotation is never read to decide.
+/// The one writer of a node row's move (`move_row`).
+pub const NODE_ROWS: &str = "crates/rafka-node-admin-core/src/node_rows.rs";
+/// The nodes store: the claim and the release are defined and implemented here.
+pub const NODES_STORAGE: &str = "crates/rafka-node-admin-core/src/storage.rs";
+
 pub const RUNTIME_SOURCES: &[&str] = &[
     "crates/rafka-mesh-entity/src",
     "crates/rafka-mesh-transport/src",
@@ -636,6 +644,15 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_three_variant_wire_schema", "fn replies_match_the_frozen_fifteen_variant_wire_schema"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
+        }
+        Ratchet::OneRenameWritePath => {
+            // A node row moves through one writer (R13: node.update is one write path):
+            // `node_rows::move_row` claims the new name and releases the old key. Nothing else
+            // releases a node row's key, and no second rename door stands beside it.
+            let files: Vec<PathBuf> = files_in(root, RUNTIME_SOURCES).into_iter().filter(|f| !rel(root, f).ends_with(NODE_ROWS) && !rel(root, f).ends_with(NODES_STORAGE)).collect();
+            scan_tokens(root, &files, &[".release_node_row("], ratchet, &mut out);
+            scan_tokens(root, &files_in(root, &[NODE_ROWS]), &["pub async fn rename(", "fn rename_steps("], ratchet, &mut out);
+            require(root, NODE_ROWS, &["pub(crate) async fn move_row(storage: &dyn NodesStorage,"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {
             // Echo (0x11) is retired forever and peer-tickle (0x19) is a product's transitional

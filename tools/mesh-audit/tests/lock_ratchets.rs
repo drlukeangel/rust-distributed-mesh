@@ -389,3 +389,14 @@ mod tests {
     );
     assert!(check_one(t.root(), Ratchet::NoSpanGuardAcrossAwait).is_empty());
 }
+
+#[test]
+fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_door() {
+    let t = Planted::of_tree();
+    t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) { let _ = s.release_node_row(n, by).await; }\n");
+    let v = only(check(t.root()), Ratchet::OneRenameWritePath);
+    assert!(matches!(&v[0], Violation::Token { file, token, .. } if file.ends_with("planted.rs") && token == ".release_node_row("));
+    let d = Planted::of_tree();
+    d.edit("crates/rafka-node-admin-core/src/node_rows.rs", "pub(crate) async fn move_row(storage: &dyn NodesStorage,", "pub async fn rename(storage: &dyn NodesStorage,");
+    only(check(d.root()), Ratchet::OneRenameWritePath);
+}
