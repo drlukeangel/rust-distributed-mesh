@@ -14,8 +14,7 @@
 use super::*;
 use crate::build_state::{BuildStepReceipt, StepOutcome};
 use crate::deployment::pipeline::{MeshLeaveEvent, RuntimeProof, TerminalReceipt};
-use crate::mesh_leave::{first_mismatch, manifest_reference, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_MESH_LEFT, STEP_OTHER_MEMBERS_EXITED};
-use futures_util::future::join_all;
+use crate::mesh_leave::{accepted_roster, first_mismatch, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT, STEP_OTHER_MEMBERS_EXITED};
 use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
@@ -65,14 +64,13 @@ impl AdminRunner {
         // was handed over first (fabric-primary-handover.md): the leave opens only on the confirmed
         // transfer, and an unconfirmed one is reconciled here before anything is dismantled.
         self.handover.confirmed(mesh_id).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric-primary handover is not confirmed: {e}"))?;
-        let members: Vec<Node> = view.members().filter(|n| n.mesh == mesh && n.status.is_live()).cloned().collect();
         let primary = view.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to"))?;
         // The final primary's authoritative provider domain: access before anything is dismantled.
         let (final_record, final_handle) = self.handle_for(&primary).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: no provider proof path for its final primary: {e}"))?;
         let final_fact = final_handle.fact().ok_or_else(|| format!("{outer} is refused before {mesh} is dismantled: the final primary {} has no exact runtime handle", primary.name))?;
-        let roster = members.iter().map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
-        let admitted = Admitted { roster: roster.clone(), final_primary: RosterBirth::of(&primary)?, final_runtime: RuntimeProof::of(&final_fact) };
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
+        let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.me.to_string(), || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
+        let admitted = Admitted { roster, final_primary: RosterBirth::of(&primary)?, final_runtime: RuntimeProof::of(&final_fact) };
         let mut handoff = self.leaves.open(key.clone(), admitted.clone());
         let event = MeshLeaveEvent { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string(), receipt_manifest: None, final_primary: None };
         // Step 2: the accepted command's hook, then the command.
@@ -201,48 +199,21 @@ impl AdminRunner {
         .await
     }
 
-    /// Both tiers: every ordinary node in parallel, then (only once every one has its exact
-    /// terminal receipt) every other node-admin in parallel; then the one manifest receipt.
+    /// Both tiers over the accepted roster, then the one manifest receipt
+    /// ([`crate::mesh_leave::members_exited`]).
     async fn leave_members(&self, key: &LeaveKey) -> Result<ExitManifest, String> {
         let view = self.topology.read().await.clone();
         let me = view.nodes.iter().find(|n| n.name == self.me).cloned().ok_or_else(|| format!("{} holds no view of itself", self.me))?;
-        let others: Vec<Node> = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.name != me.name).cloned().collect();
-        let (admins, ordinary): (Vec<Node>, Vec<Node>) = others.iter().cloned().partition(|n| n.kind == NodeKind::NodeAdmin);
-        let mut receipts: Vec<TerminalReceipt> = Vec::new();
-        for (tier, members) in [("ordinary-nodes", ordinary), ("node-admins", admins)] {
-            let span = tracing::info_span!("rdm.node_admin.mesh.update.via-leave-tier", tier, members = members.len(), mesh_id = %key.mesh_id, operation = %key.operation, outcome = tracing::field::Empty);
-            let outcomes = join_all(members.iter().map(|n| self.shutdown_one(key, n))).instrument(span.clone()).await;
-            let mut failed = Vec::new();
-            for (n, r) in members.iter().zip(outcomes) {
-                match r {
-                    Ok(t) => receipts.push(t),
-                    Err(e) => failed.push(format!("{}: {e}", n.name)),
-                }
-            }
-            span.record("outcome", if failed.is_empty() { "complete" } else { "incomplete" });
-            if !failed.is_empty() {
-                return Err(format!("tier {tier} is incomplete, the next tier does not start: {}", failed.join("; ")));
-            }
-        }
         let my_fact = self.held_runtime(&me).ok_or_else(|| format!("{} publishes no runtime fact: its own exact runtime cannot be named", me.name))?;
-        let mut roster = others.iter().map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
-        roster.push(RosterBirth::of(&me)?);
-        let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster, final_primary: RosterBirth::of(&me)?, final_runtime: Some(RuntimeProof::of(&my_fact)), receipts };
-        self.builds
-            .append_step_receipt(&BuildStepReceipt {
-                build_id: crate::build::BuildId(key.build_id.clone()),
-                attempt: key.attempt,
-                operation: key.operation.clone(),
-                step: STEP_OTHER_MEMBERS_EXITED.into(),
-                outcome: StepOutcome::Complete,
-                output: serde_json::to_value(&manifest).ok(),
-                executor: Some(self.me.to_string()),
-            })
-            .await
-            .map_err(|e| format!("the exit manifest could not be recorded: {e}"))?;
-        tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len())
-            .in_scope(|| tracing::info!("every other member's exact exit is proven: the exit manifest is recorded"));
-        Ok(manifest)
+        let me_birth = RosterBirth::of(&me)?;
+        let roster = accepted_roster(&*self.builds, key, STEP_LEAVING_ROSTER, &self.me.to_string(), || {
+            let mut roster = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.name != me.name).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
+            roster.push(me_birth.clone());
+            Ok(roster)
+        })
+        .await?;
+        let records: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
+        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, RuntimeProof::of(&my_fact), &records, |n| async move { self.shutdown_one(key, &n).await }).await
     }
 
     /// One member's drain and stop and the provider's terminal receipt of its exact runtime.
