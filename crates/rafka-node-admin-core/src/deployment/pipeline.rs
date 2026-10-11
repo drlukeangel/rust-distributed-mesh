@@ -2227,8 +2227,10 @@ impl DeploymentPipeline<'_> {
             if onto.node_id == from.node_id || onto.incarnation_id.is_none() {
                 return Err(format!("{name}: node.update copies the exited birth {}'s caller-owned meta onto the node its create made there, and the node held at the path is {} at {}", from.node_id, onto.node_id, onto.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")));
             }
+            // The caller-owned group as this admin's records hold it of the exited birth: the node
+            // record carries no caller-owned field, so the group is its default and nothing is written.
             let copied = crate::node_update::meta_of(onto).with_caller_owned_of(&crate::node_update::meta_of(from));
-            tracing::info!(node = %name, from = %from.node_id, onto = %onto.node_id, otel_debug = copied.otel_debug, "the exited birth's caller-owned meta is copied onto the new node");
+            tracing::info!(node = %name, from = %from.node_id, onto = %onto.node_id, otel_debug = copied.otel_debug, written = false, "node.update onto the new node: the caller-owned group of the exited birth as held, no row written");
             Ok(())
         })
         .await?;
