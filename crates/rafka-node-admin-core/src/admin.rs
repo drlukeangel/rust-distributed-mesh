@@ -485,6 +485,9 @@ impl Records {
             self.view_tick.send_modify(|v| *v += 1);
             self.wake.poke();
             self.view_changed.notify_one();
+            if let Some(rows) = self.rows.get() {
+                rows.claim_taken_meshes(&t).await;
+            }
             if let (Some(rows), false) = (self.rows.get(), arrivals.is_empty()) {
                 rows.write_arrivals(&t, arrivals).await;
             }

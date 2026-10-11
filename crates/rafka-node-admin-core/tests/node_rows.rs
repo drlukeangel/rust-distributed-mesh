@@ -906,3 +906,59 @@ fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_h
     assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some("name-held")), (Some(born.as_str()), Some("row-seeded"))], "{created:#?}");
     assert_eq!(created[1]["attributes"]["seeded_from"].as_str(), Some(exited.as_str()));
 }
+
+/// CONTRACT (fabric-node-lifecycle.md §2.7: "Once a node-admin is created in a mesh it is that
+/// mesh's primary, and it keeps that mesh's row in `ops.meshes`: it claims the mesh's name by
+/// insert-and-fail on the key `(path, name)` ... writes the row when the mesh is created ... and
+/// again at fabric state-commit ... The same MeshId re-claiming its own name, at state-commit, on a
+/// retry or from a replaced primary, is idempotent and accepted"): `mesh1.admin.2`, mesh1's
+/// primary, claims mesh1's name for the mesh's id when its view first holds its seat; its
+/// state-commit re-claim is accepted with nothing written; a claim of the name for another MeshId
+/// is refused naming the holder; and `mesh1.admin.1`, which holds the fabric seat but not mesh1's
+/// (mesh1 has a primary), is not mesh1's writer and refuses by name. Must NOT happen: a mesh with a
+/// primary and no row, a self-conflict at state-commit, or a row written by an admin that is not
+/// the mesh's writer.
+// @feature: node-lifecycle
+#[test]
+fn a_mesh_primary_claims_its_meshs_name_at_its_seat_reclaims_it_at_state_commit_and_no_other_admin_writes_it() {
+    use rafka_node_admin_core::node_rows::{MeshRowRefused, MeshRowStore};
+    use rafka_node_admin_core::storage::{MemoryMeshStorage, MeshClaimed, MeshNameHeld, MeshRow, MeshStorage};
+    let cap = capture();
+    let (row, again, other, foreign, mesh_id, other_id) = cap.run(async {
+        let t = view();
+        let mesh_id = t.meshes[0].id.clone().unwrap();
+        let meshes: Arc<MemoryMeshStorage> = Arc::new(MemoryMeshStorage::default());
+        let status: Arc<rafka_node_admin_core::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+        let store = || MeshRowStore { path: "fabric1".into(), meshes: meshes.clone(), status: status.clone() };
+        let writer_of = |me: &str, view: &Arc<RwLock<Topology>>| {
+            let me: PathName = me.parse().unwrap();
+            let me_id = t.node(&me).unwrap().node_id.clone();
+            Arc::new(NodeRows::new(me, me_id, view.clone(), Arc::new(MemoryNodesStorage::default())).with_mesh_rows(store()))
+        };
+        // Before: no admin holds mesh1's seat yet.
+        let mut before = t.clone();
+        for n in before.nodes.iter_mut() {
+            n.is_primary = false;
+        }
+        let view = Arc::new(RwLock::new(before));
+        let primary = writer_of("mesh1.admin.2", &view);
+        let records = Records::default();
+        records.set_rows(primary.clone());
+        records.install_projected(&view, || t.clone()).await;
+        let row = meshes.mesh_row_at("fabric1", "mesh1").await.unwrap();
+        let again = primary.claim_mesh("mesh1", &mesh_id, "commit-state:fabric1", "state-commit").await;
+        let other_id = MeshId::mint();
+        let other = primary.claim_mesh("mesh1", &other_id, "create-mesh:mesh1", "creation").await;
+        let foreign = writer_of("mesh1.admin.1", &view).claim_mesh("mesh1", &mesh_id, "commit-state:fabric1", "state-commit").await;
+        (row, again, other, foreign, mesh_id, other_id)
+    });
+    assert_ne!(other_id, mesh_id);
+    assert_eq!(row, Some(MeshRow { path: "fabric1".into(), name: "mesh1".into(), mesh_id: mesh_id.clone() }), "the mesh's primary claimed its mesh's name when its view first held its seat");
+    assert_eq!(again, Ok(MeshClaimed::AlreadyHeld), "the state-commit re-claim by the same mesh is accepted");
+    assert_eq!(other, Err(MeshRowRefused::NameHeld(MeshNameHeld { path: "fabric1".into(), name: "mesh1".into(), by: mesh_id.clone() })), "another MeshId is refused naming the holder");
+    assert!(matches!(&foreign, Err(MeshRowRefused::NotMeshPrimary(why)) if why.contains("mesh1.admin.2")), "an admin that is not mesh1's writer refuses, naming the writer: {foreign:?}");
+    let spans = cap.spans_named("rdm.node_admin.mesh.create.via-mesh-row");
+    let outcomes: Vec<(String, String)> = spans.iter().map(|s| (s["attributes"]["moment"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
+    let pairs = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+    assert_eq!(outcomes, pairs(&[("seat", "row-written"), ("state-commit", "already-held"), ("creation", "name-held"), ("state-commit", "not-mesh-primary")]), "{spans:#?}");
+}

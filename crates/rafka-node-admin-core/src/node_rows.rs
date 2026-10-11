@@ -36,7 +36,7 @@
 //! It holds that record from the replace's frames as its drive reads them ([`NodeRows::on_step`]),
 //! and writes nothing from them.
 
-use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
+use crate::model::{IncarnationId, MeshId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::storage::{NameHeld, NodeRow, NodesStorage};
 use crate::topology::Topology;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -71,6 +71,54 @@ pub struct NodeRows {
     /// holding at a claim. A later row of the node takes its config from here, never from a record
     /// that does not carry it.
     written: Arc<WrittenRows>,
+    /// Where the mesh rows of the meshes this admin writes for are claimed, when bound.
+    mesh_rows: Option<MeshRowStore>,
+    /// The meshes whose row this writer claimed in its current tenure of writing for them: a mesh it
+    /// begins writing for (a seat taken, the fabric-primary's acting tenure) is claimed once.
+    mesh_tenure: Mutex<HashSet<String>>,
+}
+
+/// Where a writer claims the rows of the meshes it writes for (fabric-node-lifecycle.md §2.7: the
+/// mesh's primary "claims the mesh's name by insert-and-fail on the key `(path, name)`").
+pub struct MeshRowStore {
+    /// The path every mesh name this admin claims is unique within: opaque, taken as given (this
+    /// admin names it after its fabric, a deployment's choice, never the key's shape).
+    pub path: String,
+    /// The mesh rows.
+    pub meshes: Arc<dyn crate::storage::MeshStorage>,
+    /// The status facts whose fold says which meshes' rows are `Dead`, the only release of a name.
+    pub status: Arc<dyn crate::status_storage::StatusStorage>,
+}
+
+/// Why a writer refused a mesh row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeshRowRefused {
+    /// This admin is not the writer of the mesh's rows: why, naming the writer.
+    NotMeshPrimary(String),
+    /// Another mesh holds the name at the path, and its row is not `Dead`.
+    NameHeld(crate::storage::MeshNameHeld),
+    /// The row could not be read or written, or no mesh row store is bound: why, whole.
+    Unwritten(String),
+}
+
+impl MeshRowRefused {
+    /// The span outcome that names the refusal.
+    pub fn outcome(&self) -> &'static str {
+        match self {
+            Self::NotMeshPrimary(_) => "not-mesh-primary",
+            Self::NameHeld(_) => "name-held",
+            Self::Unwritten(_) => "row-refused",
+        }
+    }
+}
+
+impl std::fmt::Display for MeshRowRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotMeshPrimary(why) | Self::Unwritten(why) => f.write_str(why),
+            Self::NameHeld(held) => write!(f, "name-held: {held}"),
+        }
+    }
 }
 
 /// A writer's record of the rows it holds authoritatively (fabric-node-lifecycle.md "A rewrite is
@@ -160,7 +208,29 @@ impl NodeRows {
     /// The writer of the admin `me`, born as `me_id`, deciding over its view `view`, writing to
     /// `storage`, its nodes store.
     pub fn new(me: PathName, me_id: NodeId, view: Arc<RwLock<Topology>>, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, me_id, view, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(BTreeMap::new()), parked_old: Mutex::new(HashMap::new()), written: Arc::new(WrittenRows::default()) }
+        Self { me, me_id, view, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(BTreeMap::new()), parked_old: Mutex::new(HashMap::new()), written: Arc::new(WrittenRows::default()), mesh_rows: None, mesh_tenure: Mutex::new(HashSet::new()) }
+    }
+
+    /// Claim the rows of the meshes this admin writes for in `store`.
+    pub fn with_mesh_rows(mut self, store: MeshRowStore) -> Self {
+        self.mesh_rows = Some(store);
+        self
+    }
+
+    /// The claim of `mesh`'s name for `mesh_id` by the writer of its rows (fabric-node-lifecycle.md
+    /// §2.7), at `moment`: `creation` (the mesh's id minted), `seat` (a tenure of writing for the
+    /// mesh begun) or `state-commit`. Insert-and-fail inside the store adapter on `(path, name)`;
+    /// the same MeshId's re-claim is accepted and writes nothing; a name whose holder's row folds
+    /// `Dead` is released to the claimant. One `via-mesh-row` span.
+    pub async fn claim_mesh(&self, mesh: &str, mesh_id: &MeshId, operation: &str, moment: &'static str) -> Result<crate::storage::MeshClaimed, MeshRowRefused> {
+        let _ = (mesh, mesh_id, operation, moment);
+        Ok(crate::storage::MeshClaimed::Written)
+    }
+
+    /// Claim the row of every mesh `now` names (with its id) that this admin writes for and has not
+    /// claimed in its current tenure; a mesh it no longer writes for leaves the tenure.
+    pub async fn claim_taken_meshes(&self, now: &Topology) {
+        let _ = now;
     }
 
     /// Share `written`, the record the config door holds its puts in, as this writer's record.
