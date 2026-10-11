@@ -227,7 +227,8 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
 /// under it, both under the caller's trace, and stores exactly its value.
 async fn control(r: &Rig) -> Value {
     let (out, ev) = r.put(b"control", b"v-control", &CallOptions::default()).await;
-    let reply = out.reply().expect("the healthy control call replies").value().clone();
+    let outcome = format!("{out:?} evidence={ev:?}");
+    let reply = out.reply().unwrap_or_else(|| panic!("the healthy control call replies; it ended {outcome}")).value().clone();
     assert_eq!(reply, ProofReply::Stored { at: r.at(ProofOp::Put) });
     assert!(ev.expect("evidence").committed);
     assert_eq!(r.held(b"control"), Some(b"v-control".to_vec()));
