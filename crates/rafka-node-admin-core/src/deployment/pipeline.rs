@@ -9,7 +9,7 @@
 //!   -> WaitForNodeReady -> Complete
 //! retire: DrainNode (drain-node to the exact birth; its receipt carries the CommandAdmission)
 //!   -> AwaitNodeDrained (bounded; a deadline is an arm, never a failure)
-//!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (bounded, likewise)
+//!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (its `Stopped` reply, bounded, likewise)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
 //!   -> ReleaseStorage (a removal: by the Build's StorageMeta)
 //!   -> RemoveTopologyMembership -> Complete
@@ -170,7 +170,8 @@ pub enum RetireStep {
     AwaitNodeDrained,
     /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit drain.
     StopNode,
-    /// Wait, bounded, for the birth's `node-left` completion call.
+    /// Wait, bounded, for node-left: the `Stopped` reply of the birth's `stop-node` call (R-ON1;
+    /// the birth makes no upward node-left call).
     AwaitNodeLeft,
     /// Stop the runtime through the provider.
     TerminateRuntime,
@@ -419,8 +420,8 @@ pub trait NodeObserver: Send + Sync {
     async fn send_command(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext) -> CommandAdmission {
         CommandAdmission::NotSent { reason: format!("this observer holds no Node RPC client to command {}", node.name) }
     }
-    /// Wait up to `within` for the commanded birth's completion call (`node-drained` /
-    /// `node-left`) at this admin.
+    /// Wait up to `within` for the commanded birth's completion at this admin: its `node-drained`
+    /// call, or node-left, which is the `Stopped` reply of its `stop-node` call.
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
         Completion::NotAwaited { admission: format!("this observer holds no command book for {}", node.name) }
     }
@@ -603,7 +604,8 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
     }
 }
 
-/// Whether the exact birth's completion call (`node-drained`, `node-left`) reached this admin: the
+/// Whether the exact birth's completion (its `node-drained` call, or node-left: the `Stopped` reply
+/// of its `stop-node` call) reached this admin: the
 /// AwaitNodeDrained / AwaitNodeLeft step's receipt. A missing completion is indeterminate, never
 /// success; the provider's terminal proof is what ends a stop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1640,7 +1642,7 @@ impl DeploymentPipeline<'_> {
             None
         };
         // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
-        // drain-node and its node-drained, then stop-node, its node-left and the provider's
+        // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
         // terminal proof. A caller that puts other work between them (a replace) calls the halves.
         self.drain_steps(&mut run, &mut node, handle).await?;
         if req.kind == RetireKind::Restart {
@@ -1762,7 +1764,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
-    /// drain), the wait for its `node-left` completion call, then the provider's stop and
+    /// drain), the wait for node-left (the `Stopped` reply of that call), then the provider's stop and
     /// inspection of the exact runtime: only its `Exited` is terminal proof.
     pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         let terminal = self.stop_steps_with(run, node, handle, false, StopEnd::Terminate { publish_stopped: false }).await?;
@@ -2001,7 +2003,7 @@ impl DeploymentPipeline<'_> {
     /// successor's directory: after the successor's identity exists and before its process does.
     async fn stop_and_hand_over(&self, run: &mut Run<'_>, replacing: &Replacing<'_>, successor_dir: &std::path::Path) -> Result<(), PipelineError> {
         // A birth the provider already proves terminal is asked only for that proof; any other birth is
-        // stopped through the stop leg (stop-node, node-left, the provider's stop and inspection).
+        // stopped through the stop leg (stop-node, its node-left reply, the provider's stop and inspection).
         if matches!(self.provider.inspect(replacing.handle).await, DeploymentStatus::Exited { .. }) {
             self.terminate_step(run, replacing.predecessor, replacing.handle).await?;
         } else {
