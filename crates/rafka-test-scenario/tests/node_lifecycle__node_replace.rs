@@ -48,18 +48,6 @@ async fn two_mesh_estate(test: &str) -> (Estate, String) {
     (estate, build)
 }
 
-/// The drift attempt's span for `node` carrying `action`, once exported.
-async fn drift_span(estate: &Estate, build: &str, node: &str, action: &str) -> Value {
-    wait_for(&format!("the proven-drift attempt for {node} ({action}) is exported"), Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        named(&spans, "rdm.node_admin.build.update.via-proven-drift")
-            .into_iter()
-            .find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["action"]) == action && s(&sp["attributes"]["scope"]).contains(&format!("exited: {node}")))
-            .cloned()
-    })
-    .await
-}
-
 /// The mesh-primary's recovery submit for `node`, once exported (node-recovery.md: the tickle,
 /// the TRUE OFFLINE mark, the provider inspection and the submit each have a span on the
 /// mesh-primary).
@@ -153,48 +141,90 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     estate.shutdown().await;
 }
 
-/// CONTRACT: every other unplanned exit is replaced. A rpc node killed with SIGKILL leaves no
-/// recorded reason: the fabric-primary proves the exit from the provider alone, the next attempt of
-/// the same Build is a Replace fenced to that birth (no Build minted), and the path comes back as a
-/// NEW node: the old identity is renamed `<path>.old`, its storage handed over, the successor started
-/// and ready, and only then does the old NodeId depart, exactly once, from the provider's proof,
-/// named by its exact incarnation. No drain is sent to the proven-terminal birth.
+/// CONTRACT (node-recovery.md): every other unplanned exit is a recovery like the transport stop.
+/// A rpc node killed with SIGKILL leaves no recorded reason: its mesh-primary, which in a one-mesh
+/// fabric is also the fabric-primary (the in-process arm: its own Build door, no op 0x20 call),
+/// marks it TRUE OFFLINE, proves the exit from the provider alone (no exit code) and submits one
+/// recovery keyed on the exited birth; the recovery is the next attempt of the accepted Build (no
+/// Build minted), one `recover-node:<path>` operation run by that mesh-primary: node.delete of the
+/// exited instance (no RPC to it, no stop frames), node.deleted once named by its exact birth and
+/// before the new node boots, then node.create at the same path.name over the inherited data dir.
+/// The path comes back with the SAME transport key and data dir and a NEW node.id and incarnation;
+/// no `<path>.old` rename, no storage hand-over, and the fabric-primary's drift opens nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn any_other_unplanned_exit_is_replaced_by_a_new_node() {
-    let (estate, birth_build) = estate("any_other_unplanned_exit_is_replaced_by_a_new_node").await;
+async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir() {
+    let (estate, birth_build) = estate("any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir").await;
     const NODE: &str = "mesh1.rpc.3";
+    let nodes = estate.nodes().await;
+    let primary = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
+    let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the mesh-primary")["name"]);
+    assert_eq!(mesh_primary, primary, "one mesh: its primary holds the fabric-primary seat too");
     let before = estate.node(NODE).await;
+    let data_dir = estate.data_dir_of(NODE).await;
+    let others: Vec<(String, String)> = nodes.iter().filter(|n| n["name"] != NODE).map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     estate.kill_node(NODE).await;
 
-    let after = wait_for(&format!("{NODE} re-created ready under a new NodeId"), SETTLE, || async {
+    let after = wait_for(&format!("{NODE} ready as a new node"), SETTLE, || async {
         let n = estate.node_opt(NODE).await?;
         (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
     })
     .await;
-    assert_ne!(after["incarnation_id"], before["incarnation_id"]);
+    assert_ne!(after["incarnation_id"], before["incarnation_id"], "a new incarnation");
+    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
+    assert_eq!(estate.data_dir_of(NODE).await, data_dir, "the same data dir");
 
-    let drift = drift_span(&estate, &birth_build, NODE, "replace").await;
-    assert_eq!(s(&drift["attributes"]["exit_code"]), "", "a killed runtime proves no reason: {drift}");
-    assert_eq!(s(&drift["attributes"]["exit_proof"]), "none", "{drift}");
-    let attempt = s(&drift["attributes"]["attempt"]);
+    let recovery = recovery_span(&estate, NODE, &before["node_id"]).await;
+    assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "{recovery}");
+    assert_eq!(s(&recovery["attributes"]["fabric_primary"]), primary, "submitted to its own seat: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["disposition"]), "created", "the in-process door opened it: {recovery}");
+    assert_eq!(recovery["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["exit_code"]), "", "a killed runtime proves no reason: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["exit_proof"]), "none", "{recovery}");
+    assert_eq!(s(&recovery["attributes"]["build_id"]), birth_build, "the recovery is an attempt of the accepted Build: {recovery}");
+    let attempt = s(&recovery["attributes"]["attempt"]);
+    assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "the recovery's terminal: {recovery}");
+
     let spans = wait_for("the recovery operation's last step and its reconcile span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         (step_span(&spans, &birth_build, &attempt, NODE, "Complete").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some()).then_some(spans)
     })
     .await;
-    assert_replace_followed_the_spec(&spans, &birth_build, &attempt, NODE, &before, &after, &RECOVERY_ORDER);
-    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
-        assert!(step_span(&spans, &birth_build, &attempt, NODE, step).is_none(), "no RPC is required of the proven-terminal old birth: {step} ran");
+    let reconcile = reconcile_span(&spans, &birth_build, &attempt).expect("the attempt's reconcile span");
+    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("recover-node:{NODE}"), "one recovery operation: {reconcile}");
+    let mut last = 0u64;
+    for step in ["NodeDeleting", "NodeDeleted", "DeployRuntime", "WaitForNodeReady", "Complete"] {
+        let sp = step_span(&spans, &birth_build, &attempt, NODE, step).unwrap_or_else(|| panic!("the recovery's {step} step span"));
+        assert!(start(sp) >= last, "{step} runs after the step before it");
+        last = start(sp);
     }
+    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor", "HandoffStorage"] {
+        assert!(step_span(&spans, &birth_build, &attempt, NODE, step).is_none(), "no RPC to the exited process, no .old rename, no storage hand-over: {step} ran");
+    }
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
+    assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
+    assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
+    let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
+    assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (fenced) before the new node joins");
     assert!(
         named(&spans, "rdm.node_admin.node.create.via-build").into_iter().any(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE),
         "the recovery's node operation span is node.create.via-build"
     );
+    let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(&format!("exited: {NODE}"))).collect();
+    assert!(drift.is_empty(), "the fabric-primary opened a drift attempt for a member: {drift:?}");
+    assert!(nodes_named_old(&estate.nodes().await).is_empty(), "no <path>.old identity");
     let (_, build) = estate.get(&format!("/api/builds?id={birth_build}")).await;
     assert_eq!(build["build_id"], birth_build.as_str(), "no Build was minted: {build}");
-    estate.record_trace_url(drift["trace_id"].as_str().unwrap_or(""));
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
+    for (name, id) in others {
+        assert_eq!(s(&estate.node(&name).await["node_id"]), id, "{name} is untouched");
+    }
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     estate.shutdown().await;
+}
+
+/// The nodes whose path.name is a retired `<path>.old`.
+fn nodes_named_old(nodes: &[Value]) -> Vec<String> {
+    nodes.iter().map(|n| s(&n["name"])).filter(|n| n.ends_with(".old")).collect()
 }
 
 /// The attempt's reconcile span. It closes after the attempt's last step, so it is exported after
@@ -218,24 +248,6 @@ fn end(sp: &Value) -> u64 {
     sp["end_unix_nano"].as_u64().expect("a span end")
 }
 
-/// The steps of one `replace-node:<path>` operation, in the order node-replace.md numbers them: the
-/// old birth drains (drain-node, node-drained), is renamed `<path>.old`, the successor's identity is
-/// allocated, the old birth is stopped (stop-node, node-left) with exact terminal proof and its storage handed over, the successor starts, is
-/// admitted and ready, and only then the old identity is deleted.
-const RECOVERY_ORDER: [&str; 11] = [
-    "NodeDeleting",
-    "RenamePredecessor",
-    "AllocateIdentity",
-    "TerminateRuntime",
-    "HandoffStorage",
-    "DeployRuntime",
-    "WaitForBind",
-    "WaitForMeshJoin",
-    "WaitForNodeReady",
-    "NodeDeleted",
-    "Complete",
-];
-
 /// The same, for a planned replace of a live birth.
 const REPLACE_ORDER: [&str; 15] = [
     "NodeDeleting",
@@ -258,9 +270,6 @@ const REPLACE_ORDER: [&str; 15] = [
 /// The replace of `node` in `attempt` of `build` ran as ONE operation `replace-node:<node>`, its steps in
 /// [`REPLACE_ORDER`], the successor admitted and ready before the old identity's `NodeDeleted`, and the
 /// predecessor renamed `<node>.old` before the successor's identity was allocated.
-///
-/// `order` is [`REPLACE_ORDER`] for a planned replace; for the recovery of a birth already proven
-/// terminal ([`RECOVERY_ORDER`]) no drain is sent to it.
 fn assert_replace_followed_the_spec(spans: &[Value], build: &str, attempt: &str, node: &str, old: &Value, new: &Value, order: &[&str]) {
     let reconcile = reconcile_span(spans, build, attempt)
         .unwrap_or_else(|| panic!("the attempt's reconcile span is exported"));
