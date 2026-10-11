@@ -76,6 +76,12 @@ pub trait DepartureProof: Send + Sync {
     /// `Ok` when the birth `executor` names in this admin's view is proven exited; `Err` names why
     /// it is not.
     async fn proven(&self, executor: &PathName) -> Result<(), String>;
+    /// Whether the exact birth `executor` names in this admin's view was already proven exited (a
+    /// departure an earlier pass, or the drift reconcile, recorded): a drive that finds its claim's
+    /// holder recorded so claims the next attempt without calling or proving it again.
+    async fn recorded(&self, _executor: &PathName) -> bool {
+        false
+    }
 }
 
 /// Where the verdict an executor reported is recorded on the fabric-primary's own log, so the
