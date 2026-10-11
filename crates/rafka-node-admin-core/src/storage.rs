@@ -93,7 +93,8 @@ impl MeshStorage for FileMeshStorage {
 
 // ---------------------------------------------------------------- nodes.storage
 
-/// One birth as last known: the admin's own row, or a contact it heard.
+/// One birth as last known: the admin's own row, or a contact it heard. Its address facts only:
+/// the declared state and the silence status are their own keyed rows in `status.storage`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRecord {
     /// The node's minted id.
@@ -109,15 +110,6 @@ pub struct NodeRecord {
     /// Non-Iroh listeners (the own row of a node-admin: its `control` API).
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
-    /// The lifecycle state this birth declared and its authority applied (`status_rpc`), when
-    /// this admin is that authority. Never liveness: membership still says what is heard.
-    #[serde(default)]
-    pub declared: Option<String>,
-    /// The status the mesh primary holds for this birth while it is silent (fabric-node-lifecycle.md
-    /// §7.3): `PendingReconnect`, then `Dead` once its offline tickle found no path on two rounds a
-    /// staleness floor apart. `None` while the birth is heard. Never a reason to restart or delete it.
-    #[serde(default)]
-    pub status: Option<crate::model::NodeStatus>,
 }
 
 impl NodeRecord {
@@ -209,7 +201,7 @@ impl NodesStorage for MemoryNodesStorage {
     }
 }
 
-const NODE_FORMAT: &str = "node-record/1";
+const NODE_FORMAT: &str = "node-record/2";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
 
 /// `<data dir>/nodes/self.json` and `<data dir>/nodes/contacts/<node id>.json`.
@@ -375,8 +367,6 @@ mod tests {
             endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
             listeners: vec![],
-            declared: None,
-            status: None,
         }
     }
 

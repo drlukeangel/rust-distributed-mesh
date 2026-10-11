@@ -13,7 +13,6 @@
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, EndpointId};
 use crate::topology::Topology;
-use crate::storage::NodeRecord;
 use rafka_node_rpc::{PeerContext, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::status::{transition, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest, Transition};
@@ -53,17 +52,15 @@ impl Declared {
 
 impl Declared {
     /// What an admin applied before it last stopped, folded from the rows it put: the greatest
-    /// state per Mesh, each Fabric event once, and the state on each node row it wrote. A reader
-    /// folds; nothing is written back.
-    pub async fn rehydrate(status: &dyn crate::status_storage::StatusStorage, nodes: &dyn crate::storage::NodesStorage) -> Result<Self, String> {
+    /// state per Mesh, each Fabric event once, and each node's declared-state row. A reader folds;
+    /// nothing is written back.
+    pub async fn rehydrate(status: &dyn crate::status_storage::StatusStorage) -> Result<Self, String> {
         let mut declared = Self { meshes: status.mesh_statuses().await.map_err(|e| format!("status.storage: {e}"))?, ..Self::default() };
         for e in status.fabric_events().await.map_err(|e| format!("status.storage: {e}"))? {
             declared.fabric.entry(e.fabric_id).or_default().push(e.event);
         }
-        for c in nodes.contacts().await.map_err(|e| format!("nodes.storage: {e}"))? {
-            if let Some(state) = c.declared.as_deref().and_then(parse_node_state) {
-                declared.nodes.insert(c.node_id, (c.incarnation_id, state));
-            }
+        for r in status.node_declared().await.map_err(|e| format!("status.storage: {e}"))? {
+            declared.nodes.insert(r.node_id, (r.incarnation_id, r.state));
         }
         Ok(declared)
     }
@@ -80,9 +77,8 @@ pub struct StatusAuthority {
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// What this admin applied.
     pub declared: Arc<Mutex<Declared>>,
-    /// The nodes store.
-    pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
-    /// Where an applied Mesh status or Fabric event is a keyed row, put before it is answered.
+    /// Where an applied Mesh status, Fabric event or node declared state is a keyed row, put before
+    /// it is answered.
     pub status_storage: Arc<dyn crate::status_storage::StatusStorage>,
     /// The mesh ids this admin holds, by mesh name.
     pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, MeshId> + Send + Sync>,
@@ -111,8 +107,8 @@ pub struct StatusAuthority {
 /// `Declared`: the effect is committed only after the put returned `Ok`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    /// A node record and the state applied to it.
-    Node(NodeRecord, NodeState),
+    /// A node's declared-state row: the state its exact birth declared.
+    Node(crate::status_storage::NodeDeclaredRow, NodeState),
     /// A mesh and the state applied to it.
     Mesh(MeshId, MeshState),
     /// A fabric event applied.
@@ -152,16 +148,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
                 Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
                 Transition::Backward { current } => (StatusReply::RejectedInvalidNodeTransition { current }, None),
                 Transition::Apply => {
-                    let row = NodeRecord {
-                        node_id: sender.node_id.clone(),
-                        name: sender.name.clone(),
-                        incarnation_id: incarnation.clone(),
-                        endpoint_id: sender.endpoint_id.clone().unwrap_or_else(|| EndpointId(String::new())),
-                        transport_addr: sender.transport_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0))),
-                        listeners: sender.listeners.clone(),
-                        declared: Some(format!("{state:?}")),
-                        status: None,
-                    };
+                    let row = crate::status_storage::NodeDeclaredRow { node_id: sender.node_id.clone(), incarnation_id: incarnation.clone(), state: *state };
                     (StatusReply::Applied, Some(Effect::Node(row, *state)))
                 }
             }
@@ -326,17 +313,7 @@ impl StatusAuthority {
     pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
         let held = self.declared.lock().unwrap().node(&node.node_id).filter(|(inc, _)| inc == birth).map(|(_, s)| s);
         let Some(state) = held else { return };
-        let row = NodeRecord {
-            node_id: node.node_id.clone(),
-            name: node.name.clone(),
-            incarnation_id: birth.clone(),
-            endpoint_id: node.endpoint_id.clone().unwrap_or_else(|| EndpointId(String::new())),
-            transport_addr: node.transport_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0))),
-            listeners: node.listeners.clone(),
-            declared: None,
-            status: None,
-        };
-        let outcome = match self.nodes_storage.put_contact(&row).await {
+        let outcome = match self.status_storage.remove_node_declared(&node.node_id).await {
             Ok(()) => {
                 self.declared.lock().unwrap().nodes.remove(&node.node_id);
                 "begun"
@@ -381,7 +358,7 @@ impl StatusAuthority {
     /// held now, so two declarations of one natural key racing each other answer `Applied` once.
     async fn persist_then_commit(&self, effect: Effect) -> StatusReply {
         let put = match &effect {
-            Effect::Node(row, _) => self.nodes_storage.put_contact(row).await.map_err(|e| format!("nodes.storage refused the row: {e}")),
+            Effect::Node(row, _) => self.status_storage.put_node_declared(row).await.map_err(|e| format!("status.storage refused the node declared-state row: {e}")),
             Effect::Mesh(mesh_id, state) => {
                 self.status_storage.put_mesh_status(&crate::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: *state }).await.map_err(|e| format!("status.storage refused the Mesh status row: {e}"))
             }
@@ -424,7 +401,7 @@ impl StatusAuthority {
         if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
             let mut t = self.topology.write().await;
             if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
-                n.declared = row.declared.clone();
+                n.declared = Some(format!("{:?}", row.state));
             }
             drop(t);
             self.wake.poke();
@@ -461,11 +438,6 @@ impl StatusAuthority {
 /// declaration is `NotReady` by name.
 /// A node's re-publish of its presence, filled once it has joined its mesh.
 pub(crate) type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
-
-/// A node row's stored `declared` text (the state's `Debug` name), read back as the state.
-pub(crate) fn parse_node_state(s: &str) -> Option<NodeState> {
-    [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving].into_iter().find(|n| format!("{n:?}") == s)
-}
 
 /// What a node is now, in the declaration vocabulary.
 pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
@@ -594,8 +566,8 @@ mod tests {
     }
 
     /// The silence status the mesh primary stored for `node` at `incarnation`, as a reader folds it.
-    async fn stored_silence(nodes: &dyn crate::storage::NodesStorage, node: &crate::model::Node) -> Option<crate::model::NodeStatus> {
-        nodes.contacts().await.unwrap().into_iter().find(|c| c.node_id == node.node_id && Some(&c.incarnation_id) == node.incarnation_id.as_ref()).and_then(|c| c.status)
+    async fn stored_silence(status: &dyn crate::status_storage::StatusStorage, node: &crate::model::Node) -> Option<crate::model::NodeStatus> {
+        status.node_silences().await.unwrap().into_iter().find(|c| c.node_id == node.node_id && Some(&c.incarnation_id) == node.incarnation_id.as_ref()).and_then(|c| c.status)
     }
 
     /// CONTRACT (#3051, CLAUDE.md read-modify-write ban): a node's declared state and the silence
@@ -619,14 +591,12 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![admin.clone(), rpc.clone()],
         }));
-        let nodes: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
             me: admin.name.clone(),
             fabric_id: topology.read().await.fabric.id.clone(),
             topology: topology.clone(),
             declared: Arc::new(Mutex::new(Declared::default())),
-            nodes_storage: nodes.clone(),
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
             republish: Arc::new(OnceLock::new()),
@@ -637,12 +607,12 @@ mod tests {
             wake: Default::default(),
             rounds: Default::default(),
         };
-        crate::offline::put_silence_status(&*nodes, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
+        crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(rpc.clone()), &declare).await, R::Applied);
-        assert_eq!(stored_silence(&*nodes, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "the authority's declared-state put erased the mesh primary's silence status");
+        assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "the authority's declared-state put erased the mesh primary's silence status");
         authority.begin_cycle(&rpc, rpc.incarnation_id.as_ref().unwrap()).await;
-        assert_eq!(stored_silence(&*nodes, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "a cycle begin erased the mesh primary's silence status");
+        assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "a cycle begin erased the mesh primary's silence status");
     }
 
     /// CONTRACT (#2803 detection): a fabric primary probes ANOTHER mesh's node-admin through a

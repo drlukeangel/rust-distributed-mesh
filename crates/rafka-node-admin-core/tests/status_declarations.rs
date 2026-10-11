@@ -4,7 +4,7 @@
 //! admin the primary of mesh1 and the fabric-primary); nodes declare over real Node RPC on
 //! loopback. The cells prove the decision table of `status_rpc`: who may declare what, the
 //! natural-key idempotency, forward-only transitions, stale births, and that `Applied` is on the
-//! subject's `nodes.storage` row before it is answered. Certainty: a cut before the request
+//! subject's declared-state row in `status.storage` before it is answered. Certainty: a cut before the request
 //! commits is `NotSent` with nothing applied; a reply lost after the apply is `Indeterminate`,
 //! and the same declaration again is `AlreadyApplied` — one logical event.
 
@@ -13,7 +13,7 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind};
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
-use rafka_node_admin_core::storage::{MemoryNodesStorage, NodesStorage};
+use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
@@ -51,7 +51,7 @@ struct Rig {
     _router: Router,
     resolved: ResolvedNode,
     authority: Arc<StatusAuthority>,
-    storage: Arc<MemoryNodesStorage>,
+    storage: Arc<MemoryStatusStorage>,
     topology: Arc<tokio::sync::RwLock<Topology>>,
     mesh_ids: BTreeMap<String, MeshId>,
     /// Inert until a cell arms it.
@@ -81,7 +81,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         nodes,
     }));
     let fabric_id = topology.read().await.fabric.id.clone();
-    let storage = Arc::new(MemoryNodesStorage::default());
+    let storage = Arc::new(MemoryStatusStorage::default());
     let (m1id, m2id) = (MeshId::mint(), MeshId::mint());
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), m1id.clone()), ("mesh2".to_string(), m2id.clone())].into_iter().collect();
     let rig_mesh_ids = mesh_ids.clone();
@@ -90,8 +90,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         fabric_id,
         topology: topology.clone(),
         declared: Arc::new(Mutex::new(Declared::default())),
-        nodes_storage: storage.clone(),
-        status_storage: Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default()),
+        status_storage: storage.clone(),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         republish: Arc::new(std::sync::OnceLock::new()),
         commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
@@ -149,8 +148,8 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     let rpc1 = &b["rpc1"];
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
     // Applied is on the subject's row before it was answered.
-    let row = rig.storage.contacts().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
-    assert_eq!(row.declared.as_deref(), Some("ReadyForTraffic"));
+    let row = rig.storage.node_declared().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    assert_eq!(row.state, NodeState::ReadyForTraffic);
     assert_eq!(row.incarnation_id, rpc1.node.incarnation_id.clone().unwrap());
     // The same natural key again: one logical event.
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::AlreadyApplied);
@@ -242,7 +241,7 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
     assert!(rig.authority.declared.lock().unwrap().nodes.is_empty());
-    assert!(rig.storage.contacts().await.unwrap().iter().all(|c| c.node_id != rpc1.node.node_id));
+    assert!(rig.storage.node_declared().await.unwrap().iter().all(|c| c.node_id != rpc1.node.node_id));
     // Applied, reply lost: Indeterminate at the caller; the same declaration again is AlreadyApplied.
     rig.authority.hold_next_reply.store(true, Ordering::SeqCst);
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
@@ -287,8 +286,8 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions::default()).await;
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
     assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 2, "the lost call and the retry, nothing replayed");
-    let row = rig.storage.contacts().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
-    assert_eq!(row.declared.as_deref(), Some("ReadyForTraffic"));
+    let row = rig.storage.node_declared().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    assert_eq!(row.state, NodeState::ReadyForTraffic);
 }
 
 /// Drain admission never prevents an authority from receiving the upward certainty calls
