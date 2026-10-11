@@ -2018,6 +2018,19 @@ impl AdminRunner {
     /// node-recovery.md "Delete fences the old instance before the new join": the exited birth's
     /// resolver entry is retired and its direct paths dropped, awaited, before the new birth with
     /// the same endpoint key is launched.
+    ///
+    /// The await is bounded, and it is awaited (not spawned as `after_exit` does) because the new
+    /// birth carries the SAME key: a retire landing after the new birth's paths exist would retire
+    /// those. Bounded, in the pinned iroh (rev 921afe53): `Socket::replace_direct_addrs`
+    /// (iroh/src/socket.rs:1408-1420) returns at once when no actor runs for the key, else sends one
+    /// message into the actor's 64-slot inbox (socket/remote_map/remote_state.rs:246) and awaits its
+    /// oneshot. The actor's loop (remote_state.rs:300-360) runs only synchronous arm bodies and
+    /// drains one inbox message per turn through the synchronous `handle_message` (:387); the
+    /// `ReplaceDirectAddrs` arm (:403-405) retires the paths in the synchronous
+    /// `handle_msg_replace_direct_addrs` (:529) and answers in the same turn. An actor that ends drops
+    /// its inbox (and the queued message's oneshot, :372), so the send or the reply resolves with an
+    /// error and this returns. The wait is at most the actor's turns over the messages queued ahead
+    /// of this one, none of which awaits the exited peer.
     async fn fence_exited(&self, record: &Node) {
         if let (Some(rpc), Some(incarnation)) = (&self.node_rpc, record.incarnation_id.as_ref()) {
             rpc.resolver.retire_birth(&record.node_id, incarnation);
