@@ -225,11 +225,29 @@ impl Pool {
                     let (tx, rx) = watch::channel(None);
                     dials.insert(key.clone(), Dial { cancel, outcome: rx.clone() });
                     let (pool, key) = (self.clone(), key.clone());
-                    tokio::spawn(async move {
-                        let out = pool.run_dial(&key, spec, cancelled).await;
-                        pool.inner.dials.lock().unwrap().remove(&key);
-                        let _ = tx.send(Some(out));
-                    });
+                    // The one dial for `key`, under the call that started it: its steps (the superseded
+                    // paths retired, the connect) and how it ended, however many callers wait on it.
+                    let span = tracing::info_span!(
+                        "rdm.node_rpc.connection.create.via-dial",
+                        peer = %key.peer.fmt_short(),
+                        incarnation_id = %key.incarnation.0,
+                        addr = %spec.addr,
+                        local = ?spec.endpoint.bound_sockets(),
+                        outcome = tracing::field::Empty,
+                        elapsed_ms = tracing::field::Empty,
+                    );
+                    tokio::spawn(tracing::Instrument::instrument(
+                        async move {
+                            let started = Instant::now();
+                            let out = pool.run_dial(&key, spec, cancelled).await;
+                            let span = tracing::Span::current();
+                            span.record("outcome", match &out { Ok(_) => "connected".to_string(), Err(e) => format!("{e:?}") }.as_str());
+                            span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                            pool.inner.dials.lock().unwrap().remove(&key);
+                            let _ = tx.send(Some(out));
+                        },
+                        span,
+                    ));
                     rx
                 }
             }
@@ -264,7 +282,10 @@ impl Pool {
         // before the dial so none of them takes part in it.
         let connect = async {
             spec.endpoint.replace_direct_addrs(key.peer, [spec.addr]).await;
-            spec.endpoint.connect(EndpointAddr::new(key.peer).with_ip_addr(spec.addr), crate::ALPN).await
+            tracing::info!(step = "direct-addrs-replaced", elapsed_ms = started.elapsed().as_millis() as u64, "every other direct address for the peer is retired");
+            let r = spec.endpoint.connect(EndpointAddr::new(key.peer).with_ip_addr(spec.addr), crate::ALPN).await;
+            tracing::info!(step = "connect-returned", ok = r.is_ok(), elapsed_ms = started.elapsed().as_millis() as u64, "the endpoint's connect returned");
+            r
         };
         let res = tokio::select! {
             biased;
