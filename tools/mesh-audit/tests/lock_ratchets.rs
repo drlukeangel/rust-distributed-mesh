@@ -390,6 +390,27 @@ mod tests {
     assert!(check_one(t.root(), Ratchet::NoSpanGuardAcrossAwait).is_empty());
 }
 
+/// CONTRACT: the rename ratchet reads non-test code only, by the one rule every non-test scan
+/// shares: a `#[cfg(test)]` item is skipped and nothing else. A test double's forward of
+/// `.release_node_row(` inside a `#[cfg(test)]` module is not a rename door; a real door below an
+/// item-level `#[cfg(test)]` (a gated helper, not the test module) is still read and refused.
+#[test]
+fn one_rename_write_path_reads_only_non_test_code() {
+    let t = Planted::of_tree();
+    t.write(
+        "crates/rafka-node-admin-core/src/planted.rs",
+        "pub fn real() {}\n\n#[cfg(test)]\nmod tests {\n    struct Double(MemoryNodesStorage);\n    impl Double {\n        async fn release_node_row(&self, n: &PathName, by: &NodeId) -> bool {\n            self.0.release_node_row(n, by).await\n        }\n    }\n}\n",
+    );
+    assert!(check_one(t.root(), Ratchet::OneRenameWritePath).is_empty(), "{:?}", check_one(t.root(), Ratchet::OneRenameWritePath));
+
+    t.write(
+        "crates/rafka-node-admin-core/src/planted.rs",
+        "#[cfg(test)]\npub(crate) fn tempdir() -> u8 {\n    0\n}\n\nasync fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) {\n    let _ = s.release_node_row(n, by).await;\n}\n",
+    );
+    let v = only(check(t.root()), Ratchet::OneRenameWritePath);
+    assert!(matches!(&v[0], Violation::Token { file, line: 7, token, .. } if file.ends_with("planted.rs") && token == ".release_node_row("), "{v:?}");
+}
+
 #[test]
 fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_door() {
     let t = Planted::of_tree();
