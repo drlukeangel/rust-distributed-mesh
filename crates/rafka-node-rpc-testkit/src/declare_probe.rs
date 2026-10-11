@@ -2,11 +2,12 @@
 //! declare its own lifecycle state to an authority over the real `Status` protocol and hands the
 //! typed reply back.
 //!
-//! The sender of a declaration is the authenticated peer, never a field of the request, so the
-//! probe binary cannot declare on a node's behalf: it asks the node to. Two testkit-only
-//! overrides exist so a scenario can prove the refusals: a `node_id` that is not the node's
-//! (`RejectedNotAuthority: sender-not-subject`) and an `incarnation` that is not its birth's
-//! (`RejectedStaleBirth`). Testkit range only ([`TESTKIT_OPS`]); never a product binary.
+//! The probe asks the node to declare: the call goes out from the node's own endpoint. Two
+//! testkit-only overrides exist so a scenario can prove the refusals, which are decided for the
+//! subject the declaration names and never for its caller (node-rpc.md §14): a `node_id` the
+//! authority does not hold (`RejectedNotAuthority: subject-unknown`) and an `incarnation` that is
+//! not its birth's (`RejectedStaleIncarnation`). Testkit range only ([`TESTKIT_OPS`]); never a
+//! product binary.
 //!
 //! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 

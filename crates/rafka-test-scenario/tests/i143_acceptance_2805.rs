@@ -139,9 +139,9 @@ async fn pending_contract(cell: &str) {
         .collect();
     assert!(mesh_declared.iter().any(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied"))), "the elected primary's Mesh declaration was certain at the fabric primary: {mesh_declared:?}");
     assert!(mesh_declared.iter().all(|d| start(d) >= end(&elected_ready)), "a Mesh declaration comes from a primary that is already Ready: {mesh_declared:?}");
-    // A declaration made before the fabric primary's view holds the sender's seat is refused by name
-    // and is the only refusal there is; the Mesh is applied once, by whichever admin first held the seat.
-    assert!(mesh_declared.iter().all(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")) || (d["attributes"]["outcome"] == "rejected-not-authority" && d["attributes"]["detail"] == "sender-not-subject")), "{mesh_declared:?}");
+    // A declaration made before the fabric primary holds the Mesh it names is refused by name for
+    // that subject and is the only refusal there is; the Mesh is applied once.
+    assert!(mesh_declared.iter().all(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")) || (d["attributes"]["outcome"] == "rejected-not-authority" && d["attributes"]["detail"] == "subject-unknown")), "{mesh_declared:?}");
     let mesh2_applied: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
         .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && d["attributes"]["node"] == fabric_primary.as_str() && d["attributes"]["sender"].as_str().is_some_and(|x| x.starts_with("mesh2.admin.")) && d["attributes"]["outcome"] == "applied")

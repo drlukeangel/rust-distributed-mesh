@@ -6832,12 +6832,14 @@ mod tests {
         assert!(!quiet(&records).await, "the gate closing wakes it");
     }
 
-    /// CONTRACT (R-J1 step 5): a node-admin the fabric-primary admitted over `JoinNode` is known to
+    /// CONTRACT (R-J1 step 5): a node-admin the fabric-primary admitted over `JoinNode` is held by
     /// the fabric-primary's status authority when the join is answered, before any gossip carries its
-    /// digest. Its first declaration (`ReadyForTraffic`) is `Applied`, never refused as an unknown
-    /// peer; an endpoint that never joined is still refused `SenderNotSubject` "unknown peer".
+    /// digest. Before the join its declaration names a subject the authority does not hold
+    /// (`SubjectUnknown`); after it, its first declaration (`ReadyForTraffic`) is `Applied`. Nothing
+    /// checks who is calling (node-rpc.md §14): the same declaration from an endpoint that never
+    /// joined is decided for the subject it names.
     #[tokio::test]
-    async fn an_admitted_node_admin_declares_ready_before_its_digest_is_gossiped_and_a_stranger_is_refused() {
+    async fn an_admitted_node_admin_is_a_held_subject_before_its_digest_is_gossiped() {
         use crate::join::{Deployed, JoinDoor, Joins};
         use crate::status_rpc::{Declared, StatusAuthority};
         use rafka_node_rpc_contract::status::{NodeState, NotAuthority, StatusReply, StatusRequest};
@@ -6916,18 +6918,18 @@ mod tests {
         };
         let endpoint = reported.node.endpoint_id.clone();
         assert!(authority.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
+        let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::ReadyForTraffic };
+        assert_eq!(authority.apply(None, &declare).await, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "before the join the subject is not held");
         let joined = door.serve(endpoint.clone(), JoinRequest::JoinNode { digest: (&reported).into() }).await;
         assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
 
         // Acceptance made the birth known; no projection tick ran since.
         let sender = authority.sender_of(&endpoint).await.expect("the admitted birth is known when its join is answered");
-        let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(sender), &declare).await, StatusReply::Applied);
 
-        // An endpoint that never joined is a stranger, named as one.
+        // An endpoint that never joined sends the same declaration: decided for the subject it names.
         assert!(authority.sender_of(&EndpointId("key-never-joined".into())).await.is_none());
-        let refused = authority.apply(None, &declare).await;
-        assert_eq!(refused, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } });
+        assert_eq!(authority.apply(None, &declare).await, StatusReply::AlreadyApplied);
     }
 
     #[test]
