@@ -5018,7 +5018,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
                 };
                 let watched = watched_births(&view, &me_id, &mesh, &durable);
-                let silent = watched.values().map(|n| crate::offline::SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string() }).collect();
+                // One reading of the clocks for the tick: each birth's mark is read from the book at it.
+                let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
+                let silent = crate::offline::silent_set(watched.values(), &recovery.book, now, now_ms, floor);
                 let client = runner.node_rpc.as_ref().map(|r| r.client.clone());
                 // The tickle: ask the exact birth to reassert itself.
                 // Protocol name: ProbeNodeState.
@@ -5030,7 +5032,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
                 let report = tickle
                     .tick(
-                        local_now_ms(),
+                        now_ms,
                         holds_seat,
                         silent,
                         |id: &str| in_view.contains(id),
@@ -6247,7 +6249,7 @@ mod tests {
             let view = view_now();
             let holds_seat = view.holds_mesh_seat("mesh2", &successor.node.node_id);
             let watched = watched_births(&view, &successor.node.node_id, "mesh2", &[]);
-            let silent = watched.values().map(|n| SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string() }).collect();
+            let silent = watched.values().map(|n| SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), marked_at_ms: None }).collect();
             let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
             let report = tickle
                 .tick(

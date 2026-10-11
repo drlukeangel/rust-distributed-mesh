@@ -18,6 +18,30 @@ use std::collections::{HashMap, HashSet};
 pub(crate) struct SilentNode {
     pub node_id: String,
     pub path: String,
+    /// The mark, on this admin's local clock (ms): the instant this admin's digest book holds the
+    /// birth went unheard past the staleness floor ([`silent_set`]). `None` for a birth the book holds
+    /// no receipt of (a birth only a durable runtime row names), whose silence is first seen at the
+    /// tick that lists it.
+    pub marked_at_ms: Option<u64>,
+}
+
+/// The silent set of one tick: every watched birth, each with its mark read from this admin's digest
+/// book at `now` (`now_ms` on the local clock): the birth's last receipt plus the staleness floor
+/// `floor`, the instant its silence passed the floor (node-recovery.md "Detection and proof" step 1:
+/// "Each node's pruner marks a member `PendingReconnect` once it is unheard past the staleness
+/// floor"). A birth the book holds no receipt of, a receipt of another incarnation, or one heard
+/// within the floor carries no mark.
+pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, book: &rafka_mesh_transport::membership::DigestBook, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
+    watched
+        .into_iter()
+        .map(|n| {
+            let marked_at_ms = book
+                .get_at(n.node_id.as_str(), now)
+                .filter(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && *unheard >= floor)
+                .map(|(_, unheard)| now_ms.saturating_sub((unheard - floor).as_millis() as u64));
+            SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), marked_at_ms }
+        })
+        .collect()
 }
 
 /// How many live peers the via-peer step asks.
@@ -183,7 +207,7 @@ impl OfflineTickle {
         if !holds_seat {
             return report;
         }
-        for SilentNode { node_id: id, path } in silent {
+        for SilentNode { node_id: id, path, .. } in silent {
             // The instant this admin first saw the node silent: a seat taken mid-window tickles on it.
             let seen_at = self.first_seen.get(&id).copied().unwrap_or(now_ms);
             if now_ms.saturating_sub(seen_at) < probe_delay_ms || self.settled.contains(&id) {
@@ -334,7 +358,7 @@ pub(crate) mod tests {
     const PROBE_DELAY: u64 = FLOOR / 2;
 
     fn silent(id: &str) -> Vec<SilentNode> {
-        vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}") }]
+        vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), marked_at_ms: None }]
     }
 
     async fn tick(t: &mut OfflineTickle, now: u64, seat: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict) -> OfflineTickReport {
@@ -475,7 +499,7 @@ pub(crate) mod tests {
             let ended = Arc::new(AtomicUsize::new(0));
             let mut t = OfflineTickle::new();
             let id = b.0.to_string();
-            let set = || vec![SilentNode { node_id: b.0.to_string(), path: "mesh1.rpc.1".into() }];
+            let set = || vec![SilentNode { node_id: b.0.to_string(), path: "mesh1.rpc.1".into(), marked_at_ms: None }];
             let direct_failed = AtomicBool::new(false);
             let round = async |t: &mut OfflineTickle, now: u64| {
                 t.tick(
@@ -526,6 +550,75 @@ pub(crate) mod tests {
         assert_eq!(r.tickled, vec!["a".to_string()], "one connect at floor + half a floor");
         assert_eq!(r.reachable_silent, vec!["a".to_string()], "an answer is reachable-silent, no action");
         assert!(tick(&mut t, PROBE_DELAY * 4, true, silent("a"), true, no_path()).await.tickled.is_empty(), "settled: not tickled again");
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof" step 2: "Half a floor after the mark it makes
+    /// one QUIC connect"; step 1: "a node-admin that takes the seat mid-window continues the window
+    /// already running"): the window runs from the mark, the instant the birth went unheard past the
+    /// staleness floor, not from the tick that first lists it. A birth marked at 0 and first listed
+    /// by a tick 700 ms later is tickled by the tick at half a floor after the mark, and the round's
+    /// span names the mark as `first_seen_ms`. Must NOT happen: the connect half a floor after the
+    /// sighting (a window that grows by the time between the mark and the tick that saw it).
+    #[tokio::test]
+    async fn the_one_tickle_is_made_half_a_floor_after_the_mark_not_after_the_tick_that_first_saw_it() {
+        let marked = |id: &str| vec![SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), marked_at_ms: Some(0) }];
+        let mut t = OfflineTickle::new();
+        assert!(tick(&mut t, 700, true, marked("a"), false, no_path()).await.tickled.is_empty(), "listed 700 ms after its mark: no tickle yet");
+        let r = tick(&mut t, PROBE_DELAY, true, marked("a"), false, no_path()).await;
+        assert_eq!(r.tickled, vec!["a".to_string()], "one connect half a floor after the mark, not half a floor after the tick that first listed it");
+        assert!(t.is_in_hold_down("a"), "round 1 with no path opens the hold-down");
+        // A node-admin that takes the seat later still runs on the mark its own book holds.
+        let mut successor = OfflineTickle::new();
+        assert!(tick(&mut successor, 700, false, marked("a"), false, no_path()).await.tickled.is_empty(), "not the seat: bookkeeping only");
+        let r = tick(&mut successor, PROBE_DELAY, true, marked("a"), false, no_path()).await;
+        assert_eq!(r.tickled, vec!["a".to_string()], "the successor tickles on the window from the mark");
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof" step 1: a member is marked once it is unheard
+    /// past the staleness floor): the silent set carries, for each watched birth, the mark its digest
+    /// book holds, the last receipt plus the floor, on the caller's local clock; a birth the book holds
+    /// no receipt of, a receipt of another incarnation, or one heard within the floor carries none.
+    #[test]
+    fn the_silent_set_marks_each_birth_at_its_last_receipt_plus_the_floor() {
+        use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
+        let floor = std::time::Duration::from_secs(3);
+        let digest = |name: &str| MeshDigest {
+            fabric_id: FabricId::parse("fab000000001").unwrap(),
+            node: MeshNode { node_id: crate::model::NodeId::mint(), name: name.parse().unwrap(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            status: MemberStatus::ReadyForTraffic,
+            admin_api_base: None,
+            emitted_at_rafka_ms: 1,
+            digest_seq: 1,
+            mesh_id: None,
+            in_flight: None,
+            config: Default::default(),
+            load: None,
+            gossip: None,
+            data_dir: None,
+        };
+        let node_of = |d: &MeshDigest| {
+            let mut n = crate::model::Node::allocated(d.node.name.clone());
+            n.node_id = d.node.node_id.clone();
+            n.incarnation_id = Some(d.node.incarnation.clone());
+            n
+        };
+        let book = rafka_mesh_transport::membership::DigestBook::default();
+        let t0 = std::time::Instant::now();
+        let (silent, fresh, reborn, unheld) = (digest("mesh1.rpc.1"), digest("mesh1.rpc.2"), digest("mesh1.rpc.3"), digest("mesh1.rpc.4"));
+        book.record_at(silent.clone(), t0);
+        book.record_at(fresh.clone(), t0 + floor);
+        book.record_at(reborn.clone(), t0);
+        let mut other_birth = node_of(&reborn);
+        other_birth.incarnation_id = Some(IncarnationId::mint());
+        let watched = [node_of(&silent), node_of(&fresh), other_birth, node_of(&unheld)];
+        let now = t0 + floor + std::time::Duration::from_millis(700);
+        let set = silent_set(watched.iter(), &book, now, 10_000, floor);
+        let marks: Vec<(String, Option<u64>)> = set.iter().map(|s| (s.path.clone(), s.marked_at_ms)).collect();
+        assert_eq!(
+            marks,
+            vec![("mesh1.rpc.1".into(), Some(9_300)), ("mesh1.rpc.2".into(), None), ("mesh1.rpc.3".into(), None), ("mesh1.rpc.4".into(), None)],
+            "marked 700 ms before now, at its receipt plus the floor; heard within the floor, another incarnation and no receipt carry no mark"
+        );
     }
 
     #[tokio::test]
