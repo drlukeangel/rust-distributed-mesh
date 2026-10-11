@@ -246,10 +246,16 @@ impl RuntimeFact {
         std::fs::rename(&tmp, dir.join(RUNTIME_FILE)).map_err(|e| format!("{RUNTIME_FILE}: {e}"))
     }
 
-    /// `dir`'s runtime record, if one is written.
+    /// `dir`'s runtime record: `None` when none is written; a record that cannot be read or parsed
+    /// is an error naming the file, never "no record".
     pub fn read_record(dir: &Path) -> Option<Result<Self, String>> {
-        let raw = std::fs::read(dir.join(RUNTIME_FILE)).ok()?;
-        Some(serde_json::from_slice(&raw).map_err(|e| format!("{RUNTIME_FILE}: {e}")))
+        let path = dir.join(RUNTIME_FILE);
+        let raw = match std::fs::read(&path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => return Some(Err(format!("{}: {e}", path.display()))),
+        };
+        Some(serde_json::from_slice(&raw).map_err(|e| format!("{}: {e}", path.display())))
     }
 }
 

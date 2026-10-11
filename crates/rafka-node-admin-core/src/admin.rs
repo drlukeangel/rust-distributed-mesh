@@ -2163,7 +2163,7 @@ impl AdminRunner {
             Some(id) => {
                 let dir = self.template.data_root.join(format!("{path}-{id}"));
                 let look = dir.clone();
-                let exists = look.try_exists().map_err(|e| refuse(format!("{}: {e}", dir.display())))?;
+                let exists = crate::record_store::blocking_io(move || look.try_exists()).await.map_err(|e| refuse(format!("{}: {e}", dir.display())))?;
                 if !exists {
                     return Err(refuse(format!("{} does not exist", dir.display())));
                 }

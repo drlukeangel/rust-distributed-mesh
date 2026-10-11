@@ -107,19 +107,26 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
 /// pool (`record_store::blocking_io`); a root or entry that cannot be read is an error naming it,
 /// never an empty answer.
 pub(crate) async fn recorded_dirs(data_root: &std::path::Path, path: &PathName) -> Result<Vec<std::path::PathBuf>, String> {
-    let prefix = format!("{path}-");
-    let Ok(dirs) = std::fs::read_dir(data_root) else { return Ok(Vec::new()) };
-    Ok(dirs.flatten().filter(|d| d.file_name().to_string_lossy().starts_with(&prefix)).map(|d| d.path()).collect())
+    let (root, prefix) = (data_root.to_path_buf(), format!("{path}-"));
+    crate::record_store::blocking_io(move || {
+        let named = |e: std::io::Error| format!("{}: {e}", root.display());
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&root).map_err(named)? {
+            let entry = entry.map_err(named)?;
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                out.push(entry.path());
+            }
+        }
+        Ok(out)
+    })
+    .await
 }
 
 /// The runtime record `dir` holds (`None`: it holds none), read on the blocking pool; a record
 /// that cannot be read is an error naming the file.
 pub(crate) async fn runtime_record(dir: &std::path::Path) -> Result<Option<rafka_mesh_entity::RuntimeFact>, String> {
-    match rafka_mesh_entity::RuntimeFact::read_record(dir) {
-        Some(Ok(f)) => Ok(Some(f)),
-        Some(Err(e)) => Err(format!("{}: {e}", dir.display())),
-        None => Ok(None),
-    }
+    let dir = dir.to_path_buf();
+    crate::record_store::blocking_io(move || rafka_mesh_entity::RuntimeFact::read_record(&dir).transpose()).await
 }
 
 #[cfg(test)]
