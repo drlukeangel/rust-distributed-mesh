@@ -571,32 +571,8 @@ mod tests {
     /// The same, for the record file `<key>.json` under the store's `dir`, written `bytes`.
     fn runtime_runs_while_a_file_is_read<T: Send + 'static>(dir: &str, key: &str, bytes: Vec<u8>, op: impl FnOnce(std::sync::Arc<FileNodesStorage>) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static) -> (bool, T) {
         let d = crate::record_store::tempdir("rows-offload");
-        let store = std::sync::Arc::new(FileNodesStorage::open(&d).unwrap());
         let fifo = d.join(dir).join(format!("{key}.json"));
-        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
-        let (word_tx, word_rx) = std::sync::mpsc::channel::<()>();
-        let writer = std::thread::spawn(move || {
-            use std::io::Write as _;
-            // Blocks until the read has the FIFO open: the read is waiting from here on.
-            let mut f = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
-            let heard = word_rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
-            f.write_all(&bytes).unwrap();
-            heard
-        });
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let out = rt.block_on(async move {
-            let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
-            // The read and its start signal are one poll: this task resumes only once that poll returns.
-            let read = tokio::spawn(async move {
-                let _ = started_tx.send(());
-                op(store).await
-            });
-            started_rx.await.unwrap();
-            let _ = word_tx.send(());
-            read.await.unwrap()
-        });
-        (writer.join().unwrap(), out)
+        crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { op(std::sync::Arc::new(FileNodesStorage::open(&d).unwrap())).await }))
     }
 
     /// CONTRACT: a point read of a node row never waits on the disk on a runtime worker (the
@@ -637,5 +613,21 @@ mod tests {
         let (ran, listed) = runtime_runs_while_a_file_is_read("nodes/runtimes", &row.key(), bytes, move |s| Box::pin(async move { s.runtimes().await }));
         assert!(ran, "the runtime thread ran while the list waited on the disk");
         assert_eq!(listed, Ok(vec![row]));
+    }
+
+    /// CONTRACT: a read of the connections raw log (`history.jsonl`) never waits on the disk on a
+    /// runtime worker: it runs on the blocking pool, as the log's append does. The cell reads the
+    /// log while its file holds the read: the runtime's only thread keeps running, and the read
+    /// answers the logged fact.
+    #[test]
+    fn a_read_of_the_connections_history_waits_on_the_disk_off_the_runtime_thread() {
+        let d = crate::record_store::tempdir("history-offload");
+        let logged = fact(ConnectionState::Connected);
+        let mut line = serde_json::to_vec(&logged).unwrap();
+        line.push(b'\n');
+        let fifo = d.join("connections").join("history.jsonl");
+        let (ran, history) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { FileConnectionsStorage::open(&d).unwrap().history().await }));
+        assert!(ran, "the runtime thread ran while the history read waited on the disk");
+        assert_eq!(history, Ok(vec![logged]));
     }
 }

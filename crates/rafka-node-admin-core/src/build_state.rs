@@ -1183,6 +1183,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// CONTRACT: opening the journal (its replay of every fact line in the file) never waits on
+    /// the disk on a runtime worker: it runs on the blocking pool, as every append does. The admin
+    /// opens it inside its boot, on the runtime. The cell opens a journal whose file holds the
+    /// read: the runtime's only thread keeps running, and the replay answers the logged Build.
+    #[test]
+    fn opening_the_journal_waits_on_the_disk_off_the_runtime_thread() {
+        let dir = crate::record_store::tempdir("journal-offload");
+        let line = format!("{}\n", serde_json::to_string(&BuildFact::Accepted(intent("b1"))).unwrap()).into_bytes();
+        let fifo = dir.join(JOURNAL_FILE);
+        let (ran, active) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { FileJournal::open(&dir).unwrap().list_active().await.unwrap().len() }));
+        assert!(ran, "the runtime thread ran while the journal's replay waited on the disk");
+        assert_eq!(active, 1);
+    }
+
     #[tokio::test]
     async fn a_corrupt_journal_line_is_named() {
         let dir = tmp();

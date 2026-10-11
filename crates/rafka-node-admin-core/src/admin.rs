@@ -4551,6 +4551,21 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
 mod tests {
     use super::*;
 
+    /// CONTRACT: loading the node key from the data dir never waits on the disk on a runtime
+    /// worker: it runs on the blocking pool (`record_store::blocking_io`), as every store read
+    /// does. The admin loads it inside its boot, on the runtime. The cell loads a key whose file
+    /// holds the read: the runtime's only thread keeps running, and the load answers that key.
+    #[test]
+    fn loading_the_node_key_waits_on_the_disk_off_the_runtime_thread() {
+        let d = crate::record_store::tempdir("node-key-offload");
+        let key = SecretKey::generate();
+        let fifo = d.join("node-key");
+        let dir = d.clone();
+        let (ran, loaded) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, hex::encode(key.to_bytes()).into_bytes(), Box::pin(async move { load_or_mint_key(&dir).map(|k| k.to_bytes()) }));
+        assert!(ran, "the runtime thread ran while the key's read waited on the disk");
+        assert_eq!(loaded, Ok(key.to_bytes()));
+    }
+
     fn fabric1() -> FabricId {
         FabricId::parse("fab000000001").unwrap()
     }
