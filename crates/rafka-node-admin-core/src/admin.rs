@@ -3293,6 +3293,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
     let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
+    // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
+    let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
     // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
     // event rows it put, and the lifecycle state on each node row it wrote, folded into what it
     // holds as applied. A reader folds; nothing here writes a row.
@@ -3322,6 +3324,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             wake: records.wake.clone(),
             rounds: rounds_slot.clone(),
             configs: configs_slot.clone(),
+            configure: configure.clone(),
         }));
     }
     // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -3931,6 +3934,23 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let peers: Vec<EndpointAddr> = membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
                 let _ = membership.join_peers(peers).await;
                 let d = digest.lock().unwrap().clone();
+                let _ = membership.publish(&d).await;
+            })
+        }));
+    }
+    {
+        // The config is held on this admin's own digest and by its membership, so every publish and
+        // every read of its own digest carries it.
+        let (membership, digest) = (membership.clone(), digest.clone());
+        let _ = configure.set(Arc::new(move |config: BTreeMap<String, String>| {
+            let (membership, digest) = (membership.clone(), digest.clone());
+            Box::pin(async move {
+                membership.set_config(config.clone());
+                let d = {
+                    let mut d = digest.lock().unwrap();
+                    d.config = config;
+                    d.clone()
+                };
                 let _ = membership.publish(&d).await;
             })
         }));
@@ -4960,6 +4980,7 @@ mod tests {
             wake: records.wake.clone(),
             rounds: Default::default(),
             configs: Default::default(),
+            configure: Default::default(),
         };
         let _ = Declared::default();
 
