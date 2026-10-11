@@ -75,11 +75,22 @@ fn capture(cell: &str) -> (Capture, tracing::subscriber::DefaultGuard) {
 
 /// The fabric-primary `me` over `builds`, its accepted Build seeded from `t` and settled.
 async fn plane(builds: Arc<MemoryBuildStateAdapter>, t: Topology, me: &str) -> Arc<ControlPlane> {
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), me).await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), desired(&t), me).await.unwrap();
     let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, me.parse().unwrap(), t, crate::adopted_time()));
     let b0 = cp.accepted.build_id().await.unwrap();
     settle(&builds, &b0).await;
     cp
+}
+
+/// The accepted topology: every node, the stopped ones included (a stop is an attempt of the
+/// accepted Build and leaves its topology as it is).
+fn desired(t: &Topology) -> FabricTopology {
+    let mut live = t.clone();
+    for n in live.nodes.iter_mut() {
+        n.parked = false;
+        n.status = NodeStatus::ReadyForTraffic;
+    }
+    FabricTopology::of_observed(&live)
 }
 
 /// The Build `id`'s current attempt claimed and converged.
@@ -204,16 +215,23 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     let refused = cp.collect_stopped(&candidates[0], TTL).await;
     assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-not-stopped"), "{refused:?}");
 
-    // After the scan: a Build opens a replacement of mesh1.rpc.2's birth.
+    // After the scan: the accepted Build opens a replacement of mesh1.rpc.2's birth, whose attempt
+    // fails mid-transfer: the Build is open, not in flight, and keeps the birth as its rollback point.
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
-    builds.absorb(&[BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Replace, action: Some(AttemptAction::Replace { path: other.0.clone(), from_incarnation: other.2.clone() }), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) })]);
+    builds.absorb(&[
+        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Replace, action: Some(AttemptAction::Replace { path: other.0.clone(), from_incarnation: other.2.clone() }), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
+        BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
+        BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
+    ]);
     let referenced = cp.collect_stopped(&candidates[1], TTL).await;
     assert!(matches!(&referenced, Err(Refusal::Reject(r)) if r.reason() == "referenced-by-open-build"), "{referenced:?}");
 
     assert_eq!(cp.accepted.build_id().await, Some(b0), "no delete was accepted");
     assert_eq!(spans.spans("rdm.node_admin.build.reject.via-node-not-stopped").len(), 1);
     assert_eq!(spans.spans("rdm.node_admin.build.reject.via-referenced-by-open-build").len(), 1);
-    assert!(spans.spans("rdm.node_admin.node.delete.via-stopped-ttl").is_empty());
+    let tried = spans.spans("rdm.node_admin.node.delete.via-stopped-ttl");
+    assert_eq!(tried.len(), 2, "{tried:?}");
+    assert!(tried.iter().all(|(_, a)| !a.contains_key("build_id")), "neither collection was accepted as a Build: {tried:?}");
 }
 
 /// CONTRACT (§6.9 Selection: "except a birth an open Build still references (a replace
@@ -242,7 +260,7 @@ async fn a_stopped_birth_an_open_replace_references_is_skipped() {
     assert!(verdicts.contains(&Verdict::Referenced { node: old.0.clone(), build_id: b0.clone() }), "{verdicts:?}");
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     assert_eq!(cp.accepted.build_id().await, Some(b0));
-    let skipped = spans.spans("rdm.node_admin.node.evict.via-open-build-reference");
+    let skipped = spans.spans("rdm.node_admin.node.reject.via-open-build-reference");
     assert!(skipped.iter().any(|(_, a)| a["node"] == STOPPED), "{skipped:?}");
 }
 
@@ -271,7 +289,7 @@ async fn an_earlier_stop_before_a_later_start_does_not_count() {
     assert!(verdicts.iter().any(|v| matches!(v, Verdict::Skipped { node, .. } if *node == b.0)), "{verdicts:?}");
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     assert_eq!(cp.accepted.build_id().await, Some(b0));
-    assert!(spans.spans("rdm.node_admin.node.evict.via-no-current-stop-receipt").iter().any(|(_, x)| x["node"] == YOUNG));
+    assert!(spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt").iter().any(|(_, x)| x["node"] == YOUNG));
 }
 
 /// CONTRACT (§6.9 Action: "a `BuildInProgress` refusal loses nothing, the candidate is seen
@@ -326,7 +344,7 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     *first.topology.write().await = moved.clone();
     let held = Arc::new(MemoryBuildStateAdapter::new());
     held.absorb(&builds.facts().await.unwrap());
-    let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), FabricTopology::of_observed(&moved), "mesh1.admin.2").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), desired(&moved), "mesh1.admin.2").await.unwrap();
     let successor = ControlPlane::new(held.clone(), accepted, "mesh1.admin.2".parse().unwrap(), moved, crate::adopted_time());
     let b = successor.accepted.build_id().await.unwrap();
     if !matches!(held.read_build(&b).await.unwrap().state, rafka_node_admin_core::build_state::BuildState::Complete) {

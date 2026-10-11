@@ -7,8 +7,13 @@
 //! Build per sweep. The sweep deletes nothing itself; the delete's admission rechecks the stopped
 //! and open-Build facts, serialized with it.
 
-use crate::build::BuildId;
+use crate::accepted::{AttemptAction, TopologyChange};
+use crate::build::{BuildId, BuildReject};
+use crate::build_state::{BuildFact, BuildState, StepOutcome};
+use crate::http::Refusal;
 use crate::model::{IncarnationId, NodeId, PathName};
+use rafka_mesh_entity::LifecycleOp;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// The variable that sets the ttl.
@@ -18,8 +23,28 @@ pub const ENV: &str = "RDM_STOPPED_NODE_TTL";
 pub const SHIPPED_TTL: Duration = Duration::from_secs(30 * 60);
 
 /// The ttl `raw` sets: unset is RDM's shipped 30 minutes, blank is forever (`None`, no sweep).
-pub fn ttl_from_env(_raw: Option<&str>) -> Result<Option<Duration>, String> {
-    Ok(Some(SHIPPED_TTL))
+/// A value is a whole number with its unit, `ms`, `s`, `m` or `h`; zero and anything else are
+/// refused by name.
+pub fn ttl_from_env(raw: Option<&str>) -> Result<Option<Duration>, String> {
+    let Some(raw) = raw else { return Ok(Some(SHIPPED_TTL)) };
+    let v = raw.trim();
+    if v.is_empty() {
+        return Ok(None);
+    }
+    let refuse = |why: &str| format!("{ENV} `{raw}`: {why}; a ttl is a whole number with its unit (750ms, 2s, 30m, 1h), or blank for forever");
+    let digits = v.find(|c: char| !c.is_ascii_digit()).unwrap_or(v.len());
+    let n: u64 = v[..digits].parse().map_err(|_| refuse("no number"))?;
+    let d = match &v[digits..] {
+        "ms" => Duration::from_millis(n),
+        "s" => Duration::from_secs(n),
+        "m" => Duration::from_secs(n.saturating_mul(60)),
+        "h" => Duration::from_secs(n.saturating_mul(3600)),
+        _ => return Err(refuse("no unit it knows")),
+    };
+    if d.is_zero() {
+        return Err(refuse("a zero ttl"));
+    }
+    Ok(Some(d))
 }
 
 /// How old the current stopped period of one birth is, from the Build log.
@@ -107,20 +132,188 @@ pub enum Swept {
     },
 }
 
+/// The birth an attempt's fenced action acts on.
+fn acts_on(action: &AttemptAction) -> &IncarnationId {
+    match action {
+        AttemptAction::Restart { from_incarnation, .. }
+        | AttemptAction::Replace { from_incarnation, .. }
+        | AttemptAction::Drain { from_incarnation, .. }
+        | AttemptAction::Stop { from_incarnation, .. }
+        | AttemptAction::Start { from_incarnation, .. }
+        | AttemptAction::Recover { from_incarnation, .. } => from_incarnation,
+    }
+}
+
+/// The age of the birth `(node_id, incarnation)`'s current stopped period, from the Build log in the
+/// order it holds its facts: the latest standalone stop's `Complete` receipt naming the birth opens a
+/// period, and a later `Complete` of a start or a restart of the same birth ends it. An earlier stop
+/// before a later start never counts.
+pub fn stop_age(facts: &[BuildFact], node_id: &NodeId, incarnation: &IncarnationId) -> Age {
+    // Facts arrive in any order (gossip, catch-up): an attempt's action is read from all of them.
+    let actions: HashMap<(BuildId, u32), &AttemptAction> =
+        facts.iter().filter_map(|f| if let BuildFact::Opened(o) = f { o.action.as_ref().map(|a| ((o.build_id.clone(), o.attempt), a)) } else { None }).collect();
+    let mut current: Option<Age> = None;
+    let mut ended: Option<String> = None;
+    for f in facts {
+        let BuildFact::Step(s) = f else { continue };
+        if s.step != "Complete" || s.outcome != StepOutcome::Complete {
+            continue;
+        }
+        let action = actions.get(&(s.build_id.clone(), s.attempt)).copied();
+        let ours = action.is_some_and(|a| acts_on(a) == incarnation);
+        if s.operation.starts_with("stop-node:") {
+            match s.output.as_ref().map(|v| serde_json::from_value::<LifecycleOp>(v.clone())) {
+                Some(Ok(op)) if op.node_id == *node_id && op.incarnation == *incarnation => current = Some(Age::StoppedAt(op.event_at_rafka_ms)),
+                Some(Ok(_)) => {}
+                Some(Err(e)) if ours => current = Some(Age::Unreadable(format!("the stop receipt of Build {} attempt {} does not decode as the stop's lifecycle op: {e}", s.build_id, s.attempt))),
+                None if ours => current = Some(Age::Unreadable(format!("the stop receipt of Build {} attempt {} commits no stop time", s.build_id, s.attempt))),
+                _ => {}
+            }
+        } else if ours && (s.operation.starts_with("start-node:") || s.operation.starts_with("restart-node:")) && current.is_some() {
+            current = None;
+            ended = Some(format!("its last stop receipt precedes its {} in Build {} attempt {}", s.operation, s.build_id, s.attempt));
+        }
+    }
+    current.unwrap_or_else(|| Age::NoCurrentReceipt(ended.unwrap_or_else(|| "no standalone stop receipt in the Build log names this birth".into()) + ": no stop receipt opens its current stopped period"))
+}
+
 impl crate::http::ControlPlane {
+    /// This admin's view as it is now.
+    async fn view(&self) -> crate::topology::Topology {
+        match self.view_now.get() {
+            Some(project) => project(),
+            None => self.topology.read().await.clone(),
+        }
+    }
+
+    /// The open Build that references the birth: a Build still Pending or Running, or the accepted
+    /// Build while it is not complete (a replacement left mid-transfer keeps its rollback point),
+    /// whose current attempt's fenced action acts on the birth.
+    async fn open_reference(&self, incarnation: &IncarnationId) -> Result<Option<BuildId>, String> {
+        let mut open = self.builds.list_active().await.map_err(|e| format!("the active Builds cannot be read: {e}"))?;
+        if let Some(current) = self.accepted.current(&*self.builds).await {
+            if current.state != BuildState::Complete {
+                open.push(current);
+            }
+        }
+        Ok(open.into_iter().find(|p| p.action.as_ref().is_some_and(|a| acts_on(a) == incarnation)).map(|p| p.build_id))
+    }
+
     /// The scan: every stopped birth this admin's view holds, with its verdict at `now_ms`.
-    pub async fn scan_stopped(&self, _ttl: Duration, _now_ms: u64) -> Vec<Verdict> {
-        Vec::new()
+    pub async fn scan_stopped(&self, ttl: Duration, now_ms: u64) -> Vec<Verdict> {
+        let view = self.view().await;
+        let desired = self.accepted.current(&*self.builds).await.map(|b| b.topology);
+        let facts = self.builds.facts().await;
+        let mut stopped: Vec<&crate::model::Node> = view.members().filter(|n| n.parked).collect();
+        stopped.sort_by(|a, b| a.name.to_string().cmp(&b.name.to_string()));
+        let mut out = Vec::new();
+        for n in stopped {
+            let node = n.name.clone();
+            let Some(incarnation) = n.incarnation_id.clone() else {
+                out.push(Verdict::Skipped { node, reason: "the view holds no incarnation for the stopped node".into() });
+                continue;
+            };
+            if !desired.as_ref().is_some_and(|t| t.contains(&node)) {
+                out.push(Verdict::Skipped { node, reason: "the accepted Build no longer names it: its delete is under way".into() });
+                continue;
+            }
+            match self.open_reference(&incarnation).await {
+                Ok(Some(build_id)) => {
+                    out.push(Verdict::Referenced { node, build_id });
+                    continue;
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    out.push(Verdict::Skipped { node, reason });
+                    continue;
+                }
+            }
+            let facts = match &facts {
+                Ok(f) => f,
+                Err(e) => {
+                    out.push(Verdict::Skipped { node, reason: format!("the Build log cannot be read: {e}") });
+                    continue;
+                }
+            };
+            match stop_age(facts, &n.node_id, &incarnation) {
+                Age::StoppedAt(stopped_at_ms) if now_ms.saturating_sub(stopped_at_ms) > ttl.as_millis() as u64 => {
+                    out.push(Verdict::Expired(Candidate { node, node_id: n.node_id.clone(), incarnation, stopped_at_ms }))
+                }
+                Age::StoppedAt(stopped_at_ms) => out.push(Verdict::Young { node, stopped_at_ms }),
+                Age::NoCurrentReceipt(reason) | Age::Unreadable(reason) => out.push(Verdict::Skipped { node, reason }),
+            }
+        }
+        out
     }
 
-    /// One sweep at `ttl` (blank: none): the scan, then one node.delete Build for the first candidate.
-    pub async fn sweep_stopped(&self, _ttl: Option<Duration>) -> Swept {
-        Swept::Nothing
+    /// One sweep at `ttl` (blank: none): the scan, then one node.delete Build for the first
+    /// candidate. Only the fabric-primary sweeps; one topology Build runs at a time, so the other
+    /// candidates wait for the next sweep.
+    pub async fn sweep_stopped(&self, ttl: Option<Duration>) -> Swept {
+        let Some(ttl) = ttl else { return Swept::Forever };
+        if self.topology.read().await.fabric_primary().map(|n| &n.name) != Some(&self.me) {
+            return Swept::NotFabricPrimary;
+        }
+        let now_ms = self.time.now_ms();
+        let ttl_ms = ttl.as_millis() as u64;
+        let mut first = None;
+        for v in self.scan_stopped(ttl, now_ms).await {
+            match v {
+                Verdict::Expired(c) => {
+                    first.get_or_insert(c);
+                }
+                Verdict::Young { .. } => {}
+                Verdict::Referenced { node, build_id } => tracing::info_span!("rdm.node_admin.node.reject.via-open-build-reference", node = %node, build_id = %build_id, ttl = ttl_ms)
+                    .in_scope(|| tracing::info!("the stopped birth is referenced by an open Build: it is not collected")),
+                Verdict::Skipped { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-no-current-stop-receipt", node = %node, reason = %reason, ttl = ttl_ms)
+                    .in_scope(|| tracing::info!(%reason, "the stopped birth's age cannot be decided: skipped, never treated as expired")),
+            }
+        }
+        let Some(c) = first else { return Swept::Nothing };
+        match self.collect_stopped(&c, ttl).await {
+            Ok(o) => Swept::Submitted { node: c.node, build_id: o.build_id },
+            Err(Refusal::BuildInProgress(current_build_id)) => Swept::BuildInProgress { node: c.node, current_build_id },
+            Err(Refusal::Reject(r)) => Swept::Refused { node: c.node, reason: r.to_string() },
+            Err(other) => Swept::Refused { node: c.node, reason: format!("{other:?}") },
+        }
     }
 
-    /// The node.delete Build of `candidate`, admitted only after the stopped and open-Build checks
-    /// run again under the admission, serialized with the write.
-    pub async fn collect_stopped(&self, _candidate: &Candidate, _ttl: Duration) -> Result<crate::http::Opened, crate::http::Refusal> {
-        Err(crate::http::Refusal::Unavailable("not built".into()))
+    /// The node.delete Build of `candidate`: the ordinary `RemoveNode` Build `DELETE /api/nodes/{name}`
+    /// accepts, admitted only after the stopped and open-Build checks run again under the admission,
+    /// serialized with the write (§6.9 Recheck).
+    pub async fn collect_stopped(&self, candidate: &Candidate, ttl: Duration) -> Result<crate::http::Opened, Refusal> {
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.delete.via-stopped-ttl",
+            node = %candidate.node,
+            stopped_at = candidate.stopped_at_ms,
+            ttl = ttl.as_millis() as u64,
+            build_id = tracing::field::Empty,
+            previous_build_id = tracing::field::Empty,
+        );
+        self.submit_checked(span, "stopped-ttl", TopologyChange::RemoveNode { node: candidate.node.clone() }, Some(candidate)).await
+    }
+
+    /// The recheck at the delete's admission: the view still holds the candidate's exact birth
+    /// parked, no open Build references it, and its current stopped period is the one the scan aged.
+    pub(crate) async fn recheck_stopped(&self, c: &Candidate) -> Result<(), BuildReject> {
+        let not_stopped = |found: String| BuildReject::NodeNotStopped { node: c.node.to_string(), found };
+        let view = self.view().await;
+        let n = view.node(&c.node).ok_or_else(|| not_stopped("the view holds no node at this path".into()))?;
+        if n.node_id != c.node_id || n.incarnation_id.as_ref() != Some(&c.incarnation) {
+            return Err(not_stopped(format!("the view holds another birth there ({} at {:?})", n.node_id, n.incarnation_id)));
+        }
+        if !n.parked {
+            return Err(not_stopped(format!("it is {:?} and not parked: started since the scan", n.status)));
+        }
+        match self.open_reference(&c.incarnation).await {
+            Ok(Some(build_id)) => return Err(BuildReject::ReferencedByOpenBuild { node: c.node.to_string(), build_id: build_id.to_string() }),
+            Ok(None) => {}
+            Err(e) => return Err(not_stopped(e)),
+        }
+        let facts = self.builds.facts().await.map_err(|e| not_stopped(format!("the Build log cannot be read: {e}")))?;
+        match stop_age(&facts, &c.node_id, &c.incarnation) {
+            Age::StoppedAt(t) if t == c.stopped_at_ms => Ok(()),
+            other => Err(not_stopped(format!("its current stopped period is no longer the one the scan aged at {} ms: {other:?}", c.stopped_at_ms))),
+        }
     }
 }

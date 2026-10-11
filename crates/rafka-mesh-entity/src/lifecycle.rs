@@ -26,7 +26,9 @@ pub struct LifecycleOp {
     pub incarnation: IncarnationId,
     /// The node's `path.name`.
     pub name: PathName,
-    /// When the event happened, in Rafka-time; evidence only, never liveness, order or expiry.
+    /// When the event happened, in Rafka-time; evidence only, never liveness or order. One expiry
+    /// reads it: a standalone stop's receipted op is the age of the birth's stopped period, which
+    /// the stopped-node garbage collector compares with `stopped_node_ttl` (R-GC1).
     pub event_at_rafka_ms: u64,
 }
 

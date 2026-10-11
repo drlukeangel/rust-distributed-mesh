@@ -87,6 +87,10 @@ pub struct AdminConfig {
     pub bindings: Option<rafka_mesh_entity::binding::Validated>,
     /// The two variables that named them, handed on to every node-admin this admin launches.
     pub bindings_env: BTreeMap<String, String>,
+    /// `RDM_STOPPED_NODE_TTL` (fabric-node-lifecycle.md §6.9): a node stopped longer than it is
+    /// collected by a node.delete Build the fabric-primary submits on a sweep every ttl. Read by the
+    /// fabric-primary only, held by every admin (a successor sweeps with it). `None`: blank, forever.
+    pub stopped_node_ttl: Option<Duration>,
 }
 
 impl AdminConfig {
@@ -139,7 +143,7 @@ impl AdminConfig {
                 Some(validated.map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
             }
         };
-        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", "RDM_LEAVE_LINGER_MS"]
+        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", "RDM_LEAVE_LINGER_MS", crate::stopped_gc::ENV]
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();
@@ -157,7 +161,9 @@ impl AdminConfig {
                 rafka_mesh_entity::launch::ENV_MESH_PRIMARY
             ));
         }
+        let stopped_node_ttl = crate::stopped_gc::ttl_from_env(get(crate::stopped_gc::ENV).as_deref())?;
         Ok(Self {
+            stopped_node_ttl,
             fabric,
             fabric_id,
             mesh_primary,
@@ -5282,6 +5288,24 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
                 }
             }
         });
+    }
+    // The stopped-node garbage collector (fabric-node-lifecycle.md §6.9): a sweep every ttl, by the
+    // fabric-primary only, while its view authorizes and no fabric shutdown froze reconciliation.
+    // A blank ttl runs no sweep. The sweep submits one ordinary node.delete Build and deletes nothing.
+    if let Some(ttl) = cfg.stopped_node_ttl {
+        let (control, frozen, cut_off_view) = (control.clone(), shutdown_control.clone(), membership.clone());
+        tasks.push(park_gate.spawn(async move {
+            loop {
+                tokio::time::sleep(ttl).await;
+                if frozen.held().is_some() {
+                    return;
+                }
+                if cut_off_view.authorizes() {
+                    let swept = control.sweep_stopped(Some(ttl)).await;
+                    tracing::debug!(?swept, "stopped-node sweep");
+                }
+            }
+        }));
     }
     // A fabric shutdown: freeze (the executor stops, this admin says Draining), then this admin's
     // part of the drain. The fabric-primary stops itself last by waking the shutdown route.

@@ -1580,7 +1580,8 @@ impl DeploymentPipeline<'_> {
 
     /// A standalone stop (node-stop.md): `stop-node:<path>` is the stop-node command, whose reply is the
     /// exact birth's `stopped`: it drained, cut its mesh connections and is parked, its process alive.
-    /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth. No
+    /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth and the
+    /// rafka-time it stopped at. No
     /// runtime exit is asked and no departure is published.
     pub async fn stop(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
@@ -1591,7 +1592,12 @@ impl DeploymentPipeline<'_> {
             let mut node = req.node.clone();
             self.seat_transfer_step(&mut run, &node).await?;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
-            self.complete(&mut run).await?;
+            // The `Complete` receipt opens the birth's stopped period: it commits the stop's
+            // lifecycle op, the exact birth and the rafka-time it stopped at, which the stopped-node
+            // garbage collector ages it from (fabric-node-lifecycle.md §6.9 Age).
+            let ctx = self.command_context(&run, crate::node_commands::NodeCommand::Stop, &node);
+            let op = self.command_op(&ctx, &node).map_err(|reason| PipelineError { step: RetireStep::Complete.name(), reason })?;
+            let _: LifecycleOp = self.step(&mut run, RetireStep::Complete.name(), async { Ok(op) }).await?;
             Ok(())
         }
         .instrument(span)
@@ -1684,7 +1690,7 @@ impl DeploymentPipeline<'_> {
         Ok(())
     }
 
-    /// The `Complete` receipt of a standalone operation. It commits no output: the attempt it
+    /// The `Complete` receipt of a standalone drain or start (a stop's commits its lifecycle op). It commits no output: the attempt it
     /// belongs to carried the action fenced to the exact birth (its `Opened` fact,
     /// `BuildProjection::attempt_actions`), so a later attempt's plan reads it as that birth's and
     /// plans nothing more for it.
