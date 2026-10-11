@@ -583,3 +583,76 @@ async fn connections_route_lists_a_direct_a_proxy_with_its_carrier_and_a_failed_
     assert_eq!((bad["state"].as_str(), bad["reason"].as_str()), (Some("failed"), Some("dial-refused")), "{bad}");
     assert_eq!(rows.len(), 3, "{v}");
 }
+
+/// The fabric-primary `mesh1.admin.1` with `mesh1.admin.2` as `second` (absent when `None`), and a
+/// peer mesh2 with its own primary admin, over an accepted Build of exactly that topology.
+async fn last_admin_plane(second: Option<NodeStatus>) -> (Arc<ControlPlane>, Arc<MemoryBuildStateAdapter>, Router) {
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let mut t = mn();
+    t.nodes.retain(|n| n.name.to_string() != "mesh1.admin.2");
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    let mut m2 = node("mesh2.admin.1", true);
+    m2.is_fabric_primary = false;
+    t.nodes.push(m2);
+    t.nodes.push(node("mesh2.rpc.1", true));
+    if second.is_some() {
+        t.nodes.push(node("mesh1.admin.2", false));
+    }
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    if let Some(status) = second {
+        t.nodes.iter_mut().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().status = status;
+    }
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
+    let app = router(cp.clone(), Router::new());
+    (cp, builds, app)
+}
+
+/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary; R-EL1a point 7):
+/// TakeSeats moves seats inside the holder's mesh only, so a Build that would restart, replace,
+/// drain, stop or retire the fabric-primary while no other live node-admin of its mesh can take its
+/// seats is refused by name, 422 `last-admin` with `rdm.node_admin.build.reject.via-last-admin`,
+/// before any attempt opens or any executor is picked: nothing is published. The fabric seat leaves
+/// such a mesh only through TakeFabricPrimary inside mesh-leave. A retire of a mesh's only admin
+/// stays refused at compile as `would-leave-mesh-without-admin`. With a second live admin in its mesh
+/// the same restart opens an attempt (its same-mesh successor executes it).
+#[tokio::test]
+async fn a_build_that_would_end_the_fabric_primarys_last_admin_is_refused_by_name_and_opens_nothing() {
+    let spans = SpanNames::default();
+    crate::enable_callsites();
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+    let refused = || spans.0.lock().unwrap().iter().filter(|(n, _)| n == "rdm.node_admin.build.reject.via-last-admin").count();
+    let last_admin = |action: &str, s: StatusCode, v: &Value| {
+        assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("last-admin")), "{action}: {v}");
+        assert!(
+            v["detail"].as_str().is_some_and(|d| d.contains("mesh1.admin.1") && d.contains("mesh `mesh1`") && d.contains("mesh-leave")),
+            "{action}: the refusal names the node, its mesh and the one way the seat leaves it: {v}"
+        );
+    };
+
+    // mesh1's only admin is the fabric-primary.
+    let (_, builds, app) = last_admin_plane(None).await;
+    let seed = builds.facts().await.unwrap().len();
+    for action in ["restart", "replace", "drain", "stop"] {
+        let (s, v) = call(&app, "POST", &format!("/api/nodes/mesh1.admin.1/{action}"), None).await;
+        last_admin(action, s, &v);
+    }
+    assert_eq!(refused(), 4, "each refusal is spanned by name");
+    let (s, v) = call(&app, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("would-leave-mesh-without-admin")), "a retire of a mesh's only admin is refused at compile: {v}");
+    assert_eq!(builds.facts().await.unwrap().len(), seed, "the refusals publish nothing: no attempt, no Build");
+
+    // The Build names a second admin in mesh1, but it is dead: no live admin of mesh1 can take the seats.
+    let (cp, builds, app) = last_admin_plane(Some(NodeStatus::Dead)).await;
+    let seed = builds.facts().await.unwrap().len();
+    let (s, v) = call(&app, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
+    last_admin("retire", s, &v);
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh1.admin.1/stop", None).await;
+    last_admin("stop", s, &v);
+    assert_eq!(refused(), 6, "each refusal is spanned by name");
+    assert_eq!(builds.facts().await.unwrap().len(), seed, "the refusals publish nothing: no attempt, no Build");
+
+    // A second live admin in mesh1: its same-mesh successor executes the restart.
+    cp.topology.write().await.nodes.iter_mut().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().status = NodeStatus::ReadyForTraffic;
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh1.admin.1/restart", None).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "with a same-mesh successor the restart opens an attempt: {v}");
+}

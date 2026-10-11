@@ -841,3 +841,46 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     estate.shutdown().await;
 }
+
+/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary; R-EL1a point 7):
+/// in a fabric whose fabric-primary is its mesh's only node-admin, a replace, restart, drain or stop
+/// of the fabric-primary is refused by name, 422 `last-admin` with
+/// `rdm.node_admin.build.reject.via-last-admin` naming the route: TakeSeats moves seats inside the
+/// holder's mesh only, and the fabric seat leaves that mesh only through TakeFabricPrimary inside a
+/// mesh-leave. No attempt opens, no executor of the peer mesh is picked, and every node stays as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name() {
+    let (estate, birth_build) = two_mesh_estate("a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name").await;
+    let before = estate.nodes().await;
+    let primary = before.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
+    let fp = s(&primary["name"]);
+    let mesh = s(&primary["mesh"]);
+    assert_eq!(before.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh.as_str()).count(), 1, "the fabric-primary is its mesh's only admin: {before:#?}");
+    let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    let attempt = b["attempt"].clone();
+    for action in ["replace", "restart", "drain", "stop"] {
+        let (status, r) = estate.post(&format!("/api/nodes/{fp}/{action}"), &json!({})).await;
+        assert_eq!((status, r["error"].as_str()), (422, Some("last-admin")), "{action}: {r}");
+        assert!(s(&r["detail"]).contains(&fp) && s(&r["detail"]).contains("mesh-leave"), "{action}: the refusal names the node and the one way its seat leaves the mesh: {r}");
+    }
+    let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    assert_eq!(b["attempt"], attempt, "no attempt opened: {b}");
+    let spans = wait_for("the four refusals are exported", Duration::from_secs(30), || async {
+        let spans = estate.spans();
+        (named(&spans, "rdm.node_admin.build.reject.via-last-admin").len() >= 4).then_some(spans)
+    })
+    .await;
+    let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
+    let routes: std::collections::BTreeSet<String> = refused.iter().map(|sp| s(&sp["attributes"]["route"])).collect();
+    assert_eq!(routes.len(), 4, "one refusal per route: {routes:?}");
+    assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]).contains(&fp)), "{refused:?}");
+    assert!(
+        named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().all(|sp| s(&sp["attributes"]["attempt"]).is_empty()),
+        "no attempt number was recorded by any refused request"
+    );
+    estate.record_trace_url(refused[0]["trace_id"].as_str().unwrap_or(""));
+    for n in &before {
+        assert_eq!(estate.node(&s(&n["name"])).await["incarnation_id"], n["incarnation_id"], "{} is untouched", s(&n["name"]));
+    }
+    estate.shutdown().await;
+}

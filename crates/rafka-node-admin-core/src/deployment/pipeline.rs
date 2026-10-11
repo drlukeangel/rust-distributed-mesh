@@ -868,6 +868,20 @@ pub(crate) enum StopEnd {
     Terminate { publish_stopped: bool },
 }
 
+/// What a stop's wait step must have seen to complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopProof {
+    /// Whatever the birth answered: the shutdown leg of a restart, a retire or a mesh leave member,
+    /// which the provider's terminal proof judges.
+    Lenient,
+    /// `stopped` received once stop-node was admitted; a predecessor that never admitted it is
+    /// retired by its exact runtime (a replace of a birth that does not answer).
+    StoppedIfAdmitted,
+    /// stop-node admitted and `stopped` received, or the step fails by name: a standalone stop,
+    /// whose only proof is that reply (node-stop.md).
+    Stopped,
+}
+
 /// A request to replace one birth with a new node at its path.
 #[derive(Debug, Clone)]
 pub struct ReplaceRequest {
@@ -1562,7 +1576,7 @@ impl DeploymentPipeline<'_> {
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await;
             let mut node = req.node.clone();
             self.seat_transfer_step(&mut run, &node).await?;
-            self.stop_steps_with(&mut run, &mut node, &req.handle, true, StopEnd::Park { publish_stopped: true }).await?;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
             self.complete(&mut run).await?;
             Ok(())
         }
@@ -1719,12 +1733,12 @@ impl DeploymentPipeline<'_> {
         self.drain_steps(&mut run, &mut node, handle).await?;
         if req.kind == RetireKind::Restart {
             // The birth parks and stays: its process is the one that starts again.
-            self.stop_steps_with(&mut run, &mut node, handle, false, StopEnd::Park { publish_stopped: false }).await?;
+            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Park { publish_stopped: false }).await?;
             // The retire leg of this restart is finished: the next restart of the node runs it afresh.
             self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
             return Ok(());
         }
-        let _terminal = self.stop_steps_with(&mut run, &mut node, handle, false, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.expect("a stop that terminates yields the provider's receipt");
+        let _terminal = self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: req.kind == RetireKind::Removal }).await?.expect("a stop that terminates yields the provider's receipt");
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is.
         if let Some(op) = op {
@@ -1798,6 +1812,10 @@ impl DeploymentPipeline<'_> {
     /// drains, the seats it holds move to this executor by TakeSeats, once per run and under the
     /// run's own operation, so an identical retry of the run sends the identical call. Not run for a
     /// mesh leave member (`shutdown_member`): the leaving mesh's final primary keeps its seat.
+    /// A refusal fails the step by name and nothing is drained, a fabric seat included: it is never
+    /// taken by an executor of another mesh (`HandoverDoor::take_seats` refuses it). `OtherMesh` is a
+    /// holder of its own mesh's seat alone with no other admin in that mesh: the seat stays with it
+    /// until its birth is gone and the ordinary election seats the next.
     async fn seat_transfer_step(&self, run: &mut Run<'_>, node: &Node) -> Result<(), PipelineError> {
         if node.kind != crate::model::NodeKind::NodeAdmin {
             return Ok(());
@@ -1858,13 +1876,14 @@ impl DeploymentPipeline<'_> {
     /// `NodeStopped` from that matching reply, then the provider's stop and inspection of the exact
     /// runtime: only its `Exited` is terminal proof.
     pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        let terminal = self.stop_steps_with(run, node, handle, false, StopEnd::Terminate { publish_stopped: true }).await?;
+        let terminal = self.stop_steps_with(run, node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?;
         Ok(terminal.expect("a stop that terminates yields the provider's receipt"))
     }
 
-    /// [`Self::stop_steps`]; `strict` (a standalone stop) fails the wait step by name unless the birth
-    /// admitted `stop-node` and its `stopped` reply was received. `end` says what follows: the process parks, or the provider ends it.
-    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
+    /// [`Self::stop_steps`]; `proof` says what the wait step must have seen to complete (a standalone
+    /// stop fails it by name unless stop-node was admitted and the birth's `stopped` reply received).
+    /// `end` says what follows: the process parks, or the provider ends it.
+    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
@@ -1884,7 +1903,7 @@ impl DeploymentPipeline<'_> {
                 if !admission.admitted() {
                     // A command the birth never held has no left reply to follow (node-stop.md): a
                     // standalone stop is not complete.
-                    if strict {
+                    if proof == StopProof::Stopped {
                         return Err(format!("{}: stop-node was not admitted ({admission:?}); no left reply can follow, the stop is not complete", node.name));
                     }
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
@@ -1898,7 +1917,7 @@ impl DeploymentPipeline<'_> {
                     let op = self.command_op(&ctx, node)?;
                     self.lifecycle.stopped(&op).await;
                 }
-                match (strict, &c) {
+                match (proof != StopProof::Lenient, &c) {
                     (true, c) if *c != Completion::Received => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),
                     _ => Ok(c),
                 }
@@ -2062,9 +2081,10 @@ impl DeploymentPipeline<'_> {
         if !matches!(self.provider.inspect(&req.handle).await, DeploymentStatus::Exited { .. }) {
             self.seat_transfer_step(&mut run, &old).await?;
             self.drain_steps(&mut run, &mut old, &req.handle).await?;
-            // The complete stop (node-stop.md): `stopped` received, or the step fails by name; a stop
-            // without it parked nothing and published no departure.
-            self.stop_steps_with(&mut run, &mut old, &req.handle, true, StopEnd::Park { publish_stopped: true }).await?;
+            // The complete stop (node-stop.md): once stop-node is admitted, `stopped` received or the
+            // step fails by name; a predecessor that never admitted it parked nothing, published no
+            // departure, and is retired by its exact runtime after the successor is ready.
+            self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::StoppedIfAdmitted, StopEnd::Park { publish_stopped: true }).await?;
         }
         let to = format!("{name}.old");
         self.step(&mut run, ReplaceStep::RenamePredecessor.name(), async {

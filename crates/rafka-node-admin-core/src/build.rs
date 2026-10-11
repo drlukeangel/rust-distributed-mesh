@@ -373,6 +373,19 @@ pub enum BuildReject {
         /// The node-admin named.
         node: String,
     },
+    /// The Build would drain, stop, restart, replace or retire the fabric-primary while no other
+    /// live node-admin of its mesh can take its seats: TakeSeats moves seats inside the holder's
+    /// mesh only, and the fabric seat leaves a mesh whose last admin holds it only through the
+    /// holder-initiated TakeFabricPrimary inside mesh-leave (node-rpc-envelope.md, "TakeSeats:
+    /// Build-driven seat transfer", Boundary).
+    LastAdmin {
+        /// The fabric-primary the Build would end.
+        node: String,
+        /// Its mesh.
+        mesh: String,
+        /// What the Build would do to it (`restart`, `replace`, `drain`, `stop`, `retire`).
+        action: String,
+    },
 }
 
 impl BuildReject {
@@ -394,6 +407,7 @@ impl BuildReject {
             Self::NodeMetaMismatch { .. } => "node-meta-mismatch",
             Self::UnheardMesh { .. } => "unheard-mesh",
             Self::NodeAdminNotNodeRecovered { .. } => "node-admin-not-node-recovered",
+            Self::LastAdmin { .. } => "last-admin",
         }
     }
 }
@@ -420,6 +434,10 @@ impl fmt::Display for BuildReject {
             Self::UnheardMesh { node, mesh, unheard_ms } => write!(
                 f,
                 "node `{node}` is in mesh `{mesh}`, which this fabric-primary has not heard for {unheard_ms} ms: a peer mesh held unheard is held as a mesh, and its nodes are not restarted, replaced or deleted from here until it is heard again"
+            ),
+            Self::LastAdmin { node, mesh, action } => write!(
+                f,
+                "node `{node}` holds the fabric-primary seat and no other live node-admin of mesh `{mesh}` can take its seats: a {action} of it is refused; TakeSeats moves seats inside the holder's mesh only, and the fabric seat leaves mesh `{mesh}` only through TakeFabricPrimary inside a mesh-leave"
             ),
             Self::NodeMetaMismatch { mesh, missing, extra } => write!(
                 f,

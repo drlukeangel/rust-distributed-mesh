@@ -822,6 +822,17 @@ fn every_pipeline_step_is_named_by_the_client() {
         f.frames,
         [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
+    // SeatTransfer is recorded for a node-admin target alone: a retire or stop of any other node holds
+    // none and folds past it, while an admin's retire that has not transferred yet resumes at it.
+    let mut admin_retire: Vec<&str> = vec!["NodeDeleting", "SeatTransfer"];
+    admin_retire.extend(RetireStep::ORDER.iter().skip(1).map(|s| s.name()));
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete("mesh1.admin.2".parse().unwrap()), &view("retire-node:mesh1.admin.2", admin_retire), 1).unwrap();
+    assert_eq!(f.frames.last(), Some(&Frame::Complete), "an admin's retire with its SeatTransfer receipt folds to Complete: {:?}", f.frames);
+    let stop = view("stop-node:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]);
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(name.clone()), &stop, 1).unwrap();
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
+    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete("mesh1.admin.2".parse().unwrap()), &view("retire-node:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
+    assert_eq!(r.from, Some(("retire-node".to_string(), "SeatTransfer".to_string())), "nothing after NodeDeleting is held: the workflow stands at SeatTransfer");
     let restart = vec!["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "Complete"];
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", restart), 1).unwrap();
     assert_eq!(f.frames.first(), Some(&Frame::Event(NodeEvent::Restarting)));

@@ -879,3 +879,34 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_
     assert_eq!(out, Ok(SeatTransferOutcome::NoTransfer));
     let _ = x;
 }
+
+/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary): TakeSeats moves
+/// seats inside the holder's mesh only. An executor of another mesh (mesh2.admin.1) asked to take
+/// the seats of the fabric-primary P refuses the step by name (`rdm.node_admin.seat.reject.via-take-seats`,
+/// side executor, reason other-mesh-fabric-seat) and calls nothing: P commits no row and keeps both
+/// seats. The fabric seat leaves P's mesh only through TakeFabricPrimary inside a mesh-leave. A
+/// holder of its own mesh's seat alone (mesh2.admin.1, executed from mesh1) is `OtherMesh`: that seat
+/// stays with it until its birth is gone and the ordinary election seats the next.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_executor_of_another_mesh_refuses_to_take_the_fabric_seat_by_name() {
+    if crate::own_process::delegated(module_path!(), "an_executor_of_another_mesh_refuses_to_take_the_fabric_seat_by_name") {
+        return;
+    }
+    let spans = capture();
+    let f = seats_fabric().await;
+    let view = f.n.door.topology.read().await.clone();
+    let member = |name: &str| view.members().find(|x| x.name.to_string() == name).cloned().unwrap();
+    let p_node = member("mesh1.admin.1");
+    let e = f.x.door.take_seats(&p_node, "b1", 1, "replace-node:mesh1.admin.1").await.expect_err("an executor of mesh2 cannot take mesh1's fabric-primary seats");
+    assert!(e.contains("mesh1.admin.1") && e.contains("mesh1") && e.contains("mesh2.admin.1") && e.contains("TakeFabricPrimary") && e.contains("mesh-leave"), "the refusal names the holder, its mesh, the executor and the one way the fabric seat leaves: {e}");
+    until("the executor's refusal span", || !spans.named(SEATS_REJECTED).is_empty()).await;
+    let r = &spans.named(SEATS_REJECTED)[0];
+    assert_eq!((r["side"].as_str(), r["reason"].as_str()), ("executor", "other-mesh-fabric-seat"), "{r:?}");
+    assert!(f.p.storage.seat_transfers().await.unwrap().is_empty(), "P commits no row");
+    assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.p, 7)), "P keeps the fabric seat");
+    assert!(spans.named(SEATS_COMMITTED).is_empty(), "{:?}", spans.named(SEATS_COMMITTED));
+
+    let x_node = member("mesh2.admin.1");
+    assert_eq!(f.p.door.take_seats(&x_node, "b2", 1, "restart-node:mesh2.admin.1").await, Ok(SeatTransferOutcome::OtherMesh { holder_mesh: "mesh2".into() }), "a mesh seat alone stays with its holder");
+    let _ = (&f.m, &f.n);
+}
