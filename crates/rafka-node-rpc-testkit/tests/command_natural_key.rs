@@ -20,7 +20,8 @@ use rafka_node_admin_core::node_commands::CommandKey;
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{DrainReceipt, NodeState, Status, StatusReply, StatusRequest};
-use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, PullRequest, PullServer};
+use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration};
+use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, Mode, PullRequest, PullServer, TestHydrator};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
 
@@ -41,6 +42,11 @@ struct Birth {
 
 impl Birth {
     async fn up(cell: &str) -> Self {
+        Self::up_hydrating(cell, None).await
+    }
+
+    /// [`Self::up`], its `hydrate_before_ready` hook `hydrator` when one is given.
+    async fn up_hydrating(cell: &str, hydrator: Option<std::sync::Arc<TestHydrator>>) -> Self {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
@@ -66,11 +72,18 @@ impl Birth {
         admin.deployed(&launch, &key);
         let pull = PullServer::new(vec![]);
         pull.gate.open();
-        let running = node::start(&launch, {
-            let pull = pull.clone();
-            move |b, _| pull.serve(b)
-        })
-        .await
+        let running = match hydrator {
+            None => node::start(&launch, {
+                let pull = pull.clone();
+                move |b, _| pull.serve(b)
+            })
+            .await,
+            Some(h) => node::start_hydrating(&launch, Hydration::new(h), {
+                let pull = pull.clone();
+                move |b, _| pull.serve(b)
+            })
+            .await,
+        }
         .expect("the node comes up");
         let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, running };
         birth.status_heard(MemberStatus::ReadyForTraffic).await;
@@ -302,6 +315,55 @@ fn a_round_command_from_a_later_attempt_is_already_applied_and_checked_in_under_
         let acted: Vec<_> = rounds.iter().filter(|f| f.get("acted").map(String::as_str) == Some("true")).collect();
         assert_eq!(acted.len(), 1, "the round's action runs once, whichever attempts command it: {rounds:?}");
         assert!(rounds.iter().any(|f| f.get("attempt").map(String::as_str) == Some("2") && f.get("acted").map(String::as_str) == Some("false")), "attempt 2's check-in is made again without the action: {rounds:?}");
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
+
+/// CONTRACT: a `StartNode` that reaches a parked birth while another attempt's start of it is under
+/// way (its hook still running) is the same natural key: it runs no rejoin of its own and answers
+/// that start's outcome, `Started`, once it ends; the birth is ready afterwards. What must NOT
+/// happen: a second rejoin of one birth, or the second start's own failure path (Leaving, the
+/// server drained, the mesh connections cut) tearing down the start under way.
+#[test]
+fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcome() {
+    let cell = "a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcome";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_hydrating("start-natural-key", Some(hydrator.clone())).await);
+        let stopped = birth.call(&birth.stop(1)).await;
+        assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
+
+        // Attempt 2's start runs until its hook, which holds until the cell lets it go.
+        let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
+        hydrator.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        birth.admin.deployed(&birth.launch, &birth.key);
+        let first = {
+            let birth = birth.clone();
+            tokio::spawn(async move { birth.call(&birth.start(2)).await })
+        };
+        started.notified().await;
+
+        // Attempt 3 asks for the same start while it is under way.
+        let second = {
+            let birth = birth.clone();
+            tokio::spawn(async move { birth.call(&birth.start(3)).await })
+        };
+        tokio::time::timeout(Duration::from_secs(20), spans.recorded("rdm.node_admin.status.update.via-start-node", "joined", "true"))
+            .await
+            .expect("attempt 3's StartNode joins the start under way instead of running one of its own");
+        hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
+        resume.notify_one();
+
+        assert_eq!(first.await.unwrap(), StatusReply::Started, "attempt 2's start completes");
+        assert_eq!(second.await.unwrap(), StatusReply::Started, "attempt 3 answers the outcome of the start it joined");
+        birth.status_heard(MemberStatus::ReadyForTraffic).await;
+        let rejoins = spans_named(&spans, "rdm.mesh.node.update.via-start");
+        assert_eq!(rejoins.len(), 1, "one rejoin of the birth: {rejoins:?}");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
