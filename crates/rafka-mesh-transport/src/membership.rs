@@ -1683,7 +1683,10 @@ impl View {
                 Vec::new()
             }
             Frame::NodeStopped { op, .. } => {
-                self.book.stopped(op.clone());
+                let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
+                if self.book.stopped(op.clone()) {
+                    self.note_member_parked(op, prior, via);
+                }
                 Vec::new()
             }
             Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeDrained { op, forwarded_by } => {
@@ -2024,7 +2027,10 @@ impl View {
             if op.is_restart() {
                 self.book.restarting(op);
             } else if op.is_stop() {
-                self.book.stopped(op);
+                let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
+                if self.book.stopped(op.clone()) {
+                    self.note_member_parked(&op, prior, side.name());
+                }
             } else {
                 self.book.deleting(op);
             }
@@ -2081,6 +2087,30 @@ impl View {
             routable = self.book.routable(d.node.node_id.as_str()),
         )
         .in_scope(|| tracing::info!("a peer mesh's member state held from what this node installed: routing follows it"));
+    }
+
+    /// A peer mesh's member this node now holds parked, from its mesh primary's `NodeStopped` overlay
+    /// (gossip.md, node-stopped lifecycle overlay): Leaving and parked, not routable. `channel` is
+    /// where the overlay arrived: the frame itself, or the aggregate's `in_flight`.
+    fn note_member_parked(&self, op: &rafka_mesh_entity::LifecycleOp, prior: Option<rafka_mesh_entity::MemberStatus>, channel: &str) {
+        if op.name.mesh == self.mesh {
+            return;
+        }
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-member-state",
+            node = %self.node,
+            member = %op.name,
+            member_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            status = ?rafka_mesh_entity::MemberStatus::Leaving,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+            channel,
+            routable = self.book.routable(op.node_id.as_str()),
+            parked = true,
+            operation = %op.operation,
+            build_id = %op.build_id,
+        )
+        .in_scope(|| tracing::info!("a peer mesh's member is parked by its mesh primary's NodeStopped: Leaving, not routable"));
     }
 
     fn note(&self, d: &MeshDigest, via: &'static str) {
@@ -2864,10 +2894,7 @@ impl Backbone {
         if !self.publishing.load(Ordering::Relaxed) {
             return false;
         }
-        // This mesh's own overlays and departures only; a peer mesh's travel in that mesh's
-        // aggregate.
-        let (in_flight, departed) = membership.book.overlays_of(&self.mesh);
-        let full = Full::new(members, in_flight, departed);
+        let full = self.own_full(membership, members);
         let (version, snapshot_id, bumped) = {
             let mut v = self.version.lock().unwrap();
             let before = v.version();
@@ -2906,6 +2933,59 @@ impl Backbone {
             self.membership.forward_path.source(&self.node, &self.mesh, &self.publisher, version, &overlays, sent);
         }
         true
+    }
+
+    /// This Mesh's members as a publication round puts them into its aggregate: every member of
+    /// this Mesh the book heard within the staleness floor.
+    pub fn own_members(&self, membership: &Membership) -> Vec<MeshDigest> {
+        membership.book.current(membership.book.staleness_floor()).into_iter().filter(|d| d.node.name.mesh == self.mesh).collect()
+    }
+
+    /// This Mesh's aggregate as a round publishes it: `members` with this mesh's own overlays and
+    /// departures only (a peer mesh's travel in that mesh's aggregate).
+    fn own_full(&self, membership: &Membership, members: Vec<MeshDigest>) -> Full {
+        let (in_flight, departed) = membership.book.overlays_of(&self.mesh);
+        Full::new(members, in_flight, departed)
+    }
+
+    /// Resolves when the next publication round is due: at `deadline`, the anti-entropy timer, or
+    /// at once while this admin is its Mesh's publisher and the Mesh's normalized projection is no
+    /// longer the one its `topology_version` was last bumped on (gossip.md, `Members`: "at once on a
+    /// material change"). The projection is looked at when the book says something it carries
+    /// moved (a member's birth or status, a member heard again, an overlay or a departure), never
+    /// on a timer.
+    pub async fn round_wake(&self, membership: &Membership, deadline: tokio::time::Instant) {
+        let sleep = tokio::time::sleep_until(deadline);
+        tokio::pin!(sleep);
+        let book = &membership.book;
+        let (mut heard, mut births, mut overlays) = (book.heard_changes(), book.birth_changes(), book.overlay_changes());
+        loop {
+            heard.borrow_and_update();
+            births.borrow_and_update();
+            overlays.borrow_and_update();
+            if self.publishing.load(Ordering::Relaxed) {
+                let full = self.own_full(membership, self.own_members(membership));
+                let (moved, held) = {
+                    let v = self.version.lock().unwrap();
+                    (v.would_bump(&full), v.version())
+                };
+                if moved {
+                    tracing::info_span!("rdm.mesh.backbone.update.via-material-change", node = %self.node, mesh = %self.mesh, held_topology_version = held, members = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
+                        .in_scope(|| tracing::info!("this mesh's normalized projection moved since its last publication: the round publishes at once"));
+                    return;
+                }
+            }
+            let ok = tokio::select! {
+                _ = &mut sleep => return,
+                r = heard.changed() => r.is_ok(),
+                r = births.changed() => r.is_ok(),
+                r = overlays.changed() => r.is_ok(),
+            };
+            if !ok {
+                (&mut sleep).await;
+                return;
+            }
+        }
     }
 
     /// The forwarded full of every source this primary holds (its own Mesh and each peer Mesh),
@@ -3070,6 +3150,10 @@ pub struct DigestBook {
     /// ready" or "that node is reachable again" wakes on. A local observation of the book; nothing
     /// is sent.
     heard: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Ticks when an open lifecycle overlay is added or cleared, or a departure is accepted: the
+    /// overlays and departures a mesh primary's aggregate carries. A local observation; nothing is
+    /// sent.
+    overlays: Arc<tokio::sync::watch::Sender<u64>>,
     /// Proven departures by NodeId, with when this book accepted each: held
     /// for `retention` of local age, then forgotten.
     departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
@@ -3168,6 +3252,7 @@ impl DigestBook {
             inner: Arc::default(),
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
             heard: Arc::new(tokio::sync::watch::Sender::new(0)),
+            overlays: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
             in_flight: Arc::default(),
             stopped_marks: Arc::default(),
@@ -3232,6 +3317,7 @@ impl DigestBook {
         fence_incarnation(&op.node_id, &op.incarnation);
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().remove(&op.key());
+        self.overlays_moved();
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-deleted",
@@ -3264,6 +3350,7 @@ impl DigestBook {
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if new {
+            self.overlays_moved();
             tracing::info_span!(
                 "rdm.mesh.membership.update.via-node-restarting",
                 node = %op.name,
@@ -3293,15 +3380,22 @@ impl DigestBook {
             self.restarting(op.clone());
         }
         let keep: BTreeSet<(String, u32, String)> = open.iter().filter(|o| o.is_restart()).map(|o| o.key()).collect();
-        let mut in_flight = self.in_flight.lock().unwrap();
-        let mut ended = self.ended_overlays.lock().unwrap();
-        in_flight.retain(|k, o| {
-            let gone = o.is_restart() && !keep.contains(k);
-            if gone {
-                ended.insert(k.clone());
-            }
-            !gone
-        });
+        let cleared = {
+            let mut in_flight = self.in_flight.lock().unwrap();
+            let mut ended = self.ended_overlays.lock().unwrap();
+            let before = in_flight.len();
+            in_flight.retain(|k, o| {
+                let gone = o.is_restart() && !keep.contains(k);
+                if gone {
+                    ended.insert(k.clone());
+                }
+                !gone
+            });
+            in_flight.len() != before
+        };
+        if cleared {
+            self.overlays_moved();
+        }
     }
 
     /// The open restart of `node_id`'s birth `incarnation`, if any.
@@ -3327,6 +3421,8 @@ impl DigestBook {
             !gone
         });
         if in_flight.len() != before {
+            drop((in_flight, ended));
+            self.overlays_moved();
             tracing::info_span!("rdm.mesh.membership.update.via-node-restarted", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0)
                 .in_scope(|| tracing::info!("the restarted node is heard again: the restart is over"));
         }
@@ -3352,6 +3448,7 @@ impl DigestBook {
         if !new {
             return false;
         }
+        self.overlays_moved();
         let seq = held.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
         self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), seq, held_digest));
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
@@ -3423,15 +3520,33 @@ impl DigestBook {
     /// The stop of `node_id` is over (it rejoined, or departed): its overlay and mark clear.
     fn end_stop(&self, node_id: &str) {
         self.stopped_marks.lock().unwrap().remove(node_id);
-        let mut in_flight = self.in_flight.lock().unwrap();
-        let mut ended = self.ended_overlays.lock().unwrap();
-        in_flight.retain(|k, o| {
-            let gone = o.is_stop() && o.node_id.as_str() == node_id;
-            if gone {
-                ended.insert(k.clone());
-            }
-            !gone
-        });
+        let cleared = {
+            let mut in_flight = self.in_flight.lock().unwrap();
+            let mut ended = self.ended_overlays.lock().unwrap();
+            let before = in_flight.len();
+            in_flight.retain(|k, o| {
+                let gone = o.is_stop() && o.node_id.as_str() == node_id;
+                if gone {
+                    ended.insert(k.clone());
+                }
+                !gone
+            });
+            in_flight.len() != before
+        };
+        if cleared {
+            self.overlays_moved();
+        }
+    }
+
+    /// An overlay was added or cleared, or a departure accepted: the overlay watch ticks.
+    fn overlays_moved(&self) {
+        self.overlays.send_modify(|v| *v += 1);
+    }
+
+    /// Ticks each time an open lifecycle overlay is added or cleared, or a departure is accepted:
+    /// what a mesh primary's publication round wakes on when its aggregate's overlays moved.
+    pub fn overlay_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.overlays.subscribe()
     }
 
     /// Accept an open lifecycle overlay: the node stays held and stops being
@@ -3443,6 +3558,7 @@ impl DigestBook {
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if new {
+            self.overlays_moved();
             // What this receiver holds of the node as the overlay opens: found, in what status, and
             // not routable (the overlay is what makes it so).
             let held_status = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| format!("{:?}", d.status));
@@ -3529,6 +3645,7 @@ impl DigestBook {
         fence_incarnation(&op.node_id, &op.incarnation);
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
+        self.overlays_moved();
         self.inner.lock().unwrap().remove(&id);
         true
     }

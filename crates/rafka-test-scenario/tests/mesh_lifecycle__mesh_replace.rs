@@ -212,6 +212,30 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     // The forwarder leg: mesh2's ordinary nodes, which hear no backbone, hold it from what their
     // mesh primary forwards onto the mesh channel.
     assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
+    // gossip.md, node-stopped lifecycle overlay: mesh1's primary publishes NodeStopped from each member's
+    // matching stopped reply, for every member it stops. The overlay is a material change (gossip.md
+    // "an in_flight overlay added or cleared" bumps topology_version), and the Members row publishes
+    // "at once on a material change": the primary's round is woken by its own projection's move
+    // (via-material-change, proven per event in rafka-mesh-transport round_wake; another wake of the same
+    // round may win the race) and publishes a new mesh1 version carrying the overlay, so EVERY member it
+    // stops, the other node-admin included, is held Leaving and parked, not routable, at a mesh2 admin
+    // (backbone) and a mesh2 ordinary node (mesh channel, forwarded by mesh2's primary).
+    let stopped_members: Vec<String> = ["mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string()].into_iter().chain(tier2.iter().map(|n| n.to_string())).collect();
+    let published_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped");
+    let stopped_at = |m: &str| -> u64 {
+        published_stopped.iter().find(|sp| s(&sp["attributes"]["node"]) == m && s(&sp["attributes"]["operation"]) == format!("stop-node:{m}")).map(|sp| start_ns(sp)).unwrap_or_else(|| panic!("mesh1's primary published NodeStopped for {m}: {published_stopped:?}"))
+    };
+    let mesh1_publications: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
+    let mesh1_wakes: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-material-change").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
+    let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
+    assert!(!mesh1_wakes.is_empty(), "mesh1's primary's round was woken by its own projection's move");
+    for m in &stopped_members {
+        let at = stopped_at(m);
+        assert!(mesh1_publications.iter().any(|p| *p >= at), "mesh1's primary published a new version after {m}'s NodeStopped at {at}: publications {mesh1_publications:?}");
+        let held: Vec<&Value> = leaving_states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == *m && parked(sp)).collect();
+        assert!(held.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.admin.") && sp["attributes"]["channel"] == "backbone"), "a mesh2 admin held {m} parked from mesh1's backbone Members.in_flight: {held:?}");
+        assert!(held.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held {m} parked from what mesh2's primary forwarded: {held:?}");
+    }
     let left = heard("via-mesh-left");
     assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a mesh2 node held mesh1's births departed on mesh-left: {left:?}");
     let last_exit = tier2_last.max(terminal_end(&final_name));

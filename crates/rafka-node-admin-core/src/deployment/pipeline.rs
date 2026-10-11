@@ -844,8 +844,9 @@ pub struct StartRequest {
 
 /// What follows a stop's `stopped`: the process stays parked (a standalone stop, a restart), or the
 /// provider ends it and proves the exit (a delete, a replace, a mesh leave). `publish_stopped` is
-/// whether the mesh primary publishes `NodeStopped` from the `stopped` reply: a restart holds the birth
-/// with `NodeRestarting` instead, and a mesh leave and a replace are announced by their own events.
+/// whether the mesh primary publishes `NodeStopped` from the `stopped` reply: every whole node.stop
+/// does (node-stop.md step 5), a delete's, a replace's and a mesh leave member's included; a restart
+/// holds the birth with `NodeRestarting` instead (node-restart.md).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StopEnd {
     Park { publish_stopped: bool },
@@ -1707,7 +1708,7 @@ impl DeploymentPipeline<'_> {
     /// run, whose operation is the outer `shutdown-mesh:<mesh_id>` correlated with the member's path.
     /// The children keep their `drain-node:<path>` and `stop-node:<path>` identities. The result is
     /// the provider's terminal receipt of the exact runtime.
-    pub(crate) async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
+    pub async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let path = node.name.clone();
         let span = self.pipeline_span("shutdown-member", build_id, &path, attempt, false);
@@ -1762,10 +1763,11 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
-    /// drain), the wait for its `node-left` completion call, then the provider's stop and
-    /// inspection of the exact runtime: only its `Exited` is terminal proof.
+    /// drain), the wait for its `node-left` completion call, the mesh primary's `NodeStopped` from
+    /// that matching reply, then the provider's stop and inspection of the exact runtime: only its
+    /// `Exited` is terminal proof.
     pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        let terminal = self.stop_steps_with(run, node, handle, false, StopEnd::Terminate { publish_stopped: false }).await?;
+        let terminal = self.stop_steps_with(run, node, handle, false, StopEnd::Terminate { publish_stopped: true }).await?;
         Ok(terminal.expect("a stop that terminates yields the provider's receipt"))
     }
 
