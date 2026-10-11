@@ -765,6 +765,8 @@ mod tests {
             configs: Default::default(),
             configure: Default::default(),
             hydration: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -865,6 +867,8 @@ mod tests {
             configs: Default::default(),
             configure: Default::default(),
             hydration: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
@@ -1043,6 +1047,8 @@ mod tests {
             configs: Default::default(),
             configure: Default::default(),
             hydration: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1129,6 +1135,8 @@ mod tests {
             configs: Default::default(),
             configure: Default::default(),
             hydration: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);
