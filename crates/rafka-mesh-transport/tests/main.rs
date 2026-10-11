@@ -7,6 +7,7 @@ mod i143_acceptance_2900;
 mod i143_acceptance_2901;
 mod i143_acceptance_2902;
 mod channel_park;
+mod peer_location_book;
 mod gossip_stats;
 mod heartbeat_spans;
 mod lifecycle_frames_wire;
