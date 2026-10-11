@@ -479,6 +479,11 @@ impl Records {
         let mut held = topology.write().await;
         let t = project();
         if *held != t {
+            // The seat of this admin's mesh taken with this view: its status rows are folded in
+            // before the view is installed, so no decision reads the view against an empty record.
+            if let Some(fold) = self.status.get() {
+                fold.on_install(&t, &self.declared).await;
+            }
             // A replaced predecessor this view now names `<path>.old` (the executor's own view; its
             // digest still says `<path>`): one span as it enters, with the member that took the path.
             for old in t.predecessors().filter(|o| !held.predecessors().any(|h| h.node_id == o.node_id && h.incarnation_id == o.incarnation_id)) {
@@ -3943,6 +3948,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // its entry pull or the fabric control topic.
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
     let records = Arc::new(Records::default());
+    // The status rows of this admin's mesh on the fabric's store root (`status/<mesh>/`): written by
+    // the mesh's seat holder, folded into what this admin applied when it takes the seat.
+    let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).map_err(storage_err)?);
+    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = status_files.clone();
+    records.set_status(status_storage.clone(), own_mesh.clone(), node_id.clone());
     let builds = Arc::new(
         FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone())), wiring.catch_up_seam.take())
             .await
@@ -4131,17 +4141,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
     // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
     let rename: crate::status_rpc::Rename = Arc::new(std::sync::OnceLock::new());
-    // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
-    // event rows it put, and the lifecycle state on each node row it wrote, folded into what it
-    // holds as applied. A reader folds; nothing here writes a row.
     let commands = Arc::new(crate::node_commands::CommandBook::default());
     let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
     let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
     let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
     let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
     let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone())));
-    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir, &incarnation).map_err(storage_err)?);
-    *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage).await?;
     {
         let records_for_ids = records.clone();
         let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {

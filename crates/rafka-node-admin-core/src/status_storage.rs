@@ -8,8 +8,9 @@
 //! cycle tombstones the birth's rows),
 //! `(node_id, incarnation)` for a birth's silence status. Nothing is read back to be written again.
 //! A reader folds the rows: the greatest state per Mesh and per birth, the set of events per Fabric. `Applied` means the row's put was
-//! acknowledged before the answer left; a restarted admin folds the rows it wrote into what it
-//! has applied.
+//! acknowledged before the answer left. The rows of a mesh live on the fabric's store root under
+//! `status/<mesh>/`, written by the mesh's seat holder; the admin that takes the seat folds them into
+//! what it has applied (`status_rpc::SeatFold`).
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeStatus, PathName};
 use crate::record_store::{FileRecords, StorageError};
@@ -270,11 +271,11 @@ const NODE_DECLARED_FORMAT: &str = "node-declared/3";
 const NODE_SILENCE_FORMAT: &str = "node-silence/1";
 const NODE_EXIT_FORMAT: &str = "node-exit/1";
 
-/// One row per file: `<data dir>/status/meshes/<mesh_id>-<state>.json`,
-/// `<data dir>/status/fabric/<fabric_id>-<hex of the event key>.json`,
-/// `<data dir>/status/declared/<node_id>--<incarnation>--<state>.json` and
-/// `<data dir>/status/silence/<node_id>--<incarnation>.json` and
-/// `<data dir>/status/exits/<node_id>--<incarnation>.json`.
+/// One row per file under `status/<mesh>/` of the fabric's store root (`crate::store_root`):
+/// `meshes/<mesh_id>-<state>.json`, `fabric/<fabric_id>-<hex of the event key>.json`,
+/// `declared/<node_id>--<incarnation>--<state>.json`, `silence/<node_id>--<incarnation>.json` and
+/// `exits/<node_id>--<incarnation>.json`. The mesh's seat holder writes them (fabric-node-lifecycle.md
+/// §4.3); every admin of the mesh reads the same rows.
 #[derive(Debug)]
 pub struct FileStatusStorage {
     meshes: FileRecords,
@@ -285,16 +286,23 @@ pub struct FileStatusStorage {
 }
 
 impl FileStatusStorage {
-    /// Open the store under the admin's own data directory, written by the process born as
-    /// `writer`: each row is what this admin applied as an authority, folded by this admin alone.
-    pub fn open(own_data_dir: &std::path::Path, writer: &IncarnationId) -> Result<Self, StorageError> {
+    /// Open the store under `status/<mesh>/` of the fabric's store root, written by the process
+    /// born as `writer`.
+    pub fn open(root: &crate::store_root::StoreRoot, mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
+        let base = root.status(mesh);
         Ok(Self {
-            meshes: FileRecords::open(own_data_dir, "status/meshes", writer)?,
-            fabric: FileRecords::open(own_data_dir, "status/fabric", writer)?,
-            declared: FileRecords::open(own_data_dir, "status/declared", writer)?,
-            silence: FileRecords::open(own_data_dir, "status/silence", writer)?,
-            exits: FileRecords::open(own_data_dir, "status/exits", writer)?,
+            meshes: FileRecords::open(&base, "meshes", writer)?,
+            fabric: FileRecords::open(&base, "fabric", writer)?,
+            declared: FileRecords::open(&base, "declared", writer)?,
+            silence: FileRecords::open(&base, "silence", writer)?,
+            exits: FileRecords::open(&base, "exits", writer)?,
         })
+    }
+
+    /// The records the mesh-primary seat writes (every status row of the mesh): what a seat
+    /// transfer moving that seat cuts off (R14 item 4).
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 5] {
+        [&self.meshes, &self.fabric, &self.declared, &self.silence, &self.exits]
     }
 }
 
@@ -347,7 +355,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("status-storage-{}", MeshId::mint()));
         let (m, f) = (MeshId::mint(), FabricId::mint());
         {
-            let s = FileStatusStorage::open(&dir, &crate::model::IncarnationId("test".into())).unwrap();
+            let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId("test".into())).unwrap();
             // Written out of order: the later fact first, a lagging earlier one after it.
             s.put_mesh_status(&MeshStatusRow { mesh_id: m.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
             s.put_mesh_status(&MeshStatusRow { mesh_id: m.clone(), state: MeshState::Pending }).await.unwrap();
@@ -355,7 +363,7 @@ mod tests {
             s.put_fabric_event(&FabricEventRow { fabric_id: f.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
             s.put_fabric_event(&FabricEventRow { fabric_id: f.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
         }
-        let s = FileStatusStorage::open(&dir, &crate::model::IncarnationId("test".into())).unwrap();
+        let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId("test".into())).unwrap();
         assert_eq!(s.mesh_statuses().await.unwrap().get(&m), Some(&MeshState::ReadyForTraffic), "the greatest state wins whatever the write order");
         assert_eq!(s.fabric_events().await.unwrap().len(), 1, "one row per event key");
         std::fs::remove_dir_all(&dir).ok();

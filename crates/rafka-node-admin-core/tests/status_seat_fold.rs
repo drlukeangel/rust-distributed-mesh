@@ -48,15 +48,18 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
     let rpc_birth = (rpc.node_id.clone(), rpc.incarnation_id.clone().unwrap());
     let other = (NodeId::mint(), IncarnationId::mint());
     // A, mesh1's primary, applied these as the mesh's authority: its rows on the shared root.
-    let a = FileStatusStorage::open(&dir, &IncarnationId::mint()).unwrap();
+    let root = rafka_node_admin_core::store_root::StoreRoot::at(&dir);
+    let a = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).unwrap();
     a.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
     a.put_fabric_event(&FabricEventRow { fabric_id: fabric_id.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
     a.put_node_declared(&NodeDeclaredRow { node_id: rpc_birth.0.clone(), incarnation_id: rpc_birth.1.clone(), name: rpc.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
     a.put_node_declared(&NodeDeclaredRow { node_id: other.0.clone(), incarnation_id: other.1.clone(), name: "mesh1.rpc.2".parse().unwrap(), state: NodeState::Pending }).await.unwrap();
+    let on_root = |d: &str| std::fs::read_dir(root.status("mesh1").join(d)).map(|e| e.filter_map(|e| e.ok()).filter(|e| e.path().extension().is_some_and(|x| x == "json")).count()).unwrap_or(0);
+    assert_eq!((on_root("meshes"), on_root("fabric"), on_root("declared")), (1, 1, 2), "A's rows live on the fabric's store root under status/mesh1/");
     // B, the other admin of mesh1, with its own store instance over the same root.
     let b_id = before_view.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().node_id.clone();
     let records = Records::default();
-    records.set_status(Arc::new(FileStatusStorage::open(&dir, &IncarnationId::mint()).unwrap()), "mesh1".into(), b_id.clone());
+    records.set_status(Arc::new(FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).unwrap()), "mesh1".into(), b_id.clone());
     let topology = RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() });
     // B installs views naming A the primary: it holds no seat and folds none of A's rows.
     records.install_projected(&topology, || before_view.clone()).await;
