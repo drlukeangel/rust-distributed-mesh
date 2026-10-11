@@ -5124,6 +5124,91 @@ mod tests {
         assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a proven-gone admin holds no seat");
     }
 
+    /// CONTRACT (R-EL1, "a seat moves only by explicit yield": the election ignores a holder's
+    /// status; seat_watch, R-A2: only a runtime found exited is a verified loss; fabric-node-lifecycle.md
+    /// §7.3: every admin keeps the silence window, only the seat holder tickles): a mesh primary that
+    /// goes silent keeps its seat in its successor's view until its exact runtime is proven exited
+    /// (`Records::mark_exited`, what seat_watch records). Until then the successor keeps the window but
+    /// tickles nothing, holds nothing TRUE OFFLINE and has no recovery due, however long the silence
+    /// lasts. Once the exit is proven the seat moves to the successor, which tickles on the window
+    /// already running (round 1 at once) and, one staleness floor later, holds the old primary TRUE
+    /// OFFLINE and due for its recovery. Must NOT happen: a recovery due at the successor while the
+    /// silent primary still holds the seat.
+    #[tokio::test]
+    async fn a_successor_has_no_recovery_due_for_a_silent_mesh_primary_until_the_seat_moves() {
+        use crate::offline::{OfflineTickle, SilentNode, ViaPeerVerdict};
+        use rafka_mesh_entity::Seat::MeshPrimary;
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        let holder = with_id(digest("mesh2.admin.1", ReadyForTraffic), "200000000000");
+        let successor = with_id(digest("mesh2.admin.2", ReadyForTraffic), "300000000000");
+        let rpc = with_id(digest("mesh2.rpc.1", ReadyForTraffic), "400000000000");
+        for d in [&holder, &successor, &rpc] {
+            book.record((*d).clone());
+        }
+        book.seats.take(MeshPrimary, &holder_of(&holder, 1));
+        let records = Records::default();
+        let me: PathName = "mesh2.admin.2".parse().unwrap();
+        // The successor's view: the holder silent past the floor (its pruner's PendingReconnect, or
+        // Dead once proven exited), the seats by the one election over the holder record.
+        let view_now = || {
+            let mut t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+            for n in t.nodes.iter_mut().filter(|n| n.node_id == holder.node.node_id && n.status.is_live()) {
+                n.status = NodeStatus::PendingReconnect;
+            }
+            crate::election::resolve_with(&mut t.nodes, &incumbency_of(&book, &records));
+            t
+        };
+        let floor = book.staleness_floor().as_millis() as u64;
+        let mut tickle = OfflineTickle::observed_by(me.to_string());
+        let mut offline: HashSet<(NodeId, IncarnationId)> = HashSet::new();
+        let pass = async |now: u64, tickle: &mut OfflineTickle, offline: &mut HashSet<(NodeId, IncarnationId)>| {
+            let view = view_now();
+            let holds_seat = view.cohort_primary("mesh2", NodeKind::NodeAdmin).is_some_and(|n| n.name == me);
+            let watched = watched_births(&view, &me, "mesh2", &[]);
+            let silent = watched.values().map(|n| SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string() }).collect();
+            let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
+            let report = tickle
+                .tick(
+                    now,
+                    holds_seat,
+                    silent,
+                    |id: &str| in_view.contains(id),
+                    floor / 2,
+                    floor,
+                    |id| async move { Err::<(), String>(format!("{id} did not answer the ping")) },
+                    |_| async { ViaPeerVerdict::NoPath { asked: Vec::new() } },
+                    |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                )
+                .await;
+            for id in &report.offline {
+                if let Some(n) = watched.get(id) {
+                    offline.insert((n.node_id.clone(), n.incarnation_id.clone().unwrap()));
+                }
+            }
+            let due: Vec<String> = recovery_due(holds_seat, "mesh2", &watched, offline).iter().map(|n| n.name.to_string()).collect();
+            (holds_seat, report, due)
+        };
+        let t0 = 1_000_000u64;
+        // The holder silent for six floors, its exit not proven: the seat stays, nothing is due.
+        for k in 0..6 {
+            let (holds_seat, report, due) = pass(t0 + k * floor, &mut tickle, &mut offline).await;
+            assert!(!holds_seat, "floor {k}: the silent holder keeps the seat");
+            assert!(report.tickled.is_empty() && report.offline.is_empty(), "floor {k}: no tickle, nothing TRUE OFFLINE: {report:?}");
+            assert!(due.is_empty(), "floor {k}: no recovery due before the seat moves: {due:?}");
+        }
+        // seat_watch proves the exact runtime exited: the seat moves to the successor.
+        records.mark_exited(&holder.node.node_id, &holder.node.incarnation);
+        let t1 = t0 + 6 * floor;
+        let (holds_seat, report, due) = pass(t1, &mut tickle, &mut offline).await;
+        assert!(holds_seat, "the proven exit moves the seat to the successor");
+        assert_eq!(report.tickled, vec![holder.node.node_id.to_string()], "round 1 at once, on the window kept since the silence began");
+        assert!(report.offline.is_empty() && due.is_empty(), "round 1 opens the hold-down only: {report:?} {due:?}");
+        let (_, report, due) = pass(t1 + floor, &mut tickle, &mut offline).await;
+        assert_eq!(report.offline, vec![holder.node.node_id.to_string()], "round 2, one floor later: TRUE OFFLINE");
+        assert_eq!(due, vec!["mesh2.admin.1".to_string()], "the old primary is due for recovery at the successor, after the seat moved");
+    }
+
     fn holder_of(d: &MeshDigest, epoch: u64) -> rafka_mesh_entity::SeatHolder {
         rafka_mesh_entity::SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), epoch }
     }
