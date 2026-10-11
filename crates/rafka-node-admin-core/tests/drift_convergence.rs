@@ -170,20 +170,15 @@ async fn estate() -> Estate {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let fp = view.read().await.fabric_primary().unwrap().name.to_string();
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp).await.unwrap();
-    let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), restarted: Mutex::new(Vec::new()), hear_after_birth: std::sync::atomic::AtomicBool::new(false) });
+    let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), builds: builds.clone(), hear_after_birth: std::sync::atomic::AtomicBool::new(false) });
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), view.clone(), runner.clone());
     Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner, dispatch }
 }
 
 /// A new birth at `path`: a runtime in the world, a digest in membership, a live node.
 fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, supersedes: Option<IncarnationId>) -> Node {
-    birth_as(world, book, fabric_id, path, supersedes, NodeId::mint())
-}
-
-/// [`birth`] under a given NodeId: a restart's new incarnation of the same node.
-fn birth_as(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, supersedes: Option<IncarnationId>, node_id: NodeId) -> Node {
     let mut n = Node::allocated(path.parse().unwrap());
-    n.node_id = node_id;
+    n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.endpoint_id = Some(EndpointId(iroh::SecretKey::generate().public().to_string()));
     n.status = NodeStatus::ReadyForTraffic;
@@ -221,7 +216,8 @@ struct Runner {
     fabric_id: FabricId,
     ran: Mutex<Vec<(String, BuildOperation, FenceOutcome)>>,
     born: Mutex<Vec<String>>,
-    restarted: Mutex<Vec<String>>,
+    /// The Build log the recovery's receipts are written to, as the admin's recover pipeline writes them.
+    builds: Arc<MemoryBuildStateAdapter>,
     /// Membership repair runs right after every birth, before the attempt's next operation: what a
     /// reborn forwarder does to the executor's view mid-attempt.
     hear_after_birth: std::sync::atomic::AtomicBool,
@@ -229,18 +225,7 @@ struct Runner {
 
 #[async_trait::async_trait]
 impl OperationRunner for Runner {
-    async fn run(&self, _: &BuildId, _attempt: u32, op: &BuildOperation) -> Result<(), String> {
-        if let BuildOperation::RestartNode { node: path } = op {
-            // The same identity, a new incarnation: the exited birth's NodeId is kept.
-            let prev = self.view.read().await.node(path).cloned().ok_or_else(|| format!("{path} is not in the view"))?;
-            self.restarted.lock().unwrap().push(path.to_string());
-            let n = birth_as(&self.world, &self.book, &self.fabric_id, &path.to_string(), prev.incarnation_id, prev.node_id);
-            let mut v = self.view.write().await;
-            v.nodes.retain(|x| x.name != *path);
-            v.nodes.push(n);
-            rafka_node_admin_core::election::resolve(&mut v.nodes);
-            return Ok(());
-        }
+    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         if let BuildOperation::RecoverNode { node: path, node_id, from_incarnation } = op {
             // node-recovery.md: node.delete of the exited instance (no RPC, no stop frames, no probe:
             // the provider's exit proof is the fence), then node.create at the same path.name with a
@@ -251,12 +236,29 @@ impl OperationRunner for Runner {
                     return Err(format!("{path}'s birth {node_id} at {} still runs: not proven exited", from_incarnation.0));
                 }
             }
+            // The recovery's receipts, as the recover pipeline writes them: NodeDeleted naming the
+            // exited birth, then the operation's Complete (no output). The fabric-primary's recovery
+            // dedup reads them.
+            let operation = format!("recover-node:{path}");
+            let receipt = |step: &str, output: Option<serde_json::Value>| rafka_node_admin_core::build_state::BuildStepReceipt {
+                build_id: build_id.clone(),
+                attempt,
+                operation: operation.clone(),
+                step: step.into(),
+                outcome: rafka_node_admin_core::build_state::StepOutcome::Complete,
+                output,
+                executor: None,
+            };
+            use rafka_node_admin_core::build_state::BuildStateAdapter as _;
+            self.builds.append_step_receipt(&receipt("NodeDeleted", Some(serde_json::json!({"node_id": node_id, "incarnation": from_incarnation})))).await.map_err(|e| e.to_string())?;
             let n = birth(&self.world, &self.book, &self.fabric_id, &path.to_string(), None);
             let mut v = self.view.write().await;
             v.nodes.retain(|x| x.name != *path);
             v.nodes.push(n);
             rafka_node_admin_core::election::resolve(&mut v.nodes);
+            drop(v);
             self.born.lock().unwrap().push(path.to_string());
+            self.builds.append_step_receipt(&receipt("Complete", None)).await.map_err(|e| e.to_string())?;
             return Ok(());
         }
         // A replacement is realised like a creation at a path whose exact birth the provider's proof
@@ -444,11 +446,16 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
     let e = estate().await;
     let before = e.accepted.current(&*e.builds).await.unwrap();
     let old = e.node_id("mesh1.rpc.2").await;
+    let exited = e.view.read().await.node(&"mesh1.rpc.2".parse().unwrap()).cloned().unwrap();
     e.world.kill(&old);
     e.unheard(&["mesh1.rpc.2"]).await;
     assert_eq!(e.drift().await, None, "the fabric-primary repairs no ordinary member");
     let mp = e.mesh_primary_of("mesh1.rpc.2").await;
     let opened = e.recover("mesh1.rpc.2").await;
+    // node-recovery.md sequence step 1: a repeat submit for the same exited birth answers
+    // AlreadyApplied from the recovery's receipts, naming its attempt, and opens nothing.
+    let repeat = e.door(e.builds.clone()).await.open_recovery("build.create", exited.name.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await;
+    assert!(matches!(&repeat, Ok(rafka_node_admin_core::http::Recovery::AlreadyApplied(o)) if o.attempt == opened.attempt), "{repeat:?}");
     assert_eq!((opened.build_id.clone(), opened.attempt), (before.build_id.clone(), before.attempt + 1), "the same Build, one more attempt");
     assert_eq!(e.dispatch.dispatched.lock().unwrap().clone(), vec![(mp, before.attempt + 1)], "the recovery ran on the member's mesh-primary");
     assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()], "exactly the lost path is recovered");
@@ -585,12 +592,35 @@ async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
     let opened = e.accepted.current(&*e.builds).await.unwrap();
     assert_eq!(opened.reason, rafka_node_admin_core::build_state::AttemptReason::Recovery);
     assert!(matches!(&opened.action, Some(rafka_node_admin_core::accepted::AttemptAction::Recover { path, node_id, .. }) if path.to_string() == "mesh1.rpc.2" && node_id.as_str() == id), "{:?}", opened.action);
-    assert!(e.runner.restarted.lock().unwrap().is_empty(), "nothing is restarted");
     assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()]);
     assert_ne!(e.node_id("mesh1.rpc.2").await, id, "a new node.id");
     e.holds_the_shape().await;
     let after = e.accepted.current(&*e.builds).await.unwrap();
     assert_eq!((after.build_id, after.attempt, after.state), (before.build_id, before.attempt + 1, BuildState::Complete));
+}
+
+/// CONTRACT (node-restart.md: a restart parks a live process, "no relaunch or exact-exit receipt";
+/// R-RC1: the fabric-primary's drift opens no Restart): a node-admin whose exit carries the
+/// TRANSPORT_STOPPED code (4) is replaced by the fabric-primary's drift like any other proven-exited
+/// node-admin: the next attempt's action is Replace of that exact birth, and the path is reborn.
+#[tokio::test]
+async fn a_transport_stopped_node_admin_is_replaced_never_restarted() {
+    let e = estate().await;
+    let admin = e.sibling_admin().await;
+    let id = e.node_id(&admin).await;
+    let incarnation = e.view.read().await.node(&admin.parse().unwrap()).and_then(|n| n.incarnation_id.clone()).unwrap();
+    e.world.exit_with(&id, Some(rafka_mesh_entity::runtime::TRANSPORT_STOPPED_EXIT_CODE));
+    e.unheard(&[&admin]).await;
+    e.drift().await.expect("the proven exit opens the next attempt");
+    let opened = e.accepted.current(&*e.builds).await.unwrap();
+    assert!(
+        matches!(&opened.action, Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, from_incarnation }) if path.to_string() == admin && *from_incarnation == incarnation),
+        "a Replace of the exact exited birth, never a Restart: {:?}",
+        opened.action
+    );
+    e.converge().await;
+    assert_eq!(e.born(), vec![admin.clone()], "exactly the lost admin is reborn");
+    e.holds_the_shape().await;
 }
 
 /// CONTRACT: every exit, whatever its code (1, unknown, 137), is recovered by the mesh-primary, one
@@ -618,7 +648,6 @@ async fn every_exit_is_recovered_one_birth_per_attempt_and_a_submit_waits_for_th
         assert_eq!(e.born().last().map(String::as_str), Some(path));
     }
     assert_eq!(e.born().len(), 3);
-    assert!(e.runner.restarted.lock().unwrap().is_empty());
     assert!(paths.iter().all(|p| e.fence_of(p).is_empty()), "no recovery fences by probe");
     e.holds_the_shape().await;
     assert_eq!(e.drift().await, None, "nothing is left to repair");
