@@ -593,6 +593,58 @@ mod tests {
         n
     }
 
+    /// The silence status the mesh primary stored for `node` at `incarnation`, as a reader folds it.
+    async fn stored_silence(nodes: &dyn crate::storage::NodesStorage, node: &crate::model::Node) -> Option<crate::model::NodeStatus> {
+        nodes.contacts().await.unwrap().into_iter().find(|c| c.node_id == node.node_id && Some(&c.incarnation_id) == node.incarnation_id.as_ref()).and_then(|c| c.status)
+    }
+
+    /// CONTRACT (#3051, CLAUDE.md read-modify-write ban): a node's declared state and the silence
+    /// status its mesh primary holds are two facts, each its own keyed row with its own writer. A
+    /// declaration the authority applies, and a start beginning the node's next cycle, put only the
+    /// declared fact: neither erases the `PendingReconnect` the mesh primary put for the same birth.
+    #[tokio::test]
+    async fn a_declaration_and_a_cycle_begin_leave_the_mesh_primarys_silence_status_standing() {
+        let mut admin = node("mesh1.admin.1");
+        admin.mesh = "mesh1".into();
+        admin.kind = NodeKind::NodeAdmin;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let mut rpc = node("mesh1.rpc.1");
+        rpc.mesh = "mesh1".into();
+        rpc.kind = NodeKind::RpcNode;
+        rpc.endpoint_id = Some(EndpointId("rpc-endpoint".into()));
+        rpc.transport_addr = Some("127.0.0.1:1".parse().unwrap());
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![admin.clone(), rpc.clone()],
+        }));
+        let nodes: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
+        let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+        let authority = StatusAuthority {
+            me: admin.name.clone(),
+            fabric_id: topology.read().await.fabric.id.clone(),
+            topology: topology.clone(),
+            declared: Arc::new(Mutex::new(Declared::default())),
+            nodes_storage: nodes.clone(),
+            status_storage: status.clone(),
+            mesh_ids: Arc::new(BTreeMap::new),
+            republish: Arc::new(OnceLock::new()),
+            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            own: Arc::new(OnceLock::new()),
+            leaver: Arc::new(OnceLock::new()),
+            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake: Default::default(),
+            rounds: Default::default(),
+        };
+        crate::offline::put_silence_status(&*nodes, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
+        let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        assert_eq!(authority.apply(Some(rpc.clone()), &declare).await, R::Applied);
+        assert_eq!(stored_silence(&*nodes, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "the authority's declared-state put erased the mesh primary's silence status");
+        authority.begin_cycle(&rpc, rpc.incarnation_id.as_ref().unwrap()).await;
+        assert_eq!(stored_silence(&*nodes, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "a cycle begin erased the mesh primary's silence status");
+    }
+
     /// CONTRACT (#2803 detection): a fabric primary probes ANOTHER mesh's node-admin through a
     /// member of that mesh (Forward carries no origin identity, so the node-admin authenticates the
     /// member). The probe is answered with the node-admin's current state; the same sender cannot
