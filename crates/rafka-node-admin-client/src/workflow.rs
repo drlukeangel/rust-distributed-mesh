@@ -199,7 +199,6 @@ impl WorkflowKind {
                 rows.extend([
                     row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
                     row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
-                    row("retire-node", "ReleaseStorage", NodeStep::Delete, &[], false),
                     row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false),
                     row("retire-node", "Complete", NodeStep::Delete, &[], true),
                 ]);
