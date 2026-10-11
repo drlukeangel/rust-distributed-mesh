@@ -303,15 +303,15 @@ impl Drive {
         self.state.lock().unwrap().stall = None;
     }
 
-    /// Whether this drive holds the `Complete` frame of the operation `key` from attempt `from` on: an
-    /// executor's stream reply (a `Step` frame goes out only once its receipt is durable on the
-    /// executor that wrote it) or a receipt read said the operation completed.
-    fn completed_since(&self, key: &str, from: u32) -> bool {
+    /// Whether this drive holds the `Complete` frame of the operation `key` in an attempt `counts`
+    /// admits: an executor's stream reply (a `Step` frame goes out only once its receipt is durable on
+    /// the executor that wrote it) or a receipt read said the operation completed.
+    fn completed_in(&self, key: &str, counts: impl Fn(u32) -> bool) -> bool {
         self.state.lock().unwrap().seen.iter().any(|k| {
             let mut parts = k.splitn(4, '|');
             matches!(
                 (parts.next(), parts.next().and_then(|a| a.parse::<u32>().ok()), parts.next(), parts.next()),
-                (Some("step"), Some(attempt), Some(operation), Some("Complete")) if attempt >= from && operation == key
+                (Some("step"), Some(attempt), Some(operation), Some("Complete")) if counts(attempt) && operation == key
             )
         })
     }
@@ -488,15 +488,17 @@ fn node_of_key(key: &str) -> Option<PathName> {
     key.split_once(':').and_then(|(_, node)| parse_path(node))
 }
 
-/// What is left of `p` in view `t`: the plan, less every operation the Build's current run (from
-/// [`BuildProjection::opened`]) completed, by its `Complete` receipt on this admin's log
-/// ([`BuildProjection::completed_in_run`]) or by the `Complete` frame an executor's stream reply
-/// carried to `drive` ([`Drive::completed_since`]). What a run completed is read from those, never
-/// from the view: a view that has not absorbed a completed operation yet still lists it, and it is
-/// not planned, claimed or dispatched again. The stream reply is the authority: a remote executor's
-/// receipt reaches this admin's log by the Build topic, and nothing waits for that copy.
+/// What is left of `p` in view `t`: the plan, less every operation a run of the Build's current run
+/// completed whose executor reported the run's end ([`BuildProjection::reported_in_run`]), by its
+/// `Complete` receipt on this admin's log ([`BuildProjection::completed_in_run`]) or by the
+/// `Complete` frame the executor's stream reply carried to `drive` ([`Drive::completed_in`]). What a
+/// run completed is read from those, never from the view: a view that has not absorbed a completed
+/// operation yet still lists it, and it is not planned, claimed or dispatched again. The stream reply
+/// is the authority: a remote executor's receipt reaches this admin's log by the Build topic, and
+/// nothing waits for that copy. A lost executor's run reported nothing: what it left is planned from
+/// the view again, and the create pipeline's fence decides against the world.
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
-    crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_since(&op.key(), p.opened)).collect()
+    crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
 }
 
 /// The node-admin of `mesh` the Build already carried across the R-D1 fence: an operation on it has a
