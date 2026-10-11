@@ -506,3 +506,33 @@ fn a_successor_heard_before_the_predecessor_lets_go_takes_the_name_at_the_rename
     assert_eq!((a["subject"].as_str(), a["seeded_from"].as_str()), (Some("mesh1.rpc.1"), Some(pred.as_str())), "{a:#?}");
     assert!(claims[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains(pred.as_str()) && d.contains("replace-node:mesh1.rpc.1")), "{:#?}", claims[0]);
 }
+
+/// CONTRACT: a fabric-primary that took the seat after the replace's `NodeDeleting` (it holds no
+/// announced record) still moves the predecessor's row at `RenamePredecessor`, from the record its
+/// view holds now. In the executor's own view the predecessor is already named `<path>.old` and
+/// nothing holds `<path>`: the move reads the predecessor there, never only at `<path>`.
+#[test]
+fn a_rename_the_seat_holder_never_saw_announced_moves_the_row_from_the_old_name_its_view_holds() {
+    let cap = capture();
+    let (old_row, row, pred) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let op = "replace-node:mesh1.rpc.1";
+        let renamed = Act::View(Box::new(|v: &mut Topology| {
+            for n in v.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh1.rpc.1") {
+                n.name = n.name.renamed();
+            }
+        }));
+        let acts = vec![renamed, Act::Frame(op, "RenamePredecessor"), Act::Frame(op, "Complete")];
+        let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
+        let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
+        (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone())
+    });
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the predecessor's row moved to .old");
+    assert_eq!(row, None, "the path.name is let go");
+    let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
+    assert_eq!(renames.len(), 1, "{renames:#?}");
+    let a = &renames[0]["attributes"];
+    assert_eq!((a["node_id"].as_str(), a["outcome"].as_str()), (Some(pred.as_str()), Some("renamed")), "{a:#?}");
+}
