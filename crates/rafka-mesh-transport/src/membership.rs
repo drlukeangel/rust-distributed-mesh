@@ -51,7 +51,9 @@ pub fn backbone_topic(fabric: &FabricId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-backbone:{fabric}").as_bytes()).as_bytes())
 }
 
-/// Tell `endpoint` where `peers` are (no discovery service runs).
+/// Tell `endpoint` where `peers` are (no discovery service runs): a lookup of its own that only
+/// adds. For a raw gossip observer with no [`Membership`]; an endpoint that holds a
+/// [`LocationBook`] installs every address through that book.
 pub fn learn_addresses(endpoint: &Endpoint, peers: &[EndpointAddr]) -> Result<()> {
     let lookup = MemoryLookup::new();
     for p in peers {
@@ -68,13 +70,62 @@ pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
 }
 
 /// The newest birth and heartbeat each key's address was registered from (rafka-v2 node-base
-/// `peer_location_wall_time`): governs the address book only, never the held view. Ordered as the
-/// held view is: by `digest_seq` within one incarnation, and along the lineage across incarnations.
-type LocationMark = (rafka_mesh_entity::IncarnationId, u64, Option<rafka_mesh_entity::IncarnationId>);
+/// `peer_location_wall_time`), and the socket that birth named: governs the address book only,
+/// never the held view. Ordered as the held view is: by `digest_seq` within one incarnation, and
+/// along the lineage across incarnations.
+type LocationMark = (rafka_mesh_entity::IncarnationId, u64, Option<rafka_mesh_entity::IncarnationId>, std::net::SocketAddr);
 
-fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, LocationMark>> {
-    static W: std::sync::OnceLock<Mutex<HashMap<iroh::PublicKey, LocationMark>>> = std::sync::OnceLock::new();
-    W.get_or_init(Mutex::default)
+/// The marks of one peer-location book, by key. Each book holds its own: a newer birth one node of
+/// a process consumed is still newer to every other node of that process.
+pub type LocationMarks = Mutex<HashMap<iroh::PublicKey, LocationMark>>;
+
+/// The peer-location book of one endpoint: the ONE address book its address lookup reads. Every
+/// channel and topic the endpoint joins installs where a key is through it, and only a birth's
+/// ordered digest changes a key's address (gossip.md, contact fields: "Contact changes continue
+/// through the birth's ordered digest updates"). A move retires every other direct path the
+/// endpoint holds to the key (R-I1, `Endpoint::replace_direct_addrs`). An address from anything
+/// else (a seed, a peer list) fills a key the book holds no address for and never adds a second
+/// one: iroh merges every address lookup service's answer when it dials a key with no selected
+/// path, so a socket kept in a second book is dialled again after its key moved.
+#[derive(Clone)]
+pub struct LocationBook {
+    lookup: MemoryLookup,
+    endpoint: Endpoint,
+    marks: Arc<LocationMarks>,
+    /// The node this book belongs to: the observer every location span names.
+    observer: String,
+}
+
+impl LocationBook {
+    /// The book of `endpoint`, held by `observer`, installed as an address lookup of the endpoint.
+    pub fn new(endpoint: &Endpoint, observer: &str) -> Result<Self> {
+        let lookup = MemoryLookup::new();
+        endpoint.address_lookup().map_err(|e| anyhow::anyhow!("address_lookup: {e}"))?.add(lookup.clone());
+        Ok(Self { lookup, endpoint: endpoint.clone(), marks: Arc::default(), observer: observer.to_string() })
+    }
+
+    /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
+    pub fn register(&self, d: &MeshDigest) {
+        retire_superseded(&self.endpoint, &self.observer, register_location(&self.marks, &self.lookup, d));
+    }
+
+    /// Fill `addr` for its key when the book holds no address for that key; an address the book
+    /// holds is changed only by a newer birth's digest ([`LocationBook::register`]).
+    pub fn fill(&self, addr: &EndpointAddr) {
+        if self.lookup.get_endpoint_info(addr.id).is_none_or(|e| e.ip_addrs().next().is_none()) {
+            self.lookup.add_endpoint_info(addr.clone());
+        }
+    }
+
+    /// Forget every address of `key`: a birth under an open restart or removal is never handed out.
+    pub fn forget(&self, key: iroh::PublicKey) {
+        self.lookup.remove_endpoint_info(key);
+    }
+
+    /// The direct addresses this book holds for `key`.
+    pub fn addrs(&self, key: iroh::PublicKey) -> Vec<std::net::SocketAddr> {
+        self.lookup.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect()).unwrap_or_default()
+    }
 }
 
 /// The `(node.id, incarnation)` pairs a `node.deleted` fenced in the peer-location book: a digest of
@@ -104,9 +155,11 @@ fn incarnation_fenced(node_id: &NodeId, incarnation: &rafka_mesh_entity::Incarna
 /// not newer (replayed, late, or an aggregate copy of an older view) only fills a key that has no
 /// address, so it never puts an old socket back.
 ///
-/// Returns the key and the new socket when a newer birth MOVED the key: the caller then retires
-/// the endpoint's paths to every other socket (`retire_superseded`).
-pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) -> Option<(iroh::PublicKey, std::net::SocketAddr)> {
+/// Returns the key, the socket it moved from and the new socket when a newer birth MOVED the key:
+/// the caller then retires the endpoint's paths to every other socket (`retire_superseded`). The
+/// socket it moved from is the one the book last registered for the key, or else the one it holds:
+/// a book that forgot the key under an open restart still knows where the key was.
+pub fn register_location(marks: &LocationMarks, lookup: &MemoryLookup, d: &MeshDigest) -> Option<LocationMove> {
     let addr = gossip_addr(d)?;
     let key = addr.id;
     if incarnation_fenced(&d.node.node_id, &d.node.incarnation) {
@@ -120,46 +173,73 @@ pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) -> Option<(iroh:
         .in_scope(|| tracing::info!("a digest of a deleted incarnation: its socket is not registered for the key"));
         return None;
     }
-    let fresher = {
-        let mut w = location_watermarks().lock().unwrap();
+    let (fresher, marked) = {
+        let mut w = marks.lock().unwrap();
+        let marked = w.get(&key).map(|m| m.3);
         let fresher = match w.get(&key) {
             None => true,
-            Some((incarnation, seq, _)) if *incarnation == d.node.incarnation => d.digest_seq > *seq,
-            Some((_, _, supersedes)) => supersedes.as_ref() != Some(&d.node.incarnation),
+            Some((incarnation, seq, _, _)) if *incarnation == d.node.incarnation => d.digest_seq > *seq,
+            Some((_, _, supersedes, _)) => supersedes.as_ref() != Some(&d.node.incarnation),
         };
         if fresher {
-            w.insert(key, (d.node.incarnation.clone(), d.digest_seq, d.node.supersedes.clone()));
+            w.insert(key, (d.node.incarnation.clone(), d.digest_seq, d.node.supersedes.clone(), d.node.transport_addr));
         }
-        fresher
+        (fresher, marked)
     };
-    let old = lookup.get_endpoint_info(key).and_then(|e| e.ip_addrs().next().cloned());
+    let held = lookup.get_endpoint_info(key).and_then(|e| e.ip_addrs().next().cloned());
     let mut moved = None;
     if fresher {
-        if old.is_some_and(|o| o != d.node.transport_addr) {
-            moved = Some((key, d.node.transport_addr));
-            tracing::info_span!(
-                "rdm.mesh.connection.update.via-peer-location-refreshed",
-                node = %d.node.name,
-                incarnation_id = %d.node.incarnation.0,
-                old_socket = %old.map(|o| o.to_string()).unwrap_or_default(),
-                new_socket = %d.node.transport_addr,
-            )
-            .in_scope(|| tracing::info!("a newer birth of this key moved: its old socket is no longer dialled"));
+        if let Some(old) = marked.or(held).filter(|o| *o != d.node.transport_addr) {
+            moved = Some(LocationMove { key, node: d.node.name.to_string(), incarnation: d.node.incarnation.0.clone(), old, new: d.node.transport_addr });
         }
         lookup.set_endpoint_info(addr);
-    } else if old.is_none() {
+    } else if held.is_none() {
         lookup.add_endpoint_info(addr);
     }
     moved
 }
 
-/// A newer birth moved `key` to `new`: the endpoint retires every direct path it holds to any other
-/// socket of the key, open ones included (iroh `Endpoint::replace_direct_addrs`), so a connection
-/// to the old socket, or a dial's first packet to it, can no longer reach whoever took that port.
-fn retire_superseded(endpoint: &Endpoint, moved: Option<(iroh::PublicKey, std::net::SocketAddr)>) {
-    let Some((key, new)) = moved else { return };
+/// A newer birth of `key` (node `node`, birth `incarnation`) moved it from `old` to `new`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocationMove {
+    /// The key that moved.
+    pub key: iroh::PublicKey,
+    /// The node the newer birth names.
+    pub node: String,
+    /// The newer birth.
+    pub incarnation: String,
+    /// The socket the book held for the key before.
+    pub old: std::net::SocketAddr,
+    /// The socket the newer birth names.
+    pub new: std::net::SocketAddr,
+}
+
+/// A newer birth moved a key: the endpoint retires every direct path it holds to any other socket
+/// of the key, open ones included (iroh `Endpoint::replace_direct_addrs`), so a connection to the
+/// old socket, or a dial's first packet to it, can no longer reach whoever took that port. The span
+/// ends when the endpoint has retired them (`retired=true`).
+fn retire_superseded(endpoint: &Endpoint, observer: &str, moved: Option<LocationMove>) {
+    let Some(m) = moved else { return };
+    let span = tracing::info_span!(
+        "rdm.mesh.connection.update.via-peer-location-refreshed",
+        observer = %observer,
+        node = %m.node,
+        incarnation_id = %m.incarnation,
+        peer = %m.key.fmt_short(),
+        old_socket = %m.old,
+        new_socket = %m.new,
+        retired = tracing::field::Empty,
+    );
+    span.in_scope(|| tracing::info!("a newer birth of this key moved: its old socket is no longer dialled"));
     let endpoint = endpoint.clone();
-    tokio::spawn(async move { endpoint.replace_direct_addrs(key, [new]).await });
+    tokio::spawn(tracing::Instrument::instrument(
+        async move {
+            endpoint.replace_direct_addrs(m.key, [m.new]).await;
+            tracing::Span::current().record("retired", true);
+            tracing::info!("every direct path to another socket of the key is retired");
+        },
+        span,
+    ));
 }
 
 /// `RDM_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
@@ -1238,7 +1318,8 @@ struct Channel {
     peers: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
     /// The peers asked while they stayed on the live list.
     joined: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
-    lookup: MemoryLookup,
+    /// The endpoint's peer-location book: shared by every channel and topic of the endpoint.
+    book: LocationBook,
     endpoint: Endpoint,
     /// The active gossip neighbours on this channel (NeighborUp minus NeighborDown).
     neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
@@ -1253,7 +1334,7 @@ struct Channel {
 impl Channel {
     /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
     fn register(&self, d: &MeshDigest) {
-        retire_superseded(&self.endpoint, register_location(&self.lookup, d));
+        self.book.register(d);
     }
 
     async fn join(
@@ -1264,14 +1345,13 @@ impl Channel {
         node: &str,
         channel: &str,
         seeds: Vec<EndpointAddr>,
+        book: LocationBook,
         on_frame: Arc<dyn Fn(Frame) + Send + Sync>,
         targets: Arc<dyn Fn() -> Held + Send + Sync>,
         replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync>,
     ) -> Result<Self> {
-        let lookup = MemoryLookup::new();
-        endpoint.address_lookup().map_err(|e| anyhow::anyhow!("address_lookup: {e}"))?.add(lookup.clone());
         for s in &seeds {
-            lookup.add_endpoint_info(s.clone());
+            book.fill(s);
         }
         let peers: BTreeSet<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
         let sub = gossip.subscribe(topic, peers.iter().copied().collect()).await?;
@@ -1279,7 +1359,7 @@ impl Channel {
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
-        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), parked: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, lookup, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default() };
+        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), parked: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, book, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default() };
         let neighbors = me.neighbors.clone();
         let neighbors_changed = me.neighbors_changed.clone();
         let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
@@ -1424,7 +1504,7 @@ impl Channel {
 
     /// Register `peer`'s address; `true` when it is new to this channel.
     fn learn(&self, peer: &EndpointAddr) -> bool {
-        self.lookup.add_endpoint_info(peer.clone());
+        self.book.fill(peer);
         self.peers.lock().unwrap().insert(peer.id)
     }
 
@@ -1466,7 +1546,7 @@ impl Channel {
                 // typed drain is in flight over them, and they are retired at the proven exit.
                 for key in &held.retired {
                     if retired.insert(*key) {
-                        me.lookup.remove_endpoint_info(*key);
+                        me.book.forget(*key);
                         me.peers.lock().unwrap().remove(key);
                         me.joined.lock().unwrap().remove(key);
                         tracing::info_span!("rdm.mesh.connection.update.via-restart-address-retired", node = %node, channel = %channel, peer = %key.fmt_short())
@@ -1475,7 +1555,7 @@ impl Channel {
                 }
                 retired.retain(|k| held.retired.contains(k));
                 for t in schedule.due(held.targets, Instant::now()) {
-                    me.lookup.add_endpoint_info(t.addr.clone());
+                    me.book.fill(&t.addr);
                     me.peers.lock().unwrap().insert(t.addr.id);
                     let sender = me.sender.read().await.clone();
                     let joined = match sender {
@@ -2190,6 +2270,12 @@ impl Membership {
         self.mesh.endpoint.clone()
     }
 
+    /// The endpoint's peer-location book: every other topic this process joins on the endpoint
+    /// installs its peers' addresses through it.
+    pub fn location_book(&self) -> LocationBook {
+        self.mesh.book.clone()
+    }
+
     /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`. `clock` is the
     /// Rafka-time the process composes: every timestamp this membership and its backbone put on a
     /// frame reads it.
@@ -2209,8 +2295,8 @@ impl Membership {
                 Vec::new()
             }
         });
-        let lookup_slot: Arc<Mutex<Option<(MemoryLookup, Endpoint)>>> = Arc::default();
-        let (v, f, ls, observing) = (view.clone(), fabric.clone(), lookup_slot.clone(), clock.clone());
+        let location = LocationBook::new(endpoint, node)?;
+        let (v, f, ls, observing) = (view.clone(), fabric.clone(), location.clone(), clock.clone());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
             let carried = match &frame {
                 Frame::Members { .. } | Frame::MembersDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel).carried,
@@ -2224,17 +2310,14 @@ impl Membership {
                     carried
                 }
             };
-            if let Some((l, ep)) = ls.lock().unwrap().as_ref() {
-                for d in &carried {
-                    retire_superseded(ep, register_location(l, d));
-                }
+            for d in &carried {
+                ls.register(d);
             }
         });
         let (book, own_mesh, me_name) = (view.book.clone(), mesh.to_string(), node.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
             Arc::new(move || held_view(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
-        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets, replay).await?;
-        *lookup_slot.lock().unwrap() = Some((channel.lookup.clone(), channel.endpoint.clone()));
+        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, location, on_frame, targets, replay).await?;
         let sink_channel = channel.clone();
         let sink: crate::forward_path::Sink = Arc::new(move |f: Frame| {
             let channel = sink_channel.clone();
@@ -2769,7 +2852,7 @@ impl Backbone {
                     crate::discipline::offer(&m.clock, &m.view.node, "fabric-primary-members", verdict);
                 }
                 for d in &taken.carried {
-                    register_location(&m.mesh.lookup, d);
+                    m.mesh.register(d);
                 }
                 // A complete snapshot of a source Mesh: the forwarding primary says what moved
                 // since it last published that source into its own Mesh. The forward path decides
@@ -2799,7 +2882,7 @@ impl Backbone {
         let (book, own_mesh) = (membership.book.clone(), mesh.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
             Arc::new(move || held_view(&book, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin));
-        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, on_frame, targets, replay).await?;
+        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, membership.mesh.book.clone(), on_frame, targets, replay).await?;
         let me = Self {
             channel,
             node: node.to_string(),
@@ -4036,12 +4119,12 @@ mod tests {
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
         };
-        let lookup = MemoryLookup::new();
+        let (marks, lookup) = (LocationMarks::default(), MemoryLookup::new());
         let addrs = |l: &MemoryLookup| l.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect::<Vec<_>>()).unwrap_or_default();
-        register_location(&lookup, &at(41001, &first, None, 40));
-        register_location(&lookup, &at(41002, &second, Some(first.clone()), 1));
+        register_location(&marks, &lookup, &at(41001, &first, None, 40));
+        register_location(&marks, &lookup, &at(41002, &second, Some(first.clone()), 1));
         assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "the newer birth replaces, never joins, the old socket");
-        register_location(&lookup, &at(41001, &first, None, 41));
+        register_location(&marks, &lookup, &at(41001, &first, None, 41));
         assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "a late digest of the old birth never restores its socket");
     }
 
@@ -4061,15 +4144,15 @@ mod tests {
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
         };
-        let lookup = MemoryLookup::new();
+        let (marks, lookup) = (LocationMarks::default(), MemoryLookup::new());
         let addrs = |l: &MemoryLookup| l.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect::<Vec<_>>()).unwrap_or_default();
         let (port_old, port_new) = (std::net::SocketAddr::from(([127, 0, 0, 1], 41011)), std::net::SocketAddr::from(([127, 0, 0, 1], 41012)));
-        register_location(&lookup, &at(&old_node, 41011, &old, 40));
-        register_location(&lookup, &at(&new_node, 41012, &new, 1));
+        register_location(&marks, &lookup, &at(&old_node, 41011, &old, 40));
+        register_location(&marks, &lookup, &at(&new_node, 41012, &new, 1));
         assert_eq!(addrs(&lookup), vec![port_new], "the new instance's digest replaces the key's address");
         let book = DigestBook::default();
         assert!(book.depart(op(&old_node, &old, "retire-node:mesh1.rpc.1")));
-        assert!(register_location(&lookup, &at(&old_node, 41011, &old, 41)).is_none());
+        assert!(register_location(&marks, &lookup, &at(&old_node, 41011, &old, 41)).is_none());
         assert_eq!(addrs(&lookup), vec![port_new], "a digest of the deleted incarnation is refused: {port_old} is not restored");
     }
 
