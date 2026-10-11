@@ -33,7 +33,7 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_twenty_four_variant_wire_schema() {
+fn replies_match_the_frozen_twenty_five_variant_wire_schema() {
     use BuildReply::*;
     let b = || "b".to_string();
     let s = |v: &str| v.to_string();
@@ -64,13 +64,15 @@ fn replies_match_the_frozen_twenty_four_variant_wire_schema() {
         (Draining { reason: s("d") }, "15 01 64"),
         (Malformed { kind: MalformedKind::Corrupt }, "16 02"),
         (Unauthorized { reason: s("u") }, "17 01 75"),
+        (SeatMoved { build_id: b(), fabric_primary: Some(s("p")) }, "18 01 62 01 01 70"),
+        (SeatMoved { build_id: b(), fabric_primary: None }, "18 01 62 00"),
     ];
     for (r, hex) in fixtures {
         assert_eq!(Build::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(Build::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(Build::REPLY_VARIANTS, 24);
-    assert_eq!(Build::decode_reply(&[24]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(Build::REPLY_VARIANTS, 25);
+    assert_eq!(Build::decode_reply(&[25]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
@@ -90,6 +92,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         Complete { build_id: "b".into(), attempt: 1 },
         Failed { build_id: "b".into(), attempt: 1, operation: "o".into(), step: "s".into(), reason: "r".into() },
         HandedOff { build_id: "b".into(), attempt: 1, to: "t".into() },
+        SeatMoved { build_id: "b".into(), fabric_primary: Some("p".into()) },
         Got { build_id: "b".into(), phase: BuildPhase::Pending, attempt: 0, executor: None, reason: "requested".into(), last_failure: None, steps: 0, chunks: 0 },
         Deleted { build_id: "b".into() },
     ] {
