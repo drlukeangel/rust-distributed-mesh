@@ -336,6 +336,8 @@ pub struct DriveEnv {
     pub departure: Arc<dyn DepartureProof>,
     /// Records an executor's verdict on this admin's log.
     pub verdicts: Arc<dyn VerdictSink>,
+    /// The writer of node rows: the live `Step` frames of a delete and a create write them.
+    pub rows: Arc<crate::node_rows::NodeRows>,
 }
 
 /// The drives this admin holds, by Build.
@@ -686,7 +688,13 @@ impl DriveEnv {
         loop {
             match stream.next().await {
                 InnerItem::Frame(f) => match f {
-                    BuildReply::Step { .. } | BuildReply::Blocked { .. } => {
+                    BuildReply::Step { ref operation, ref step, .. } => {
+                        // The live frame, never a replayed receipt: the row is written from the
+                        // record this fabric-primary holds while the executor runs the step.
+                        self.rows.on_step(&self.me, &self.topology, operation, step).await;
+                        drive.push(f);
+                    }
+                    BuildReply::Blocked { .. } => {
                         drive.push(f);
                     }
                     t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),

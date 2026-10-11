@@ -3459,6 +3459,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 },
                 book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
             verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
+            rows: Arc::new(crate::node_rows::NodeRows::new(nodes_storage.clone())),
         });
         let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door }));
         env

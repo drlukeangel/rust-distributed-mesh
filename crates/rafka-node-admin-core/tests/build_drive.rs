@@ -106,6 +106,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         gate: switch.clone(),
         departure: proofs.clone(),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id }
 }
