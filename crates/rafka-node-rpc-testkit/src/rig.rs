@@ -17,7 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Joined = the node's own digest for exactly this birth reached the admin's
-/// membership; ready = an Ping answered; drained =
+/// membership; ready = that digest says ReadyForTraffic (as the node-admin's own observer
+/// decides it) and a Ping is answered; drained =
 /// this birth's digest says `Draining` with nothing in flight, or `Leaving`;
 /// admission closed = no Ping runs any more.
 pub struct LiveMesh {
@@ -64,6 +65,13 @@ impl NodeObserver for LiveMesh {
     }
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
+        // A joined node answers Ping while it is still Pending (its hook runs, it serves status and
+        // the lifecycle commands): ready is what its own digest says, never the Ping alone.
+        match self.membership.book.get(node.node_id.as_str()).filter(|(d, _)| node.incarnation_id.as_ref() == Some(&d.node.incarnation)) {
+            Some((d, _)) if d.status == rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic => {}
+            Some((d, _)) => return Err(format!("{} reports {:?}", node.name, d.status)),
+            None => return Err(format!("no digest from {} for this birth", node.name)),
+        }
         let target = self.echo_target(node)?;
         {
             match self.echo(&target).await {
@@ -84,6 +92,28 @@ impl NodeObserver for LiveMesh {
 
     async fn await_completion(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> rafka_node_admin_core::deployment::pipeline::Completion {
         rafka_node_admin_core::node_commands::await_completion(&self.commands, node, cmd, ctx, within).await
+    }
+}
+
+/// Every runtime a process provider launched under `data_root` (each birth's data dir carries the
+/// `deployment.json` the provider writes at spawn: its pid and start token) is killed when this is
+/// dropped, however the cell ends: a cell that panics before its own terminate leaves no node behind.
+/// A pid whose start token no longer matches is another process (or none) and is left alone.
+pub struct ReapOnDrop(pub std::path::PathBuf);
+
+impl Drop for ReapOnDrop {
+    fn drop(&mut self) {
+        let Ok(dirs) = std::fs::read_dir(&self.0) else { return };
+        for dir in dirs.flatten() {
+            let Ok(record) = std::fs::read_to_string(dir.path().join("deployment.json")) else { continue };
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(&record) else { continue };
+            let Some(pid) = record["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else { continue };
+            let start = record["start"].as_u64();
+            if start.is_some() && rafka_mesh_entity::runtime::process_start_token(pid) == start {
+                eprintln!("reap: {} still runs as pid {pid} after the cell: killed", dir.path().display());
+                let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+            }
+        }
     }
 }
 

@@ -27,6 +27,8 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+    // A cell that fails before its own terminate leaves no node running.
+    let _reap = common::ReapOnDrop(template.data_root.clone());
     let builds = MemoryBuildStateAdapter::new();
     let sink = Published::default();
     let provider = ProcessDeploymentProvider::new();

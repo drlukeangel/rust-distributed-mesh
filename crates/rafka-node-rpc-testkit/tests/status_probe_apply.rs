@@ -42,6 +42,8 @@ async fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family()
     let observer = &admin.observer;
     // The admin side publishes its digest on joining (`common::admin_side`), so the node holds it as a node-admin.
     let template = common::template(&fabric_id, admin.seed.clone(), admin.launcher.clone());
+    // A cell that fails before its own terminate leaves no node running.
+    let _reap = common::ReapOnDrop(template.data_root.clone());
     let builds = MemoryBuildStateAdapter::new();
     let build_id = common::publish_build(&builds, common::add_node()).await;
     let sink = common::Published::default();
