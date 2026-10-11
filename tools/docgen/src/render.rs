@@ -30,6 +30,7 @@ pub fn cell(text: &str) -> String {
 /// their inner text, since the page has no target for them, then [`cell`] escaping. A bracket
 /// inside inline code, or one that opens a real link (`](` or `][`), is kept.
 pub fn doc(text: &str) -> String {
+    let text = decite(text);
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let (mut i, mut in_code) = (0, false);
@@ -68,6 +69,50 @@ pub fn doc(text: &str) -> String {
         i += 1;
     }
     cell(&out)
+}
+
+/// A doc line with its citation forms written out. rafka-v2's doc gate reads `<path>.<ext>:<line>`,
+/// a bare `:<line>` and `<path>.<ext>::<symbol>` as citations into rafka-v2's own tree, and an RDM
+/// path never resolves there. So `x.rs:12` is written `x.rs line 12`, a bare `:12` (after a
+/// character that is not a word character, `/` or `.`) is written `line 12`, and `x.rs::name` is
+/// written `x.rs :: name`. A colon between digits (`127.0.0.1:41000`, `1:2`) and a Rust path
+/// (`crate::wire`) are not citations and stay as they are.
+pub fn decite(text: &str) -> String {
+    const EXTS: [&str; 5] = ["rs", "json", "yaml", "sh", "py"];
+    let path_char = |c: char| c.is_alphanumeric() || matches!(c, '_' | '/' | '.' | '-');
+    let chars: Vec<char> = text.chars().collect();
+    let ends_with_path = |end: usize| {
+        EXTS.iter().any(|ext| {
+            let tail: Vec<char> = format!(".{ext}").chars().collect();
+            end > tail.len() && chars[end - tail.len()..end] == tail[..] && path_char(chars[end - tail.len() - 1])
+        })
+    };
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == ':' {
+            let digit_next = chars.get(i + 1).is_some_and(char::is_ascii_digit);
+            if digit_next && ends_with_path(i) {
+                out.push_str(" line ");
+                i += 1;
+                continue;
+            }
+            if digit_next && (i == 0 || !(chars[i - 1].is_alphanumeric() || matches!(chars[i - 1], '_' | '/' | '.'))) {
+                out.push_str("line ");
+                i += 1;
+                continue;
+            }
+            if chars.get(i + 1) == Some(&':') && chars.get(i + 2).is_some_and(|n| n.is_ascii_alphabetic() || *n == '_') && ends_with_path(i) {
+                out.push_str(" :: ");
+                i += 2;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 /// `text` as inline code, safe for a table cell.

@@ -18,9 +18,9 @@ pub fn page(root: &Path) -> anyhow::Result<String> {
         names.len(),
         emitters.len()
     ));
-    out.push_str("| span | where |\n|---|---|\n");
+    out.push_str("| span | file | line |\n|---|---|---|\n");
     for e in &emitters {
-        out.push_str(&format!("| {} | `{}:{}` |\n", crate::render::code(&e.name), e.file, e.line));
+        out.push_str(&format!("| {} | `{}` | {} |\n", crate::render::code(&e.name), e.file, e.line));
     }
     Ok(out)
 }

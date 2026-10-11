@@ -183,9 +183,9 @@ pub fn page(ws: &Workspace) -> anyhow::Result<String> {
         "Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source ({} names). Each row is one place the source names it: the literal itself, or a const holding it (`via` names the const), the item it sits in, and the call or macro it is handed to. Sorted by name, then site.\n\n",
         names.len()
     ));
-    out.push_str("| name | where | in | via |\n|---|---|---|---|\n");
+    out.push_str("| name | file | line | in | via |\n|---|---|---|---|---|\n");
     for s in &sites {
-        out.push_str(&format!("| `{}` | `{}:{}` | {} | {} |\n", s.name, s.file, s.line, crate::render::cell(&s.within), crate::render::cell(&s.via)));
+        out.push_str(&format!("| `{}` | `{}` | {} | {} | {} |\n", s.name, s.file, s.line, crate::render::cell(&s.within), crate::render::cell(&s.via)));
     }
     Ok(out)
 }
