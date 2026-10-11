@@ -1310,7 +1310,9 @@ pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[No
 /// The watched births the tick inspects for recovery (node-recovery.md): none unless this admin
 /// holds its mesh's primary seat; else every watched birth of its own mesh (its secondary
 /// node-admins included, mesh-recovery.md:8-9) held TRUE OFFLINE at its exact incarnation.
-pub fn recovery_due(holds_seat: bool, mesh: &str, watched: &BTreeMap<String, Node>, offline: &HashSet<(NodeId, IncarnationId)>) -> Vec<Node> {
+/// `frozen` is a fabric shutdown held by this admin (fabric-mesh-lifecycle.md §11.1).
+pub fn recovery_due(holds_seat: bool, frozen: bool, mesh: &str, watched: &BTreeMap<String, Node>, offline: &HashSet<(NodeId, IncarnationId)>) -> Vec<Node> {
+    let _ = frozen;
     if !holds_seat {
         return Vec::new();
     }
@@ -4984,6 +4986,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // status lands on its row in nodes.storage and in the view.
     {
         let (topology, records, status_storage, runner, me, me_id, mesh) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone());
+        let frozen = shutdown_control.clone();
         // The recovery of a TRUE OFFLINE member of this mesh (node-recovery.md): the provider's
         // exact-exit proof, the exit-proof row, the submit to the fabric-primary.
         let recovery = RecoverySubmitter {
@@ -5149,7 +5152,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // member stays TRUE OFFLINE, so a recovery that failed is submitted again.
                 {
                     let offline = records.offline.lock().unwrap().clone();
-                    for n in recovery_due(holds_seat, &mesh, &watched, &offline) {
+                    for n in recovery_due(holds_seat, frozen.held().is_some(), &mesh, &watched, &offline) {
                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                         let birth = (n.node_id.clone(), incarnation);
                         if !in_flight.lock().unwrap().insert(birth.clone()) {
@@ -6269,7 +6272,7 @@ mod tests {
                     offline.insert((n.node_id.clone(), n.incarnation_id.clone().unwrap()));
                 }
             }
-            let due: Vec<String> = recovery_due(holds_seat, "mesh2", &watched, offline).iter().map(|n| n.name.to_string()).collect();
+            let due: Vec<String> = recovery_due(holds_seat, false, "mesh2", &watched, offline).iter().map(|n| n.name.to_string()).collect();
             (holds_seat, report, due)
         };
         let t0 = 1_000_000u64;
@@ -6290,6 +6293,27 @@ mod tests {
         let (_, report, due) = pass(t1 + floor, &mut tickle, &mut offline).await;
         assert_eq!(report.offline, vec![holder.node.node_id.to_string()], "round 2, one floor later: TRUE OFFLINE");
         assert_eq!(due, vec!["mesh2.admin.1".to_string()], "the old primary is due for recovery at the successor, after the seat moved");
+    }
+
+    /// CONTRACT (fabric-mesh-lifecycle.md §11.1: every admin that holds the Fabric shutdown "freezes
+    /// Build reconciliation/drift recovery/rebirth"; "the surviving primary exists to retry/finish
+    /// stops, observe exact disappearance, and report incomplete runtimes, not to recreate nodes"):
+    /// a member the shutdown's drain stopped goes silent and the mesh-primary's tickle may hold it
+    /// TRUE OFFLINE, but while the shutdown is held nothing is due for recovery, so no recovery Build
+    /// is submitted for it. Must NOT happen: a stopped member inspected and submitted for recovery
+    /// during the shutdown (the handover cell's tail submitted mesh2.rpc.1 and mesh2.rpc.2 every
+    /// tick after the drain stopped them).
+    #[test]
+    fn no_member_is_due_for_recovery_while_a_fabric_shutdown_is_held() {
+        let mut n = Node::allocated("mesh2.rpc.1".parse().unwrap());
+        n.node_id = NodeId::mint();
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.status = NodeStatus::Dead;
+        let watched: BTreeMap<String, Node> = [(n.node_id.to_string(), n.clone())].into();
+        let offline: HashSet<(NodeId, IncarnationId)> = [(n.node_id.clone(), n.incarnation_id.clone().unwrap())].into();
+        let names = |due: Vec<Node>| due.iter().map(|n| n.name.to_string()).collect::<Vec<_>>();
+        assert_eq!(names(recovery_due(true, false, "mesh2", &watched, &offline)), vec!["mesh2.rpc.1".to_string()], "TRUE OFFLINE at the seat holder: due");
+        assert!(recovery_due(true, true, "mesh2", &watched, &offline).is_empty(), "a held fabric shutdown froze drift recovery: nothing is due");
     }
 
     fn holder_of(d: &MeshDigest, epoch: u64) -> rafka_mesh_entity::SeatHolder {

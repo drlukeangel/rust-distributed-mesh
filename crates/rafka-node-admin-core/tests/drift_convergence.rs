@@ -809,7 +809,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     assert_eq!((w.name.to_string(), w.incarnation_id.clone(), w.status), (lost.clone(), Some(row.incarnation_id.clone()), NodeStatus::PendingReconnect), "the row's exact birth, silent");
     // TRUE OFFLINE (the tickle's verdict): due for recovery at the seat holder, and at nobody else.
     let offline: HashSet<(NodeId, IncarnationId)> = [(row.node_id.clone(), row.incarnation_id.clone())].into();
-    let due: Vec<String> = rafka_node_admin_core::admin::recovery_due(true, peer, &watched, &offline).iter().map(|n| n.name.to_string()).collect();
+    let due: Vec<String> = rafka_node_admin_core::admin::recovery_due(true, false, peer, &watched, &offline).iter().map(|n| n.name.to_string()).collect();
     assert_eq!(due, vec![lost.clone()], "{mp} inspects {lost} for recovery");
     // The provider's exact-exit proof, from the row.
     let proof = rafka_node_admin_core::admin::exit_proof_of(&e.provider, &None, Some(&row)).await;
