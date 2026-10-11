@@ -101,6 +101,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         wake: Default::default(),
         rounds: Default::default(),
         configs: Default::default(),
+        configure: Default::default(),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
@@ -612,4 +613,29 @@ fn a_config_update_for_another_meshs_member_reaches_it_through_that_meshs_primar
     assert_eq!(carried[0].1.get("carrier").map(String::as_str), Some("mesh2.admin.1"));
     assert_eq!(carried[0].1.get("protocol").map(String::as_str), Some("status"));
     eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config outcome=config-updated > rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.admin.1");
+}
+
+/// CONTRACT (ops-naming "Node data": the node applies the config and carries it in its next digest; a
+/// node-admin is a node like any other): `ApplyNodeConfig` naming this admin, from another node-admin,
+/// is answered by the admin itself: `Applied`, after it handed the whole map to what holds it and
+/// publishes its digest. One naming another incarnation of it is `RejectedStaleIncarnation` with the
+/// one held; one from a member that is not a node-admin is `RejectedNotAuthority`. Neither holds anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
+    let (rig, b) = rig().await;
+    let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+    let held: Arc<Mutex<Vec<BTreeMap<String, String>>>> = Arc::default();
+    let h = held.clone();
+    let _ = rig.authority.configure.set(Arc::new(move |config: BTreeMap<String, String>| {
+        let h = h.clone();
+        Box::pin(async move { h.lock().unwrap().push(config) })
+    }));
+    let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
+    let me = &rig.admin.node;
+    let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation, config };
+    assert_eq!(reply(&call(&rig, admin2, &told(me.incarnation_id.clone().unwrap(), config.clone())).await), StatusReply::Applied);
+    assert_eq!(held.lock().unwrap().clone(), vec![config.clone()], "the admin holds the whole config it was told");
+    assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), config.clone())).await), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
+    assert!(matches!(reply(&call(&rig, rpc1, &told(me.incarnation_id.clone().unwrap(), config)).await), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its config");
+    assert_eq!(held.lock().unwrap().len(), 1, "neither refusal held anything");
 }
