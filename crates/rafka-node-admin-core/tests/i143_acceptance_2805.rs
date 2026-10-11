@@ -12,7 +12,6 @@ use rafka_mesh_entity::{EndpointId, IncarnationId, MeshId, NodeId, NodeKind};
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
-use rafka_node_admin_core::storage::MemoryNodesStorage;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
@@ -148,7 +147,6 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         fabric_id,
         topology,
         declared: Arc::new(Mutex::new(declared)),
-        nodes_storage: Arc::new(MemoryNodesStorage::default()),
         status_storage,
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         republish: Arc::new(OnceLock::new()),
@@ -536,6 +534,24 @@ impl StatusStorage for Refusing {
     async fn fabric_events(&self) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
         self.inner.fabric_events().await
     }
+    async fn put_node_declared(&self, row: &rafka_node_admin_core::status_storage::NodeDeclaredRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.put_node_declared(row).await
+    }
+    async fn remove_node_declared(&self, node_id: &rafka_mesh_entity::NodeId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.remove_node_declared(node_id).await
+    }
+    async fn node_declared(&self) -> Result<Vec<rafka_node_admin_core::status_storage::NodeDeclaredRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_declared().await
+    }
+    async fn put_node_silence(&self, row: &rafka_node_admin_core::status_storage::NodeSilenceRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.put_node_silence(row).await
+    }
+    async fn node_silences(&self) -> Result<Vec<rafka_node_admin_core::status_storage::NodeSilenceRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_silences().await
+    }
 }
 
 /// CONTRACT (#2805, acceptance 9): a Mesh status or Fabric event is answered `Applied` only after
@@ -583,7 +599,7 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
 
         // The authority restarts over the same rows: what it folds is what it applied.
-        let folded = Declared::rehydrate(&*store, &MemoryNodesStorage::default()).await.unwrap();
+        let folded = Declared::rehydrate(&*store).await.unwrap();
         assert_eq!(folded.meshes.get(&mesh2), Some(&MeshState::Pending));
         let me_again = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let restarted = rig_with(me_again, &[&fabric_primary], ids, store.clone(), folded, Some(fabric.clone())).await;
@@ -777,7 +793,7 @@ fn applied_events_survive_authority_change_and_the_old_authority_is_refused() {
         assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");
         assert_eq!(reply(&call(&rig, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::Applied, "the new authority applies new work");
         // The receiver restarts over its rows.
-        let folded = Declared::rehydrate(&*store, &MemoryNodesStorage::default()).await.unwrap();
+        let folded = Declared::rehydrate(&*store).await.unwrap();
         let receiver2 = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), store.clone(), folded, Some(fabric.clone())).await;
         {

@@ -1,16 +1,19 @@
-//! `status.storage`: the Mesh statuses and Fabric events a node-admin applied as an authority
-//! (`status_rpc`), each fact its own keyed row, beside the node rows `nodes.storage` holds.
+//! `status.storage`: the status facts a node-admin holds, each its own keyed row with one writer,
+//! beside the contact rows `nodes.storage` holds: the Mesh statuses, Fabric events and node
+//! declared states it applied as an authority (`status_rpc`), and the silence status it holds for a
+//! member as that member's mesh primary (`offline::put_silence_status`).
 //!
 //! A status fact is a blind put of its own key: `(mesh_id, state)` for a Mesh, `(fabric_id,
-//! event)` for a Fabric event. Nothing is read back to be written again. A reader folds the rows:
-//! the greatest state per Mesh, the set of events per Fabric. `Applied` means the row's put was
+//! event)` for a Fabric event, `node_id` for a node's declared state (a new cycle tombstones it),
+//! `(node_id, incarnation)` for a birth's silence status. Nothing is read back to be written again.
+//! A reader folds the rows: the greatest state per Mesh, the set of events per Fabric. `Applied` means the row's put was
 //! acknowledged before the answer left; a restarted admin folds the rows it wrote into what it
 //! has applied.
 
-use crate::model::{FabricId, MeshId};
+use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeStatus, PathName};
 use crate::record_store::{FileRecords, StorageError};
 use async_trait::async_trait;
-use rafka_node_rpc_contract::status::MeshState;
+use rafka_node_rpc_contract::status::{MeshState, NodeState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -49,7 +52,50 @@ impl FabricEventRow {
     }
 }
 
-/// The durable record of the status facts this admin applied.
+/// One node's declared state as its authority applied it: the state the birth `incarnation_id`
+/// declared. Keyed by the node: one current fact per node, written only by the authority; a start
+/// beginning the node's next cycle tombstones it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDeclaredRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The birth that declared it.
+    pub incarnation_id: IncarnationId,
+    /// The state applied.
+    pub state: NodeState,
+}
+
+impl NodeDeclaredRow {
+    /// The row's key: the node.
+    pub fn key(&self) -> String {
+        self.node_id.to_string()
+    }
+}
+
+/// The silence status a mesh primary holds for one birth of its own mesh (fabric-node-lifecycle.md
+/// §7.3): `PendingReconnect`, then `Dead` once its offline tickle found no path on two rounds a
+/// staleness floor apart, `None` once it is heard again. Keyed by the exact birth; written only by
+/// the mesh primary's tickle loop. Observer-inferred: never itself a reason to act.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSilenceRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// The status held, `None` while heard.
+    pub status: Option<NodeStatus>,
+}
+
+impl NodeSilenceRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        format!("{}--{}", self.node_id, self.incarnation_id.0)
+    }
+}
+
+/// The durable record of the status facts this admin holds.
 #[async_trait]
 pub trait StatusStorage: Send + Sync {
     /// A blind put of the fact's own key.
@@ -60,6 +106,16 @@ pub trait StatusStorage: Send + Sync {
     async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError>;
     /// The events held, per Fabric, each once.
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError>;
+    /// A blind put of the node's declared-state row.
+    async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError>;
+    /// A blind tombstone of `node_id`'s declared-state row.
+    async fn remove_node_declared(&self, node_id: &NodeId) -> Result<(), StorageError>;
+    /// Every node's declared-state row.
+    async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError>;
+    /// A blind put of the birth's silence-status row.
+    async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError>;
+    /// Every birth's silence-status row.
+    async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError>;
 }
 
 fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {
@@ -78,6 +134,8 @@ fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId,
 pub struct MemoryStatusStorage {
     meshes: Mutex<Vec<MeshStatusRow>>,
     events: Mutex<Vec<FabricEventRow>>,
+    declared: Mutex<std::collections::BTreeMap<String, NodeDeclaredRow>>,
+    silences: Mutex<std::collections::BTreeMap<String, NodeSilenceRow>>,
 }
 
 #[async_trait]
@@ -102,23 +160,52 @@ impl StatusStorage for MemoryStatusStorage {
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
         Ok(self.events.lock().unwrap().clone())
     }
+    async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+        self.declared.lock().unwrap().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn remove_node_declared(&self, node_id: &NodeId) -> Result<(), StorageError> {
+        self.declared.lock().unwrap().remove(node_id.as_str());
+        Ok(())
+    }
+    async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
+        Ok(self.declared.lock().unwrap().values().cloned().collect())
+    }
+    async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError> {
+        self.silences.lock().unwrap().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError> {
+        Ok(self.silences.lock().unwrap().values().cloned().collect())
+    }
 }
 
 const MESH_STATUS_FORMAT: &str = "mesh-status/1";
 const FABRIC_EVENT_FORMAT: &str = "fabric-event/1";
+const NODE_DECLARED_FORMAT: &str = "node-declared/1";
+const NODE_SILENCE_FORMAT: &str = "node-silence/1";
 
-/// One row per file: `<data dir>/status/meshes/<mesh_id>-<state>.json` and
-/// `<data dir>/status/fabric/<fabric_id>-<hex of the event key>.json`.
+/// One row per file: `<data dir>/status/meshes/<mesh_id>-<state>.json`,
+/// `<data dir>/status/fabric/<fabric_id>-<hex of the event key>.json`,
+/// `<data dir>/status/declared/<node_id>.json` and
+/// `<data dir>/status/silence/<node_id>--<incarnation>.json`.
 #[derive(Debug)]
 pub struct FileStatusStorage {
     meshes: FileRecords,
     fabric: FileRecords,
+    declared: FileRecords,
+    silence: FileRecords,
 }
 
 impl FileStatusStorage {
     /// Open the store under the admin's own data directory.
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self { meshes: FileRecords::open(own_data_dir, "status/meshes")?, fabric: FileRecords::open(own_data_dir, "status/fabric")? })
+        Ok(Self {
+            meshes: FileRecords::open(own_data_dir, "status/meshes")?,
+            fabric: FileRecords::open(own_data_dir, "status/fabric")?,
+            declared: FileRecords::open(own_data_dir, "status/declared")?,
+            silence: FileRecords::open(own_data_dir, "status/silence")?,
+        })
     }
 }
 
@@ -135,6 +222,21 @@ impl StatusStorage for FileStatusStorage {
     }
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
         self.fabric.list(FABRIC_EVENT_FORMAT)
+    }
+    async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+        self.declared.write(&row.key(), NODE_DECLARED_FORMAT, row).await
+    }
+    async fn remove_node_declared(&self, node_id: &NodeId) -> Result<(), StorageError> {
+        self.declared.remove(node_id.as_str()).await
+    }
+    async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
+        self.declared.list(NODE_DECLARED_FORMAT)
+    }
+    async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError> {
+        self.silence.write(&row.key(), NODE_SILENCE_FORMAT, row).await
+    }
+    async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError> {
+        self.silence.list(NODE_SILENCE_FORMAT)
     }
 }
 

@@ -194,25 +194,16 @@ impl OfflineTickle {
 }
 
 /// Write the status the mesh primary holds for a silent birth (`PendingReconnect`, `Dead`, or
-/// `None` once it is heard again) on that birth's row in nodes.storage. The row is the record the
-/// admin holds for the birth, put whole; the stored row is never read back and changed (the banned
-/// read-modify-write). A held record with no endpoint, address or incarnation yet has no row to
-/// put: that is named, never a silent skip.
-pub(crate) async fn put_silence_status(store: &dyn crate::storage::NodesStorage, node: &crate::model::Node, status: Option<crate::model::NodeStatus>) -> Result<bool, String> {
-    let (Some(incarnation_id), Some(endpoint_id), Some(transport_addr)) = (node.incarnation_id.clone(), node.endpoint_id.clone(), node.transport_addr) else {
-        return Err(format!("{} ({}) holds no incarnation, endpoint id or transport address: no row to put", node.name, node.node_id));
+/// `None` once it is heard again) as that birth's own silence row in status.storage: a blind put of
+/// its `(node_id, incarnation)` key, the one writer of that fact. No other row is touched and no
+/// row is read back. A held record with no incarnation yet has no birth to key the row by: that is
+/// named, never a silent skip.
+pub(crate) async fn put_silence_status(store: &dyn crate::status_storage::StatusStorage, node: &crate::model::Node, status: Option<crate::model::NodeStatus>) -> Result<bool, String> {
+    let Some(incarnation_id) = node.incarnation_id.clone() else {
+        return Err(format!("{} ({}) holds no incarnation: no birth to key its silence row by", node.name, node.node_id));
     };
-    let row = crate::storage::NodeRecord {
-        node_id: node.node_id.clone(),
-        name: node.name.clone(),
-        incarnation_id,
-        endpoint_id,
-        transport_addr,
-        listeners: node.listeners.clone(),
-        declared: node.declared.clone(),
-        status,
-    };
-    store.put_contact(&row).await.map_err(|e| format!("nodes.storage put of {} ({}): {e}", node.name, node.node_id))?;
+    let row = crate::status_storage::NodeSilenceRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, status };
+    store.put_node_silence(&row).await.map_err(|e| format!("status.storage put of {} ({}) silence row: {e}", node.name, node.node_id))?;
     Ok(true)
 }
 
@@ -342,64 +333,23 @@ mod tests {
         assert!(!t.is_offline("a"));
     }
 
-    /// A storage whose row reads fail: the status writer must put from the record it holds and
-    /// never read the stored row back (the banned read-modify-write).
-    #[derive(Default)]
-    struct NoReads(crate::storage::MemoryNodesStorage, std::sync::atomic::AtomicUsize);
-
-    #[async_trait::async_trait]
-    impl crate::storage::NodesStorage for NoReads {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::record_store::StorageError> {
-            self.0.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
-            self.0.runtimes().await
-        }
-        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::record_store::StorageError> {
-            self.0.own().await
-        }
-        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
-            self.0.put_own(record).await
-        }
-        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::record_store::StorageError> {
-            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.0.contacts().await
-        }
-        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
-            self.0.put_contact(record).await
-        }
-        async fn remove_contact(&self, node_id: &crate::model::NodeId) -> Result<(), crate::record_store::StorageError> {
-            self.0.remove_contact(node_id).await
-        }
-    }
-
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn mesh_primary_status_write_puts_the_held_record_without_reading_the_row() {
-        use crate::model::{EndpointId, IncarnationId, Node, NodeStatus, PathName};
+    async fn mesh_primary_status_write_puts_only_the_births_own_silence_row() {
+        use crate::model::{IncarnationId, Node, NodeStatus, PathName};
+        use crate::status_storage::StatusStorage;
         let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
         held.incarnation_id = Some(IncarnationId::mint());
-        held.endpoint_id = Some(EndpointId("k".into()));
-        held.transport_addr = Some(std::net::SocketAddr::from(([127, 0, 0, 1], 4100)));
-        held.declared = Some("ReadyForTraffic".into());
-        let store = NoReads::default();
-        // The stored row is stale: an older declared state that the authority has since moved on from.
-        let stale = crate::storage::NodeRecord {
-            node_id: held.node_id.clone(),
-            name: held.name.clone(),
-            incarnation_id: held.incarnation_id.clone().unwrap(),
-            endpoint_id: held.endpoint_id.clone().unwrap(),
-            transport_addr: held.transport_addr.unwrap(),
-            listeners: Vec::new(),
-            declared: Some("Pending".into()),
-            status: None,
-        };
-        crate::storage::NodesStorage::put_contact(&store.0, &stale).await.unwrap();
+        let store = crate::status_storage::MemoryStatusStorage::default();
+        let declared = crate::status_storage::NodeDeclaredRow { node_id: held.node_id.clone(), incarnation_id: held.incarnation_id.clone().unwrap(), state: rafka_node_rpc_contract::status::NodeState::ReadyForTraffic };
+        store.put_node_declared(&declared).await.unwrap();
 
-        assert_eq!(put_silence_status(&store, &held, Some(NodeStatus::Dead)).await, Ok(true), "the status row is put");
-        assert_eq!(store.1.load(std::sync::atomic::Ordering::SeqCst), 0, "the writer read the stored row back: a read-modify-write");
-        let row = crate::storage::NodesStorage::contacts(&store.0).await.unwrap().into_iter().find(|c| c.node_id == held.node_id).unwrap();
-        assert_eq!(row.status, Some(NodeStatus::Dead));
-        assert_eq!(row.declared.as_deref(), Some("ReadyForTraffic"), "the row is the held record, never the stale stored one");
+        assert_eq!(put_silence_status(&store, &held, Some(NodeStatus::Dead)).await, Ok(true), "the silence row is put");
+        let rows = store.node_silences().await.unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!((rows[0].node_id.clone(), rows[0].incarnation_id.clone(), rows[0].status), (held.node_id.clone(), held.incarnation_id.clone().unwrap(), Some(NodeStatus::Dead)));
+        assert_eq!(store.node_declared().await.unwrap(), vec![declared], "the declared-state row is another fact and stands");
+        held.incarnation_id = None;
+        assert!(put_silence_status(&store, &held, None).await.is_err(), "a held record with no birth is named, never skipped");
     }
 }

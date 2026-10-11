@@ -487,8 +487,6 @@ impl TopologySink for Records {
                 endpoint_id,
                 transport_addr,
                 listeners: node.listeners.clone(),
-                declared: None,
-                status: None,
             };
             // nodes.storage is async (a durable backend awaits its write); the sink is sync, so
             // the contact is written on its own task and a refusal is named there.
@@ -3299,7 +3297,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
     let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
     let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
-    *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage, &*nodes_storage).await?;
+    *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage).await?;
     {
         let records_for_ids = records.clone();
         let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
@@ -3308,7 +3306,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             fabric_id: cfg.fabric_id.clone(),
             topology: control.topology.clone(),
             declared: records.declared.clone(),
-            nodes_storage: nodes_storage.clone(),
             mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
             republish: republish.clone(),
             commands: commands.clone(),
@@ -3519,8 +3516,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 endpoint_id: d.node.endpoint_id.clone(),
                 transport_addr: d.node.transport_addr,
                 listeners: vec![("control".into(), listener.local_addr().map_err(|e| e.to_string())?)],
-                declared: None,
-                status: None,
             })
             .await.map_err(storage_err)?;
         mesh_storage.put_mesh(&crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: cfg.mesh.clone() }).await.map_err(storage_err)?;
@@ -3556,28 +3551,18 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             }
                         }
                     }
-                    let mut r = crate::storage::NodeRecord {
+                    let r = crate::storage::NodeRecord {
                         node_id: d.node.node_id.clone(),
                         name: d.node.name.clone(),
                         incarnation_id: d.node.incarnation.clone(),
                         endpoint_id: d.node.endpoint_id.clone(),
                         transport_addr: d.node.transport_addr,
                         listeners: Vec::new(),
-                        declared: None,
-                        status: None,
                     };
-                    // The contact is what is held; the declared state on the row is the
-                    // authority's (`status_rpc`) and rides along, never overwritten from gossip.
-                    let same = |w: &crate::storage::NodeRecord| crate::storage::NodeRecord { declared: None, ..w.clone() } == r;
-                    if !written.get(&r.node_id).is_some_and(same) {
-                        r.declared = nodes_storage
-                            .contacts().await
-                            .ok()
-                            .and_then(|cs| cs.into_iter().find(|c| c.node_id == r.node_id && c.incarnation_id == r.incarnation_id))
-                            .and_then(|c| c.declared);
-                        if nodes_storage.put_contact(&r).await.is_ok() {
-                            written.insert(r.node_id.clone(), r);
-                        }
+                    // The contact is what is held, put whole; the declared state and the silence
+                    // status are their own rows in status.storage, never carried on it.
+                    if written.get(&r.node_id) != Some(&r) && nodes_storage.put_contact(&r).await.is_ok() {
+                        written.insert(r.node_id.clone(), r);
                     }
                 }
                 let replaced: Vec<NodeId> = written
@@ -4041,7 +4026,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // the same kick through a live node of the target's mesh on the ViaPeer route. The node's
     // status lands on its row in nodes.storage and in the view.
     {
-        let (topology, records, nodes_storage, runner, me, mesh) = (control.topology.clone(), records.clone(), nodes_storage.clone(), runner.clone(), name.clone(), cfg.mesh.clone());
+        let (topology, records, status_storage, runner, me, mesh) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), cfg.mesh.clone());
         tasks.push(park_gate.spawn(async move {
             let mut tickle = crate::offline::OfflineTickle::new();
             let floor = rafka_mesh_transport::membership::staleness_floor();
@@ -4134,9 +4119,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         },
                     )
                     .await;
-                // The row is put from the record this admin holds now (the topology, with the
-                // authority's declared state), never read back from nodes.storage and changed. What
-                // this loop last put is held here, so an unchanged status is not put again.
+                // The birth's own silence row is put blind, keyed by the exact birth this admin
+                // holds now; no other row is read or touched. What this loop last put is held here,
+                // so an unchanged status is not put again.
                 let write = async |id: &str, status: Option<NodeStatus>, written: &mut HashMap<NodeId, (Option<crate::model::IncarnationId>, Option<NodeStatus>)>| {
                     let held = topology.read().await.births().find(|n| n.node_id.as_str() == id).cloned();
                     let Some(node) = held.or_else(|| watched.get(id).cloned()) else { return };
@@ -4144,11 +4129,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     if written.get(&node.node_id) == Some(&fact) {
                         return;
                     }
-                    match crate::offline::put_silence_status(&*nodes_storage, &node, status).await {
+                    match crate::offline::put_silence_status(&*status_storage, &node, status).await {
                         Ok(_) => {
                             written.insert(node.node_id.clone(), fact);
                         }
-                        Err(e) => tracing::info!(node = %node.name, error = %e, "the node's status could not be written to nodes.storage"),
+                        Err(e) => tracing::info!(node = %node.name, error = %e, "the node's silence status could not be written to status.storage"),
                     }
                 };
                 if holds_seat {
@@ -4949,7 +4934,6 @@ mod tests {
             fabric_id: fabric1(),
             topology: topology.clone(),
             declared: records.declared.clone(),
-            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
             mesh_ids: Arc::new(BTreeMap::new),
             republish: Arc::new(std::sync::OnceLock::new()),
