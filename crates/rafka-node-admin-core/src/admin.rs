@@ -484,12 +484,13 @@ impl Records {
     }
 
     /// [`Self::install_projected`] of the admin `me`'s projection that names each birth not
-    /// publishing its own name by its row: the rows are read for `book`'s births of `fabric_id` while
-    /// the view lock is held ([`RowNames::read`]), so the installed view is never older than the rows
-    /// it was named from. A birth the view lists at a moved row's name for the first time is one span.
+    /// publishing its own name by its row. The rows of `book`'s births of `fabric_id` are read first
+    /// ([`RowNames::read`]), and only then is the view's write lock taken: no disk read holds a reader
+    /// of the view. A read older than the view it replaces is replaced at the next rebuild. A birth
+    /// the view lists at a moved row's name for the first time is one span.
     pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, book: &DigestBook, fabric_id: &FabricId, project: impl FnOnce(&RowNames) -> Topology) -> Topology {
-        let held = topology.write().await;
         let rows = RowNames::read(me, book, self, fabric_id, std::time::Instant::now()).await;
+        let held = topology.write().await;
         let t = project(&rows);
         for (node_id, incarnation, published, name) in rows.moved() {
             let listed = |v: &Topology| v.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation) && &n.name == name);
@@ -670,15 +671,14 @@ pub fn project_with(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, 
 }
 
 /// The names the node rows hold for the births a projection lists that do not publish their own
-/// (CLAUDE.md read rule: the node-row kind declares no projection, so each is a point read through
-/// the row's `path.name` key, read for one projection and held by nothing after it). A birth that
-/// publishes names itself: its digest carries its row's name (R12: it publishes only the row's name,
-/// a live rename reaching it as `ApplyNodeName`). One that does not (stopped, silent past the
+/// (CLAUDE.md read rule: the node-row kind declares no projection, so each is a point read through a
+/// store index, read for one projection and held by nothing after it; the caller holds the birth's
+/// node id, so it is the row's id index, `NodesStorage::node_row_name`: one read per birth). A birth
+/// that publishes names itself: its digest carries its row's name (R12: it publishes only the row's
+/// name, a live rename reaching it as `ApplyNodeName`). One that does not (stopped, silent past the
 /// staleness floor, proven exited, held true offline) may have had its row moved while it said
 /// nothing: a stopped node's `node.update` (R13: it is told nothing and reads the name at its next
-/// join) or a replace's `RenamePredecessor`. A move toggles one suffix of the name
-/// (`NodeMeta::check_update`), so the row is at the name the birth last published, that name's base,
-/// its `.old` or its `.new`.
+/// join) or a replace's `RenamePredecessor`.
 pub struct RowNames {
     /// The instant the births were judged at: the projection is taken as of it, so the births it lists
     /// by their rows are exactly the ones this read covered.
@@ -689,9 +689,10 @@ pub struct RowNames {
 
 /// Where the row of one birth stands.
 enum RowName {
-    /// The key whose row holds the birth (the name it published, when no row of it was ever moved).
+    /// The name of the row the birth holds (the name it published, when it holds no row).
     At(PathName),
-    /// A key could not be read: the birth's name is not known, and the view does not list it.
+    /// Its id index entry could not be read: the birth's name is not known, and the view does not
+    /// list it.
     Unreadable,
 }
 
@@ -750,30 +751,20 @@ fn publishes(book: &DigestBook, records: &Records, node_id: &NodeId, incarnation
 }
 
 /// Where the row of the birth `(node_id, incarnation)`, which last published `published`, stands, as
-/// the admin `me` reads it: a point read of each key a move reaches, the published name first. A key
-/// that cannot be read is one span on every projection that reads it, until it can be read.
+/// the admin `me` reads it: one point read through the row's id index in the birth's mesh (a rename
+/// never changes the mesh). An index entry that cannot be read is one span on every projection that
+/// reads it, until it can be read.
 async fn row_name(me: &PathName, store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> RowName {
-    let base = published.base();
-    let mut keys = vec![published.clone()];
-    for key in [base.clone(), base.renamed(), base.successor()] {
-        if !keys.contains(&key) {
-            keys.push(key);
+    match store.node_row_name(&published.mesh, node_id).await {
+        Ok(Some(name)) => RowName::At(name),
+        // The node holds no row: no rename moved it, and the name it published stands.
+        Ok(None) => RowName::At(published.clone()),
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", node = %me, subject = %published, node_id = %node_id, incarnation_id = %incarnation.0, index = "id", detail = %e)
+                .in_scope(|| tracing::info!("the birth's row could not be read through its id index: its name is not known and the view does not list it"));
+            RowName::Unreadable
         }
     }
-    for key in keys {
-        match store.node_row_at(&key).await {
-            Ok(Some(row)) if &row.node_id == node_id => return RowName::At(key),
-            Ok(_) => {}
-            Err(e) => {
-                tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", node = %me, subject = %published, node_id = %node_id, incarnation_id = %incarnation.0, key = %key, detail = %e)
-                    .in_scope(|| tracing::info!("the birth's row could not be read at {key}: its name is not known and the view does not list it"));
-                return RowName::Unreadable;
-            }
-        }
-    }
-    // No row holds the birth at any key a move reaches: a move claims the new key before it lets go
-    // of the old one, so nothing moved it, and the name it published is its row's.
-    RowName::At(published.clone())
 }
 
 /// Projects the book into the view now: what the join door runs once it installed an admitted
@@ -5805,6 +5796,9 @@ mod tests {
         async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
             self.0.node_row_at(name).await
         }
+        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::record_store::StorageError> {
+            self.0.node_row_name(mesh, node_id).await
+        }
         async fn claim_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<crate::storage::Claimed, crate::storage::NameHeld>, crate::record_store::StorageError> {
             self.0.claim_node_row(row).await
         }
@@ -5948,6 +5942,9 @@ mod tests {
         async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
             self.0.node_row_at(name).await
         }
+        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::record_store::StorageError> {
+            self.0.node_row_name(mesh, node_id).await
+        }
         async fn claim_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<crate::storage::Claimed, crate::storage::NameHeld>, crate::record_store::StorageError> {
             self.0.claim_node_row(row).await
         }
@@ -6000,6 +5997,9 @@ mod tests {
         }
         async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
             self.inner.node_row_at(name).await
+        }
+        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::record_store::StorageError> {
+            self.inner.node_row_name(mesh, node_id).await
         }
         async fn claim_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<crate::storage::Claimed, crate::storage::NameHeld>, crate::record_store::StorageError> {
             self.inner.claim_node_row(row).await
@@ -6959,9 +6959,9 @@ mod tests {
     }
 
     /// CONTRACT (CLAUDE.md error rule: "never written" and "could not be read" are different facts):
-    /// a parked birth whose row cannot be read (the file at its `path.name` key is not a record this
+    /// a parked birth whose row cannot be read (its entry in the row's id index is not a record this
     /// build reads) is not listed by the view, its name being unknown, and the refused read is one
-    /// span naming the reading admin, the birth, the key and the store's own cause. What must NOT
+    /// span naming the reading admin, the birth, the index and the store's own cause. What must NOT
     /// happen: the birth listed at the name its digest last published as if no row had moved it, or
     /// the refusal silent.
     #[tokio::test]
@@ -6981,8 +6981,9 @@ mod tests {
             name: held.node.name.clone(),
             event_at_rafka_ms: 1,
         }));
-        let file = root.nodes("mesh1").join("rows").join("mesh1.rpc.1.json");
-        std::fs::write(&file, b"not a node row").unwrap();
+        let file = root.nodes("mesh1").join("ids").join(format!("{}.json", held.node.node_id));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"not an index entry").unwrap();
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(mine);
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
@@ -6997,7 +6998,7 @@ mod tests {
         assert_eq!(spans.len(), 1, "{spans:?}");
         let a = &spans[0].attributes;
         let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("node"), attr("subject"), attr("key"), attr("node_id")), ("mesh1.admin.2".to_string(), "mesh1.rpc.1".to_string(), "mesh1.rpc.1".to_string(), held.node.node_id.to_string()), "{a:?}");
+        assert_eq!((attr("node"), attr("subject"), attr("index"), attr("node_id")), ("mesh1.admin.2".to_string(), "mesh1.rpc.1".to_string(), "id".to_string(), held.node.node_id.to_string()), "{a:?}");
         assert!(attr("detail").contains(&file.display().to_string()), "the store's cause names the file: {a:?}");
         eprintln!("span rdm.node_admin.topology.reject.via-row-unreadable trace_id={} {a:?}", spans[0].trace_id);
         let _ = std::fs::remove_dir_all(&d);
@@ -7180,6 +7181,10 @@ mod tests {
         async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
             self.read(&self.key_reads);
             self.inner.node_row_at(name).await
+        }
+        async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::record_store::StorageError> {
+            self.read(&self.id_reads);
+            self.inner.node_row_name(mesh, node_id).await
         }
         async fn claim_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<crate::storage::Claimed, crate::storage::NameHeld>, crate::record_store::StorageError> {
             self.inner.claim_node_row(row).await

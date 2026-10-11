@@ -475,6 +475,9 @@ impl NodesStorage for RefusingRows {
     async fn node_row_at(&self, name: &rafka_node_admin_core::model::PathName) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
         self.0.node_row_at(name).await
     }
+    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<rafka_node_admin_core::model::PathName>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.node_row_name(mesh, node_id).await
+    }
     async fn claim_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<rafka_node_admin_core::storage::Claimed, rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the claim".into() })
     }

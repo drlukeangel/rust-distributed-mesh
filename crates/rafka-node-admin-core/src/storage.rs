@@ -156,6 +156,8 @@ impl RuntimeRow {
 /// The record of the node at one `path.name`: which node holds the name now, its status and its
 /// config. The fabric-primary is its only writer and writes it whole, a blind put of the record it
 /// holds. A `Deleted` row keeps the config for the next node created at the same `path.name`.
+/// Its store indexes: `path.name`, its key, and `id`, the name of the row each node holds
+/// ([`NodesStorage::node_row_name`]), kept by the store with every write of a row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRow {
     /// The node's `path.name`: the row's key.
@@ -192,6 +194,11 @@ pub trait NodesStorage: Send + Sync {
     async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError>;
     /// The record at `name`: a point read through the `path.name` key; `None` when none was ever written.
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
+    /// The `path.name` of the row the node `node_id` of `mesh` holds now: a point read through the
+    /// node row's id index (the row's own key is its `path.name`, so a lookup by node id cannot read
+    /// it). The index entry is kept by the store in the same step as every write of a row (put,
+    /// claim, release), so it names exactly the row the node holds; `None` when it holds none.
+    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, StorageError>;
     /// Claim `row.name` for `row.node_id`: insert-and-fail on the `path.name` key, decided by the
     /// store in one step, never a read then a write by the caller. A row of the same node already
     /// there satisfies the claim and is left exactly as it is ([`Claimed::HeldByNode`]: a claim
@@ -230,6 +237,19 @@ pub struct MemoryNodesStorage {
     own: Mutex<Option<NodeRecord>>,
     contacts: Mutex<BTreeMap<NodeId, NodeRecord>>,
     rows: Mutex<BTreeMap<String, NodeRow>>,
+    /// The node row's id index: each node's row's `path.name`, kept with `rows` under its lock.
+    ids: Mutex<BTreeMap<NodeId, PathName>>,
+}
+
+/// The id index after `row` is kept at its key, over `previous`, the row it replaced there: the
+/// row's node names the key, and a previous row of another node no longer holds it.
+fn index_put(ids: &mut BTreeMap<NodeId, PathName>, previous: Option<&NodeRow>, row: &NodeRow) {
+    if let Some(p) = previous.filter(|p| p.node_id != row.node_id) {
+        if ids.get(&p.node_id) == Some(&p.name) {
+            ids.remove(&p.node_id);
+        }
+    }
+    ids.insert(row.node_id.clone(), row.name.clone());
 }
 
 #[async_trait]
@@ -263,17 +283,23 @@ impl NodesStorage for MemoryNodesStorage {
         Ok(())
     }
     async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
-        self.rows.lock().unwrap().insert(row.name.to_string(), row.clone());
+        let mut rows = self.rows.lock().unwrap();
+        let previous = rows.insert(row.name.to_string(), row.clone());
+        index_put(&mut self.ids.lock().unwrap(), previous.as_ref(), row);
         Ok(())
     }
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         Ok(self.rows.lock().unwrap().get(&name.to_string()).cloned())
     }
+    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, StorageError> {
+        Ok(self.ids.lock().unwrap().get(node_id).filter(|n| n.mesh == mesh).cloned())
+    }
     async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
         let mut rows = self.rows.lock().unwrap();
         let claimed = claim_against(rows.get(&row.name.to_string()), row);
         if claimed == Ok(Claimed::Written) {
-            rows.insert(row.name.to_string(), row.clone());
+            let previous = rows.insert(row.name.to_string(), row.clone());
+            index_put(&mut self.ids.lock().unwrap(), previous.as_ref(), row);
         }
         Ok(claimed)
     }
@@ -283,6 +309,10 @@ impl NodesStorage for MemoryNodesStorage {
         let held = rows.get(&key).is_some_and(|r| &r.node_id == holder);
         if held {
             rows.remove(&key);
+            let mut ids = self.ids.lock().unwrap();
+            if ids.get(holder) == Some(name) {
+                ids.remove(holder);
+            }
         }
         Ok(held)
     }
@@ -291,20 +321,47 @@ impl NodesStorage for MemoryNodesStorage {
 const NODE_FORMAT: &str = "node-record/3";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
 const ROW_FORMAT: &str = "node-row/1";
+const ROW_ID_FORMAT: &str = "node-row-id/1";
+
+/// One entry of the node row's id index: the `path.name` of the row its node holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RowId {
+    node_id: NodeId,
+    name: PathName,
+}
 
 /// One mesh's rows on the fabric's store root, `nodes/<mesh>/`: its members' Node rows
-/// (`rows/<path.name>.json`) and contacts (`contacts/<node id>.json`), written by that mesh's
-/// primary.
+/// (`rows/<path.name>.json`), the rows' id index (`ids/<node id>.json`: the `path.name` of the row
+/// the node holds) and contacts (`contacts/<node id>.json`), written by that mesh's primary.
 #[derive(Debug)]
 struct MeshNodes {
     rows: FileRecords,
+    ids: FileRecords,
     contacts: FileRecords,
 }
 
 impl MeshNodes {
     fn open(root: &crate::store_root::StoreRoot, mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
         let base = root.nodes(mesh);
-        Ok(Self { rows: FileRecords::open(&base, "rows", writer)?, contacts: FileRecords::open(&base, "contacts", writer)? })
+        Ok(Self { rows: FileRecords::open(&base, "rows", writer)?, ids: FileRecords::open(&base, "ids", writer)?, contacts: FileRecords::open(&base, "contacts", writer)? })
+    }
+
+    /// The id index after `row` was written at its key over `previous`, the row it replaced there
+    /// (written after the row, so an entry never names a row not yet written): the row's node names
+    /// the key, and a previous row of another node no longer holds it.
+    async fn index_put(&self, previous: Option<&NodeRow>, row: &NodeRow) -> Result<(), StorageError> {
+        if let Some(p) = previous.filter(|p| p.node_id != row.node_id) {
+            self.index_drop(&p.node_id, &p.name).await?;
+        }
+        self.ids.write(row.node_id.as_str(), ROW_ID_FORMAT, &RowId { node_id: row.node_id.clone(), name: row.name.clone() }).await
+    }
+
+    /// `node_id`'s entry goes when it names `name`, the key whose row the node no longer holds.
+    async fn index_drop(&self, node_id: &NodeId, name: &PathName) -> Result<(), StorageError> {
+        if self.ids.read::<RowId>(node_id.as_str(), ROW_ID_FORMAT).await?.is_some_and(|e| &e.name == name) {
+            self.ids.remove(node_id.as_str()).await?;
+        }
+        Ok(())
     }
 }
 
@@ -360,8 +417,8 @@ impl FileNodesStorage {
 
     /// The records the mesh-primary seat writes (its own mesh's members' Node rows and contacts):
     /// what a seat transfer cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 2] {
-        [&self.mine.1.rows, &self.mine.1.contacts]
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 3] {
+        [&self.mine.1.rows, &self.mine.1.ids, &self.mine.1.contacts]
     }
 
     /// The rows of `mesh` on the shared root.
@@ -376,6 +433,7 @@ impl FileNodesStorage {
         let m = std::sync::Arc::new(MeshNodes::open(&self.root, mesh, &self.writer)?);
         if let Some(reason) = self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             m.rows.cut_off(reason.clone());
+            m.ids.cut_off(reason.clone());
             m.contacts.cut_off(reason);
         }
         others.insert(mesh.to_string(), m.clone());
@@ -390,7 +448,7 @@ impl FileNodesStorage {
             *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason.to_string());
             others.values().cloned().collect()
         };
-        let stores: Vec<&FileRecords> = opened.iter().flat_map(|m| [&m.rows, &m.contacts]).collect();
+        let stores: Vec<&FileRecords> = opened.iter().flat_map(|m| [&m.rows, &m.ids, &m.contacts]).collect();
         crate::record_store::cut_off_and_drain(&stores, reason).await;
     }
 
@@ -400,6 +458,7 @@ impl FileNodesStorage {
         *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = None;
         for m in others.values() {
             m.rows.lift_cut_off();
+            m.ids.lift_cut_off();
             m.contacts.lift_cut_off();
         }
     }
@@ -452,18 +511,28 @@ impl NodesStorage for FileNodesStorage {
     }
     async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
         let _one = self.row_writes.lock().await;
-        self.mesh(&row.name.mesh)?.rows.write(&row.name.to_string(), ROW_FORMAT, row).await
+        let (key, rows) = (row.name.to_string(), self.mesh(&row.name.mesh)?);
+        // The row it replaces is read only to keep the id index: a row of another node there no
+        // longer holds the key once this one is written.
+        let previous = rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?;
+        rows.rows.write(&key, ROW_FORMAT, row).await?;
+        rows.index_put(previous.as_ref(), row).await
     }
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         self.mesh(&name.mesh)?.rows.read(&name.to_string(), ROW_FORMAT).await
+    }
+    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, StorageError> {
+        Ok(self.mesh(mesh)?.ids.read::<RowId>(node_id.as_str(), ROW_ID_FORMAT).await?.map(|e| e.name))
     }
     async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
         let _one = self.row_writes.lock().await;
         let key = row.name.to_string();
         let rows = self.mesh(&row.name.mesh)?;
-        let claimed = claim_against(rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.as_ref(), row);
+        let previous = rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?;
+        let claimed = claim_against(previous.as_ref(), row);
         if claimed == Ok(Claimed::Written) {
             rows.rows.write(&key, ROW_FORMAT, row).await?;
+            rows.index_put(previous.as_ref(), row).await?;
         }
         Ok(claimed)
     }
@@ -474,6 +543,7 @@ impl NodesStorage for FileNodesStorage {
         let held = rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.is_some_and(|r| &r.node_id == holder);
         if held {
             rows.rows.remove(&key).await?;
+            rows.index_drop(holder, name).await?;
         }
         Ok(held)
     }
@@ -665,6 +735,45 @@ mod tests {
 
     fn row(name: &str) -> NodeRow {
         NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() }
+    }
+
+    /// CONTRACT (CLAUDE.md read rule: a lookup by id that cannot read the store's own key reads the
+    /// kind's `id` index): the node row's id index names exactly the row each node holds, kept by the
+    /// store in the same step as every row write, in memory and on disk alike. A claim names the new
+    /// key; a move (claim the new key, release the old) leaves it naming the new one; a release
+    /// drops it; a recovery's new node claiming over a `Deleted` row of another node, or a blind put
+    /// over another node's row, leaves that node with no entry. A node that never held a row has
+    /// none. What must NOT happen: an entry naming a key whose row another node holds.
+    #[tokio::test]
+    async fn the_node_rows_id_index_names_exactly_the_row_each_node_holds() {
+        let d = crate::record_store::tempdir("row-id-index");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let file = FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).unwrap();
+        let mem = MemoryNodesStorage::default();
+        for n in [&file as &dyn NodesStorage, &mem as &dyn NodesStorage] {
+            let a = row("mesh1.rpc.1");
+            assert_eq!(n.node_row_name("mesh1", &a.node_id).await.unwrap(), None, "a node that never held a row has no entry");
+            assert_eq!(n.claim_node_row(&a).await.unwrap(), Ok(Claimed::Written));
+            assert_eq!(n.node_row_name("mesh1", &a.node_id).await.unwrap(), Some(a.name.clone()));
+            let old = NodeRow { name: a.name.renamed(), ..a.clone() };
+            assert_eq!(n.claim_node_row(&old).await.unwrap(), Ok(Claimed::Written));
+            assert!(n.release_node_row(&a.name, &a.node_id).await.unwrap());
+            assert_eq!(n.node_row_name("mesh1", &a.node_id).await.unwrap(), Some(old.name.clone()), "a move leaves the entry naming the new key");
+            assert!(n.release_node_row(&old.name, &a.node_id).await.unwrap());
+            assert_eq!(n.node_row_name("mesh1", &a.node_id).await.unwrap(), None, "a release drops the entry");
+            // A recovery: the exited node's Deleted row is claimed over by the new node at its name.
+            let gone = NodeRow { status: crate::model::NodeStatus::Deleted, ..row("mesh1.rpc.2") };
+            n.put_node_row(&gone).await.unwrap();
+            let new = NodeRow { node_id: NodeId::mint(), ..row("mesh1.rpc.2") };
+            assert_eq!(n.claim_node_row(&new).await.unwrap(), Ok(Claimed::Written));
+            assert_eq!((n.node_row_name("mesh1", &gone.node_id).await.unwrap(), n.node_row_name("mesh1", &new.node_id).await.unwrap()), (None, Some(new.name.clone())), "the name taken over is the new node's alone");
+            // A blind put over another node's row.
+            let over = NodeRow { node_id: NodeId::mint(), ..new.clone() };
+            n.put_node_row(&over).await.unwrap();
+            assert_eq!((n.node_row_name("mesh1", &new.node_id).await.unwrap(), n.node_row_name("mesh1", &over.node_id).await.unwrap()), (None, Some(over.name.clone())));
+        }
+        assert_eq!(keys(&root.nodes("mesh1").join("ids")).len(), 1, "on disk, one entry per node that holds a row");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn keys(dir: &std::path::Path) -> Vec<String> {
