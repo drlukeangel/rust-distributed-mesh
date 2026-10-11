@@ -779,12 +779,23 @@ impl HandoverDoor {
             };
             committed.push(CommittedSeat { seat: e.seat.clone(), holder: t.successor.clone(), epoch: next });
         }
+        // The cut-off and the drain (R14 item 4): every write the moving seats authorize is refused
+        // from here, and each of those stores' write locks is taken once, which waits for every
+        // write already issued (each holds its lock until its disk job ends). So no write of the old
+        // seat lands after the row.
+        let fabric_seat = committed.iter().any(|c| c.seat.kind() == Seat::FabricPrimary);
+        let reason = format!("the seats of {} moved to {} {} by {}", self.me, t.successor.mesh, t.successor.node_id, t.operation);
+        (self.cut_off_writes)(WriteCutOff::Set { reason, fabric_seat }).await;
+        tracing::info_span!("rdm.node_admin.seat.update.via-writes-drained", fabric = %t.fabric, operation = %t.operation, build_id = %t.build_id, attempt = t.attempt, holder = %births(&t.holder), successor = %births(&t.successor), fabric_seat)
+            .in_scope(|| tracing::info!("the holder cut off the writes its moving seats authorize and every issued one finished before the seat row"));
         // The one row: the fence and the commit. Before it nothing has moved; after it the row is the answer.
         let row = SeatTransferRow { operation: t.operation.clone(), fabric: t.fabric.clone(), build_id: t.build_id.clone(), attempt: t.attempt, holder: t.holder.clone(), successor: t.successor.clone(), expected: t.seats.clone(), seats: committed.clone() };
         // Build dispatch from the old seat ends at the row: the row and the records it moves are
         // written under the Build log's decision lock, and the moved fabric record is the fence.
         let decisions = self.decisions.clone().lock_owned().await;
         if let Err(e) = self.storage.put_seat_transfer(&row).await {
+            // Nothing moved: the writes are this admin's again.
+            (self.cut_off_writes)(WriteCutOff::Lift).await;
             return refuse("not-ready", e.to_string(), Reply::NotReady { reason: format!("{}: the seat transfer {} could not be made durable: {e}", self.me, t.operation) });
         }
         self.handovers.transfers.lock().unwrap().insert(t.operation.clone(), row);

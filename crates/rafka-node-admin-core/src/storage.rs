@@ -77,6 +77,11 @@ impl FileMeshStorage {
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
         Ok(Self(FileRecords::open(own_data_dir, "meshes")?))
     }
+
+    /// The records the mesh-primary seat writes (its Mesh row): what a seat transfer cuts off.
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 1] {
+        [&self.0]
+    }
 }
 
 #[async_trait]
@@ -300,6 +305,12 @@ impl FileNodesStorage {
     /// Open the store under the admin's own data directory.
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
         Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")?, rows: FileRecords::open(own_data_dir, "nodes/rows")?, row_writes: tokio::sync::Mutex::new(()) })
+    }
+
+    /// The records the mesh-primary seat writes (its members' Node rows and contacts): what a seat
+    /// transfer cuts off (R14 item 4).
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 2] {
+        [&self.rows, &self.contacts]
     }
 }
 

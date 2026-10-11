@@ -381,6 +381,13 @@ impl FileFabricStorage {
         }
         Ok(Self { records, pointers: crate::record_store::FileRecords::open(own_data_dir, POINTERS_DIR)?, seats: crate::record_store::FileRecords::open(own_data_dir, SEATS_DIR)?, handovers: crate::record_store::FileRecords::open(own_data_dir, HANDOVERS_DIR)?, transfers: crate::record_store::FileRecords::open(own_data_dir, TRANSFERS_DIR)? })
     }
+
+    /// The records the fabric-primary seat writes (the Fabric record and its pointers): what a seat
+    /// transfer moving that seat cuts off. Seat, handover and seat-transfer rows stay writable: the
+    /// transfer itself writes them.
+    pub fn fabric_primary_records(&self) -> [&crate::record_store::FileRecords; 2] {
+        [&self.records, &self.pointers]
+    }
 }
 
 #[async_trait]

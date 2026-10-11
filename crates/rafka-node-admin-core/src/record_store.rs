@@ -205,6 +205,17 @@ impl FileRecords {
     }
 }
 
+/// Cut off every store of `stores` with `reason`, then take each one's write lock once: every write
+/// already issued has finished when this returns, and every later one is refused by name.
+pub async fn cut_off_and_drain(stores: &[&FileRecords], reason: &str) {
+    for s in stores {
+        s.cut_off(reason.to_string());
+    }
+    for s in stores {
+        s.drain().await;
+    }
+}
+
 fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     use std::io::Write as _;
     let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };

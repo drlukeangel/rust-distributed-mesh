@@ -3455,12 +3455,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // nodes.storage was here before: it restarts as the same logical node, in the same Mesh and
     // Fabric, holding the same Builds.
     let storage_err = |e: crate::record_store::StorageError| e.to_string();
-    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(
-        wiring.fabric_storage.take(),
-        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?),
-    );
-    let mesh_storage: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).map_err(storage_err)?);
-    let nodes_storage: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let fabric_files = Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_files.clone());
+    let mesh_files = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let mesh_storage: Arc<dyn crate::storage::MeshStorage> = mesh_files.clone();
+    let nodes_files = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let nodes_storage: Arc<dyn crate::storage::NodesStorage> = nodes_files.clone();
     let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
         Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).map_err(storage_err)?);
     let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).map_err(|e| e.to_string())?);
@@ -4136,7 +4136,25 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         decisions: builds.decisions(),
         claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
         project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
-        cut_off_writes: Arc::new(|_| Box::pin(async {})),
+        cut_off_writes: Arc::new(move |c: crate::fabric_handover::WriteCutOff| {
+            let (mesh, nodes, fabric) = (mesh_files.clone(), nodes_files.clone(), fabric_files.clone());
+            Box::pin(async move {
+                let mut seat: Vec<&crate::record_store::FileRecords> = mesh.mesh_primary_records().into_iter().chain(nodes.mesh_primary_records()).collect();
+                match c {
+                    crate::fabric_handover::WriteCutOff::Set { reason, fabric_seat } => {
+                        if fabric_seat {
+                            seat.extend(fabric.fabric_primary_records());
+                        }
+                        crate::record_store::cut_off_and_drain(&seat, &reason).await;
+                    }
+                    crate::fabric_handover::WriteCutOff::Lift => {
+                        for s in seat.into_iter().chain(fabric.fabric_primary_records()) {
+                            s.lift_cut_off();
+                        }
+                    }
+                }
+            })
+        }),
     });
     handover.restore().await?;
     let _ = handover_slot.set(handover.clone());
