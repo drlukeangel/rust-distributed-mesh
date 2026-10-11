@@ -1159,7 +1159,9 @@ impl RecoverySubmitter {
 
     /// One TRUE OFFLINE birth on the mesh primary's tick (node-recovery.md "Detection and proof"
     /// step 3, sequence step 1): the provider's inspection, named when its verdict for the birth
-    /// changes, and the recovery submitted only on an exit proof. Any other verdict ends here.
+    /// changes, and the recovery submitted only on an exit proof of a member that exited outside any
+    /// workflow. Any other verdict ends here, and so does the exit of a birth whose removal this
+    /// admin's book holds announced, read after the inspection (the tick's view predates it).
     pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &Mutex<HashMap<(NodeId, IncarnationId), Inspected>>) -> Inspected {
         let outcome = self.inspect(n).await;
         if let Some(incarnation) = n.incarnation_id.clone() {
@@ -1168,11 +1170,46 @@ impl RecoverySubmitter {
             }
         }
         if let Inspected::Exited(code, source) = &outcome {
-            if let Err(e) = self.submit(n, *code, source).await {
+            if let Some((announced, op)) = self.removal_announced(n) {
+                let incarnation = n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default();
+                tracing::info_span!(
+                    "rdm.node_admin.build.reject.via-exit-inside-workflow",
+                    node = %n.name,
+                    node_id = %n.node_id,
+                    incarnation_id = %incarnation,
+                    submitter = %self.me,
+                    announced,
+                    operation = %op.operation,
+                    build_id = %op.build_id,
+                    attempt = op.attempt,
+                    exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
+                    exit_proof = *source,
+                )
+                .in_scope(|| tracing::info!("the birth's exit belongs to the workflow that announced its removal: it is no drift, and no recovery is submitted"));
+            } else if let Err(e) = self.submit(n, *code, source).await {
                 tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
             }
         }
         outcome
+    }
+
+    /// The workflow whose announced removal `n`'s exact birth is under, as this admin's book holds it
+    /// now (node-recovery.md: recovery is drift reconciliation for a member that exits outside any
+    /// workflow; "Failure and receipts": an exit during a workflow belongs to that workflow): its
+    /// node's departure (`node-deleted`), else an open `NodeDeleting` overlay naming the exact birth
+    /// (`node-deleting`). The overlay of the birth's own recovery (`recover-node:<path>`) names no
+    /// other workflow: a recovery that failed is submitted again (a failed Build gets its next attempt).
+    fn removal_announced(&self, n: &Node) -> Option<(&'static str, rafka_mesh_entity::LifecycleOp)> {
+        let incarnation = n.incarnation_id.as_ref()?;
+        if let Some(op) = self.book.departed().into_iter().find(|op| op.node_id == n.node_id) {
+            return Some(("node-deleted", op));
+        }
+        let own_recovery = format!("recover-node:{}", n.name);
+        self.book
+            .in_flight()
+            .into_iter()
+            .find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop() && op.operation != own_recovery)
+            .map(|op| ("node-deleting", op))
     }
 
     /// The inspection's span, named when its verdict for the birth changes (a hung member is
