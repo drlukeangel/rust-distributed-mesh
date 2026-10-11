@@ -225,11 +225,13 @@ impl Pool {
                     let (tx, rx) = watch::channel(None);
                     dials.insert(key.clone(), Dial { cancel, outcome: rx.clone() });
                     let (pool, key) = (self.clone(), key.clone());
-                    // The one dial for `key`: its steps (the superseded paths retired, the connect) and
-                    // how it ended, however many callers wait on it. It can outlive the call that
-                    // started it (that caller's deadline), so it is its own span, following from that call.
+                    // The one dial for `key`, under the call that started it: its steps (the superseded
+                    // paths retired, the connect) and how it ended, however many callers wait on it. It is
+                    // never the current span while the dial runs: the transport's connect spawns the
+                    // connection's driver task with the span current at that moment, and that task lives as
+                    // long as the pooled connection, so a current dial span would stay open (and keep the
+                    // call span above it open) until the connection closes. Its events name it as parent.
                     let span = tracing::info_span!(
-                        parent: None,
                         "rdm.node_rpc.connection.create.via-dial",
                         peer = %key.peer.fmt_short(),
                         incarnation_id = %key.incarnation.0,
@@ -238,12 +240,12 @@ impl Pool {
                         outcome = tracing::field::Empty,
                         elapsed_ms = tracing::field::Empty,
                     );
-                    span.follows_from(tracing::Span::current());
                     tokio::spawn(async move {
                         let started = Instant::now();
-                        let out = tracing::Instrument::instrument(pool.run_dial(&key, spec, cancelled), span.clone()).await;
+                        let out = pool.run_dial(&key, spec, cancelled, &span).await;
                         span.record("outcome", match &out { Ok(_) => "connected".to_string(), Err(e) => format!("{e:?}") }.as_str());
                         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                        // The dial span ends with the dial, before any waiter hears the outcome.
                         drop(span);
                         pool.inner.dials.lock().unwrap().remove(&key);
                         let _ = tx.send(Some(out));
@@ -260,7 +262,7 @@ impl Pool {
         waited.expect("waited for an outcome").map(|c| (c, false))
     }
 
-    async fn run_dial(&self, key: &PoolKey, spec: DialSpec, mut cancelled: watch::Receiver<bool>) -> Result<Connection, DialError> {
+    async fn run_dial(&self, key: &PoolKey, spec: DialSpec, mut cancelled: watch::Receiver<bool>, span: &tracing::Span) -> Result<Connection, DialError> {
         let started = Instant::now();
         let resolver = spec.resolver.clone();
         let target = spec.target.clone();
@@ -282,9 +284,9 @@ impl Pool {
         // before the dial so none of them takes part in it.
         let connect = async {
             spec.endpoint.replace_direct_addrs(key.peer, [spec.addr]).await;
-            tracing::info!(step = "direct-addrs-replaced", elapsed_ms = started.elapsed().as_millis() as u64, "every other direct address for the peer is retired");
+            tracing::info!(parent: span, step = "direct-addrs-replaced", elapsed_ms = started.elapsed().as_millis() as u64, "every other direct address for the peer is retired");
             let r = spec.endpoint.connect(EndpointAddr::new(key.peer).with_ip_addr(spec.addr), crate::ALPN).await;
-            tracing::info!(step = "connect-returned", ok = r.is_ok(), elapsed_ms = started.elapsed().as_millis() as u64, "the endpoint's connect returned");
+            tracing::info!(parent: span, step = "connect-returned", ok = r.is_ok(), elapsed_ms = started.elapsed().as_millis() as u64, "the endpoint's connect returned");
             r
         };
         let res = tokio::select! {
@@ -295,7 +297,7 @@ impl Pool {
         };
         let Some(res) = res else {
             let now = resolver.resolve(&target).ok();
-            evict_span(key.superseded_by(now.as_ref()), key, "cancelled", started.elapsed().as_millis());
+            span.in_scope(|| evict_span(key.superseded_by(now.as_ref()), key, "cancelled", started.elapsed().as_millis()));
             return Err(DialError::Superseded);
         };
         let conn = match res {
@@ -311,7 +313,7 @@ impl Pool {
         let now = resolver.resolve(&target).ok();
         if !key.is_current(now.as_ref()) {
             conn.close(0u32.into(), b"superseded");
-            evict_span(key.superseded_by(now.as_ref()), key, "late-connect-dropped", started.elapsed().as_millis());
+            span.in_scope(|| evict_span(key.superseded_by(now.as_ref()), key, "late-connect-dropped", started.elapsed().as_millis()));
             return Err(DialError::Superseded);
         }
         self.inner.conns.lock().unwrap().insert(key.clone(), conn.clone());
