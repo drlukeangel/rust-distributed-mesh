@@ -94,10 +94,19 @@ struct Row {
     /// The step events the step's `Complete` receipt announces, in order.
     events: &'static [NodeEvent],
     terminal: bool,
+    /// Recorded only for some targets: SeatTransfer runs for a node-admin target alone, so a
+    /// receipt-less row is passed over when a later row of the workflow is held.
+    only_for_admins: bool,
 }
 
 const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, events: &'static [NodeEvent], terminal: bool) -> Row {
-    Row { operation, step, node_step, events, terminal }
+    Row { operation, step, node_step, events, terminal, only_for_admins: false }
+}
+
+/// The SeatTransfer row under `operation`: a node-admin target's seats move to the executor by
+/// TakeSeats before it drains or stops; any other target records no SeatTransfer receipt.
+const fn seat_transfer_row(operation: &'static str, node_step: NodeStep) -> Row {
+    Row { operation, step: "SeatTransfer", node_step, events: &[], terminal: false, only_for_admins: true }
 }
 
 /// The create leg, in pipeline order, under the operation prefix `op`; `last` is what the
@@ -142,8 +151,7 @@ macro_rules! retire_rows {
         [
             row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false),
             row("retire-node", "NodeRestarting", $first_step, $first, false),
-            // A node-admin target's seats move to the executor by TakeSeats before it drains.
-            row("retire-node", "SeatTransfer", NodeStep::Drain, &[], false),
+            seat_transfer_row("retire-node", NodeStep::Drain),
             row("retire-node", "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
             row("retire-node", "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
             row("retire-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
@@ -171,8 +179,7 @@ impl WorkflowKind {
             // The stop's one call drains, cuts the mesh connections and answers `stopped`: its receipts
             // announce all four events, and no runtime exits.
             Self::Stop(_) => vec![
-                // A node-admin target's seats move to the executor by TakeSeats before it stops.
-                row("stop-node", "SeatTransfer", NodeStep::Stop, &[], false),
+                seat_transfer_row("stop-node", NodeStep::Stop),
                 row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
                 row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
                 row("stop-node", "Complete", NodeStep::Stop, &[], true),
@@ -279,8 +286,13 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
     let mut frames = Vec::new();
     let mut completed = Vec::new();
     let mut next = None;
+    // A receipt-less SeatTransfer row: where the workflow stands if no later row is held either.
+    let mut passed_over: Option<&Row> = None;
     for r in &rows {
         let held = latest.iter().find(|(op, st, ..)| r.operation == op.split(':').next().unwrap_or_default() && *st == r.step);
+        if held.is_some() {
+            passed_over = None;
+        }
         match held {
             Some((op, st, _, None)) => {
                 completed.push((op.clone(), st.clone()));
@@ -295,9 +307,11 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
                 frames.push(Frame::Failed { step: r.node_step, reason: reason.clone() });
                 break;
             }
+            None if r.only_for_admins => passed_over = passed_over.or(Some(r)),
             None => {
                 if next.is_none() {
-                    next = Some((r.operation.to_string(), r.step.to_string()));
+                    let at = passed_over.unwrap_or(r);
+                    next = Some((at.operation.to_string(), at.step.to_string()));
                 }
                 break;
             }
