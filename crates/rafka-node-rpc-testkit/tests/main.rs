@@ -23,3 +23,4 @@ mod retire_admission;
 mod retire_pipeline;
 mod status_probe_apply;
 mod park_start;
+mod mesh_leave_member;
