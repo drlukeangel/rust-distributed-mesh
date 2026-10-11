@@ -4290,7 +4290,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     backbone.announce_seat(seat, holder).await;
                 }
                 let heard = membership.book.current(membership.book.staleness_floor());
-                let mine: Vec<MeshDigest> = heard.iter().filter(|d| d.node.name.mesh == mesh).cloned().collect();
+                let mine: Vec<MeshDigest> = backbone.own_members(&membership);
                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 backbone.publish(&membership, mine.clone()).await;
                 // A status is sent when it changed, never per round (gossip.md §3.2).
@@ -4340,10 +4340,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // fabric-primary waits on, or the application's answer, moved, or when the view changes
                 // what the round publishes: this admin takes or loses a seat, or its mesh's status moves
                 // (gossip.md §3.2, a material change is published at once).
-                let round_ends = tokio::time::Instant::now() + gossip_interval();
+                let round_wake = backbone.round_wake(&membership, tokio::time::Instant::now() + gossip_interval());
+                tokio::pin!(round_wake);
                 loop {
                     tokio::select! {
-                        _ = tokio::time::sleep_until(round_ends) => break,
+                        _ = &mut round_wake => break,
                         _ = fabric_rounds.climb_due() => break,
                         _ = records.view_changed.notified() => {
                             let now = topology.read().await.clone();
