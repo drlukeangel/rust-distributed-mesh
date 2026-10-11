@@ -1383,6 +1383,8 @@ pub struct MembershipObserver {
     /// This admin's status authority, once it holds a view: a start begins a new cycle of the birth's
     /// declared states.
     pub authority: crate::status_rpc::AuthoritySlot,
+    /// This admin's 0x21 door, once it holds a view: the SeatTransfer step's TakeSeats goes through it.
+    pub handover: crate::fabric_handover::HandoverSlot,
 }
 
 impl MembershipObserver {
@@ -1393,6 +1395,12 @@ impl MembershipObserver {
 
 #[async_trait::async_trait]
 impl NodeObserver for MembershipObserver {
+    async fn transfer_seats(&self, node: &Node, ctx: &crate::deployment::pipeline::CommandContext) -> Result<crate::fabric_handover::SeatTransferOutcome, String> {
+        let Some(door) = self.handover.get().cloned() else {
+            return Err(format!("this admin holds no 0x21 door yet: the seats of {} cannot be transferred", node.name));
+        };
+        door.take_seats(node, &ctx.build_id, ctx.attempt, &ctx.operation).await
+    }
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
         self.book
             .get(node_id.as_str())
@@ -3512,7 +3520,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let runner = Arc::new(AdminRunner {
         provider: provider_dyn.clone(),
         joins: joins.clone(),
-        observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone() }),
+        observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone(), handover: handover_slot.clone() }),
         records: records.clone(),
         builds: builds_dyn.clone(),
         template,
