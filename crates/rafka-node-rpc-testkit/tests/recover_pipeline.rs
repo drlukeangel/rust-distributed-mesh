@@ -219,3 +219,58 @@ async fn recovery_deletes_the_exited_instance_then_creates_a_new_node_over_its_d
     assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the new node was stopped");
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }
+
+/// CONTRACT (node-recovery.md, Operation summary "Retained": "endpoint key"; sequence step 4: "it
+/// loads the endpoint key from that data dir"): a recovery whose inherited data dir holds no
+/// `node-key` fails by name before anything of the exited birth changes: no `recover-node` receipt,
+/// no node.deleting, the path not removed, and no key minted into the inherited dir.
+/// Must NOT happen: a new endpoint key minted for the recovered node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recovery_whose_inherited_data_dir_has_no_endpoint_key_fails_by_name_and_mints_none() {
+    let rig = rig().await;
+    let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
+    let recorder = Recorder(rig.log.clone());
+    let pipeline = rig.pipeline(&observer, &recorder);
+
+    let birth_build = publish_build(&rig.builds, add_node()).await;
+    let first = pipeline
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+        .await
+        .unwrap_or_else(|e| panic!("create: {e}"));
+    let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
+    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+    let code = match rig.provider.inspect(&first.handle).await {
+        DeploymentStatus::Exited { code } => code,
+        other => panic!("the runtime exited: {other:?}"),
+    };
+    // The inherited data dir lost its endpoint key.
+    std::fs::remove_file(old_dir.join("node-key")).unwrap();
+    rig.log.lock().unwrap().clear();
+    let old_inc = first.node.incarnation_id.clone().unwrap();
+    let exit = rafka_node_admin_core::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: old_inc, exit_code: code, proof: "provider".into(), observed_at_ms: 1 };
+
+    let recover_build = publish_build(&rig.builds, add_node()).await;
+    let outcome = pipeline
+        .recover(
+            &RecoverRequest { build_id: recover_build.clone(), attempt: 2, exited: Node { endpoint_id: None, ..first.node.clone() }, handle: first.handle.clone(), exit, spec: &RPC_NODE },
+            |_| async {},
+            |_| async { Ok(()) },
+        )
+        .await;
+    let err = match outcome {
+        Err(e) => e,
+        Ok(created) => {
+            rig.provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+            panic!("a recovery with no endpoint key in its inherited data dir was created as {} with key {:?}", created.node.node_id, created.node.endpoint_id);
+        }
+    };
+    let text = err.to_string();
+    assert!(text.contains("node-key") && text.contains("inherited data dir"), "the refusal names the missing key in the inherited data dir: {text}");
+    assert!(!old_dir.join("node-key").exists(), "no key is minted into the inherited data dir");
+    let view = rig.builds.read_build(&recover_build).await.unwrap();
+    assert!(view.steps.iter().all(|r| r.outcome != StepOutcome::Complete), "no step of the recovery completed: {:?}", view.steps.iter().map(|r| (r.step.as_str(), &r.outcome)).collect::<Vec<_>>());
+    let log = rig.log.lock().unwrap().clone();
+    assert!(!log.iter().any(|l| l.starts_with("NodeDeleting") || l.starts_with("NodeDeleted")), "nothing of the exited birth was deleted: {log:?}");
+    assert!(rig.sink.removed.lock().unwrap().is_empty(), "the path was not removed");
+    let _ = std::fs::remove_dir_all(&rig.template.data_root);
+}
