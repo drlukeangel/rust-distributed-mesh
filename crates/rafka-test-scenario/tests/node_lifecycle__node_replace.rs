@@ -1097,3 +1097,71 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     }
     estate.shutdown().await;
 }
+
+/// A caller outside the fabric that reaches the node-admin `admin` by its exact birth: its own
+/// endpoint, and a resolver holding that birth as the answering admin's view names it.
+async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClient>, rafka_mesh_entity::NodeId) {
+    use rafka_node_rpc::{NodeRpcClient, ResolvedNode, StaticResolver};
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
+    let resolver = std::sync::Arc::new(StaticResolver::new());
+    let node_id: rafka_mesh_entity::NodeId = s(&admin["node_id"]).parse().expect("a node id");
+    resolver.insert(ResolvedNode {
+        node_id: node_id.clone(),
+        name: s(&admin["name"]).parse().unwrap(),
+        endpoint_id: s(&admin["endpoint_id"]).parse().expect("an iroh key"),
+        transport_addr: s(&admin["transport_addr"]).parse().expect("a transport address"),
+        incarnation: rafka_mesh_entity::IncarnationId(s(&admin["incarnation_id"])),
+    });
+    (std::sync::Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), node_id)
+}
+
+/// CONTRACT: a recovered node keeps the config its mesh-primary told its predecessor
+/// (node-recovery.md "Retained: ... config (seeded from the Deleted row)"; fabric-node-lifecycle.md
+/// "A rewrite is lossless for every field its writer knows"). The caller puts `<mesh>.rpc.1`'s config
+/// through its mesh-primary (not the fabric-primary), the node carries it, then its runtime is
+/// killed: the mesh-primary's recovery writes the exited birth's Deleted row with that config, the
+/// new node's name claim is seeded from it (`via-node-row` moment `claim`, `seeded_from` the exited
+/// node, one key), and the new node (new node.id, same path.name) carries the config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor() {
+    let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor").await;
+    let nodes = estate.nodes().await;
+    let (node, mesh_primary, _fp) = placement(&nodes);
+    let node_path = node.as_str();
+    let before = estate.node(node_path).await;
+    let admin = nodes.iter().find(|n| n["name"] == mesh_primary.as_str()).expect("the mesh-primary's view row").clone();
+    let (client, mp_id) = caller_of(&admin).await;
+    let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
+    let node_id: rafka_mesh_entity::NodeId = s(&before["node_id"]).parse().unwrap();
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rafka_mesh_entity::IncarnationId(s(&before["incarnation_id"])) };
+    let reply = rafka_node_admin_client::NodeRpc::new(&client)
+        .config_update(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
+        .await
+        .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
+    assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
+    let told_json = json!({"tier": "gold"});
+    wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node(node_path).await["config"] == told_json).then_some(()) }).await;
+
+    estate.kill_node(node_path).await;
+    let after = wait_for(&format!("{node_path} ready as a new node"), SETTLE, || async {
+        let n = estate.node_opt(node_path).await?;
+        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
+    })
+    .await;
+    // The new node's name claim, written by the mesh-primary, is seeded from the exited birth's
+    // Deleted row: its config is the one told.
+    let claim = wait_for("the new node's name claim is exported", Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "claim").cloned()
+    })
+    .await;
+    let a = &claim["attributes"];
+    assert_eq!((s(&a["node"]), s(&a["outcome"]), s(&a["seeded_from"])), (mesh_primary.clone(), "row-seeded".to_string(), s(&before["node_id"])), "the mesh-primary claims the name seeded from the exited birth's Deleted row: {claim}");
+    assert_eq!(s(&a["keys"]), "1", "the seeded row carries the config told to the predecessor: {claim}");
+    let deleted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect();
+    assert_eq!(deleted.len(), 1, "one Deleted row of the exited birth: {deleted:?}");
+    assert_eq!(s(&deleted[0]["attributes"]["keys"]), "1", "the Deleted row keeps the config: {deleted:?}");
+    let carried = wait_for(&format!("the new {node_path} carries the config"), Duration::from_secs(30), || async { let n = estate.node(node_path).await; (n["config"] == told_json).then_some(n) }).await;
+    assert_eq!(carried["node_id"], after["node_id"], "the new node, not the exited one, carries it");
+    eprintln!("trace {}: via-node-row delete node_id={} keys={}; trace {}: via-node-row claim node={} seeded_from={} keys={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&claim["trace_id"]), mesh_primary, s(&a["seeded_from"]), a["keys"]);
+}

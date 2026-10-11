@@ -255,6 +255,42 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
     assert_eq!((a["moment"].as_str(), a["subject"].as_str(), a["node_id"].as_str(), a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("claim"), Some("mesh1.rpc.2"), Some(born.as_str()), Some(old.as_str()), Some("1"), Some("row-seeded")), "{a:#?}");
 }
 
+/// CONTRACT: a rewrite is lossless for every field its writer knows (fabric-node-lifecycle.md "A
+/// rewrite is lossless"; node-recovery.md "Retained: ... config (seeded from the Deleted row)"). The
+/// mesh-primary's claim seeds a birth's row with the config of the Deleted row at its `path.name`;
+/// the executor's record of that birth (the create's own record) carries no config. When the birth
+/// exits, its Deleted row carries the config the writer holds for it, never the record's empty
+/// default, and the next birth at the name is seeded with it. The `via-node-row` delete span names
+/// `config_from` `writer-record` and one key.
+#[test]
+fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_record() {
+    let cap = capture();
+    let (deleted, next_row, born) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let name: PathName = "mesh1.rpc.2".parse().unwrap();
+        storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver") }).await.unwrap().unwrap();
+        let mp = mesh_primary(&storage);
+        let born = NodeId::mint();
+        mp.rows.claim(&name, &born, "create-node:mesh1.rpc.2").await.expect("the name is free of live rows");
+        // The executor's record of the birth it created: no config on it.
+        let mut record = Node::allocated(name.clone());
+        record.node_id = born.clone();
+        assert!(record.config.is_empty());
+        mp.rows.deleted(&record, "recover-node:mesh1.rpc.2").await.expect("the Deleted row is written");
+        let deleted = storage.node_row_at(&name).await.unwrap();
+        let next = NodeId::mint();
+        mp.rows.claim(&name, &next, "recover-node:mesh1.rpc.2").await.expect("the Deleted row holds no name");
+        (deleted, storage.node_row_at(&name).await.unwrap(), born)
+    });
+    assert_eq!(deleted.map(|r| (r.node_id, r.status, r.config)), Some((born.clone(), NodeStatus::Deleted, tier("silver"))), "the Deleted row keeps the config the writer holds for the birth");
+    assert_eq!(next_row.map(|r| r.config), Some(tier("silver")), "the next birth at the name is seeded with it");
+    let spans = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
+    assert_eq!(spans.len(), 1, "{spans:#?}");
+    let a = &spans[0]["attributes"];
+    assert_eq!((a["config_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("writer-record"), Some("1"), Some("row-deleted")), "{a:#?}");
+    eprintln!("trace {}: rdm.node_admin.node.delete.via-node-row config_from=writer-record keys=1 outcome=row-deleted", spans[0]["trace_id"].as_str().unwrap_or(""));
+}
+
 fn meta_of(n: &Node) -> rafka_node_admin_client::NodeMeta {
     rafka_node_admin_client::NodeMeta {
         node_id: n.node_id.clone(),
