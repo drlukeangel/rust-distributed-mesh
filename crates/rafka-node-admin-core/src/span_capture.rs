@@ -44,3 +44,31 @@ impl Capture {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Capture;
+
+    /// Opens the span every thread of the cell opens, at one callsite.
+    fn open() {
+        tracing::info_span!("capture.shared-callsite").in_scope(|| {});
+    }
+
+    /// CONTRACT: a capture receives the span its own thread opens at a callsite that another thread,
+    /// one with no dispatcher of its own (another cell's), opened first. tracing-core caches a
+    /// callsite's interest for the whole process when the callsite is first hit, and with one
+    /// dispatcher registered it asks only the thread that hit it (tracing-core 0.1.36 callsite.rs,
+    /// `Rebuilder::JustOne`), which answers never. Must NOT happen: the capture's own span lost
+    /// because a cell on another thread hit its callsite first (the peer-mesh probe-order cell lost
+    /// both its probe spans so in a whole-crate run while passing alone).
+    #[test]
+    fn a_capture_receives_its_own_span_at_a_callsite_another_thread_hit_first() {
+        let capture = Capture::new("span-capture-shared-callsite");
+        std::thread::spawn(open).join().unwrap();
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            open();
+        }
+        assert_eq!(capture.named("capture.shared-callsite").len(), 1, "the capture's own span reached it");
+    }
+}
