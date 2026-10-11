@@ -1,20 +1,22 @@
-//! `node.config.update` at the fabric-primary (ops-naming "Node data: meta, config and exe").
+//! `node.config.update` at the node's mesh-primary (ops-naming "Node data: meta, config and exe").
 //!
-//! Config is a field of the node record. The fabric-primary is its only writer: it checks the cap,
-//! writes the node's whole row from what it holds (a blind put of the `path.name` key; it never reads
-//! the store on the write path), tells the exact birth through the node's mesh-primary (Forward
-//! `0x1A`; direct when this fabric-primary is that primary or the node is it) with `ApplyNodeConfig`,
-//! which the node holds and carries in its next digest, and answers `node.config.updated`. A single call, never a Build, and
-//! never refused because a Build runs: updates go through this one door one at a time.
+//! Config is a field of the node record. The mesh-primary of the node's mesh is the only writer of
+//! that mesh's rows (fabric-node-lifecycle §4.3): the door refuses by name at any admin that does not
+//! hold that mesh's primary seat. It checks the cap, writes the node's whole row from what it holds (a
+//! blind put of the `path.name` key; it never reads the store on the write path), tells the exact
+//! birth directly, within its mesh, with `ApplyNodeConfig`, which the node holds and carries in its
+//! next digest, and answers `node.config.updated` only after that apply answered. A caller that cannot
+//! reach the mesh-primary directly reaches it through a carrier (Forward `0x1A`). A single call, never
+//! a Build, and never refused because a Build runs: updates go through this one door one at a time.
 
 use crate::storage::NodeRow;
 use crate::topology::Topology;
 use rafka_node_admin_client::{CallEnd, ExactBirth, NodeRpc};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, RouteChoice};
+use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use std::sync::Arc;
 
-/// The fabric-primary's config door: the client it tells a birth through, and the lock that makes
+/// A mesh-primary's config door: the client it tells a birth through, and the lock that makes
 /// every config change one at a time.
 pub struct NodeConfigs {
     client: Arc<NodeRpcClient>,
@@ -44,7 +46,6 @@ impl NodeConfigs {
             incarnation_id = %incarnation.0,
             keys = config.len(),
             row_status = tracing::field::Empty,
-            route = tracing::field::Empty,
             outcome = tracing::field::Empty,
             answered = tracing::field::Empty,
             detail = tracing::field::Empty,
@@ -61,27 +62,24 @@ impl NodeConfigs {
         if let Err(over) = rafka_mesh_entity::check_config(config) {
             return StatusReply::RejectedConfig { over };
         }
-        if !view.own(me_id).is_some_and(|n| n.is_fabric_primary) {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the fabric-primary".into() } };
-        }
         let Some(subject) = view.members().find(|n| n.node_id == *node_id) else {
-            return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} is not a member of the fabric-primary's view; its config cannot be put") };
+            return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} is not a member of this admin's view; its config cannot be put") };
         };
         span.record("subject", subject.name.to_string().as_str());
         span.record("row_status", format!("{:?}", subject.status).as_str());
+        // The writer of the row is the mesh-primary of the node's mesh, and no other admin
+        // (fabric-node-lifecycle §4.3); a caller that sent it elsewhere is told whose seat it needs.
+        if !view.holds_mesh_seat(&subject.mesh, me_id) {
+            let held_by = view.cohort_primary(&subject.mesh, rafka_mesh_entity::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
+            let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
+            span.record("detail", needed.as_str());
+            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } };
+        }
         match subject.incarnation_id.as_ref() {
             Some(held) if held != incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
             None => return StatusReply::PeerUnresolved { reason: format!("{me}: {} has no known birth; its config cannot be put", subject.name) },
             Some(_) => {}
         }
-        // The route to the birth (ops-naming "Node data"): through the node's mesh-primary, Forward
-        // `0x1A`, unless this fabric-primary is that primary or the node is the primary itself; then
-        // the call is direct. Chosen before the row is written, so a member with no route changes nothing.
-        let Some(primary) = view.cohort_primary(&subject.mesh, rafka_mesh_entity::NodeKind::NodeAdmin) else {
-            return StatusReply::PeerUnresolved { reason: format!("{me}: {} has no single live primary node-admin in the view; {} cannot be told its config", subject.mesh, subject.name) };
-        };
-        let route = if primary.node_id == *me_id || primary.node_id == subject.node_id { RouteChoice::Direct } else { RouteChoice::ViaPeer { carrier: primary.node_id.clone(), path: primary.name.clone() } };
-        span.record("route", route.token());
         let _one = self.one_at_a_time.lock().await;
         let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
         if let Err(e) = storage.put_node_row(&row).await {
@@ -90,7 +88,7 @@ impl NodeConfigs {
             return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
         }
         let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let told = NodeRpc::new(&self.client).config_apply(&birth, &route, config.clone(), &CallOptions::default()).await;
+        let told = NodeRpc::new(&self.client).config_apply(&birth, config.clone(), &CallOptions::default()).await;
         let (answered, detail) = match told {
             Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() },
             Ok(refused) => (refused.name(), format!("{me} wrote the row; the birth answered {refused:?}")),
