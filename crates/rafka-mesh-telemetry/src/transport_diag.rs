@@ -36,8 +36,8 @@ pub const TRANSPORT_DIAG_TARGET: &str = "transport_diag";
 /// socket (bind, path selection, the direct addresses a dial replaced), the per-remote path state,
 /// noq's connection driver, every noq-proto connection line at debug (path added, packet dropped,
 /// handshake failed, closed) and the noq-proto endpoint at trace (initial connection ids, a datagram
-/// dropped before a connection takes it, refused or stale initials). The relay, net report, address
-/// lookup and gossip are not the handshake and are off.
+/// dropped before a connection takes it, refused or stale initials). `iroh::socket::transports::relay`,
+/// the net report, address lookup and gossip are not the handshake and are off.
 pub(crate) const DIRECTIVES: &[&str] = &[
     "transport_diag=trace",
     "rafka_node_rpc::pool=info",

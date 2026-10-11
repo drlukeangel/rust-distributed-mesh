@@ -126,6 +126,5 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     // The dial's line names its trace, and that trace is the dial span the dialler exported.
     let trace = failed.split("trace=00-").nth(1).and_then(|t| t.split('-').next()).unwrap_or_else(|| panic!("the connect failure names no trace: {failed}"));
     assert!(spans.contains(&format!("\"trace_id\":\"{trace}\"")) && spans.contains("rdm.node_rpc.connection.create.via-dial"), "the connect failure's trace {trace} is not the exported dial's");
-    // Kept for the reader: both ends' files and the run's span evidence.
-    println!("transport diagnostics kept in {}", root.display());
+    let _ = std::fs::remove_dir_all(&root);
 }
