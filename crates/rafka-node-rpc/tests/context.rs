@@ -254,6 +254,63 @@ async fn a_client_without_explicit_context_sends_its_current_span_and_its_caller
     assert_eq!(attr(&serve[0], "caller_system").as_deref(), Some("rdm"));
 }
 
+/// A call under a fresh caller span: (that span, its trace id, its span id, the call).
+fn caller_call<'a>(c: &'a NodeRpcClient, p: &Process, payload: &'static [u8]) -> (tracing::Span, String, String, impl std::future::Future<Output = RpcOutcome<PingReply>> + 'a) {
+    let caller = tracing::info_span!("test.caller");
+    let trace = caller.context().span().span_context().trace_id().to_string();
+    let parent = caller.context().span().span_context().span_id().to_string();
+    let target = NodeTarget::ExactNode(p.resolved.node_id.clone());
+    let fut = tracing::Instrument::instrument(
+        async move { c.call::<Ping>(&target, &echo(payload), &CallOptions::default()).await.0 },
+        caller.clone(),
+    );
+    (caller, trace, parent, fut)
+}
+
+fn steps(s: &SpanData) -> Vec<String> {
+    s.events.iter().filter_map(|e| e.attributes.iter().find(|kv| kv.key.as_str() == "step").map(|kv| kv.value.as_str().into_owned())).collect()
+}
+
+/// CONTRACT: the dial a call starts is one span, `rdm.node_rpc.connection.create.via-dial`, a
+/// child of that call's `via-call` span in the caller's trace, and it ends when the dial ends
+/// (outcome `connected`, its steps as events), while the connection it opened stays pooled for
+/// the next call. A dependency task that lives as long as the connection never holds it open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dialed_calls_dial_span_ends_with_the_dial_under_its_call_span_while_the_connection_stays_pooled() {
+    spans();
+    let p = process("mesh1.rpc.1").await;
+    let (c, _) = client(Some("rdm"), &[&p.resolved]).await;
+    let (caller, trace, parent, fut) = caller_call(&c, &p, b"dialed");
+    let out = fut.await;
+    drop(caller);
+    assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
+    assert_eq!(c.pooled().len(), 1, "the dial's connection is pooled and stays pooled");
+    let call = finished("rdm.node_rpc.request.update.via-call", Some(&trace));
+    assert_eq!(call.len(), 1, "the call span ended in the caller's trace: {call:?}");
+    assert_eq!(call[0].parent_span_id.to_string(), parent, "the call span is a child of the caller's span");
+    let dial = finished("rdm.node_rpc.connection.create.via-dial", Some(&trace));
+    assert_eq!(dial.len(), 1, "the dial span ended with the dial, in the caller's trace, while its connection is still pooled: {dial:?}");
+    assert_eq!(dial[0].parent_span_id, call[0].span_context.span_id(), "the dial is a child of the call that started it");
+    assert_eq!(attr(&dial[0], "outcome").as_deref(), Some("connected"));
+    assert_eq!(steps(&dial[0]), ["direct-addrs-replaced", "connect-returned"], "the dial's steps are its events");
+    assert!(dial[0].end_time <= call[0].end_time, "the dial ended before the call that waited on it");
+    eprintln!(
+        "trace {trace}: test.caller {parent} > rdm.node_rpc.request.update.via-call {} outcome={:?} > rdm.node_rpc.connection.create.via-dial {} outcome={:?} steps={:?}; pooled={}",
+        call[0].span_context.span_id(), attr(&call[0], "outcome"), dial[0].span_context.span_id(), attr(&dial[0], "outcome"), steps(&dial[0]), c.pooled().len()
+    );
+
+    // The next call reuses the pooled connection: no dial, and its call span ends too.
+    let (caller, trace, _, fut) = caller_call(&c, &p, b"pooled");
+    let out = fut.await;
+    drop(caller);
+    assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
+    assert_eq!(c.pooled().len(), 1);
+    let call = finished("rdm.node_rpc.request.update.via-call", Some(&trace));
+    assert_eq!(call.len(), 1, "{call:?}");
+    assert!(steps(&call[0]).iter().any(|s| s == "pooled"), "the second call reused the connection: {:?}", steps(&call[0]));
+    assert!(finished("rdm.node_rpc.connection.create.via-dial", Some(&trace)).is_empty(), "a pooled call dials nothing");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn missing_context_is_valid_and_starts_a_new_trace() {
     spans();

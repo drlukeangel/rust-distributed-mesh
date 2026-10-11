@@ -18,6 +18,8 @@ use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusRep
 /// CONTRACT: at a live rpc node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
 /// with the node's state and changes nothing; `DrainNode` answers `Applied`, a repeat of the same
 /// operation `AlreadyApplied`, and the birth then calls `NodeDrained` at the commanding side;
+/// `ApplyNodeConfig` answers `Applied` and the node's own topology answer carries the config on its
+/// digest, while one naming another incarnation is `RejectedStaleIncarnation`;
 /// `ApplyNodeState(Draining)` is refused `RejectedInvalidNodeTransition` with the held state and moves nothing; a probe
 /// naming another incarnation is `RejectedStaleIncarnation` with the held one; a
 /// `DeclareNodeState` sent downward is refused by direction. What must NOT happen: a probe moving
@@ -101,6 +103,16 @@ async fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family()
     let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
     assert_eq!(call(apply).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
     assert!(matches!(call(probe.clone()).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }), "the refused apply moved nothing");
+    // apply-node-config (ops-naming "Node data"): the birth holds the whole config and carries it in its
+    // digest. Its own topology answer, read after the Applied reply, carries the config on its own digest.
+    let config: std::collections::BTreeMap<String, String> = [("tags".to_string(), "edge".to_string()), ("zone".to_string(), "a".to_string())].into();
+    let told = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
+    assert_eq!(call(told).await, StatusReply::Applied);
+    let held = rafka_node_admin_client::NodeRpc::new(&observer.client).held_view(&target, "mesh1", &CallOptions::default()).await.expect("the node's own topology answer");
+    let own = held.members.iter().find(|d| d.node.node_id == node.node_id).expect("the node answers its own digest");
+    assert_eq!(own.config, config, "the birth's own digest carries the config it was told");
+    let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };
+    assert_eq!(call(stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
     // drain-node: admitted, then the birth calls node-drained back at the commanding side.
     let (operation, build_id) = ("drain-node:mesh1.rpc.1".to_string(), "bld_probe".to_string());
     let key = rafka_node_admin_core::node_commands::CommandKey { build_id: build_id.clone(), attempt: 1, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
