@@ -27,7 +27,7 @@
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-use rafka_mesh_entity::{ConfigOverCap, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact};
+use rafka_mesh_entity::{ConfigOverCap, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS};
 use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
@@ -334,6 +334,20 @@ pub enum StatusRequest {
 /// The longest `receipt_manifest` reference a `MeshLeave` carries.
 pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 
+/// The most bytes postcard spends on one varint length prefix of a config key or value: one string
+/// is at most [`MAX_CONFIG_BYTES`] long, under `2^14`, so its prefix is at most two bytes.
+const CONFIG_STRING_PREFIX_BYTES: usize = 2;
+const _: () = assert!(MAX_CONFIG_BYTES < 1 << 14, "a config string's length prefix is assumed to be at most two bytes");
+
+/// The most bytes an `UpdateNodeConfig` (or `ApplyNodeConfig`) at the config cap encodes to: the
+/// variant (a varint, at most five bytes), two ids (each a one-byte length and [`CROCKFORD60_LEN`]
+/// characters), the map's length (a varint under the key cap, at most two bytes), and every key and
+/// value at the cap with its length prefix. Derived from the cap, so the two cannot drift.
+pub const MAX_CONFIG_REQUEST_BYTES: usize = 5 + 2 * (1 + CROCKFORD60_LEN) + 2 + MAX_CONFIG_BYTES + MAX_CONFIG_KEYS * 2 * CONFIG_STRING_PREFIX_BYTES;
+
+/// The bound every other Status request fits in.
+const MAX_DECLARATION_REQUEST_BYTES: usize = 1024;
+
 impl StatusRequest {
     /// The request's operation name as it appears in spans and replies.
     pub fn op(&self) -> &'static str {
@@ -582,7 +596,8 @@ impl StatusReply {
 impl NodeProtocol for Status {
     const OP: u8 = 0x1B;
     const NAME: &'static str = "status";
-    const MAX_REQUEST_FRAME_BYTES: usize = 4096;
+    /// The larger of a declaration's bound and a config put at its cap ([`MAX_CONFIG_REQUEST_BYTES`]).
+    const MAX_REQUEST_FRAME_BYTES: usize = if MAX_CONFIG_REQUEST_BYTES > MAX_DECLARATION_REQUEST_BYTES { MAX_CONFIG_REQUEST_BYTES } else { MAX_DECLARATION_REQUEST_BYTES };
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// A declaration travels the ordinary Direct/ViaPeer route like any other call.
     const FORWARDABLE: bool = true;
@@ -736,6 +751,27 @@ mod tests {
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
             assert_eq!(Status::decode_request(&Status::encode_request(&q).unwrap()).unwrap(), q);
+        }
+    }
+
+    /// CONTRACT (ops-naming "Node data": config is capped in key count and bytes): a config put at
+    /// its cap encodes within the Status request bound, whichever shape fills the cap: the most keys,
+    /// the longest strings (two-byte length prefixes), or both prefixes long on every entry.
+    #[test]
+    fn a_config_put_at_its_cap_encodes_within_the_status_request_bound() {
+        let shapes: [(usize, usize, usize); 3] = [(MAX_CONFIG_KEYS, 8, MAX_CONFIG_BYTES / MAX_CONFIG_KEYS - 8), (MAX_CONFIG_BYTES / 256, 128, 128), (MAX_CONFIG_BYTES / 136, 8, 128)];
+        for (keys, key_len, value_len) in shapes {
+            let config: BTreeMap<String, String> = (0..keys).map(|i| (format!("{i:0key_len$}"), "v".repeat(value_len))).collect();
+            assert_eq!(config.len(), keys);
+            rafka_mesh_entity::check_config(&config).expect("the shape is within the cap");
+            for q in [
+                StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: config.clone() },
+                StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: config.clone() },
+            ] {
+                let len = Status::encode_request(&q).unwrap().len();
+                assert!(len <= Status::MAX_REQUEST_FRAME_BYTES, "{keys} keys of {key_len}+{value_len} bytes encode to {len}, over {}", Status::MAX_REQUEST_FRAME_BYTES);
+                assert!(len <= MAX_CONFIG_REQUEST_BYTES, "{len} over the derived {MAX_CONFIG_REQUEST_BYTES}");
+            }
         }
     }
 
