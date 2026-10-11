@@ -265,7 +265,7 @@ pub struct HandoverDoor {
 /// What the holder's SeatTransfer step does to the stores its moving seats write (R14 item 4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteCutOff {
-    /// Refuse every write the moving seats authorize (the mesh-primary's mesh and node rows; the
+    /// Refuse every write the moving seats authorize (the mesh-primary's mesh, node and status rows; the
     /// fabric record as well when the fabric seat moves), then take each store's write lock once,
     /// which waits for every write already issued.
     Set {
@@ -282,7 +282,7 @@ pub enum WriteCutOff {
 pub type CutOffWrites = Arc<dyn Fn(WriteCutOff) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 /// The file stores on the fabric's store root a seat transfer cuts off (R14 item 4): the
-/// mesh-primary seat's (the Mesh row, its members' Node rows and contacts) and the fabric-primary
+/// mesh-primary seat's (the Mesh row, its members' Node rows and contacts, the mesh's status rows) and the fabric-primary
 /// seat's (the Fabric record and its pointers, and every other mesh's rows).
 pub struct SeatStores {
     /// The Mesh rows.
@@ -298,7 +298,7 @@ pub struct SeatStores {
 impl SeatStores {
     /// Apply `c`: set cuts off and drains every store the moving seats write; lift gives them back.
     pub async fn apply(&self, c: WriteCutOff) {
-        let mut seat: Vec<&crate::record_store::FileRecords> = self.mesh.mesh_primary_records().into_iter().chain(self.nodes.mesh_primary_records()).collect();
+        let mut seat: Vec<&crate::record_store::FileRecords> = self.mesh.mesh_primary_records().into_iter().chain(self.nodes.mesh_primary_records()).chain(self.status.mesh_primary_records()).collect();
         match c {
             WriteCutOff::Set { reason, fabric_seat } => {
                 if fabric_seat {
