@@ -483,16 +483,16 @@ impl Records {
         self.install(held, t).await
     }
 
-    /// [`Self::install_projected`] of the admin `me`'s projection that names each birth not
-    /// publishing its own name by its row. The rows of `book`'s births of `fabric_id` are read first
-    /// ([`RowNames::read`]), and only then is the view's write lock taken: no disk read holds a reader
-    /// of the view. A read older than the view it replaces is replaced at the next rebuild. A birth
-    /// the view lists at a moved row's name for the first time is one span.
-    pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, book: &DigestBook, fabric_id: &FabricId, project: impl FnOnce(&RowNames) -> Topology) -> Topology {
-        let rows = RowNames::read(me, book, self, fabric_id, std::time::Instant::now()).await;
+    /// [`Self::install_projected`] of the admin `me`'s projection from what the stores hold: the
+    /// view's one read phase, [`ViewReads::read`], runs first over `book`'s births of `fabric_id`, and
+    /// only then is the view's write lock taken and `project` handed the reads: no disk read holds a
+    /// reader of the view. A read older than the view it replaces is replaced at the next rebuild. A
+    /// birth the view lists at a moved row's name for the first time is one span.
+    pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, book: &DigestBook, fabric_id: &FabricId, project: impl FnOnce(&ViewReads) -> Topology) -> Topology {
+        let reads = ViewReads::read(me, book, self, fabric_id).await;
         let held = topology.write().await;
-        let t = project(&rows);
-        for (node_id, incarnation, published, name) in rows.moved() {
+        let t = project(&reads);
+        for (node_id, incarnation, published, name) in reads.rows.moved() {
             let listed = |v: &Topology| v.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation) && &n.name == name);
             if listed(&t) && !listed(&held) {
                 tracing::info_span!("rdm.node_admin.topology.update.via-row-name", node = %me, subject = %name, published = %published, node_id = %node_id, incarnation_id = %incarnation.0)
@@ -568,7 +568,7 @@ impl TopologySink for Records {
     }
     fn rename_predecessor(&self, name: &PathName, _node_id: &NodeId, incarnation: &IncarnationId) {
         // The predecessor's launch record no longer stands at the path.name its successor takes; the
-        // view names it by its row (`RowNames`), which its mesh's row writer moves to `<path>.old`.
+        // view names it by its row (`ViewReads`), which its mesh's row writer moves to `<path>.old`.
         let mut nodes = self.nodes.lock().unwrap();
         if nodes.get(name).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
             nodes.remove(name);
@@ -664,10 +664,36 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
     project_at(fabric, fabric_id, provider, book, records, std::time::Instant::now())
 }
 
-/// [`project`] as of the instant `rows` was read at, each birth that does not publish its own name
-/// listed at the name its row holds.
-pub fn project_with(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, rows: &RowNames) -> Topology {
-    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), rows)
+/// [`project`] as of the instant `reads` were taken at, from what they read: each birth that does not
+/// publish its own name listed at the name its row holds.
+pub fn project_with(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, reads: &ViewReads) -> Topology {
+    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), reads)
+}
+
+/// What a view rebuild reads from the stores, taken in one read phase before the view's write lock
+/// ([`Records::install_read`], `view_now`) and handed to the projection under it. Every store read a
+/// projection needs is a field here, read in [`ViewReads::read`]; nothing is read under the lock.
+pub struct ViewReads {
+    /// The instant the births were judged at: the projection is taken as of it, so the births it lists
+    /// from these reads are exactly the ones the reads covered.
+    at: std::time::Instant,
+    /// The names the node rows hold for the births that do not publish their own.
+    rows: RowNames,
+}
+
+impl ViewReads {
+    /// Nothing read: every birth is listed at the name it published, as of `at`.
+    pub fn none_at(at: std::time::Instant) -> Self {
+        Self { at, rows: RowNames::default() }
+    }
+
+    /// The read phase of the admin `me`'s rebuild over `book`'s births of `fabric_id`, as of now: the
+    /// row of every birth that does not publish its own name, from `records`' nodes store (no store:
+    /// nothing is read).
+    pub async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId) -> Self {
+        let at = std::time::Instant::now();
+        Self { at, rows: RowNames::read(me, book, records, fabric_id, at).await }
+    }
 }
 
 /// The names the node rows hold for the births a projection lists that do not publish their own
@@ -679,10 +705,8 @@ pub fn project_with(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, 
 /// staleness floor, proven exited, held true offline) may have had its row moved while it said
 /// nothing: a stopped node's `node.update` (R13: it is told nothing and reads the name at its next
 /// join) or a replace's `RenamePredecessor`.
-pub struct RowNames {
-    /// The instant the births were judged at: the projection is taken as of it, so the births it lists
-    /// by their rows are exactly the ones this read covered.
-    at: std::time::Instant,
+#[derive(Default)]
+struct RowNames {
     /// Each birth read: the name it published, and where its row stands.
     names: HashMap<(NodeId, IncarnationId), (PathName, RowName)>,
 }
@@ -697,15 +721,10 @@ enum RowName {
 }
 
 impl RowNames {
-    /// No row read: every birth is listed at the name it published, as of `at`.
-    pub fn none_at(at: std::time::Instant) -> Self {
-        Self { at, names: HashMap::new() }
-    }
-
     /// The row of every birth of `fabric_id` in `book` that does not publish its own name as of `at`,
     /// read by the admin `me` from `records`' nodes store (no store: nothing is read).
-    pub async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId, at: std::time::Instant) -> Self {
-        let mut rows = Self::none_at(at);
+    async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId, at: std::time::Instant) -> Self {
+        let mut rows = Self::default();
         let Some(store) = records.contacts.get().cloned() else { return rows };
         let mut quiet: Vec<(NodeId, IncarnationId, PathName)> = Vec::new();
         for d in book.all() {
@@ -773,7 +792,7 @@ pub fn view_projector(me: PathName, topology: Arc<RwLock<Topology>>, fabric: Str
     Arc::new(move || {
         let (me, topology, fabric, fabric_id, book, records) = (me.clone(), topology.clone(), fabric.clone(), fabric_id.clone(), book.clone(), records.clone());
         Box::pin(async move {
-            records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
+            records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
         })
     })
 }
@@ -821,14 +840,14 @@ pub fn describe_absence(book: &DigestBook, records: &Records, name: &PathName) -
 
 /// [`project`] as of `now`.
 pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, now: std::time::Instant) -> Topology {
-    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), &RowNames::none_at(now))
+    project_decided_at(fabric, fabric_id, provider, book, records, &incumbency_of(book, records), &ViewReads::none_at(now))
 }
 
 /// [`project_with`] with its seats decided against `decided`, the seat records and proven-gone births
 /// read once: a caller that acts on the projection's seats (the hierarchy loop announcing one)
 /// acts against the very records the projection was decided from, never a later read of them.
-pub(crate) fn project_decided(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, rows: &RowNames) -> Topology {
-    project_decided_at(fabric, fabric_id, provider, book, records, decided, rows)
+pub(crate) fn project_decided(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, reads: &ViewReads) -> Topology {
+    project_decided_at(fabric, fabric_id, provider, book, records, decided, reads)
 }
 
 /// The launch record this admin holds of the exact birth `incarnation`, whatever name the view lists
@@ -837,8 +856,8 @@ fn launched(recorded: &BTreeMap<PathName, Node>, incarnation: &Option<Incarnatio
     incarnation.as_ref().and_then(|inc| recorded.values().find(|r| r.incarnation_id.as_ref() == Some(inc)).cloned())
 }
 
-fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, rows: &RowNames) -> Topology {
-    let now = rows.at;
+fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, decided: &crate::election::Incumbency, reads: &ViewReads) -> Topology {
+    let (now, rows) = (reads.at, &reads.rows);
     let removed = records.removed.lock().unwrap().clone();
     let recorded = records.nodes.lock().unwrap().clone();
     let mut nodes: BTreeMap<PathName, Node> = BTreeMap::new();
@@ -2557,7 +2576,7 @@ impl AdminRunner {
     /// Publish the view as it is now, so a Build that completes after this
     /// operation is never read back against an older view.
     async fn refresh_view(&self) {
-        self.records.install_read(&self.me, &self.topology, &self.book, &self.fabric_id, |rows| project_with(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records, rows)).await;
+        self.records.install_read(&self.me, &self.topology, &self.book, &self.fabric_id, |reads| project_with(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records, reads)).await;
     }
 
     /// A launch of `kind` in `mesh`. Every node carries its mesh's identity (it
@@ -4314,8 +4333,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let _ = control.view_now.set(Arc::new(move || {
             let (me, book, records, fabric, fabric_id) = (me.clone(), book.clone(), records.clone(), fabric.clone(), fabric_id.clone());
             Box::pin(async move {
-                let rows = RowNames::read(&me, &book, &records, &fabric_id, std::time::Instant::now()).await;
-                project_with(&fabric, &fabric_id, provider, &book, &records, &rows)
+                let reads = ViewReads::read(&me, &book, &records, &fabric_id).await;
+                project_with(&fabric, &fabric_id, provider, &book, &records, &reads)
             })
         }));
     }
@@ -4364,7 +4383,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             rename: rename.clone(),
             row_moved: {
                 // The view is projected at once: it reads the moved row, as every admin's next
-                // projection does (`RowNames`), so it holds nothing of the move itself.
+                // projection does (`ViewReads`), so it holds nothing of the move itself.
                 let moved: crate::status_rpc::RowMoved = Arc::new(std::sync::OnceLock::new());
                 let project = view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
                 let _ = moved.set(Arc::new(move |_from: PathName, _node_id: NodeId, _incarnation: IncarnationId, _to: PathName| project()));
@@ -4505,7 +4524,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     Arc::new(move || {
                         let (me, topology, records, book, fabric, fabric_id) = (me.clone(), topology.clone(), records.clone(), book.clone(), fabric.clone(), fabric_id.clone());
                         Box::pin(async move {
-                            records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
+                            records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
                         })
                     })
                 },
@@ -5362,9 +5381,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // view is never older than the records it replaces.
                 let mut decided = crate::election::Incumbency::default();
                 let t = records
-                    .install_read(&me, &topology, &view_book, &view_fabric_id, |rows| {
+                    .install_read(&me, &topology, &view_book, &view_fabric_id, |reads| {
                         decided = incumbency_of(&view_book, &records);
-                        project_decided(&view_fabric, &view_fabric_id, view_provider, &view_book, &records, &decided, rows)
+                        project_decided(&view_fabric, &view_fabric_id, view_provider, &view_book, &records, &decided, reads)
                     })
                     .await;
                 // The accepted Build is the authority on which meshes the fabric has: the book
@@ -5494,7 +5513,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut facts = book.routing_watch();
             loop {
                 facts.seen();
-                let t = records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
+                let t = records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
                 elections.observe(&t);
                 // A name this view held and now lacks: the exclusion is named from the same
                 // inputs at the moment it happens, not reconstructed later.
@@ -5571,7 +5590,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 }
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
-                let now = records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
+                let now = records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
                 // Every Build whose next operation this admin executes; none
                 // while it is cut off or within one silence window of healing
                 // (its view then authorizes nothing). The fabric authority first
@@ -5582,7 +5601,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now,
                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                     // proven exited is not live there, and holds no seat.
                     if opened.is_some() {
-                        records.install_read(&me, &topology, &book, &fabric_id, |rows| project_with(&fabric, &fabric_id, provider, &book, &records, rows)).await;
+                        records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
                     }
                     if now.holds_fabric_seat(&me_id) {
                         crate::build_op::ensure_active(&drives, &drive_env).await;
@@ -6558,7 +6577,7 @@ mod tests {
         let me_birth = (&me.node.node_id, &me.node.incarnation);
         // The loop decides: this admin holds both of its seats, and their records already name it.
         let decided = incumbency_of(&book, &records);
-        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &RowNames::none_at(std::time::Instant::now()));
+        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
         // While the loop awaits its climb, the committed transfer lands: mesh2.admin.1 at epoch 2.
         book.seats.take(FabricPrimary, &holder_of(&successor, 2));
@@ -6577,7 +6596,7 @@ mod tests {
         book.seats.take(FabricPrimary, &holder_of(&gone, 5));
         records.mark_exited(&gone.node.node_id, &gone.node.incarnation);
         let decided = incumbency_of(&book, &records);
-        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &RowNames::none_at(std::time::Instant::now()));
+        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
         let epochs: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.epoch)).collect();
         assert_eq!(epochs, vec![(MeshPrimary, me.node.node_id.clone(), 6), (FabricPrimary, me.node.node_id.clone(), 6)], "the successor of a proven-gone holder takes both seats at the next epoch (decided against {:?})", decided.fabric);
