@@ -192,6 +192,10 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[Rost
 pub enum OwnerResume {
     /// The `MeshLeft` receipt is recorded: the departure is the record.
     Left,
+    /// The final primary's exact exit is recorded (the owner stopped it, then `MeshLeft` was not
+    /// recorded): the complete proof set, from the receipts, that `MeshLeft` records. Nothing is
+    /// called: the final primary is gone and sends nothing.
+    FinalExited(ExitManifest),
     /// Nothing recorded settles the leave: the owner leads it (admission, `LeaveMesh`, the
     /// handoff, the final primary's stop).
     Lead,
@@ -202,6 +206,7 @@ impl OwnerResume {
     /// holds one.
     pub fn mesh_left_manifest(&self) -> Option<&ExitManifest> {
         match self {
+            OwnerResume::FinalExited(all) => Some(all),
             OwnerResume::Left | OwnerResume::Lead => None,
         }
     }
@@ -212,7 +217,46 @@ pub fn owner_resume(steps: &[BuildStepReceipt], operation: &str) -> Result<Owner
     if steps.iter().any(|r| r.operation == operation && r.step == STEP_MESH_LEFT && r.outcome == StepOutcome::Complete) {
         return Ok(OwnerResume::Left);
     }
-    Ok(OwnerResume::Lead)
+    let Some(row) = accepted_row(steps, operation, STEP_ACCEPTED_ROSTER).transpose()? else {
+        return Ok(OwnerResume::Lead);
+    };
+    let last = &row.final_primary;
+    let Some(terminal) = exit_receipts(steps, operation, std::slice::from_ref(last)).remove(&(last.node_id.clone(), last.incarnation_id.clone())) else {
+        return Ok(OwnerResume::Lead);
+    };
+    // The final primary's exact exit is recorded: the rest of the proof is in this log or nowhere.
+    let named = format!("{} {}", last.node, last.incarnation_id);
+    if terminal.runtime != row.final_runtime {
+        return Err(format!("{operation}: the final primary {named}'s Exited receipt names the runtime {:?}, not the one accepted at admission {:?}", terminal.runtime, row.final_runtime));
+    }
+    let manifest: ExitManifest = steps
+        .iter()
+        .filter(|r| r.operation == operation && r.step == STEP_OTHER_MEMBERS_EXITED && r.outcome == StepOutcome::Complete)
+        .max_by_key(|r| r.attempt)
+        .ok_or_else(|| format!("{operation}: the final primary {named}'s exit is proven (TerminateRuntime under {}), but no {STEP_OTHER_MEMBERS_EXITED} manifest is held in this Build's facts: MeshLeft cannot be recorded", member_operation(operation, &last.node)))?
+        .output
+        .clone()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .ok_or_else(|| format!("{operation}: the {STEP_OTHER_MEMBERS_EXITED} manifest held in this Build's facts does not decode: MeshLeft cannot be recorded"))?;
+    if manifest.final_runtime != row.final_runtime {
+        return Err(format!("{operation}: the {STEP_OTHER_MEMBERS_EXITED} manifest names the final runtime {:?}, not the one accepted at admission {:?}", manifest.final_runtime, row.final_runtime));
+    }
+    let mut all = manifest;
+    all.final_runtime = None;
+    all.receipts.push(terminal);
+    if let Some((field, expected, reported)) = first_mismatch(&all, &row.roster, last, true) {
+        return Err(format!("{operation}: the recorded proof set is not complete: {field}: expected {expected}, reported {reported}"));
+    }
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-recorded-final-exit", operation = %operation, final_primary = %named, receipts = all.receipts.len(), roster = row.roster.len())
+        .in_scope(|| tracing::info!("the final primary's exact exit and every other member's are recorded: MeshLeft is recorded from the receipts, nothing is called"));
+    Ok(OwnerResume::FinalExited(all))
+}
+
+/// The roster row recorded under `step` (`AcceptedRoster`, `LeavingRoster`) for `operation`, from
+/// the first attempt that recorded it: `None` when none is recorded, `Err` when it does not decode.
+pub fn accepted_row(steps: &[BuildStepReceipt], operation: &str, step: &str) -> Option<Result<ExitManifest, String>> {
+    let r = steps.iter().filter(|r| r.operation == operation && r.step == step && r.outcome == StepOutcome::Complete).min_by_key(|r| r.attempt)?;
+    Some(r.output.clone().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| format!("the {step} receipt of {operation} (attempt {}) holds no readable roster: the accepted roster cannot be named", r.attempt)))
 }
 
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):

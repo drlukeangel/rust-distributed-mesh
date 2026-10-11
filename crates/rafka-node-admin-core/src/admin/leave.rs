@@ -19,7 +19,11 @@ use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusR
 use tracing::Instrument;
 
 /// How long the owner waits for the leaving mesh's `MeshLeave` handoff before its attempt ends
-/// incomplete (the Build's next attempt resumes from the receipts).
+/// incomplete. A leaving primary whose member workflows end incomplete says so inside a
+/// `MeshLeave` call, which ends the attempt at once; this bound covers a handoff that never
+/// arrives (a lost call, a lost primary). A failed attempt ends the Build; the fabric-primary's
+/// drift check (`crate::admin::reconcile_drift`) opens the next attempt while the removed mesh is
+/// still live with no `MeshLeft` receipt, and that attempt resumes from the receipts.
 const HANDOFF_WAIT: Duration = Duration::from_secs(120);
 
 /// What serves `LeaveMesh` and `MeshLeave` for a running admin.
@@ -55,23 +59,52 @@ impl AdminRunner {
     async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), String> {
         // Where this owner resumes, from its own Build facts, before it calls anything.
         let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
-        if crate::mesh_leave::owner_resume(&steps, outer)? == crate::mesh_leave::OwnerResume::Left {
-            // Resumed after the departure was recorded: the receipt is the record.
-            self.forget_mesh_id(mesh);
-            return Ok(());
-        }
         let view = self.topology.read().await.clone();
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
+        match crate::mesh_leave::owner_resume(&steps, outer)? {
+            crate::mesh_leave::OwnerResume::Left => {
+                // Resumed after the departure was recorded: the receipt is the record.
+                self.forget_mesh_id(mesh);
+                return Ok(());
+            }
+            crate::mesh_leave::OwnerResume::FinalExited(all) => {
+                // Resumed after the final primary's exact exit was recorded: nothing is called (it
+                // is gone); the proof set from the receipts is what MeshLeft records.
+                let last = &all.final_primary;
+                if let Some(node) = view.nodes.iter().find(|n| n.node_id.to_string() == last.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == last.incarnation_id)).cloned() {
+                    self.after_mesh_exit(&node, "mesh-leave");
+                }
+                let event = MeshLeaveEvent { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string(), receipt_manifest: None, final_primary: None };
+                return self.record_mesh_left(&key, mesh, all, event).await;
+            }
+            crate::mesh_leave::OwnerResume::Lead => {}
+        }
         let node_rpc = self.node_rpc.as_ref().ok_or_else(|| format!("{}: this admin holds no Node RPC client: {outer} cannot call the mesh", self.me))?;
         // Step 1: this owner is the fabric-primary. When the leaving mesh held the fabric seat it
         // was handed over first (fabric-primary-handover.md): the leave opens only on the confirmed
         // transfer, and an unconfirmed one is reconciled here before anything is dismantled.
         self.handover.confirmed(mesh_id).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric-primary handover is not confirmed: {e}"))?;
         let primary = view.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to"))?;
+        // A resumed attempt hands the workflow only to the final primary accepted at admission.
+        let recorded = crate::mesh_leave::accepted_row(&steps, outer, STEP_ACCEPTED_ROSTER).transpose().map_err(|e| format!("{outer}: {e}"))?;
+        if let Some(row) = &recorded {
+            let held = RosterBirth::of(&primary)?;
+            if held != row.final_primary {
+                return Err(format!(
+                    "{outer} is refused: {mesh}'s primary is {} {}, not the final primary {} {} accepted at admission; a resumed leave hands its workflow to no other birth",
+                    held.node, held.incarnation_id, row.final_primary.node, row.final_primary.incarnation_id
+                ));
+            }
+        }
         // The final primary's authoritative provider domain: access before anything is dismantled.
         let (final_record, final_handle) = self.handle_for(&primary).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: no provider proof path for its final primary: {e}"))?;
         let final_fact = final_handle.fact().ok_or_else(|| format!("{outer} is refused before {mesh} is dismantled: the final primary {} has no exact runtime handle", primary.name))?;
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
         let (final_primary, final_runtime) = (RosterBirth::of(&primary)?, RuntimeProof::of(&final_fact));
+        if let Some(accepted) = recorded.as_ref().and_then(|row| row.final_runtime.as_ref()) {
+            if accepted != &final_runtime {
+                return Err(format!("{outer} is refused before {mesh} is dismantled further: the final primary {}'s runtime is {final_runtime:?}, not the one accepted at admission {accepted:?}", primary.name));
+            }
+        }
         let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.me.to_string(), &final_primary, &final_runtime, || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
         let admitted = Admitted { roster, final_primary, final_runtime };
         if !admitted.roster.contains(&admitted.final_primary) {
@@ -134,6 +167,13 @@ impl AdminRunner {
         if let Some((field, expected, reported)) = first_mismatch(&all, &admitted.roster, &admitted.final_primary, true) {
             return Err(format!("{outer}: the proof set is not complete: {field}: expected {expected}, reported {reported}"));
         }
+        self.record_mesh_left(key, mesh, all, event).await
+    }
+
+    /// Step 7: the complete proof set `all` is recorded as the `MeshLeft` receipt, then the
+    /// mesh-left hook runs and the mesh's id is dropped.
+    async fn record_mesh_left(&self, key: &LeaveKey, mesh: &str, all: ExitManifest, event: MeshLeaveEvent) -> Result<(), String> {
+        let (build_id, attempt, outer, mesh_id) = (crate::build::BuildId(key.build_id.clone()), key.attempt, key.operation.as_str(), &key.mesh_id);
         let reference = manifest_reference(&key.build_id, attempt, outer, true);
         self.builds
             .append_step_receipt(&BuildStepReceipt {
