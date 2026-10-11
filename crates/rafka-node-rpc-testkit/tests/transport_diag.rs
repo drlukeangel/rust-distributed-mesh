@@ -44,7 +44,9 @@ fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {
 /// of the handshake are on both sides: the dialler's Initial sent and the maker's reply received,
 /// the maker's first Initial received and its reply sent. What must NOT happen: a diagnostic line,
 /// a noq or iroh line in either process's span evidence (R-TL1), or a side with no file. The
-/// dialler's connect failure names the trace of its exported dial span.
+/// dialler's connect failure names the trace of its exported dial span. The maker is launched as the
+/// estate launches the bootstrap admin (a mesh and a data dir, no node name), and its header still
+/// names it: `node="mesh1.admin.1"`, `mesh="mesh1"`.
 #[test]
 fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs() {
     if crate::own_process::delegated(module_path!(), "a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs") {
@@ -56,7 +58,9 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     std::fs::create_dir_all(&run).unwrap();
     std::env::set_var("RDM_EVIDENCE_DIR", &run);
     std::env::set_var("RDM_DATA_DIR", &maker_dir);
-    std::env::set_var("RDM_NODE_NAME", "mesh1.admin.1");
+    // As the estate launches the bootstrap admin: a mesh and a data dir, no node name.
+    std::env::remove_var("RDM_NODE_NAME");
+    std::env::set_var("RDM_MESH", "mesh1");
     std::env::set_var("RDM_FABRIC", "diag");
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let telemetry = rt.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin") });
@@ -104,9 +108,10 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     let run_field = format!("run={:?}", run.display().to_string());
     for (side, file, node) in [("maker", &maker, "mesh1.admin.1"), ("dialler", &dialler, "mesh1.rpc.9")] {
         let header = file.lines().next().unwrap_or_default();
-        assert!(header.starts_with("transport-diag ") && header.contains(&run_field) && header.contains(&format!("node={node:?}")), "the {side}'s header names another run or node: {header}");
+        assert!(header.starts_with("transport-diag ") && header.contains(&run_field) && header.contains(&format!(" node={node:?}")), "the {side}'s header names another run or node: {header}");
         assert!(line_with(file, &["step=\"endpoint-bound\"", "endpoint_id=", "bound="]).is_some(), "the {side} logged no bound endpoint:\n{file}");
     }
+    assert!(maker.lines().next().unwrap_or_default().contains(" mesh=\"mesh1\""), "the maker's header names no mesh: {}", maker.lines().next().unwrap_or_default());
     let maker_id = maker_key.public().to_string();
     assert!(line_with(&maker, &["step=\"endpoint-bound\"", &format!("endpoint_id={maker_id}"), &maker_addr.to_string()]).is_some(), "the maker's bound line names another key or address:\n{maker}");
     let failed = line_with(&dialler, &["step=\"connect-failed\""]).unwrap_or_else(|| panic!("the dialler logged no connect failure:\n{dialler}"));
@@ -127,4 +132,38 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     let trace = failed.split("trace=00-").nth(1).and_then(|t| t.split('-').next()).unwrap_or_else(|| panic!("the connect failure names no trace: {failed}"));
     assert!(spans.contains(&format!("\"trace_id\":\"{trace}\"")) && spans.contains("rdm.node_rpc.connection.create.via-dial"), "the connect failure's trace {trace} is not the exported dial's");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// CONTRACT: a process that is not part of an evidence run (it has a node log dir, `RDM_DATA_DIR`,
+/// and no `RDM_EVIDENCE_DIR`: every production node) installs no transport diagnostic layer. After
+/// telemetry is initialised and the endpoint bound, the noq-proto endpoint's trace callsites and the
+/// `transport_diag` target are disabled, and the data dir holds no `transport-diag.log`. What must
+/// NOT happen: noq or iroh handshake tracing switched on in production (hot-path tracing is
+/// debug-only), or a diagnostic file written outside a gate run.
+#[test]
+fn a_process_outside_an_evidence_run_installs_no_transport_diagnostics() {
+    if crate::own_process::delegated(module_path!(), "a_process_outside_an_evidence_run_installs_no_transport_diagnostics") {
+        return;
+    }
+    let data_dir = std::env::temp_dir().join(format!("rdm-transport-diag-off-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&data_dir);
+    std::env::remove_var("RDM_EVIDENCE_DIR");
+    std::env::remove_var("RUST_LOG");
+    std::env::set_var("RDM_DATA_DIR", &data_dir);
+    std::env::set_var("RDM_NODE_NAME", "mesh1.rpc.1");
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let telemetry = rt.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node") });
+    let (noq_trace, diag_target) = (tracing::enabled!(target: "noq_proto::endpoint", tracing::Level::TRACE), tracing::enabled!(target: "transport_diag", tracing::Level::INFO));
+    rt.block_on(async {
+        let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        ep.close().await;
+    });
+    drop(rt);
+    drop(telemetry);
+    rafka_mesh_telemetry::flush_before_exit();
+    assert!(!noq_trace, "noq-proto endpoint trace is enabled in a process outside an evidence run");
+    assert!(!diag_target, "the transport_diag target is enabled in a process outside an evidence run");
+    let file = data_dir.join(DIAG);
+    assert!(!file.exists(), "a process outside an evidence run wrote {}: {}", file.display(), std::fs::read_to_string(&file).unwrap_or_default());
+    let _ = std::fs::remove_dir_all(&data_dir);
 }
