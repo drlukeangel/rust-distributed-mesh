@@ -4506,6 +4506,27 @@ mod tests {
         assert!(!book.routable(id.as_str()), "a dead mesh is a routing stop");
     }
 
+    /// CONTRACT (states.md "Routing", gossip.md MeshStatus): the mesh primary that observes its mesh
+    /// leaving sends that change at once on the existing MeshStatus send, and a peer that takes the
+    /// frame stops selecting the mesh's births on receipt, whatever each member still says. Must NOT
+    /// happen: the change waiting for anything, or a peer still selecting a birth of the leaving mesh.
+    #[test]
+    fn a_mesh_primary_observing_its_mesh_leaving_sends_it_at_once_and_a_peer_stops_routing_on_receipt() {
+        let (now, fabric) = (Instant::now(), FabricId::parse("fab000000001").unwrap());
+        let mut publisher = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh1".into()));
+        publisher.set_role(true);
+        let peer = DigestBook::default();
+        let ready = publisher.observe("ready-for-traffic", None, true, now, 10).expect("the first status is a change");
+        assert!(peer.statuses.take(&ready, &fabric));
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(peer.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(peer.routable(id.as_str()));
+        let leaving = publisher.observe("leaving", None, true, now, 20).expect("the mesh's leaving is a change, sent at once");
+        assert!(matches!(&leaving, Frame::MeshStatus { status, publisher, .. } if status == "leaving" && publisher == "mesh1.admin.1"), "{leaving:?}");
+        assert!(peer.statuses.take(&leaving, &fabric));
+        assert!(!peer.routable(id.as_str()), "a peer holding the mesh leaving selects none of its births, though the member still says ready-for-traffic");
+    }
+
     #[test]
     fn a_deleting_overlay_keeps_the_node_held_and_not_routable_and_a_departure_removes_it() {
         let book = DigestBook::default();

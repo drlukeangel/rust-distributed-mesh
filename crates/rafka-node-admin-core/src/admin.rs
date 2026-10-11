@@ -6758,6 +6758,29 @@ mod tests {
         assert!(!routable(&of_unheard_mesh), "a birth of a mesh this admin holds no status of is not held ready-for-traffic");
     }
 
+    /// CONTRACT (states.md: a mesh is pending -> ready-for-traffic -> leaving -> dead; "Routing": a
+    /// mesh Leaving or Dead is a routing stop): the mesh status this admin projects is the state its
+    /// mesh row holds once that is past ready-for-traffic. The projection is what the mesh primary
+    /// announces on the existing MeshStatus send (`Backbone::announce_statuses`, fed from
+    /// `t.meshes`), so a leaving mesh is announced leaving by its own primary. Must NOT happen: a
+    /// mesh whose row holds Leaving (or Dead) projected, and so announced, ready-for-traffic.
+    #[test]
+    fn a_mesh_whose_row_holds_leaving_is_projected_leaving_so_its_primary_announces_leaving() {
+        use rafka_node_rpc_contract::status::MeshState;
+        let book = DigestBook::default();
+        let records = Records::default();
+        for (mesh, state) in [("mesh1", MeshState::Leaving), ("mesh2", MeshState::Dead), ("mesh3", MeshState::ReadyForTraffic)] {
+            assert!(book.record(digest(&format!("{mesh}.admin.1"), MemberStatus::ReadyForTraffic)));
+            records.meshes.lock().unwrap().insert(mesh.into(), mesh_id(mesh));
+            records.declared.lock().unwrap().meshes.insert(mesh_id(mesh), state);
+        }
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        let status = |m: &str| t.meshes.iter().find(|x| x.name == m).unwrap_or_else(|| panic!("{m} is in the view: {:?}", t.meshes)).status;
+        assert_eq!(status("mesh1"), ScopeStatus::Leaving, "a mesh whose row holds Leaving is projected leaving, so its primary announces leaving");
+        assert_eq!(status("mesh2"), ScopeStatus::Dead, "a mesh whose row holds Dead is projected dead");
+        assert_eq!(status("mesh3"), ScopeStatus::ReadyForTraffic, "a mesh whose row holds ready-for-traffic is projected from its members, as before");
+    }
+
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
     /// node's digest, only the stop overlay the mesh topology carries (`Members.in_flight`, read
     /// by `GetTopology`). Its view lists the node `Leaving` and parked from that overlay.
