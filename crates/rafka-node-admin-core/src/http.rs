@@ -723,37 +723,14 @@ async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
 /// minted id, its source, destination, kind (`direct` or `proxy`, a proxy with its carrier), state and when it
 /// was observed. An admin that holds none lists none.
 async fn get_connections(State(cp): State<Shared>) -> Json<Value> {
-    use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, NodeConnection};
-    let mut facts: Vec<NodeConnection> = Vec::new();
-    let mut complete = false;
-    if let Some(held) = cp.connections.get() {
-        let held = held.lock().unwrap();
-        complete = held.is_complete();
-        facts.extend(held.active_directs().into_iter().cloned());
-        for own in held.own_latest_directs().into_iter().chain(held.own_active_proxies()) {
-            let key = own.index();
-            match facts.iter().position(|f| f.index() == key) {
-                Some(i) if facts[i].stamp() >= own.stamp() => {}
-                Some(i) => facts[i] = own.clone(),
-                None => facts.push(own.clone()),
-            }
+    let (facts, complete) = match cp.connections.get() {
+        Some(held) => {
+            let held = held.lock().unwrap();
+            (crate::views::held_connections(&held), held.is_complete())
         }
-    }
-    let connections: Vec<Value> = facts
-        .iter()
-        .map(|f| {
-            json!({
-                "id": f.id.to_string(),
-                "source": f.source.name.to_string(),
-                "destination": f.destination.name.to_string(),
-                "kind": match f.kind { ConnectionKind::Direct => "direct", ConnectionKind::Proxy => "proxy" },
-                "state": match f.state { ConnectionState::Connected => "connected", ConnectionState::Disconnected => "disconnected", ConnectionState::Failed => "failed" },
-                "carrier": f.carrier.as_ref().map(|c| c.name.to_string()),
-                "reason": f.reason,
-                "logged_at_ms": f.logged_at_ms,
-            })
-        })
-        .collect();
+        None => (Vec::new(), false),
+    };
+    let connections: Vec<Value> = facts.iter().map(|f| serde_json::to_value(crate::views::connection_view(f)).unwrap_or(Value::Null)).collect();
     Json(json!({"node": cp.me.to_string(), "complete": complete, "connections": connections}))
 }
 

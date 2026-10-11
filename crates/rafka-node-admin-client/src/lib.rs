@@ -1,12 +1,13 @@
-//! The node-admin control API, as a client sees it.
+//! The typed objects a caller uses (`node`, `mesh`, `fabric` and `build`), and the node-admin
+//! control API's client.
 //!
-//! Every topology change is a Build request: the client submits it and gets
-//! the Build's id back; it never starts or stops a runtime itself. Reads are
-//! the views node-admin publishes. Refusals keep node-admin's named reason
-//! (`{"error", "detail"}`) and HTTP status.
-//!
-//! The DTOs mirror node-admin core's JSON; `rafka-node-admin-core`'s
-//! `client_contract` test pins that every route decodes into them.
+//! The objects speak Node RPC: workflows go to the fabric-primary's Build family (op `0x20`), and
+//! the reads (`node.get`, `mesh.get`, `fabric.get`, `node.connections.get`) are Status calls (op
+//! `0x1B`) answered by the node asked, whose answers are the views of
+//! `rafka_node_rpc_contract::views`. [`NodeAdminClient`] is the control API's client: every
+//! topology change it makes is a Build request answered with the Build's id, a refusal keeps
+//! node-admin's named reason (`{"error", "detail"}`) and HTTP status, and its reads decode into the
+//! same views (`rafka-node-admin-core`'s `client_contract` test pins that every route does).
 #![deny(missing_docs)]
 
 mod build_stream;
@@ -18,15 +19,17 @@ mod workflow;
 
 pub use build_stream::{BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, MeshCounts, StartDisposition};
 pub use calls::{CallEnd, DrainContext, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
-pub use names::{BuildOp, NodeEvent, NodeOp, NodeStep};
+pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
-    BuildPreset, BuildSpec, Builds, MetaField, MetaFieldIsRdmOwned, NameHeld, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
+    BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, MetaField, MetaFieldIsRdmOwned, NameHeld, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
 };
 pub use peers::Peers;
 pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
 
 
-use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
+use rafka_mesh_entity::{NodeKind, PathName};
+/// What the reads answer: the views travel on op `0x1B` and the control API answers the same shapes.
+pub use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 /// The executable-binding contract an operator hands node-admin (`RDM_EXECUTABLE_BINDINGS`).
 pub use rafka_mesh_entity::binding;
 pub use rafka_mesh_entity::NodeKind as LaunchKind;
@@ -42,143 +45,6 @@ impl fmt::Display for BuildId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
-}
-
-/// A node's lifecycle state as node-admin reports it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NodeStatus {
-    /// Born and not yet ready for traffic.
-    Pending,
-    /// Ready: it takes traffic.
-    ReadyForTraffic,
-    /// Draining: it takes no new work while it finishes what it holds.
-    Draining,
-    /// Leaving: it has announced its departure and is closing.
-    Leaving,
-    /// Unheard past the staleness floor: held, never death, and never a reason to restart or
-    /// delete it; its next digest flips it back.
-    PendingReconnect,
-    /// Commanded silence: its mesh executor is restarting this exact birth and owns bringing it
-    /// back.
-    Restarting,
-    /// True offline: the mesh primary's connect found no path on two rounds a staleness floor
-    /// apart. Inferred by an observer, never announced by the node.
-    Dead,
-    /// Deleted: identity and name released; only the node's row carries it.
-    Deleted,
-}
-
-/// The lifecycle state of a mesh or of a fabric.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ScopeStatus {
-    /// Created and not yet ready for traffic.
-    Pending,
-    /// Ready: it takes traffic.
-    ReadyForTraffic,
-    /// Leaving: a mesh whose shutdown was accepted; it is not selected for new work.
-    Leaving,
-    /// Dead: a mesh every one of whose births was proven exited; final.
-    Dead,
-    /// Degraded: the fabric primary has decided a peer mesh is reborn.
-    Degraded,
-    /// A fabric state: every mesh is ready-for-traffic and the application does its work.
-    StateSync,
-    /// A fabric state: the commit-state and open-traffic rounds run.
-    StateCommit,
-}
-
-/// The deployment provider that runs a fabric's nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
-    /// Each node is an OS process.
-    Process,
-    /// Each node is a container.
-    Container,
-}
-
-/// `NodeView`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeView {
-    /// The node's `path.name`.
-    pub name: PathName,
-    /// The node's kind.
-    pub kind: NodeKind,
-    /// The name of the mesh the node belongs to.
-    pub mesh: String,
-    /// The node's minted id.
-    pub node_id: NodeId,
-    /// The node's fabric endpoint id, once known.
-    pub endpoint_id: Option<String>,
-    /// The incarnation of the node's current birth, once launched.
-    pub incarnation_id: Option<IncarnationId>,
-    /// The deployment that runs the node, once created.
-    pub deployment_id: Option<String>,
-    /// The provider that runs the node.
-    pub provider: Option<ProviderKind>,
-    /// The node's data directory.
-    pub data_dir: Option<String>,
-    /// The node's lifecycle state.
-    pub status: NodeStatus,
-    /// Whether the node holds its mesh's primary seat.
-    pub is_primary: bool,
-    /// Whether the node holds the fabric-primary seat.
-    pub is_fabric_primary: bool,
-    /// The control API base the node advertises, for a node-admin.
-    pub admin_api_base: Option<String>,
-    /// The address the node's mesh transport is bound to.
-    pub transport_addr: Option<std::net::SocketAddr>,
-    /// The named listeners the node serves, each with its bound address.
-    #[serde(default)]
-    pub listeners: Vec<(String, std::net::SocketAddr)>,
-    /// The lifecycle state the birth declared to its authority, once applied.
-    #[serde(default)]
-    pub declared: Option<String>,
-    /// Stopped and parked: `leaving` with a live process, waiting for a start or a delete.
-    #[serde(default)]
-    pub parked: bool,
-    /// The node's CPU and RAM from its latest digest, as the answering admin holds it.
-    #[serde(default)]
-    pub load: Option<rafka_mesh_entity::NodeLoad>,
-    /// The node's mesh-channel counts from its latest digest: heard, neighbours, frames.
-    #[serde(default)]
-    pub gossip: Option<rafka_mesh_entity::GossipStats>,
-}
-
-/// `MeshView`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeshView {
-    /// The mesh's minted id.
-    pub id: String,
-    /// The mesh's name.
-    pub name: String,
-    /// The mesh's lifecycle state.
-    pub status: ScopeStatus,
-    /// The node-admin that is the mesh's primary, when one is seated.
-    pub primary_admin: Option<PathName>,
-    /// The control API base of the mesh's primary.
-    pub admin_api_base: Option<String>,
-    /// The `path.name` of every node of the mesh.
-    pub nodes: Vec<PathName>,
-}
-
-/// `FabricView`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FabricView {
-    /// The fabric's name.
-    pub name: String,
-    /// The fabric's lifecycle state.
-    pub status: ScopeStatus,
-    /// The provider that runs the fabric's nodes.
-    pub provider: ProviderKind,
-    /// The node-admin that is the fabric primary, when one is seated.
-    pub fabric_primary: Option<PathName>,
-    /// The control API base of the fabric primary.
-    pub admin_api_base: Option<String>,
-    /// The fabric's meshes.
-    pub meshes: Vec<MeshView>,
 }
 
 /// One mesh's desired counts (`POST /api/meshes`, and inside a fabric Build).
@@ -329,41 +195,6 @@ pub struct Accepted {
     pub build_id: BuildId,
     /// The attempt the request opened.
     pub attempt: u32,
-}
-
-/// One connection fact (`GET /api/connections`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConnectionView {
-    /// The entry's minted id: an open entry's id names its connection to `node.connections.delete`.
-    pub id: String,
-    /// The source node's `path.name`.
-    pub source: String,
-    /// The destination node's `path.name`.
-    pub destination: String,
-    /// `direct` or `proxy`.
-    pub kind: String,
-    /// `connected`, `disconnected` or `failed`.
-    pub state: String,
-    /// The carrier's `path.name`, for a proxy.
-    #[serde(default)]
-    pub carrier: Option<String>,
-    /// Why the connection is in its state, when known.
-    #[serde(default)]
-    pub reason: Option<String>,
-    /// When the fact was observed, in rafka-time milliseconds.
-    #[serde(default)]
-    pub logged_at_ms: u64,
-}
-
-/// The connection facts one admin holds (`GET /api/connections`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConnectionsView {
-    /// The answering admin's `path.name`.
-    pub node: String,
-    /// Whether the admin holds the complete set.
-    pub complete: bool,
-    /// The facts.
-    pub connections: Vec<ConnectionView>,
 }
 
 #[derive(Deserialize)]

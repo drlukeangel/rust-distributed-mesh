@@ -9,7 +9,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
-use rafka_node_admin_client::{BuildCarrier, Builds, CallEnd, Frame, NodeAdminClient, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
+use rafka_node_admin_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
 use rafka_node_admin_core::build_drive::{DepartureProof, Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
@@ -299,9 +299,9 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     Served { router, carrier: BuildCarrier::new(client, "mesh1.admin.1".parse().unwrap()) }
 }
 
-/// The reads of the node objects go to one admin's control API; no cell of this file reads one.
+/// The node objects over `carrier`; no cell of this file reads a view.
 fn nodes_over(carrier: &BuildCarrier) -> Nodes {
-    Nodes::new(NodeAdminClient::new("http://127.0.0.1:1"), carrier.clone())
+    Nodes::new(carrier.clone())
 }
 
 struct Rig {
