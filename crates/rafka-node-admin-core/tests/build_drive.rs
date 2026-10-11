@@ -138,6 +138,33 @@ async fn a_fabric_primary_that_yielded_its_seat_claims_and_dispatches_nothing() 
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.why.contains("leaving") && loss.to.is_none()));
 }
 
+/// CONTRACT: an admin knows the fabric-primary seat is its own by the node id it was born with,
+/// never by path.name. When its view shows another birth at its own path.name holding the seat (a
+/// successor or a retired birth of that path), the drive ends `SeatLost` naming that holder, claims
+/// no attempt and calls no executor, and the callers' streams end naming the holder.
+#[tokio::test]
+async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_holding_the_seat_dispatches_nothing() {
+    let r = rig().await;
+    let other = rafka_mesh_entity::NodeId::mint();
+    {
+        let mut t = r.env.topology.write().await;
+        let fp = t.nodes.iter_mut().find(|n| n.is_fabric_primary).expect("the view shows a fabric-primary");
+        assert_eq!(fp.name, r.env.me, "the seat is shown at this admin's own path.name");
+        fp.node_id = other.clone();
+        fp.incarnation_id = Some(IncarnationId::mint());
+    }
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match r.env.run(&drive).await {
+        DriveEnd::SeatLost(why) => assert!(why.contains("does not hold the fabric-primary seat") && why.contains(other.as_str()), "the refusal names the birth that holds the seat: {why}"),
+        other => panic!("another birth of this path holding the seat ends the drive SeatLost: {other:?}"),
+    }
+    assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
+    assert!(r.ran.0.lock().unwrap().is_empty());
+    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh1.admin.1")));
+}
+
 /// CONTRACT: the Build log's fence decides before the view does. A fabric-primary whose seat record
 /// moved is fenced by that move while its view may still show the old holder or already show the new
 /// one: either way its dispatch is refused `Fenced`, and the callers' streams end naming the admin
