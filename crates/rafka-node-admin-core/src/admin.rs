@@ -1466,7 +1466,15 @@ pub async fn reconcile_drift(
             .filter(|m| !current.topology.meshes.contains_key(&m.name))
             .filter_map(|m| m.id.as_ref().map(|id| (m, crate::mesh_leave::operation(id))))
             .filter(|(_, op)| !current.steps.iter().any(|st| &st.operation == op && st.step == crate::mesh_leave::STEP_MESH_LEFT && st.outcome == crate::build_state::StepOutcome::Complete))
-            .filter(|(m, op)| t.members().any(|n| n.mesh == m.name && n.status.is_live()) || matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::FinalExited(_))))
+            .filter(|(m, op)| {
+                t.members().any(|n| n.mesh == m.name && n.status.is_live())
+                    || matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::FinalExited(_)))
+                    // An admitted leave is resumed until its MeshLeft, whatever this view hears of the
+                    // mesh: with every admin lost its births are silent here, and the resume proves the
+                    // lost final primary's exit before it creates the mesh's one admin (R11). An
+                    // unreadable roster receipt is planned too: the resume refuses it by name.
+                    || crate::mesh_leave::admitted_of(&current.steps, op).is_some()
+            })
             .map(|(_, op)| op),
     );
     surplus.sort();
