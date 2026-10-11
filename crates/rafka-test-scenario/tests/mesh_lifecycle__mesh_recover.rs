@@ -138,7 +138,10 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     estate.artifact("nodes.json", &json!(after));
     estate.stop().await;
     let spans = estate.spans();
-    let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == b.as_str()).unwrap().clone();
+    // B was accepted, and its attempt 1 claimed, by the fabric-primary of before the loss. The cell
+    // killed that admin (SIGKILL), and its exporter writes in batches (200 ms): what it had not written
+    // went with it, so nothing here reads that admin's spans unless it decided the takeover itself.
+    let accepting = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("a fabric-primary before the loss");
     let takeover = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|r| {
@@ -150,9 +153,10 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     // The attempt context lives with the fabric-primary that accepted B: a takeover attempt that
     // admin decided descends from B's request; one decided after the seat moved starts its own
     // trace (ruling R-X1: the context is the accepting primary's local record).
-    let accepting = claim_decider(&spans, b.as_str(), "1").expect("attempt 1 of B was claimed");
     let attempt = takeover["attributes"]["attempt"].as_str().map(String::from).unwrap_or_else(|| takeover["attributes"]["attempt"].to_string());
-    if claim_decider(&spans, b.as_str(), &attempt).is_none_or(|d| d == accepting) {
+    let decider = claim_decider(&spans, b.as_str(), &attempt).unwrap_or_else(|| panic!("the claim of takeover attempt {attempt} of {b} has its decision span"));
+    if decider == accepting {
+        let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == b.as_str()).expect("B's request").clone();
         assert!(descends_from(&spans, &takeover, &accepted), "a takeover the accepting fabric-primary decided descends from B's request");
     } else {
         assert_eq!(takeover["parent_span_id"].as_str().unwrap_or(""), "", "a takeover decided after the seat moved starts its own trace: {takeover}");
@@ -168,5 +172,5 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
         let held = ready["attributes"]["runtime_facts_held"].as_u64().or_else(|| ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);
         assert!(held >= 5, "{} held {held} runtime facts before Ready: {ready}", admin["name"]);
     }
-    estate.record_trace_url(accepted["trace_id"].as_str().unwrap_or(""));
+    estate.record_trace_url(takeover["trace_id"].as_str().unwrap_or(""));
 }
