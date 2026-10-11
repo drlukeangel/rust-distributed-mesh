@@ -6,6 +6,7 @@
 
 pub use rafka_mesh_entity::launch;
 pub mod node;
+mod taskdump;
 /// The app's `hydrate_before_ready` hook and everything it is handed.
 pub use rafka_node_admin_core::app_hydration;
 pub mod node_rpc;
