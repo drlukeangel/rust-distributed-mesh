@@ -339,6 +339,9 @@ where
 
 /// What the watch drives.
 pub struct Watch {
+    /// The admin's park gate: this watch is held at its own wait while the admin is parked, never
+    /// where it reads the view.
+    pub gate: crate::park_gate::ParkGate,
     /// This admin's path.name.
     pub me: PathName,
     /// This admin's NodeId.
@@ -381,6 +384,8 @@ pub async fn run(w: Watch) {
             _ = w.membership.concerns().heard() => {}
             _ = tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()) => {}
         }
+        // Held here while the admin is parked: its own wait, outside every lock.
+        w.gate.opened().await;
         let heard = w.membership.concerns().drain();
         let view = w.topology.read().await.clone();
         let plan = plan(&view, &w.me, &me_birth, &heard, &mut said);

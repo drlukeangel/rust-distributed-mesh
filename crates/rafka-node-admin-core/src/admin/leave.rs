@@ -345,6 +345,9 @@ impl AdminRunner {
             StatusReply::Applied | StatusReply::AlreadyApplied => self.records.wake.poke(),
             refused => return refused,
         }
+        // The same commit applies the row to the view: the mesh is projected leaving now, and the
+        // view change wakes the hierarchy loop, which announces it on the mesh's MeshStatus send.
+        self.refresh_view().await;
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
         let resend = match self.leave_runs.admit(&key, &owner) {
             crate::mesh_leave::LeaveAdmission::Running => return StatusReply::AlreadyApplied,

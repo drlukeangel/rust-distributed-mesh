@@ -721,6 +721,21 @@ impl NodeRpcServer {
 }
 
 impl ProtocolHandler for NodeRpcServer {
+    /// The handshake's end, as iroh's default awaits it, written to the transport diagnostic file
+    /// (R-QH1): the remote's address, how long the handshake took and, on failure, the full error
+    /// chain. Observation only: the outcome is returned as is.
+    async fn on_accepting(&self, accepting: iroh::endpoint::Accepting) -> Result<Connection, AcceptError> {
+        let remote_addr = accepting.remote_addr();
+        let started = std::time::Instant::now();
+        let r = accepting.await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        match &r {
+            Ok(c) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "accept-completed", ?remote_addr, peer = %c.remote_id(), connection = c.stable_id(), elapsed_ms, "the accepted handshake completed"),
+            Err(e) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "accept-failed", ?remote_addr, elapsed_ms, error = %format_args!("{e:#}"), error_debug = ?e, "the accepted handshake failed"),
+        }
+        Ok(r?)
+    }
+
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
         let id = connection.stable_id();
