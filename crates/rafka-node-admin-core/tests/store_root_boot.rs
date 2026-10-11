@@ -39,7 +39,7 @@ fn boot(name: &str, env: &[(&str, String)]) -> (std::process::ExitStatus, String
 /// CONTRACT (R14 item 8; acceptance "a missing store_dir is refused by name at boot"): a node-admin
 /// started with no `RDM_STORE_DIR` is refused by name before it boots (exit 2, the variable named);
 /// one whose `RDM_STORE_DIR` does not exist is refused at boot naming the path and the cause (exit
-/// 3), its boot span carrying the refusal; neither creates the store_dir nor writes a store in its
+/// 3), its boot's storage step naming the store_dir it refused; neither creates the store_dir nor writes a store in its
 /// data dir.
 #[test]
 fn a_node_admin_with_no_usable_store_dir_is_refused_by_name_at_boot() {
@@ -55,7 +55,8 @@ fn a_node_admin_with_no_usable_store_dir_is_refused_by_name_at_boot() {
     assert!(stderr.contains(&named), "{stderr}");
     assert!(!missing.exists(), "the boot created the store_dir it was refused for");
     assert!(!data_dir.join("fabric").exists() && !data_dir.join("meshes").exists() && !data_dir.join("connections").exists(), "a refused boot fell back to its data dir");
-    let boot_span = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-deployment").unwrap_or_else(|| panic!("the refused boot left no boot span: {spans:?}"));
+    assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.node.create.via-deployment"), "the refused process left no deployment span: {spans:?}");
+    let boot_span = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-boot").unwrap_or_else(|| panic!("the refused boot left no boot span: {spans:?}"));
     println!("trace_id={}", boot_span["trace_id"].as_str().unwrap_or(""));
     let refused = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("no storage step span: {spans:?}"));
     assert_eq!(refused["trace_id"], boot_span["trace_id"], "the storage step is the boot's own story");
