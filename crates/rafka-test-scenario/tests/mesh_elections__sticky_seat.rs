@@ -370,6 +370,7 @@ async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_deci
     let (mut estate, nodes) = fabric(cell).await;
     let p = fabric_primary(&nodes).expect("one fabric primary");
     let mesh = s(&node(&nodes, &p)["mesh"]);
+    let p_birth = node(&nodes, &p)["incarnation_id"].clone();
     let n_name = if p.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
     estate.admin = s(&node(&nodes, &n_name)["admin_api_base"]);
     let grow = json!({"fabric": "fabric1", "meshes": [
@@ -381,14 +382,26 @@ async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_deci
     let (status, r) = estate.post(&format!("/api/nodes/{p}/replace"), &json!({})).await;
     assert_eq!(status, 202, "{r}");
     let all: BTreeSet<String> = names().into_iter().chain(["mesh2.rpc.4".to_string(), "mesh2.rpc.5".to_string()]).collect();
-    wait_for("the grown fabric is settled under the new holder", Duration::from_secs(180), || async {
+    // The replace is part of the story: the fabric is stopped only once P's path is ready again under
+    // a new birth, so the fabric's own shutdown never races the seat transfer.
+    wait_for("the grown fabric is settled under the new holder and P's path is a new birth", Duration::from_secs(180), || async {
         let ns = estate.nodes().await;
-        (all.iter().all(|n| ns.iter().any(|x| x["name"] == n.as_str() && x["status"] == "ready-for-traffic")) && ns.iter().filter(|x| x["is_fabric_primary"] == true).count() == 1).then_some(())
+        let replaced = ns.iter().any(|x| x["name"] == p.as_str() && x["incarnation_id"] != p_birth && x["status"] == "ready-for-traffic");
+        (replaced && all.iter().all(|n| ns.iter().any(|x| x["name"] == n.as_str() && x["status"] == "ready-for-traffic")) && ns.iter().filter(|x| x["is_fabric_primary"] == true).count() == 1).then_some(())
     })
     .await;
     estate.stop().await;
     let spans = estate.spans();
-    let fence = named(&spans, "rdm.node_admin.build.update.via-seat-fence").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "fenced") == "true").min_by_key(|sp| at_ns(sp)).cloned().expect("P fenced");
+    // R-EL1a: P's seat row is the fence and the commit, one write. The fence is the one P sets at
+    // that row (`via-seat-fence-at-handover`), and the row (`via-seats-committed`, not a replay)
+    // follows it before N is answered; the yield that follows finds the log already fenced.
+    let replace = s(&r["build_id"]);
+    let fence = named(&spans, "rdm.node_admin.build.update.via-seat-fence-at-handover").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "fenced") == "true").min_by_key(|sp| at_ns(sp)).cloned().expect("P's seat row fenced its Build log");
+    let row: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seats-committed").into_iter().filter(|sp| attr(sp, "build_id") == replace && attr(sp, "replay") == "false").collect();
+    assert_eq!(row.len(), 1, "P wrote one seat row for the replace: {row:#?}");
+    assert!(at_ns(&fence) <= at_ns(row[0]), "the fence is set at the row, before it is answered: {fence:#?} {row:#?}");
+    let installed = named(&spans, "rdm.node_admin.seat.update.via-seats-installed").into_iter().filter(|sp| attr(sp, "build_id") == replace).map(at_ns).min().expect("N installed the committed seats");
+    assert!(sp_end(row[0]) <= installed, "P's row was written before N installed the seats");
     let (f_start, f_end) = (at_ns(&fence), sp_end(&fence));
     let mine: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) < sp_end(&fence) + 3_000_000_000).collect();
     for sp in &mine {
