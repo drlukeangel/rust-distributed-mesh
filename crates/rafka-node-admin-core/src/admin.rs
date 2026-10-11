@@ -579,6 +579,19 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
     crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), lost }
 }
 
+/// Where this birth's Build log reads its authority: the committed fabric seat record held in
+/// `book`, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
+/// lost set every election takes, [`incumbency_of`]) and named from the digests `book` holds.
+pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId)) -> crate::fabric_builds::SeatSource {
+    let changed = Some(book.seats.subscribe());
+    let (book, records) = (book.clone(), records.clone());
+    let read = Arc::new(move || {
+        let incumbency = incumbency_of(&book, &records);
+        crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, |id| book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()))
+    });
+    crate::fabric_builds::SeatSource { read, changed }
+}
+
 /// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
 /// `t` gives it (`live`: a cut-off view authorizes nothing) whose record names another birth, at the
 /// next epoch over that record. The record is the one `t` was decided against (`decided`): a seat
@@ -1217,7 +1230,7 @@ fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), String>) {
 }
 
 /// The gates of the fabric-primary's drive: the membership's cut-off rule and the Build log's
-/// sticky seat fence.
+/// authority, read from the committed fabric seat record.
 struct SeatGate {
     membership: Membership,
     builds: Arc<FabricBuildStateAdapter>,
@@ -3077,9 +3090,10 @@ impl Running {
     }
 
     async fn leave_with(self, parked: bool) {
-        // A leaving holder yields before it says anything: its Build log decides nothing after
-        // this, and the committed facts are with the neighbours before the new holder acts.
-        self.builds.yield_seat("leaving", None).await;
+        // A leaving admin hands its committed Build facts to the neighbours before it says
+        // anything. A seat it held moved before its leave (TakeSeats, TakeFabricPrimary), and that
+        // moved record is what ends its Build authority.
+        self.builds.hand_over_facts("leaving", None).await;
         self.executor.abort();
         self.hierarchy.abort();
         self.publisher.abort();
@@ -3614,8 +3628,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
     // its entry pull or the fabric control topic.
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
+    let records = Arc::new(Records::default());
     let builds = Arc::new(
-        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), wiring.catch_up_seam.take())
+        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone())), wiring.catch_up_seam.take())
             .await
             .map_err(|e| e.to_string())?,
     );
@@ -3734,7 +3749,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         b.check_image(provider_image(policy.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
     }
 
-    let records = Arc::new(Records::default());
     // A restart that enters its mesh from its durable map elects nobody until its entry read has
     // told it who holds the seats.
     records.set_entering(entering_existing_mesh && cfg.launch.is_none());
@@ -3901,15 +3915,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         records: records.clone(),
         contacts: crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) },
         handovers: Default::default(),
-        fence_builds: {
-            let builds = builds.clone();
-            Arc::new(move |by: String, to: Option<String>| {
-                let builds = builds.clone();
-                Box::pin(async move {
-                    builds.fence_seat(&by, to).await;
-                })
-            })
-        },
+        decisions: builds.decisions(),
         claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
         project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
     });

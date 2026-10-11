@@ -49,8 +49,8 @@ pub trait Gate: Send + Sync {
     fn frozen(&self) -> Option<String> {
         None
     }
-    /// Resolves once the Build log's seat fence is set (never, for a gate with no fence): a drive
-    /// waiting on an executor's run ends at the fence, not when that run's stream does.
+    /// Resolves once the seat record ends this admin's authority (never, for a gate with no seat):
+    /// a drive waiting on an executor's run ends there, not when that run's stream does.
     async fn fence_set(&self) {
         std::future::pending::<()>().await
     }
@@ -468,26 +468,19 @@ impl DriveEnv {
         end
     }
 
-    /// The admin the view names as the fabric-primary when it is not this birth (told apart by the
-    /// node id this admin was born with, never by path.name).
-    async fn seat_elsewhere(&self) -> Option<String> {
-        self.topology.read().await.fabric_primary().filter(|n| n.node_id != self.door.node_id).map(|n| n.name.to_string())
-    }
-
     /// The seat, the cut-off rule and the fence: `Some` when this admin may not claim or dispatch now.
-    /// The Build log's sticky fence is checked before the view: it is set by the committed seat move
-    /// itself, while the view follows it.
+    /// The committed fabric seat record is read first: it is the fence (node-rpc-envelope.md
+    /// TakeSeats), and it names the holder this admin's authority ended at, while the view follows it.
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
         if let Err(e) = self.gate.fence().await {
             let why = e.to_string();
-            // A seat move names the new holder in the fence itself (the handover door's commit and
-            // the yield on the moved record both name it); a leaving holder's fence names none, and
-            // the holder this admin's view shows is named.
+            // The record names the holder (its path.name from the digest book); none only when no
+            // digest of that birth is held, and the reason says so.
             let to = match e {
-                BuildStateError::Fenced { to: Some(to), .. } => Some(to),
-                _ => self.seat_elsewhere().await,
+                BuildStateError::Fenced { to, .. } => to,
+                _ => None,
             };
-            tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat was yielded"));
+            tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
             drive.lose_seat(SeatLoss { why: why.clone(), to });
             return Some(DriveEnd::SeatLost(why));
         }
