@@ -271,6 +271,16 @@ pub struct BuildProjection {
 }
 
 impl BuildProjection {
+    /// The attempt a drive of this Build covers as it reads now: the current attempt while it runs or
+    /// once it completed; the next one while it waits for its claim (an attempt opened on it, a
+    /// complete Build reopened included, or the hand-off of the current one) or after it failed.
+    pub fn attempt_to_drive(&self) -> u32 {
+        match self.state {
+            BuildState::Running | BuildState::Complete => self.attempt,
+            BuildState::Pending | BuildState::Failed => self.attempt + 1,
+        }
+    }
+
     /// Whether `attempt` carried exactly `action`.
     pub fn carried(&self, attempt: u32, action: &AttemptAction) -> bool {
         self.attempt_actions.get(&attempt) == Some(action)
