@@ -6,7 +6,8 @@
 
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::http::{ControlPlane, Recovery, Refusal};
+use rafka_node_admin_core::build_state::AttemptReason;
+use rafka_node_admin_core::http::{ActionKind, ControlPlane, Recovery, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use std::sync::Arc;
@@ -159,6 +160,69 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     }
 }
 
+/// CONTRACT (node-recovery.md:5-7 "Node recovery is RDM's drift reconciliation for a member that
+/// exits outside any workflow" and "Failure and receipts": "An exit during a workflow belongs to
+/// that workflow"): a birth a `replace-node` attempt of the accepted Build deleted (its
+/// `NodeDeleted` receipt names the exact birth, and the operation completed) exited inside that
+/// workflow. A recovery submitted for it afterwards (the mesh-primary's tickle proved it TRUE
+/// OFFLINE and the provider proved it exited: the replace terminated it) answers `AlreadyApplied`,
+/// naming the replace attempt, from the Build log keyed on the exited birth, and opens nothing.
+/// Must NOT happen: a recovery attempt opened
+/// for a birth a workflow already deleted, which deletes it again and creates over the data dir
+/// that workflow released (gate 71b06a15, mesh_identity__canonical_ids: `recover-node:mesh2.rpc.2:
+/// NodeDeleting failed: the inherited data dir .../mesh2.rpc.2-ekne99d5g23b does not exist`).
+#[tokio::test]
+async fn a_recovery_submit_for_a_birth_a_replace_deleted_is_answered_already_applied_by_the_replace() {
+    crate::enable_callsites();
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-3016-replaced-birth", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let t = view();
+    let path: PathName = "mesh1.rpc.2".parse().unwrap();
+    let replaced = t.node(&path).unwrap().clone();
+    let (node_id, birth) = (replaced.node_id.clone(), replaced.incarnation_id.clone().unwrap());
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
+    let b0 = cp.accepted.build_id().await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+    // `mesh1.rpc.2` is replaced: attempt 2 terminates the birth, creates its successor at the
+    // path.name and deletes the birth.
+    let replace = cp.open_attempt("build.create", AttemptReason::Replace, path.clone(), ActionKind::Replace, Some(birth.clone())).await.expect("the replace is admitted");
+    assert_eq!((replace.build_id.clone(), replace.attempt), (b0.clone(), 2));
+    builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
+    for r in deletion_receipts("replace-node", &b0, 2, &path, &node_id, &birth, "mesh1.admin.1") {
+        builds.append_step_receipt(&r).await.unwrap();
+    }
+    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Converged }).await.unwrap();
+    // The mesh-primary's tick read the birth silent before the replace removed it: its tickle ends
+    // TRUE OFFLINE and the provider proves the exit (the replace terminated it).
+    cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
+    let before = opened(&builds.facts().await.unwrap());
+
+    let submitted = cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await;
+    assert!(
+        matches!(&submitted, Ok(Recovery::AlreadyApplied(o)) if *o == replace),
+        "the recovery of a birth the replace deleted names the replace attempt and opens nothing: {submitted:?}"
+    );
+    assert_eq!(opened(&builds.facts().await.unwrap()), before, "no recovery attempt is opened for a birth a workflow deleted");
+
+    let applied = capture.spans("rdm.node_admin.build.reject.via-recovery-already-applied");
+    assert_eq!(
+        applied.iter().map(|(_, a)| a.get("operation").cloned().unwrap_or_default()).collect::<Vec<_>>(),
+        vec![format!("replace-node:{path}")],
+        "the answer names the workflow operation the birth's exit belongs to"
+    );
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-recovery-already-applied"] {
+        for (trace_id, attrs) in capture.spans(name) {
+            eprintln!("span {name} trace_id={trace_id} {attrs:?}");
+        }
+    }
+}
+
 /// A node-admin on the fabric's Build topic: its own endpoint, gossip and Build log.
 async fn gossip_admin(name: &str, fabric: &FabricId, peers: Vec<iroh::EndpointAddr>) -> (iroh::Endpoint, iroh::protocol::Router, Arc<rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter>) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -205,7 +269,15 @@ async fn until(what: &str, builds: &dyn BuildStateAdapter, id: &rafka_node_admin
 /// output; the create's steps between them and `Complete` are elided (they name the new node, not
 /// the exited one).
 fn recovery_receipts(build: &rafka_node_admin_core::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
-    let operation = format!("recover-node:{path}");
+    deletion_receipts("recover-node", build, attempt, path, node_id, birth, executor)
+}
+
+/// The step receipts of node workflow `kind` (`recover-node`, `replace-node`, `retire-node`) at
+/// `path` that deleted the exact birth: `NodeDeleting` and `NodeDeleted` carry the node.delete's
+/// lifecycle operation naming that birth, as every deleting pipeline writes them; `Complete` ends
+/// the operation. The steps between them name the successor, never the deleted birth: elided.
+fn deletion_receipts(kind: &str, build: &rafka_node_admin_core::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
+    let operation = format!("{kind}:{path}");
     let op = rafka_mesh_entity::LifecycleOp { build_id: build.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
     let receipt = |step: &str, output: Option<serde_json::Value>| BuildStepReceipt { build_id: build.clone(), attempt, operation: operation.clone(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor.into()) };
     vec![

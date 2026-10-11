@@ -1323,6 +1323,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// CONTRACT (node-recovery.md:5-7, recovery is for "a member that exits outside any workflow";
+    /// "Failure and receipts": "An exit during a workflow belongs to that workflow"): a birth a
+    /// `replace-node` or `retire-node` operation deleted (its `NodeDeleted` receipt names the exact
+    /// birth, and the operation's `Complete` at that attempt or later is held) is answered by the
+    /// recovery index as that workflow's attempt, folded on append, journal replay and absorb alike.
+    /// Must NOT happen: `None` for a birth a workflow deleted, which admits a recovery of it.
+    #[tokio::test]
+    async fn a_birth_a_replace_or_a_retire_deleted_is_answered_by_that_workflow() {
+        let path: crate::model::PathName = "mesh2.rpc.2".parse().unwrap();
+        let receipt = |kind: &str, attempt: u32, step: &str, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId| BuildStepReceipt {
+            build_id: BuildId("b1".into()),
+            attempt,
+            operation: format!("{kind}:{path}"),
+            step: step.into(),
+            outcome: StepOutcome::Complete,
+            output: (step == "NodeDeleted").then(|| {
+                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt, operation: format!("{kind}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+            }),
+            executor: Some("mesh2.admin.1".into()),
+        };
+        let replaced = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        let retired = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        let dir = tmp();
+        {
+            let j = FileJournal::open(&dir).unwrap();
+            j.publish_accepted(&intent("b1")).await.unwrap();
+            j.append_step_receipt(&receipt("replace-node", 2, "NodeDeleted", &replaced.0, &replaced.1)).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "deleted, the replace not complete: its next attempt finishes it");
+            j.append_step_receipt(&receipt("replace-node", 2, "Complete", &replaced.0, &replaced.1)).await.unwrap();
+            j.append_step_receipt(&receipt("retire-node", 3, "NodeDeleted", &retired.0, &retired.1)).await.unwrap();
+            j.append_step_receipt(&receipt("retire-node", 3, "Complete", &retired.0, &retired.1)).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2)), "own append: the replace that deleted the birth");
+            assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId("b1".into()), 3)), "own append: the retire that deleted the birth");
+        }
+        let j = FileJournal::open(&dir).unwrap(); // the admin restarted
+        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2)), "journal replay");
+        assert_eq!(j.recovery_of(&"mesh2.rpc.1".parse().unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
+        let m = MemoryBuildStateAdapter::new();
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("replace-node", 2, "Complete", &replaced.0, &replaced.1))]);
+        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "a Complete alone names no birth");
+        m.absorb(&[BuildFact::Step(receipt("replace-node", 2, "NodeDeleted", &replaced.0, &replaced.1))]);
+        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2)), "absorbed, in either order");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn a_corrupt_journal_line_is_named() {
         let dir = tmp();
