@@ -3693,7 +3693,24 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             }
         })
     };
-    let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task];
+    // A birth the book shows superseded (a later incarnation of its node held, or its node
+    // departed): the declared-state rows this admin put for it as an authority are tombstoned.
+    let superseded_rows_task = {
+        let (book, authority) = (membership.book.clone(), authority.clone());
+        park_gate.spawn(async move {
+            let mut births = book.birth_changes();
+            loop {
+                births.borrow_and_update();
+                if let Some(a) = authority.get() {
+                    a.retire_superseded(&book).await;
+                }
+                if births.changed().await.is_err() {
+                    return;
+                }
+            }
+        })
+    };
+    let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task, superseded_rows_task];
     tasks.extend(tasks_early);
     // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
     // primary reborn into its mesh from its durable map): connect to a local node, read its

@@ -52,6 +52,8 @@ pub mod record_store;
 pub mod shutdown;
 pub(crate) mod status_declare;
 pub mod status_rpc;
+#[cfg(test)]
+pub(crate) mod span_capture;
 pub mod connections_writer;
 pub mod storage;
 pub mod status_storage;
