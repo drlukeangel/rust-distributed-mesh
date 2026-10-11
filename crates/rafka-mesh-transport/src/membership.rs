@@ -3600,10 +3600,13 @@ impl DigestBook {
     }
 
     /// The restart overlays the Build facts name open, applied as the facts' truth: each is open here
-    /// until its operation's `Complete` is receipted, whatever a rejoin digest did to it before, and a
-    /// restart overlay this book holds that the facts no longer name is closed. This is the lifetime
-    /// the aggregate carries a restart for: from its pre-event to the end of the operation.
-    pub fn restarts_from_facts(&self, open: &[LifecycleOp]) {
+    /// until its operation's `Complete` is receipted, whatever a rejoin digest did to it before. A
+    /// restart overlay this book holds closes only on the facts' word: its operation's `Complete` is
+    /// receipted in its Build (`completed`, by Build and operation), or its Build is forgotten
+    /// (`forgotten`). A hold the facts do not name yet (a `NodeRestarting` frame or a peer's summary
+    /// arrived before its receipts) stays open; no other fact closes it. This is the lifetime the
+    /// aggregate carries a restart for: from its pre-event to the end of the operation.
+    pub fn restarts_from_facts(&self, open: &[LifecycleOp], completed: &BTreeSet<(String, String)>, forgotten: &BTreeSet<String>) {
         {
             let mut ended = self.ended_overlays.lock().unwrap();
             for op in open.iter().filter(|o| o.is_restart()) {
@@ -3613,13 +3616,12 @@ impl DigestBook {
         for op in open.iter().filter(|o| o.is_restart()) {
             self.restarting(op.clone());
         }
-        let keep: BTreeSet<(String, u32, String)> = open.iter().filter(|o| o.is_restart()).map(|o| o.key()).collect();
         let mut cleared = Vec::new();
         {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();
             in_flight.retain(|k, o| {
-                let gone = o.is_restart() && !keep.contains(k);
+                let gone = o.is_restart() && (completed.contains(&(o.build_id.clone(), o.operation.clone())) || forgotten.contains(&o.build_id));
                 if gone {
                     ended.insert(k.clone());
                     cleared.push(o.clone());
@@ -3640,7 +3642,7 @@ impl DigestBook {
                 attempt = op.attempt,
                 operation = %op.operation,
             )
-            .in_scope(|| tracing::info!("the Build facts no longer name the restart open: its Complete is receipted (or its Build was forgotten)"));
+            .in_scope(|| tracing::info!("the Build facts end the restart: its Complete is receipted (or its Build was forgotten)"));
         }
     }
 
@@ -4441,6 +4443,35 @@ mod tests {
         assert!(book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1")));
         assert!(book.in_flight().is_empty(), "the departure cleared the stop overlay");
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a departed node never returns");
+    }
+
+    /// CONTRACT (membership.rs `restarts_from_facts`; node-restart.md: no event is inferred from
+    /// gossip): the facts end a restart hold only by its own operation's `Complete` in its own Build,
+    /// or by its Build being forgotten. Must NOT happen: a hold the facts do not name yet closed by a
+    /// recomputation, or closed by the same operation completing in another Build.
+    #[test]
+    fn the_facts_close_a_restart_hold_only_by_its_complete_or_its_forgotten_build() {
+        let book = DigestBook::default();
+        let (none, no_build): (BTreeSet<(String, String)>, BTreeSet<String>) = (BTreeSet::new(), BTreeSet::new());
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let restart = op(&id, &inc, "restart-node:mesh1.rpc.1");
+        assert!(book.restarting(restart.clone()));
+        book.restarts_from_facts(&[], &none, &no_build);
+        assert!(book.restart_of(id.as_str(), &inc).is_some(), "facts that do not name the hold yet leave it open");
+        let elsewhere: BTreeSet<(String, String)> = [("b2".to_string(), restart.operation.clone())].into();
+        book.restarts_from_facts(&[], &elsewhere, &no_build);
+        assert!(book.restart_of(id.as_str(), &inc).is_some(), "the same operation completing in another Build is not its Complete");
+        let own: BTreeSet<(String, String)> = [(restart.build_id.clone(), restart.operation.clone())].into();
+        book.restarts_from_facts(&[], &own, &no_build);
+        assert!(book.restart_of(id.as_str(), &inc).is_none(), "its own Complete closes it");
+
+        let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
+        let forgotten_one = LifecycleOp { build_id: "b3".into(), ..op(&id2, &inc2, "restart-node:mesh1.rpc.2") };
+        assert!(book.restarting(forgotten_one.clone()));
+        book.restarts_from_facts(&[], &none, &["b1".to_string()].into());
+        assert!(book.restart_of(id2.as_str(), &inc2).is_some(), "another Build forgotten leaves it open");
+        book.restarts_from_facts(&[], &none, &["b3".to_string()].into());
+        assert!(book.restart_of(id2.as_str(), &inc2).is_none(), "its Build forgotten closes it");
     }
 
     /// CONTRACT: an overlay that ended because its birth rejoined stays ended: the primary re-applying

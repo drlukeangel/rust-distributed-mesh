@@ -473,6 +473,9 @@ pub(crate) fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> InFl
     let mut out = InFlight::default();
     for p in builds.values() {
         for s in &p.steps {
+            if s.step == "Complete" && s.outcome == StepOutcome::Complete && s.operation.starts_with("restart-node:") {
+                out.restarts_completed.insert((s.build_id.0.clone(), s.operation.clone()));
+            }
             if s.outcome != StepOutcome::Complete || (s.step != "NodeDeleting" && s.step != "NodeRestarting") {
                 continue;
             }
@@ -513,6 +516,22 @@ pub struct InFlight {
     pub ops: Vec<rafka_mesh_entity::LifecycleOp>,
     /// Completed steps whose recorded operation cannot be read.
     pub unrecognised: Vec<UnrecognisedStep>,
+    /// The restarts whose `restart-node:<path>` `Complete` is receipted, by (Build, operation): the
+    /// facts end every hold of that operation in that Build.
+    pub restarts_completed: std::collections::BTreeSet<(String, String)>,
+}
+
+/// The Builds the facts forgot: each a `Forget` fact names whose Build the fold no longer holds
+/// (`fold` drops a Build on its `Forget` once it is complete or failed). An overlay of such a Build
+/// is no longer named by any fact.
+pub(crate) fn forgotten_builds(facts: &[BuildFact], builds: &BTreeMap<BuildId, BuildProjection>) -> std::collections::BTreeSet<String> {
+    facts
+        .iter()
+        .filter_map(|f| match f {
+            BuildFact::Forget { build_id } if !builds.contains_key(build_id) => Some(build_id.0.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A completed `NodeDeleting`/`NodeRestarting` step whose recorded operation cannot be read.
@@ -1153,6 +1172,17 @@ mod tests {
         facts.push(with("restart-node:mesh1.rpc.3", "Complete", &c));
         assert_eq!(in_flight_ops(&fold(&facts)).ops, vec![b], "the restart's create half completing closes it");
         assert!(in_flight_ops(&fold(&facts)).unrecognised.is_empty());
+        assert_eq!(
+            in_flight_ops(&fold(&facts)).restarts_completed,
+            [("b1".to_string(), "restart-node:mesh1.rpc.3".to_string())].into(),
+            "the restart's Complete is named by Build and operation: it ends that restart's hold and no other"
+        );
+
+        // A Build is forgotten once the fold drops it on its `Forget`; a `Forget` of a Build still in
+        // flight leaves it held, so it names nothing forgotten.
+        facts.push(BuildFact::Forget { build_id: BuildId("b1".into()) });
+        facts.push(BuildFact::Forget { build_id: BuildId("b9".into()) });
+        assert_eq!(forgotten_builds(&facts, &fold(&facts)), ["b9".to_string()].into(), "only a Build the fold no longer holds is forgotten");
     }
 
     /// CONTRACT: a completed pre-event step whose recorded operation this build cannot read (a row

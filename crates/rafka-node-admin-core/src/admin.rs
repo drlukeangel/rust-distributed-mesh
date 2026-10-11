@@ -3264,7 +3264,8 @@ pub fn rpc_server(
 type NamedSteps = HashSet<(String, u32, String, String)>;
 
 /// Apply the lifecycle overlays the facts of `log` name open to `book`: the restarts as the facts'
-/// truth (`DigestBook::restarts_from_facts`), every other open operation as a hold, and every
+/// truth (`DigestBook::restarts_from_facts`: open while named open, closed only by its own `Complete`
+/// receipt or its Build's forgetting), every other open operation as a hold, and every
 /// pre-event step this build cannot read refused by name, once.
 async fn overlays_from_facts(log: &dyn crate::build_state::LocalBuildLog, book: &DigestBook, named: &mut NamedSteps) {
     let facts = match log.facts().await {
@@ -3275,8 +3276,9 @@ async fn overlays_from_facts(log: &dyn crate::build_state::LocalBuildLog, book: 
             return;
         }
     };
-    let in_flight = crate::build_state::in_flight_ops(&crate::build_state::fold(&facts));
-    book.restarts_from_facts(&in_flight.ops);
+    let builds = crate::build_state::fold(&facts);
+    let in_flight = crate::build_state::in_flight_ops(&builds);
+    book.restarts_from_facts(&in_flight.ops, &in_flight.restarts_completed, &crate::build_state::forgotten_builds(&facts, &builds));
     for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
         book.deleting(op);
     }
