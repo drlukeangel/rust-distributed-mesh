@@ -469,10 +469,29 @@ impl Investigations {
         while probes.try_join_next().is_some() {}
         for s in &steps {
             if let Step::Probe { n, unheard_ms, ticket } = *s {
-                let (me, ladder, landed, mesh, probe) = (self.me.clone(), self.ladder.clone(), self.landed.clone(), mesh.to_string(), start(n));
+                // The probe's span opens when it is asked and its calls are its children; what it
+                // found is recorded on it when it ends.
+                let empty = tracing::field::Empty;
+                let span = tracing::info_span!(
+                    "rdm.node_admin.mesh.update.via-probe",
+                    node = %self.me,
+                    mesh = %mesh,
+                    probe = n,
+                    seat_record = empty,
+                    target = empty,
+                    member = empty,
+                    carrier = empty,
+                    outcome = empty,
+                    detail = empty,
+                    iroh_known_addrs = empty,
+                    iroh_active_addrs = empty,
+                    unheard_ms,
+                );
+                let (me, ladder, landed, mesh) = (self.me.clone(), self.ladder.clone(), self.landed.clone(), mesh.to_string());
+                let probe = tracing::Instrument::instrument(start(n), span.clone());
                 probes.spawn(async move {
                     let found = probe.await;
-                    land(&me, &ladder, &mesh, ticket, n, unheard_ms, found);
+                    land(&me, &span, &ladder, &mesh, ticket, n, unheard_ms, found);
                     landed.notify_one();
                 });
             }
@@ -481,24 +500,19 @@ impl Investigations {
     }
 }
 
-/// Probe `n` of `mesh`'s investigation `ticket` ended with `found`: record it and say what it found.
-fn land(me: &str, ladder: &Mutex<Ladder>, mesh: &str, ticket: u64, n: u8, unheard_ms: u64, found: Found) {
+/// Probe `n` of `mesh`'s investigation `ticket` ended with `found`: record it, and say what it
+/// found on its span (`span`, opened when it was asked).
+fn land(me: &str, span: &tracing::Span, ladder: &Mutex<Ladder>, mesh: &str, ticket: u64, n: u8, unheard_ms: u64, found: Found) {
     let stop = ladder.lock().unwrap().probed(mesh, ticket, n, found.outcome, unheard_ms);
-    tracing::info_span!(
-        "rdm.node_admin.mesh.update.via-probe",
-        node = %me,
-        mesh = %mesh,
-        probe = n,
-        target = %found.target,
-        member = %found.members,
-        carrier = %found.carrier,
-        outcome = found.outcome.as_str(),
-        detail = %found.detail,
-        iroh_known_addrs = %found.iroh_known,
-        iroh_active_addrs = %found.iroh_active,
-        unheard_ms,
-    )
-    .in_scope(|| tracing::info!("one probe of the unheard mesh"));
+    span.record("seat_record", found.seat_record.as_str());
+    span.record("target", found.target.as_str());
+    span.record("member", found.members.as_str());
+    span.record("carrier", found.carrier.as_str());
+    span.record("outcome", found.outcome.as_str());
+    span.record("detail", found.detail.as_str());
+    span.record("iroh_known_addrs", found.iroh_known.as_str());
+    span.record("iroh_active_addrs", found.iroh_active.as_str());
+    span.in_scope(|| tracing::info!("one probe of the unheard mesh"));
     if let Some(Step::Stop { unheard_ms }) = stop {
         verdict(me, mesh, found.outcome.as_str(), unheard_ms, "the node-admin answered: the investigation stops");
     }
@@ -576,6 +590,8 @@ pub(crate) struct Found {
     pub(crate) iroh_known: String,
     /// The addresses iroh used for each node-admin asked, as `iroh_known`.
     pub(crate) iroh_active: String,
+    /// The mesh-primary seat record the probe ordered its node-admins by, or `none` held.
+    pub(crate) seat_record: String,
 }
 
 /// The node-admins of `mesh` a probe carries `ProbeNodeState` to, in the order it asks them: the
@@ -615,9 +631,11 @@ pub(crate) fn fold_admin_outcomes(outcomes: &[ProbeOutcome]) -> ProbeOutcome {
 /// when that fails, Forwarded through a member that answered a Ping. Active connections are asked first, then path order; probe 2 prefers a member probe 1
 /// did not use.
 async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
-    let admins = admins_in_probe_order(view, mesh, w.membership.book.seats.mesh(mesh).as_ref());
+    let record = w.membership.book.seats.mesh(mesh);
+    let seat_record = record.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
+    let admins = admins_in_probe_order(view, mesh, record.as_ref());
     if admins.is_empty() {
-        return Found { detail: format!("the view holds no node-admin of {mesh}"), ..Found::default() };
+        return Found { detail: format!("the view holds no node-admin of {mesh}"), seat_record, ..Found::default() };
     }
     // Each node-admin in turn, the exact mesh-primary first: direct, then through a carrier member
     // (found once per probe, on the first direct contact that fails). The first node-admin that
@@ -666,7 +684,7 @@ async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
         }
     }
     let carrier = carrier.flatten().map(|c| c.name.to_string()).unwrap_or_default();
-    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";") }
+    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), seat_record }
 }
 
 /// The carrier of a probe: a few of `mesh`'s ordinary members Pinged in parallel, active
