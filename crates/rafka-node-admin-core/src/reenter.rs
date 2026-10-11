@@ -10,7 +10,8 @@
 //!    Members can exit while a mesh has no admin, so the maker's map alone is not the current read.
 //! 3. The own-mesh sweep: ONE bounded core Ping to every node of the own mesh, once, on entry.
 //!    A reply proves a live exact birth. No reply is "not yet reached", never death: the node
-//!    stays in the map and goes to the standard decommission ([`decommission_unreached`]).
+//!    stays in the map as unheard and goes to node recovery (mesh-recovery.md step 6): the new
+//!    mesh-primary's tickle, then the provider's exact exit proof, then recovery only on proof.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::NodeRecord;
@@ -275,125 +276,4 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         tracing::info!("the own-mesh sweep on entering the mesh");
     });
     report
-}
-
-/// What the standard decommission of an unreached node needs.
-pub(crate) struct Decommission {
-    pub me: PathName,
-    pub topology: Arc<tokio::sync::RwLock<crate::topology::Topology>>,
-    pub accepted: Arc<crate::accepted::AcceptedStore>,
-    pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
-    pub control: Arc<crate::http::ControlPlane>,
-}
-
-/// How long one node's decommission waits for the Build to be free and its attempt to complete.
-pub(crate) const DECOMMISSION_WAIT: Duration = Duration::from_secs(180);
-
-/// Why the sweep's decommission of `n` needs no attempt of this sweeper's: the node is heard again
-/// as the same birth (`heard`), or another birth holds its path (`replaced-by-another-attempt`,
-/// the other admin of the mesh sweeps too and its attempt ran first). Neither is a completed
-/// attempt of this sweeper; an attempt this sweeper opened ends `attempt N` and is never decided here.
-pub(crate) fn sweep_ended_without_attempt(held: Option<&crate::model::Node>, swept: &crate::model::IncarnationId) -> Option<&'static str> {
-    let held = held?;
-    if held.incarnation_id.as_ref() != Some(swept) {
-        Some("replaced-by-another-attempt")
-    } else if held.status.is_live() {
-        Some("heard")
-    } else {
-        None
-    }
-}
-
-/// A node that did not answer the sweep enters the STANDARD decommission, one attempt per node in
-/// path order: a requested replacement of the birth, an attempt of the accepted Build opened at
-/// the fabric primary (itself, or over its control API), whose retire pipeline drains when
-/// sendable, terminates and inspects the exact runtime, and publishes `NodeDeleted` only on a
-/// proven exit; the node is then created again as the accepted Build requires. A node heard again
-/// meanwhile is not decommissioned.
-pub(crate) async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapNode>) {
-    nodes.sort_by_key(|n| n.name.to_string());
-    for n in nodes {
-        let started = Instant::now();
-        let outcome = loop {
-            let view = d.topology.read().await.clone();
-            if let Some(why) = sweep_ended_without_attempt(view.node(&n.name), &n.incarnation) {
-                break why.to_string();
-            }
-            if started.elapsed() > DECOMMISSION_WAIT {
-                break format!("no attempt completed within {} s", DECOMMISSION_WAIT.as_secs());
-            }
-            let Some(fp) = view.fabric_primary().cloned() else {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                continue;
-            };
-            let opened: Result<u32, String> = if fp.name == d.me {
-                d.control.open_attempt("sweep decommission", crate::build_state::AttemptReason::Replace, n.name.clone(), crate::http::ActionKind::Replace, Some(n.incarnation.clone())).await.map(|o| o.attempt).map_err(|r| format!("{r:?}"))
-            } else {
-                match fp.admin_api_base.as_deref() {
-                    Some(base) => rafka_node_admin_client::NodeAdminClient::new(base).replace_birth(&n.name, &n.incarnation.0).await.map(|a| a.attempt).map_err(|e| e.to_string()),
-                    None => Err(format!("the fabric primary {} advertises no control API", fp.name)),
-                }
-            };
-            match opened {
-                Ok(attempt) => {
-                    // The attempt is the Build's: wait until it has ended, complete or failed.
-                    let ended = loop {
-                        let b = d.accepted.current(&*d.builds).await;
-                        if let Some(b) = b.filter(|b| b.attempt >= attempt && matches!(b.state, crate::build_state::BuildState::Complete | crate::build_state::BuildState::Failed)) {
-                            break Some(b);
-                        }
-                        if started.elapsed() > DECOMMISSION_WAIT {
-                            break None;
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    };
-                    break match ended {
-                        Some(b) if b.state == crate::build_state::BuildState::Failed => format!("attempt {attempt} failed: {}", b.last_failure.unwrap_or_default()),
-                        Some(_) => format!("attempt {attempt}"),
-                        None => format!("attempt {attempt} did not end within {} s", DECOMMISSION_WAIT.as_secs()),
-                    };
-                }
-                // One Build in flight, the seat is moving, or the fabric primary has not yet heard this mesh's
-                // restored authority (`unheard-mesh`): wait and ask again.
-                Err(e) if e.contains("BuildInProgress") || e.contains("409") || e.contains("NotAuthority") || e.contains("Unavailable") || e.contains("build-in-progress") || e.contains("unheard-mesh") => {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                }
-                Err(e) => break format!("refused: {e}"),
-            }
-        };
-        tracing::info_span!(
-            "rdm.node_admin.node.update.via-sweep-decommission",
-            node = %n.name,
-            node_id = %n.node_id,
-            incarnation_id = %n.incarnation.0,
-            sweeper = %d.me,
-            outcome = %outcome,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-        )
-        .in_scope(|| tracing::info!("a node that did not answer the entry sweep went through the standard decommission"));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{IncarnationId, Node, NodeStatus};
-
-    fn node(inc: &IncarnationId, status: NodeStatus) -> Node {
-        let mut n = Node::allocated("mesh1.rpc.3".parse().unwrap());
-        n.incarnation_id = Some(inc.clone());
-        n.status = status;
-        n
-    }
-
-    /// CONTRACT (#2803): a sweep's decommission ends without an attempt of its own by one of two named
-    /// facts, never one label for both: the swept birth is heard again, or another birth holds its path.
-    #[test]
-    fn a_sweep_ends_without_an_attempt_as_heard_or_as_replaced_by_name() {
-        let (swept, other) = (IncarnationId::mint(), IncarnationId::mint());
-        assert_eq!(sweep_ended_without_attempt(Some(&node(&swept, NodeStatus::ReadyForTraffic)), &swept), Some("heard"));
-        assert_eq!(sweep_ended_without_attempt(Some(&node(&other, NodeStatus::ReadyForTraffic)), &swept), Some("replaced-by-another-attempt"));
-        assert_eq!(sweep_ended_without_attempt(Some(&node(&swept, NodeStatus::PendingReconnect)), &swept), None, "silent and the same birth: still to be decommissioned");
-        assert_eq!(sweep_ended_without_attempt(None, &swept), None, "absent from the view: still to be decommissioned");
-    }
 }
