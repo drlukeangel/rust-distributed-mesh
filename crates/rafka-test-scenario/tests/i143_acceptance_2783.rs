@@ -278,6 +278,12 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     assert_ne!(admin_new["incarnation_id"], admin_n["incarnation_id"], "a new incarnation: {admin_new}");
     assert_eq!(admin_new["endpoint_id"], admin_n["endpoint_id"], "the recovered node-admin holds the endpoint key of the data dir it inherited: {admin_new}");
     assert_eq!(estate.data_dir_of(&admin).await, admin_dir, "the recovered node-admin runs over the inherited data dir");
+    // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
+    // submit followed the recover-node operation to its terminal frame.
+    wait_for("the node-admin's recovery is followed to its terminal", Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| attr(sp, "node") == admin && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
+    })
+    .await;
     estate.settled_shape(&[("mesh1", 3, 3)], Duration::from_secs(120)).await;
     let nodes_end = estate.nodes().await;
     let survivors_after: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["node_id"])).collect();
