@@ -141,6 +141,12 @@ struct State {
     tracked: bool,
     marked: bool,
     probes: [Option<ProbeOutcome>; 2],
+    /// The probe made and not yet ended: one probe of a mesh is in flight at a time, so the latest
+    /// completed probe is always the later one, and the decision waits for it.
+    in_flight: Option<u8>,
+    /// This investigation, issued when tracking began: a probe's result is recorded only in the
+    /// investigation it was made for, never in a fresh one after a cancel.
+    ticket: u64,
     stopped: bool,
     /// The decision, once taken: whether it was a rebirth.
     verdict: Option<bool>,
@@ -148,7 +154,7 @@ struct State {
 
 impl State {
     fn probes_made(&self) -> u8 {
-        self.probes.iter().flatten().count() as u8
+        self.probes.iter().flatten().count() as u8 + u8::from(self.in_flight.is_some())
     }
 }
 
@@ -167,12 +173,14 @@ pub struct PeerMesh {
 pub struct Ladder {
     rungs: Rungs,
     meshes: BTreeMap<String, State>,
+    /// The last investigation ticket issued; never reused, across a cleared or forgotten mesh too.
+    issued: u64,
 }
 
 impl Ladder {
     /// A ladder over `rungs` with no mesh tracked.
     pub fn new(rungs: Rungs) -> Self {
-        Self { rungs, meshes: BTreeMap::new() }
+        Self { rungs, meshes: BTreeMap::new(), issued: 0 }
     }
 
     /// The meshes held now.
@@ -217,10 +225,13 @@ impl Ladder {
     }
 
     /// What `mesh` being unheard for `unheard` asks next. One probe or the decision per call; the
-    /// driver makes the probe, records it with [`Self::probed`], and asks again.
+    /// driver makes the probe, records it with [`Self::probed`] when it ends, and asks again. While
+    /// a probe is in flight the ladder still tracks and marks, and asks for no other probe and no
+    /// decision.
     pub fn step(&mut self, mesh: &str, unheard: Duration) -> Vec<Step> {
-        let r = self.rungs;
-        let st = self.meshes.entry(mesh.to_string()).or_default();
+        let Ladder { rungs: r, meshes, issued } = self;
+        let r = *r;
+        let st = meshes.entry(mesh.to_string()).or_default();
         let mut out = Vec::new();
         st.unheard = unheard;
         let unheard_ms = unheard.as_millis() as u64;
@@ -233,19 +244,23 @@ impl Ladder {
         }
         if !st.tracked {
             st.tracked = true;
+            *issued += 1;
+            st.ticket = *issued;
             out.push(Step::Track { unheard_ms });
         }
         if unheard >= r.mark && !st.marked {
             st.marked = true;
             out.push(Step::Mark { unheard_ms });
         }
-        if st.stopped || st.verdict.is_some() {
+        if st.stopped || st.verdict.is_some() || st.in_flight.is_some() {
             return out;
         }
         if unheard >= r.probe1 && st.probes[0].is_none() {
-            out.push(Step::Probe { n: 1, unheard_ms, ticket: 0 });
+            st.in_flight = Some(1);
+            out.push(Step::Probe { n: 1, unheard_ms, ticket: st.ticket });
         } else if unheard >= r.probe2 && st.probes[1].is_none() {
-            out.push(Step::Probe { n: 2, unheard_ms, ticket: 0 });
+            st.in_flight = Some(2);
+            out.push(Step::Probe { n: 2, unheard_ms, ticket: st.ticket });
         } else if unheard >= r.decide {
             // The latest completed probe decides; an older carrier-edge-lost never overrides a
             // newer unreachable.
@@ -259,8 +274,11 @@ impl Ladder {
 
     /// Probe `n` of `mesh`'s investigation `ticket` found `outcome`. An answering node-admin stops
     /// the investigation.
-    pub fn probed(&mut self, mesh: &str, _ticket: u64, n: u8, outcome: ProbeOutcome, unheard_ms: u64) -> Option<Step> {
-        let st = self.meshes.get_mut(mesh)?;
+    /// A probe of an investigation since cancelled, forgotten or dropped with the seat, or one this
+    /// investigation is not waiting on, records nothing.
+    pub fn probed(&mut self, mesh: &str, ticket: u64, n: u8, outcome: ProbeOutcome, unheard_ms: u64) -> Option<Step> {
+        let st = self.meshes.get_mut(mesh).filter(|st| st.ticket == ticket && st.in_flight == Some(n))?;
+        st.in_flight = None;
         st.probes[usize::from(n.clamp(1, 2)) - 1] = Some(outcome);
         (outcome == ProbeOutcome::AdminAlive).then(|| {
             st.stopped = true;
@@ -331,7 +349,10 @@ pub async fn run(w: Watch) {
     let mut seat_since: Option<Instant> = None;
     let mut wait = w.round;
     loop {
-        tokio::time::sleep(wait).await;
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = inv.landed() => {}
+        }
         wait = w.round;
         let view = Arc::new(w.topology.read().await.clone());
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
@@ -418,26 +439,42 @@ pub(crate) struct Investigations {
     /// This admin's `path.name`, named on the probe and verdict spans.
     me: String,
     ladder: Arc<Mutex<Ladder>>,
+    /// The probes in flight, each its own task; dropped with the driver, they end with it.
+    probes: Mutex<tokio::task::JoinSet<()>>,
+    /// Woken when a probe ends, so the step it opens (probe 2, the decision) is taken then.
+    landed: Arc<tokio::sync::Notify>,
 }
 
 impl Investigations {
     pub(crate) fn new(me: String, ladder: Arc<Mutex<Ladder>>) -> Self {
-        Self { me, ladder }
+        Self { me, ladder, probes: Mutex::new(tokio::task::JoinSet::new()), landed: Arc::new(tokio::sync::Notify::new()) }
     }
 
-    /// Step `mesh` at `unheard` and make each probe the ladder asks for with `start`. Answers the
-    /// steps the ladder took; a probe's result is recorded with its ticket and its span emitted
-    /// once the probe ends.
+    /// Resolves when a probe has ended since the last wake.
+    pub(crate) async fn landed(&self) {
+        self.landed.notified().await
+    }
+
+    /// Step `mesh` at `unheard` and start each probe the ladder asks for with `start`, as its own
+    /// task: a running probe never holds the ladder (R-CK1: a delayed tick never moves a threshold).
+    /// Answers the steps the ladder took; a probe's result is recorded with its ticket and its span
+    /// emitted when the probe ends.
     pub(crate) async fn tick<F, Fut>(&self, mesh: &str, unheard: Duration, start: F) -> Vec<Step>
     where
         F: Fn(u8) -> Fut,
         Fut: std::future::Future<Output = Found> + Send + 'static,
     {
         let steps = self.ladder.lock().unwrap().step(mesh, unheard);
+        let mut probes = self.probes.lock().unwrap();
+        while probes.try_join_next().is_some() {}
         for s in &steps {
             if let Step::Probe { n, unheard_ms, ticket } = *s {
-                let found = start(n).await;
-                land(&self.me, &self.ladder, mesh, ticket, n, unheard_ms, found);
+                let (me, ladder, landed, mesh, probe) = (self.me.clone(), self.ladder.clone(), self.landed.clone(), mesh.to_string(), start(n));
+                probes.spawn(async move {
+                    let found = probe.await;
+                    land(&me, &ladder, &mesh, ticket, n, unheard_ms, found);
+                    landed.notify_one();
+                });
             }
         }
         steps
@@ -457,6 +494,8 @@ fn land(me: &str, ladder: &Mutex<Ladder>, mesh: &str, ticket: u64, n: u8, unhear
         carrier = %found.carrier,
         outcome = found.outcome.as_str(),
         detail = %found.detail,
+        iroh_known_addrs = %found.iroh_known,
+        iroh_active_addrs = %found.iroh_active,
         unheard_ms,
     )
     .in_scope(|| tracing::info!("one probe of the unheard mesh"));
@@ -532,15 +571,27 @@ pub(crate) struct Found {
     pub(crate) members: String,
     pub(crate) carrier: String,
     pub(crate) detail: String,
+    /// iroh's local view of each node-admin asked, `<path.name>=<known addrs>` joined by `;`: a
+    /// diagnostic beside the probe, nothing decides on it (`rafka_mesh_transport::iroh_obs`).
+    pub(crate) iroh_known: String,
+    /// The addresses iroh used for each node-admin asked, as `iroh_known`.
+    pub(crate) iroh_active: String,
 }
 
 /// The node-admins of `mesh` a probe carries `ProbeNodeState` to, in the order it asks them: the
-/// mesh's primary node-admin first, then its other node-admins in path order (Luke 2026-10-11: the
-/// investigation's first step is the fabric-primary's tickle of the peer mesh's primary, then of its
-/// other node-admins). Only exact births are asked: a probe names `(node.id, incarnation)`.
-pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, _seat: Option<&rafka_mesh_entity::seat::SeatHolder>) -> Vec<Node> {
+/// exact mesh-primary the held seat record `seat` names first (its birth, the record's, R-EL1a),
+/// then the mesh's other node-admins in path order (mesh-investigation.md step 1). With no record
+/// held, path order. Only exact births are asked: a probe names `(node.id, incarnation)`.
+pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, seat: Option<&rafka_mesh_entity::seat::SeatHolder>) -> Vec<Node> {
     let mut admins: Vec<Node> = view.cohort(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).cloned().collect();
-    admins.sort_by_key(|a| (!a.is_primary, a.name.to_string()));
+    admins.sort_by_key(|a| a.name.to_string());
+    if let Some(record) = seat.filter(|r| r.mesh == mesh) {
+        if let Some(i) = admins.iter().position(|a| a.node_id == record.node_id) {
+            let mut primary = admins.remove(i);
+            primary.incarnation_id = Some(record.incarnation.clone());
+            admins.insert(0, primary);
+        }
+    }
     admins
 }
 
@@ -566,7 +617,7 @@ pub(crate) fn fold_admin_outcomes(outcomes: &[ProbeOutcome]) -> ProbeOutcome {
 async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
     let admins = admins_in_probe_order(view, mesh, w.membership.book.seats.mesh(mesh).as_ref());
     if admins.is_empty() {
-        return Found { outcome: ProbeOutcome::Unreachable, target: String::new(), members: String::new(), carrier: String::new(), detail: format!("the view holds no node-admin of {mesh}") };
+        return Found { detail: format!("the view holds no node-admin of {mesh}"), ..Found::default() };
     }
     // Each node-admin in turn, the exact mesh-primary first: direct, then through a carrier member
     // (found once per probe, on the first direct contact that fails). The first node-admin that
@@ -576,9 +627,16 @@ async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
     let mut carrier: Option<Option<Node>> = None;
     let (mut members_asked, mut carrier_why) = (String::new(), String::new());
     let (mut outcomes, mut asked_admins, mut details) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut iroh_known, mut iroh_active) = (Vec::new(), Vec::new());
     for admin in &admins {
         let req = StatusRequest::ProbeNodeState { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().expect("filtered on it") };
         let (out, _) = w.client.call::<Status>(&NodeTarget::ExactNode(admin.node_id.clone()), &req, &direct).await;
+        // One read of iroh's local view of the node-admin, beside its direct contact; the outcome is
+        // the Node RPC's, never this.
+        let key = admin.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
+        let seen = rafka_mesh_transport::iroh_obs::observe_remote(&w.membership.endpoint(), key).await;
+        iroh_known.push(format!("{}={}", admin.name, seen.known_addrs));
+        iroh_active.push(format!("{}={}", admin.name, seen.active_addrs));
         let (outcome, detail) = classify(&out, &admin.name);
         if outcome == ProbeOutcome::AdminAlive {
             outcomes.push(outcome);
@@ -608,7 +666,7 @@ async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
         }
     }
     let carrier = carrier.flatten().map(|c| c.name.to_string()).unwrap_or_default();
-    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier, detail: details.join("; ") }
+    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";") }
 }
 
 /// The carrier of a probe: a few of `mesh`'s ordinary members Pinged in parallel, active
