@@ -693,8 +693,9 @@ impl NodeSelf {
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 };
+                // The receipt's count first, its name last: a reader that sees the receipt's name
+                // on the span sees the whole receipt (the count is never read before it is written).
                 let current = tracing::Span::current();
-                current.record("receipt", receipt.name());
                 match receipt {
                     DrainReceipt::Established { in_flight } => {
                         current.record("in_flight", in_flight);
@@ -702,8 +703,11 @@ impl NodeSelf {
                     }
                     DrainReceipt::Deadline { last_in_flight } => {
                         current.record("in_flight", last_in_flight);
-                        tracing::info!(last_in_flight, "the drain bound passed with work in flight: the birth stays Draining, not drained, and owes no node-drained");
                     }
+                }
+                current.record("receipt", receipt.name());
+                if let DrainReceipt::Deadline { last_in_flight } = receipt {
+                    tracing::info!(last_in_flight, "the drain bound passed with work in flight: the birth stays Draining, not drained, and owes no node-drained");
                 }
                 // Each commander owed is called on its own: one that cannot be reached holds up no other.
                 futures_util::future::join_all(self.ended(receipt).into_iter().map(|owed| owed.complete(&self))).await;
