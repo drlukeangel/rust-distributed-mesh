@@ -701,6 +701,30 @@ mod tests {
         assert_eq!(reader.history().await.unwrap(), [up]);
     }
 
+    /// CONTRACT (R14 item 4 on the shared root): the fabric-primary seat also authorizes rows of
+    /// meshes other than its own (the fabric-primary writes them; after R13, as acting primary of a
+    /// mesh with no primary). When that seat moves, the holder's writes to every other mesh's rows are
+    /// cut off and drained with the rest, the rows of a mesh this store first opens after the cut-off
+    /// included, and a lift gives them back; its own mesh's rows follow the mesh seat's cut-off.
+    #[tokio::test]
+    async fn a_moving_fabric_seat_cuts_off_the_holders_writes_to_every_other_meshs_rows() {
+        let d = crate::record_store::tempdir("other-meshes-cut-off");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let n = FileNodesStorage::open(&d, &root, "mesh1", &IncarnationId::mint()).unwrap();
+        n.put_node_row(&row("mesh2.rpc.1")).await.unwrap();
+        n.cut_off_other_meshes("seat transfer drain-node:mesh1.admin.1").await;
+        for name in ["mesh2.rpc.1", "mesh3.rpc.1"] {
+            match n.put_node_row(&row(name)).await {
+                Err(StorageError::CutOff { reason, .. }) => assert!(reason.contains("drain-node:mesh1.admin.1"), "{reason}"),
+                other => panic!("{name}: a row write after the fabric seat's cut-off answered {other:?}"),
+            }
+            assert!(matches!(n.put_contact(&node(name)).await, Err(StorageError::CutOff { .. })), "{name}: a contact write after the cut-off");
+        }
+        n.put_node_row(&row("mesh1.rpc.1")).await.expect("its own mesh's rows follow the mesh seat's cut-off, not this one");
+        n.lift_other_meshes();
+        n.put_node_row(&row("mesh3.rpc.1")).await.expect("a lifted cut-off gives the writes back");
+    }
+
     #[tokio::test]
     async fn runtime_rows_are_one_keyed_row_per_birth_and_an_unrecognised_row_is_refused_by_name() {
         let d = std::env::temp_dir().join(format!("rdm-runtime-rows-{}", rand::random::<u32>()));
