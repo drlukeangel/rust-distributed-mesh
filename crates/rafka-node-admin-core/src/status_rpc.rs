@@ -232,6 +232,28 @@ fn event_key(e: &FabricEvent) -> String {
     }
 }
 
+/// One commit of a Mesh status at its writer: decided over what is held, the keyed row put and
+/// acknowledged, then held as applied and answered. A refused put answers `NotReady` naming the
+/// store and holds nothing, so the same commit again is decided afresh; the commit decides again
+/// over what is held after the put, so two commits of one natural key racing answer `Applied` once.
+pub(crate) async fn commit_mesh_state(storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<Declared>, mesh_id: &MeshId, state: MeshState) -> StatusReply {
+    let (decided, effect) = apply_mesh(&declared.lock().unwrap(), mesh_id, state);
+    if effect.is_none() {
+        return decided;
+    }
+    if let Err(e) = storage.put_mesh_status(&crate::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state }).await {
+        return StatusReply::NotReady { reason: format!("status.storage refused the Mesh status row {mesh_id}-{state:?}: {e}") };
+    }
+    let mut declared = declared.lock().unwrap();
+    match apply_mesh(&declared, mesh_id, state) {
+        (StatusReply::Applied, _) => {
+            declared.meshes.insert(mesh_id.clone(), state);
+            StatusReply::Applied
+        }
+        (other, _) => other,
+    }
+}
+
 fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState) -> (StatusReply, Option<Effect>) {
     match transition(declared.meshes.get(mesh_id).copied(), state) {
         Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
@@ -423,11 +445,12 @@ impl StatusAuthority {
     /// so the same declaration again is decided afresh. The commit decides again over what is
     /// held now, so two declarations of one natural key racing each other answer `Applied` once.
     async fn persist_then_commit(&self, effect: Effect) -> StatusReply {
+        if let Effect::Mesh(mesh_id, state) = &effect {
+            return commit_mesh_state(&*self.status_storage, &self.declared, mesh_id, *state).await;
+        }
         let put = match &effect {
             Effect::Node(row, _) => self.status_storage.put_node_declared(row).await.map_err(|e| format!("status.storage refused the node declared-state row: {e}")),
-            Effect::Mesh(mesh_id, state) => {
-                self.status_storage.put_mesh_status(&crate::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: *state }).await.map_err(|e| format!("status.storage refused the Mesh status row: {e}"))
-            }
+            Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
             Effect::Fabric(fabric_id, event) => {
                 self.status_storage.put_fabric_event(&crate::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: event.clone() }).await.map_err(|e| format!("status.storage refused the Fabric event row: {e}"))
             }
@@ -447,13 +470,7 @@ impl StatusAuthority {
                     Transition::AlreadyApplied => StatusReply::AlreadyApplied,
                     Transition::Backward { current } => StatusReply::RejectedInvalidNodeTransition { current },
                 },
-                Effect::Mesh(mesh_id, state) => match apply_mesh(&declared, mesh_id, *state) {
-                    (StatusReply::Applied, _) => {
-                        declared.meshes.insert(mesh_id.clone(), *state);
-                        StatusReply::Applied
-                    }
-                    (other, _) => other,
-                },
+                Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
                 Effect::Fabric(fabric_id, event) => {
                     let events = declared.fabric.entry(fabric_id.clone()).or_default();
                     if events.contains(event) {
