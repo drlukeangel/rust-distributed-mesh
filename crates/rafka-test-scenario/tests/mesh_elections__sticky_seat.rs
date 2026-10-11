@@ -287,6 +287,7 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
         (f["status"] == "ready-for-traffic").then_some(f)
     })
     .await;
+    let ready_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     let spans = estate.spans();
     let fence: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-fence").into_iter().filter(|sp| attr(sp, "node") == p).collect();
@@ -303,12 +304,13 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     // N's first fabric-primary action is installing the seats (or announcing one).
     let n_first = named(&spans, "rdm.mesh.seat.update.via-announce").into_iter().filter(|sp| attr(sp, "node") == n_name && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&n_id)).map(at_ns).chain([installed]).min().unwrap();
     assert!(fenced_at < n_first, "P fenced ({fenced_at}) before N acted ({n_first})");
-    // No seatless window: from the replace until the fabric is ready again, no observer resolves P's
-    // mesh or the fabric with nobody.
+    // No seatless window: from the replace until the fabric is ready again (the fabric's own
+    // shutdown after that is not this cell's story), no observer resolves P's mesh or the fabric
+    // with nobody.
     let vacant: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
         .into_iter()
-        .filter(|sp| attr(sp, "mesh") == mesh && attr(sp, "winner_path").is_empty() && attr(sp, "previous_node_id") != "" && at_ns(sp) > replaced_at)
-        .chain(named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").into_iter().filter(|sp| attr(sp, "winner_path").is_empty() && attr(sp, "previous_node_id") != "" && at_ns(sp) > replaced_at))
+        .filter(|sp| attr(sp, "mesh") == mesh && attr(sp, "winner_path").is_empty() && attr(sp, "previous_node_id") != "" && (replaced_at..ready_at).contains(&at_ns(sp)))
+        .chain(named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").into_iter().filter(|sp| attr(sp, "winner_path").is_empty() && attr(sp, "previous_node_id") != "" && (replaced_at..ready_at).contains(&at_ns(sp))))
         .collect();
     assert!(vacant.is_empty(), "a seat was vacant during the hand-over: {vacant:#?}");
     // The Build facts were handed on with the fence.
