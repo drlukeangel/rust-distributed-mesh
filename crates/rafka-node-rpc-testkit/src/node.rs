@@ -67,6 +67,9 @@ pub struct RunningNode {
     /// Cancelled when this birth is retired (drain-node, stop-node, its process stopping): the
     /// `hydrate_before_ready` hook and any pull it has in flight end.
     pub cancel: rafka_node_rpc::Retirement,
+    /// The surface that obeys this birth's lifecycle and round commands
+    /// (`rafka_node_admin_core::node_self`).
+    pub own: Arc<rafka_node_admin_core::node_self::NodeSelf>,
     hydration: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>>,
     hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -569,7 +572,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         hydration_cell: hydration_cell.clone(),
         hydrating: hydrating_cell.clone(),
     }));
-    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own, addressed: addressed.clone(), hydration: hydration_cell.clone(), stats: server.stats() }));
+    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), hydration: hydration_cell.clone(), stats: server.stats() }));
     ready.store(true, std::sync::atomic::Ordering::SeqCst);
     *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
@@ -640,7 +643,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         attempt: 0,
     };
     let driver = hydration.driver(ctx, rafka_node_admin_core::app_hydration::Events::new(membership.book.clone(), addressed), boot.clone());
-    let running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: hydration_cell.clone(), hydrating: hydrating_cell.clone(), publisher, node_rpc_feed, declare_loop };
+    let running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, hydration: hydration_cell.clone(), hydrating: hydrating_cell.clone(), publisher, node_rpc_feed, declare_loop };
     *hydration_cell.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     use rafka_node_admin_core::app_hydration::{End, Step};
     let Some(driver) = driver else {
