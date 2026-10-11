@@ -4765,27 +4765,26 @@ mod tests {
         assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, second);
     }
 
-    /// A peer mesh's members are heard through its primary's forwarded aggregate. When that primary
-    /// is lost its successor takes over only after it hears the loss (the floor) and publishes on
-    /// its next round: a forwarded member stays heard through that grace, while a member heard
-    /// directly falls silent at the floor (gossip.md §3.2). Small windows here; the defaults are
-    /// the documented ones.
+    /// CONTRACT (R-G2, gossip.md §3.2 and §6, mesh-investigation.md step 2): a node-admin judges a
+    /// peer mesh's member from direct backbone receipt, and a member held from a backbone aggregate
+    /// ages from that receipt at the shared staleness floor, exactly as a member heard on its own
+    /// mesh channel: no grace is added for it. Its silence is the real time since the receipt.
     #[test]
-    fn a_forwarded_member_stays_heard_through_one_primary_succession() {
+    fn a_member_held_from_a_backbone_aggregate_ages_at_the_staleness_floor() {
         let book = DigestBook::default();
-        let (floor, backbone) = (staleness_floor(), backbone_gossip_interval());
-        assert_eq!(book.forwarded_staleness_floor(), floor + backbone + floor + backbone);
-        let (direct, forwarded) = (NodeId::mint(), NodeId::mint());
-        assert!(book.record(digest(&direct, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100)));
-        assert!(book.record_forwarded(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100)));
-        // Just past the staleness floor: the direct member is unheard, the forwarded one is not.
-        let now = Instant::now() + floor + Duration::from_millis(1);
-        let heard: Vec<String> = book.current_at(floor, now).into_iter().map(|d| d.node.node_id.to_string()).collect();
-        assert!(!heard.contains(&direct.to_string()), "a member heard directly is unheard past the staleness floor");
-        assert!(heard.contains(&forwarded.to_string()), "a forwarded member is still heard while its mesh's next primary takes over");
-        // Past the forwarded staleness floor it is unheard too.
-        let later = Instant::now() + book.forwarded_staleness_floor() + Duration::from_millis(1);
-        assert!(book.current_at(floor, later).is_empty());
+        let floor = staleness_floor();
+        let (direct, backbone) = (NodeId::mint(), NodeId::mint());
+        let t0 = Instant::now();
+        book.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100), t0);
+        assert!(book.record_forwarded_at(digest(&backbone, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100), t0));
+        let within = t0 + floor;
+        assert_eq!(book.current_at(floor, within).len(), 2, "both are heard within the staleness floor");
+        let past = t0 + floor + Duration::from_millis(1);
+        let heard: Vec<String> = book.current_at(floor, past).into_iter().map(|d| d.node.node_id.to_string()).collect();
+        assert!(heard.is_empty(), "past the staleness floor neither the direct nor the backbone-held member is heard: {heard:?}");
+        assert_eq!(book.get_at(backbone.as_str(), past).unwrap().1, floor + Duration::from_millis(1), "its silence is the time since its backbone receipt");
+        let silent: Vec<Duration> = book.silent_held(past).into_iter().map(|(_, s)| s).collect();
+        assert_eq!(silent, vec![floor + Duration::from_millis(1); 2], "every held member's silence is measured from its receipt");
     }
 
     /// A peer mesh's member that said `Leaving` is not succeeded: its forwarded copy earns no

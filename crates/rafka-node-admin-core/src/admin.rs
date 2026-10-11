@@ -6127,6 +6127,32 @@ mod tests {
         assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a proven-gone admin holds no seat");
     }
 
+    /// CONTRACT (node-recovery.md "The mesh-primary is the reconciler for its own members";
+    /// mesh-investigation.md: a peer mesh unheard on the backbone is the fabric-primary's
+    /// investigation, counted from t since it last heard that mesh): a mesh-primary's offline tickle
+    /// watches the silent members of its own mesh and nothing of a peer mesh, its node-admins
+    /// included. A peer mesh's node-admins are reached by the investigation's probes alone. Must NOT
+    /// happen: a mesh-primary tickling, holding TRUE OFFLINE or writing a silence status for a peer
+    /// mesh's node-admin on a per-member clock beside the investigation.
+    #[test]
+    fn a_mesh_primary_watches_only_its_own_meshs_silent_members() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        let me = with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000");
+        let own = with_id(digest("mesh1.rpc.1", ReadyForTraffic), "300000000000");
+        let peer_admin = with_id(digest("mesh2.admin.1", ReadyForTraffic), "400000000000");
+        let peer_rpc = with_id(digest("mesh2.rpc.1", ReadyForTraffic), "500000000000");
+        for d in [&me, &own, &peer_admin, &peer_rpc] {
+            book.record((*d).clone());
+        }
+        let mut t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        for n in t.nodes.iter_mut().filter(|n| n.node_id != me.node.node_id) {
+            n.status = NodeStatus::PendingReconnect;
+        }
+        let watched: Vec<String> = watched_births(&t, &me.node.node_id, "mesh1", &[]).values().map(|n| n.name.to_string()).collect();
+        assert_eq!(watched, vec!["mesh1.rpc.1".to_string()], "only its own mesh's silent member is watched");
+    }
+
     /// CONTRACT (R-EL1, "a seat moves only by explicit yield": the election ignores a holder's
     /// status; seat_watch, R-A2: only a runtime found exited is a verified loss; fabric-node-lifecycle.md
     /// §7.3: every admin keeps the silence window, only the seat holder tickles): a mesh primary that
