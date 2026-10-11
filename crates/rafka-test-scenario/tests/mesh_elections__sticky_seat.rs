@@ -290,13 +290,11 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     let ready_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     let spans = estate.spans();
-    let fence: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-fence").into_iter().filter(|sp| attr(sp, "node") == p).collect();
-    assert!(!fence.is_empty(), "P fenced its Build log");
-    // P's fence is set by its seat row, before it answers TakeSeats.
-    let fenced_at = named(&spans, "rdm.node_admin.build.update.via-seat-fence-at-handover").into_iter().chain(fence.iter().copied()).filter(|sp| attr(sp, "node") == p).map(at_ns).min().unwrap();
     // The seats moved by TakeSeats: P committed them to N, and N installed them before P drained.
+    // P's seat row is its fence (node-rpc-envelope.md TakeSeats): no other fence write exists.
     let committed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seats-committed").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "successor").contains(&n_id) && attr(sp, "replay") == "false").collect();
     assert_eq!(committed.len(), 1, "P committed both seats to N once: {committed:#?}");
+    let fenced_at = at_ns(committed[0]);
     assert_eq!((num(committed[0], "mesh_epoch").is_some(), num(committed[0], "fabric_epoch").is_some()), (true, true), "both seats moved together: {committed:#?}");
     let installed = named(&spans, "rdm.node_admin.seat.update.via-seats-installed").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "successor").contains(&n_id)).map(at_ns).min().expect("N installed the committed seats");
     let p_drain = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && attr(sp, "step") == "DrainNode").map(at_ns).min().expect("P was drained");
@@ -392,24 +390,20 @@ async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_deci
     .await;
     estate.stop().await;
     let spans = estate.spans();
-    // R-EL1a: P's seat row is the fence and the commit, one write. The fence is the one P sets at
-    // that row (`via-seat-fence-at-handover`), and the row (`via-seats-committed`, not a replay)
-    // follows it before N is answered; the yield that follows finds the log already fenced.
+    // R-EL1a: P's seat row is the fence and the commit, one write (node-rpc-envelope.md TakeSeats:
+    // "no separate fence write precedes or follows it"). The row (`via-seats-committed`, not a
+    // replay) is written under P's Build-log decision lock, before N is answered.
     let replace = s(&r["build_id"]);
-    let fence = named(&spans, "rdm.node_admin.build.update.via-seat-fence-at-handover").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "fenced") == "true").min_by_key(|sp| at_ns(sp)).cloned().expect("P's seat row fenced its Build log");
     let row: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seats-committed").into_iter().filter(|sp| attr(sp, "build_id") == replace && attr(sp, "replay") == "false").collect();
     assert_eq!(row.len(), 1, "P wrote one seat row for the replace: {row:#?}");
-    assert!(at_ns(&fence) <= at_ns(row[0]), "the fence is set at the row, before it is answered: {fence:#?} {row:#?}");
+    assert!(named(&spans, "rdm.node_admin.build.update.via-seat-fence-at-handover").is_empty() && named(&spans, "rdm.node_admin.build.update.via-seat-fence").is_empty(), "no fence is written beside the row");
     let installed = named(&spans, "rdm.node_admin.seat.update.via-seats-installed").into_iter().filter(|sp| attr(sp, "build_id") == replace).map(at_ns).min().expect("N installed the committed seats");
     assert!(sp_end(row[0]) <= installed, "P's row was written before N installed the seats");
-    let (f_start, f_end) = (at_ns(&fence), sp_end(&fence));
-    let mine: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) < sp_end(&fence) + 3_000_000_000).collect();
+    // A decision P won committed wholly before the row moved its record; none after it.
+    let row_at = at_ns(row[0]);
+    let mine: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) < sp_end(row[0]) + 3_000_000_000 && attr(sp, "outcome") == "won").collect();
     for sp in &mine {
-        if at_ns(sp) < f_start {
-            assert!(sp_end(sp) <= f_end, "a decision begun before the fence ended after it: {sp:#?}");
-        } else {
-            assert_ne!(attr(sp, "outcome"), "won", "P won a claim after its fence began: {sp:#?}");
-        }
+        assert!(sp_end(sp) <= row_at, "P won a claim that did not commit before its seat row: {sp:#?}");
     }
     let mut won: std::collections::BTreeMap<(String, String), BTreeSet<String>> = Default::default();
     for sp in named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "outcome") == "won") {

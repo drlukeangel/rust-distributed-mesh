@@ -245,6 +245,7 @@ async fn gossip_admin(name: &str, fabric: &FabricId, peers: Vec<iroh::EndpointAd
         Arc::new(AcceptedStore::new(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), name)),
         rafka_node_admin_core::shutdown::ShutdownControl::memory(name).await,
         name.into(),
+        rafka_node_admin_core::fabric_builds::SeatSource::unrecorded(),
         None,
     )
     .await

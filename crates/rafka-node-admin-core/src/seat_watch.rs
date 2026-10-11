@@ -72,7 +72,7 @@ fn birth(n: &Node) -> Option<Birth> {
     n.incarnation_id.clone().map(|i| (n.node_id.clone(), i))
 }
 
-/// The fence a pass owes this birth's Build log when the fabric seat record it held names another
+/// The hand-over of committed Build facts a pass owes when the fabric seat record this birth held names another
 /// birth now, the move planned or not (the handover door's commit, or the record heard on the
 /// backbone first): why, and the admin the seat moved to, by the node id the record names (a
 /// member of the view whether or not its seat flags have moved yet; the handover door names it the
@@ -358,7 +358,7 @@ pub struct Watch {
     pub looker: Looker,
     /// Re-publishes this admin's presence and re-joins its mesh's members (`status_rpc::Republish`).
     pub republish: crate::status_rpc::Republish,
-    /// This admin's Build log: fenced when the fabric seat's record names another birth.
+    /// This admin's Build log: its committed facts are handed on when the fabric seat's record names another birth.
     pub builds: Arc<crate::fabric_builds::FabricBuildStateAdapter>,
 }
 
@@ -370,12 +370,12 @@ pub async fn run(w: Watch) {
     let mut seats_changed = w.membership.seats().subscribe();
     let mut held_the_fabric_seat = false;
     loop {
-        // A fabric seat this birth held, now recorded to another birth: it yielded (planned or
-        // not), and its Build log is fenced before the new holder acts.
+        // A fabric seat this birth held, now recorded to another birth: the record already fences
+        // its Build log; the committed facts are handed to the neighbours before the new holder acts.
         let record = w.membership.seats().fabric();
         let owed = seat_yield(record.as_ref(), &me_birth, &mut held_the_fabric_seat, &*w.topology.read().await);
         if let Some((by, to)) = owed {
-            w.builds.yield_seat(&by, to).await;
+            w.builds.hand_over_facts(&by, to).await;
         }
         tokio::select! {
             _ = seats_changed.changed() => {}

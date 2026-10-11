@@ -75,7 +75,6 @@ struct Admin {
     resolved: ResolvedNode,
     storage: Arc<dyn FabricStorage>,
     claims: Arc<TestClaims>,
-    fenced: Arc<Mutex<Vec<(String, Option<String>)>>>,
     /// The admin's Node RPC server: a cell drains it as the admin's DrainNode does.
     server: rafka_node_rpc::NodeRpcServer,
     _router: Router,
@@ -120,7 +119,6 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let claims = Arc::new(TestClaims::default());
-    let fenced: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::default();
     let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
     // The cell's view is set by hand, not projected from digests: the projection re-runs the one
     // election over its members with the seat records this admin holds now, as the admin's own
@@ -149,20 +147,14 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         records: Arc::new(Records::default()),
         contacts: OwnContacts { endpoint_id: ep.id().to_string(), transport_addr: addr, admin_api_base: Some(format!("http://127.0.0.1:{}", addr.port() + 1)) },
         handovers: Default::default(),
-        fence_builds: {
-            let fenced = fenced.clone();
-            Arc::new(move |by: String, to: Option<String>| {
-                fenced.lock().unwrap().push((by, to));
-                Box::pin(async {})
-            })
-        },
+        decisions: Arc::default(),
         claims: claims.clone(),
         project_view,
     });
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, slot, client, resolver, resolved, storage, claims, fenced, server, _router: router }, ep)
+    (Admin { door, slot, client, resolver, resolved, storage, claims, server, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -738,8 +730,8 @@ fn committed_to(a: &Admin, mesh_epoch: u64, fabric_epoch: u64) -> Vec<CommittedS
 }
 
 /// CONTRACT (R-EL1a; node-rpc-envelope.md "TakeSeats"): the executor N calls the holder P. P commits
-/// ONE durable row holding both seats at their next epochs (mesh1 4, fabric 8), installs both, fences
-/// its Build log naming N, publishes SeatedTogether, and answers SeatsCommitted; N installs the
+/// ONE durable row holding both seats at their next epochs (mesh1 4, fabric 8), installs both (the moved
+/// record fences its Build log naming N), publishes SeatedTogether, and answers SeatsCommitted; N installs the
 /// committed seats from the reply. In order: P's commit, then N's install. What must NOT happen: a
 /// second seat row written for the same move, or N holding a seat P has not committed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -760,7 +752,13 @@ async fn a_seat_holder_commits_both_seats_to_the_executor_in_one_row() {
     assert_eq!(rows[0].seats, committed_to(&f.n, 4, 8));
     let standing = f.p.storage.seats().await.unwrap();
     assert!(standing.iter().any(|r| r.seat == Seat::FabricPrimary && r.holder == holder_of(&f.n, 8)) && standing.iter().any(|r| r.seat == Seat::MeshPrimary && r.holder == holder_of(&f.n, 4)), "the row is what the standing seats fold: {standing:?}");
-    assert_eq!(f.p.fenced.lock().unwrap().iter().map(|(_, to)| to.clone()).collect::<Vec<_>>(), vec![Some("mesh1.admin.2".to_string())], "P's Build log is fenced naming N");
+    // The moved record is P's fence: read for P's birth, it names N.
+    let p_birth = (p_node.node_id.clone(), p_node.incarnation_id.clone().unwrap());
+    // This fixture's admins are wired by view, with no digests in their books: N's path.name is read
+    // from P's view here (the admin reads it from its digest book, `admin::fabric_seat_source`).
+    let view = f.p.door.topology.read().await.clone();
+    let read = rafka_node_admin_core::seat_watch::fabric_seat_record(f.p.door.membership.seats().fabric().as_ref(), &p_birth, &Default::default(), |id| view.own(id).map(|n| n.name.to_string()));
+    assert!(matches!(&read, rafka_node_admin_core::fabric_builds::SeatRecord::Moved { to: Some(to), .. } if to == "mesh1.admin.2"), "P's seat record fences its Build log naming N: {read:?}");
     until("N's install span", || spans.position(SEATS_INSTALLED).is_some()).await;
     let at = |n: &str| spans.position(n).unwrap_or_else(|| panic!("no {n} span among {:?}", spans.names()));
     assert!(at(SEATS_COMMITTED) < at(SEATED_TOGETHER), "the committed row is announced after it is written");
