@@ -101,6 +101,12 @@ pub enum BuildFrame {
         /// The number of chunks sent.
         chunks: u32,
     },
+    /// Terminal of `build.create`: the fabric-primary seat moved while the Build ran (a planned
+    /// handover). The Build goes on at the new seat; re-submit the same build id there.
+    SeatMoved {
+        /// The admin (path.name) that holds the seat now, when the old seat's view named one.
+        fabric_primary: Option<String>,
+    },
     /// Terminal of `build.delete`.
     Deleted,
 }
@@ -175,6 +181,10 @@ impl BuildStream {
                 BuildReply::Deleted { .. } => {
                     self.ended = true;
                     return Some(Ok(BuildFrame::Deleted));
+                }
+                BuildReply::SeatMoved { fabric_primary, .. } => {
+                    self.ended = true;
+                    return Some(Ok(BuildFrame::SeatMoved { fabric_primary }));
                 }
                 other => {
                     self.ended = true;

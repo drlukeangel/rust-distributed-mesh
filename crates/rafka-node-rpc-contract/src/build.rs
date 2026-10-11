@@ -17,7 +17,8 @@
 //! Step { build_id, attempt, operation, step }      only after the step's Complete receipt is durable
 //!                                                   on the executor that wrote it
 //! Blocked { build_id, attempt, operation, step, reason }   non-terminal, never durable, never a step outcome
-//! Complete | Failed { step, reason } | HandedOff { to }    the terminal of Create / AttemptRun
+//! Complete | Failed { step, reason } | HandedOff { to } | SeatMoved { fabric_primary }
+//!                                                  the terminal of Create / AttemptRun (SeatMoved: Create only)
 //! Got | Deleted                                    the terminal of Get / Delete
 //! ```
 //!
@@ -440,6 +441,15 @@ pub enum BuildReply {
         /// Why the call is refused.
         reason: String,
     },
+    /// Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a
+    /// planned handover, op `0x21`). The Build goes on at the new seat; the caller re-submits the
+    /// same `build_id` there. Never `Indeterminate` on a planned move.
+    SeatMoved {
+        /// The Build.
+        build_id: String,
+        /// The admin (path.name) that holds the seat now, when the receiver's view names one.
+        fabric_primary: Option<String>,
+    },
 }
 
 impl BuildReply {
@@ -470,6 +480,7 @@ impl BuildReply {
             Self::Draining { .. } => "draining",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
+            Self::SeatMoved { .. } => "seat-moved",
         }
     }
 
@@ -494,7 +505,7 @@ impl NodeProtocol for Build {
     /// A stream, decided by the fabric-primary itself or not at all.
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 4;
-    const REPLY_VARIANTS: u32 = 24;
+    const REPLY_VARIANTS: u32 = 25;
 
     type Request = BuildRequest;
     type Reply = BuildReply;
@@ -508,6 +519,7 @@ impl NodeProtocol for Build {
             | BuildReply::Complete { .. }
             | BuildReply::Failed { .. }
             | BuildReply::HandedOff { .. }
+            | BuildReply::SeatMoved { .. }
             | BuildReply::Got { .. }
             | BuildReply::Deleted { .. } => ReplyKind::Success,
             BuildReply::NotFabricPrimary { .. }
@@ -552,7 +564,7 @@ impl StreamingProtocol for Build {
         match frame {
             BuildReply::Started { .. } => FrameKind::Started,
             BuildReply::Step { .. } | BuildReply::Blocked { .. } | BuildReply::Steps { .. } => FrameKind::Data,
-            BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } => FrameKind::Terminal,
+            BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. } | BuildReply::SeatMoved { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Build::classify_reply(other)),
         }
     }
