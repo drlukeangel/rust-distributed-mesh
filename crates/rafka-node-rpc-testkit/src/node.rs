@@ -539,7 +539,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         hydration_cell: hydration_cell.clone(),
         hydrating: hydrating_cell.clone(),
     }));
-    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own, addressed: addressed.clone() }));
+    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own, addressed: addressed.clone(), hydration: hydration_cell.clone() }));
     ready.store(true, std::sync::atomic::Ordering::SeqCst);
     *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
@@ -912,6 +912,9 @@ pub(crate) struct Kicked {
     own: Arc<rafka_node_admin_core::node_self::NodeSelf>,
     /// The down ops node-admins sent this birth: what a hook blocked on its authority's word wakes on.
     addressed: Arc<rafka_node_admin_core::app_hydration::Addressed>,
+    /// Where this birth's `hydrate_before_ready` stands (the cell a start's hook writes): while it is
+    /// Blocked, a probe is answered `NotReady` carrying its blocker.
+    hydration: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>>,
 }
 
 type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
@@ -942,6 +945,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let Some(me) = slot.get().cloned() else {
                 return Ok(StatusReply::NotReady { reason: "this node has not joined its mesh yet".into() });
             };
+            // The hook's blocker as it stood when the call arrived, before this call addresses the
+            // birth (a hook blocked on its authority's word runs again on it).
+            let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker(&me.digest.node.name));
             let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
             let from_admin = sender.as_ref().is_some_and(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin);
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default();
@@ -996,6 +1002,13 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let mut d = me.digest.clone();
                     d.status = status;
                     let _ = me.membership.publish(&d).await;
+                    // node-start.md step 3: while its hook is Blocked, the node answers NotReady
+                    // carrying the hook's blocker, so its executor can frame it.
+                    if let Some(reason) = blocker {
+                        tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.digest.node.name, sender = %sender_name, state = "blocked", blocker = %reason)
+                            .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, the hook's blocker answered NotReady"));
+                        return Ok(StatusReply::NotReady { reason });
+                    }
                     tracing::info_span!(
                         "rdm.node_admin.status.update.via-probe",
                         node = %me.digest.node.name,

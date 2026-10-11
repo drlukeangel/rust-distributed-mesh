@@ -1361,6 +1361,24 @@ impl MembershipObserver {
     }
 }
 
+/// The blocker an exact birth names for its Ready (node-start.md step 3): only while its own digest
+/// in `book` says Pending, one `ProbeNodeState` to that birth over `client`, and the reason of a
+/// `NotReady` answer. A birth that answers its state (`Current`, `CurrentParked`), a stale
+/// incarnation, or a call that ends unanswered names no blocker: why it is not Ready is the Ready
+/// check's to report, and nothing is framed `Blocked` for it.
+pub async fn probed_ready_blocker(client: &rafka_node_rpc::NodeRpcClient, book: &DigestBook, node: &Node) -> Option<String> {
+    let incarnation = node.incarnation_id.clone()?;
+    let (digest, _) = book.get(node.node_id.as_str()).filter(|(d, _)| d.node.incarnation == incarnation)?;
+    if digest.status != MemberStatus::Pending {
+        return None;
+    }
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation };
+    match rafka_node_admin_client::NodeRpc::new(client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
+        Ok(rafka_node_rpc_contract::status::StatusReply::NotReady { reason }) => Some(reason),
+        _ => None,
+    }
+}
+
 #[async_trait::async_trait]
 impl NodeObserver for MembershipObserver {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
@@ -1381,6 +1399,10 @@ impl NodeObserver for MembershipObserver {
             Some(d) => Err(format!("{} reports {:?}", node.name, d.status)),
             None => Err(format!("no digest from {} for this birth", node.name)),
         }
+    }
+
+    async fn ready_blocker(&self, node: &Node) -> Option<String> {
+        probed_ready_blocker(self.client.as_deref()?, &self.book, node).await
     }
 
     async fn send_command(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext) -> crate::deployment::pipeline::CommandAdmission {
@@ -3359,6 +3381,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
     let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
+    // Where this admin's own `hydrate_before_ready` stands: written by its start (and a rejoin's),
+    // read by the Ready check and by a probe naming this admin.
+    let hydration_cell: crate::status_rpc::Hydrating = Arc::default();
     // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
     let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
     // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
@@ -3392,6 +3417,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             rounds: rounds_slot.clone(),
             configs: configs_slot.clone(),
             configure: configure.clone(),
+            hydration: hydration_cell.clone(),
         }));
     }
     // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -3846,7 +3872,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // and the mesh channel joined; the Ready check below names its blocker. A birth with no
     // launcher has no authority to pull from, and says why.
     let hydrate_cancel = rafka_node_rpc::Retirement::new();
-    let hydration_cell: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>> = Arc::default();
     let hydration_handle = {
         use crate::app_hydration::{AcceptingAuthority, Authority, Birth, End, Events, HydrateCtx, NoAuthority};
         let authority_ctx = match cfg.launch.as_ref().and_then(|l| l.launcher.clone()) {
@@ -5114,6 +5139,7 @@ mod tests {
             rounds: Default::default(),
             configs: Default::default(),
             configure: Default::default(),
+            hydration: Default::default(),
         };
         let _ = Declared::default();
 

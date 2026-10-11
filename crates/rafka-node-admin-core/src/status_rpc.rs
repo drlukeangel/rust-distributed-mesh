@@ -113,6 +113,9 @@ pub struct StatusAuthority {
     /// This admin as the subject of `ApplyNodeConfig`: it holds the config and publishes its digest
     /// carrying it; filled once its digest exists.
     pub configure: Configure,
+    /// Where this admin's own `hydrate_before_ready` stands (the cell its start writes): while it is
+    /// Blocked, a probe naming this admin is answered `NotReady` carrying its blocker.
+    pub hydration: Hydrating,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -297,7 +300,7 @@ impl StatusAuthority {
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.own(&self.node_id) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.configure, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.configure, &self.hydration, &self.wake).await {
                 return reply;
             }
         }
@@ -476,6 +479,9 @@ impl StatusAuthority {
 /// A node's re-publish of its presence, filled once it has joined its mesh.
 pub(crate) type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
+/// Where a node's own `hydrate_before_ready` stands: `None` until its start registered a hook.
+pub type Hydrating = Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>>;
+
 /// This node holding the config it is told and publishing its digest carrying it (`ApplyNodeConfig`).
 pub type Configure = Arc<OnceLock<Arc<dyn Fn(BTreeMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
@@ -504,7 +510,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition.
 /// `ApplyNodeState` is not served: a drain is `drain-node` and a stop is `stop-node`.
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, configure: &Configure, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, configure: &Configure, hydration: &Hydrating, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let (node_id, incarnation) = match req {
         StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } => (node_id, incarnation),
         _ => return None,
@@ -527,6 +533,9 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
     let sender_name = sender.map(|n| n.name.to_string()).unwrap_or_default();
     match req {
         StatusRequest::ProbeNodeState { .. } => {
+            // The hook's blocker as it stood when the probe arrived, before the probe addresses
+            // this admin (a hook blocked on its authority's word runs again on it).
+            let blocker = hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker(&me.name));
             // The authority addressed this admin (R-S3's down op): every declaration owed to it is
             // sent again, whatever its last outcome.
             if let Some(from) = sender {
@@ -540,6 +549,13 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             }
             if let Some(republish) = republish.get() {
                 republish().await;
+            }
+            // node-start.md step 3: while its hook is Blocked, the node answers NotReady carrying the
+            // hook's blocker, so its executor can frame it.
+            if let Some(reason) = blocker {
+                tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "blocked", blocker = %reason, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, the hook's blocker answered NotReady"));
+                return Some(StatusReply::NotReady { reason });
             }
             let state = node_state_of(me.status);
             tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = ?state, "otel.kind" = "internal")
@@ -632,12 +648,12 @@ mod tests {
         let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
         let republish = Republish::default();
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let answered = self_subject(&admin, Some(&carrier), &probe, &republish, &Configure::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), &probe, &republish, &Configure::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::Current { .. })), "{answered:?}");
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::Draining };
-        assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &Configure::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "an apply from a member is not the subject's to answer");
-        assert!(self_subject(&admin, Some(&admin), &probe, &republish, &Configure::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "a node-admin is not its own sender");
-        assert!(self_subject(&admin, None, &probe, &republish, &Configure::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "an unresolved peer is answered by no one");
+        assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &Configure::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "an apply from a member is not the subject's to answer");
+        assert!(self_subject(&admin, Some(&admin), &probe, &republish, &Configure::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "a node-admin is not its own sender");
+        assert!(self_subject(&admin, None, &probe, &republish, &Configure::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "an unresolved peer is answered by no one");
     }
 
     /// The status authority of the admin born as `me`, deciding over `view`.
@@ -660,6 +676,7 @@ mod tests {
             rounds: Default::default(),
             configs: Default::default(),
             configure: Default::default(),
+            hydration: Default::default(),
         }
     }
 

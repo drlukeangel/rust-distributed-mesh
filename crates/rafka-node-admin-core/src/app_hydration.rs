@@ -378,6 +378,17 @@ impl HydrationState {
             Self::Retired => Some(format!("{me}: retired before hydrate_before_ready passed")),
         }
     }
+
+    /// What a `ProbeNodeState` is answered `NotReady` with while the hook is `Blocked`
+    /// (node-start.md step 3), `None` in every other state. The text names the birth, the hook's own
+    /// reason and the event it runs again on, and no attempt counter: a rerun blocked for the same
+    /// reason answers the same text, so the executor frames a new `Blocked` only on a new reason.
+    pub fn probe_blocker(&self, me: &PathName) -> Option<String> {
+        match self {
+            Self::Blocked { reason, retry_on, .. } => Some(format!("{me}: hydrate_before_ready is blocked: {reason}; it runs again on {}", retry_on.name())),
+            Self::Running { .. } | Self::Passed | Self::Failed(_) | Self::Retired => None,
+        }
+    }
 }
 
 /// A read-only view of a birth's hook state.
@@ -592,5 +603,27 @@ impl HookDriver {
                 () = cancel.cancelled() => {}
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CONTRACT (node-start.md step 3): the probe's `NotReady` text is the hook's blocker while
+    /// Blocked and nothing otherwise; two attempts blocked for the same reason answer the same text,
+    /// and a changed reason a different one. What must NOT happen: an attempt counter in the text,
+    /// which would frame a new `Blocked` on every rerun.
+    #[test]
+    fn a_rerun_blocked_for_the_same_reason_answers_the_same_probe_text() {
+        let me: PathName = "mesh1.rpc.1".parse().unwrap();
+        let blocked = |attempt, reason: &str| HydrationState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::AuthorityAddressed };
+        let first = blocked(1, "rows not yet published").probe_blocker(&me).expect("blocked answers its blocker");
+        assert_eq!(Some(first.clone()), blocked(7, "rows not yet published").probe_blocker(&me), "the attempt is not part of the blocker");
+        assert_ne!(Some(first.clone()), blocked(8, "the authority is draining").probe_blocker(&me), "a changed reason is a new blocker");
+        assert!(first.contains("mesh1.rpc.1") && first.contains("rows not yet published") && first.contains("authority-addressed"), "{first}");
+        for other in [HydrationState::Running { attempt: 2 }, HydrationState::Passed, HydrationState::Failed("x".into()), HydrationState::Retired] {
+            assert_eq!(other.probe_blocker(&me), None, "only Blocked answers NotReady: {other:?}");
+        }
     }
 }
