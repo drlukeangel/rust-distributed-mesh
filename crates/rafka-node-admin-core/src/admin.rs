@@ -2957,11 +2957,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let launched_runtime = match &cfg.launch {
         Some(_) => {
             let dir = cfg.data_dir.clone();
-            Some(
-                tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
-                    .await
-                    .map_err(|e| format!("reading the runtime record: {e}"))??,
-            )
+            Some(crate::node_self::wait_for_own_record(&dir, Duration::from_secs(10)).await?)
         }
         None => None,
     };

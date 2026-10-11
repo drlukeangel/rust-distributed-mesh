@@ -253,21 +253,27 @@ impl RuntimeFact {
     }
 }
 
+/// One read of the record the provider writes for the runtime reading it: the record when it is
+/// written and describes this runtime, else why not (absent, unreadable, or an earlier birth's). A
+/// caller that waits for it ([`await_own_record`], or an async caller on its own runtime) reads again.
+pub fn read_own_record(dir: &Path) -> Result<RuntimeFact, String> {
+    match RuntimeFact::read_record(dir) {
+        Some(Ok(f)) => f.verify_is_this_runtime().map(|()| f).map_err(|e| e.to_string()),
+        Some(Err(e)) => Err(e),
+        None => Err(format!("no {RUNTIME_FILE} in {}", dir.display())),
+    }
+}
+
 /// The record the provider writes for the runtime reading it, once it is
 /// written and describes this runtime (a record an earlier birth left in the
 /// same data dir does not); a named refusal after `within`.
 pub fn await_own_record(dir: &Path, within: std::time::Duration) -> Result<RuntimeFact, String> {
     let until = std::time::Instant::now() + within;
-    let mut last = format!("no {RUNTIME_FILE} in {}", dir.display());
     loop {
-        match RuntimeFact::read_record(dir) {
-            Some(Ok(f)) => match f.verify_is_this_runtime() {
-                Ok(()) => return Ok(f),
-                Err(e) => last = e.to_string(),
-            },
-            Some(Err(e)) => last = e,
-            None => {}
-        }
+        let last = match read_own_record(dir) {
+            Ok(f) => return Ok(f),
+            Err(e) => e,
+        };
         if std::time::Instant::now() >= until {
             return Err(format!("the provider wrote no runtime record for this runtime within {within:?}: {last}"));
         }

@@ -133,9 +133,9 @@ pub async fn run(role: Role) -> Result<()> {
 /// `hydration`, `ServerBuilder::serve_gated`) to the catalog before it seals. A hook that fails
 /// after the node came up Pending ends the process by name.
 pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydration::Hydration, serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Result<()> {
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&format!("rafka-{}", role.name()));
     // A stop that arrives while the node boots is heard from here on.
     rafka_node_rpc_testkit::node::listen_for_stop();
+    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&format!("rafka-{}", role.name()));
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",

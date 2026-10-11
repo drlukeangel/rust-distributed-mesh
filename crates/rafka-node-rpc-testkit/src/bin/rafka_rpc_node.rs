@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node");
     // A stop that arrives while the node boots is heard from here on.
     node::listen_for_stop();
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node");
     let launch = match Launch::from_env(|k| std::env::var(k).ok()) {
         Ok(l) => l,
         Err(e) => {
