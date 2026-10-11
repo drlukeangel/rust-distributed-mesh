@@ -5,7 +5,7 @@
 //! is minted. An exit whose reason is the reserved `TRANSPORT_STOPPED` (exit code 4) is restarted
 //! as the same node; every other exit is replaced by a new node.
 
-use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
