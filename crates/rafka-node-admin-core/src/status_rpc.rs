@@ -361,8 +361,8 @@ impl StatusAuthority {
             .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
     }
 
-    /// A birth's completion call (`node-drained`, `node-left`) at the admin that commanded it: it
-    /// resolves the open command it names, by `(build_id, attempt, operation, node_id,
+    /// A birth's `node-drained` completion call at the admin that commanded it (node-left is the
+    /// reply of `stop-node`, never a call): it resolves the open command it names, by `(build_id, attempt, operation, node_id,
     /// incarnation)`. The sender must be the subject. A completion with no open command is
     /// refused `NotReady` naming the mismatch, never counted toward another operation.
     fn accept_completion(&self, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {

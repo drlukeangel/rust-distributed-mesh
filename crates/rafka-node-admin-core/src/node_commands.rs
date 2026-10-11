@@ -2,9 +2,10 @@
 //! completion for (node-drain.md, node-stop.md; node-rpc-envelope.md, "Node drain and stop
 //! command pairs").
 //!
-//! A command is sent to one exact birth; the birth answers `Applied` on admission and, later, calls
-//! `NodeDrained` / `NodeLeft` back. The completion is matched to the open command by
-//! `(build_id, attempt, operation, node_id, incarnation)`. A completion with no open command is
+//! A command is sent to one exact birth. `drain-node` is answered `Applied` on admission and the
+//! birth later calls `NodeDrained` back; `stop-node` is answered `Stopped` once the birth is parked,
+//! and that reply is node-left: no upward node-left call exists (R-ON1). A completion is matched to
+//! the open command by `(build_id, attempt, operation, node_id, incarnation)`. A completion with no open command is
 //! refused by name; a repeat of an accepted completion is `AlreadyApplied`. This is the RPC
 //! completion inbox of the executing admin: it reads no gossip and writes nothing durable (the
 //! pipeline's step receipt is the durable record).
@@ -200,7 +201,8 @@ fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> Com
     }
 }
 
-/// Wait up to `within` for the completion call of the command `ctx` names for `node`.
+/// Wait up to `within` for the completion of the command `ctx` names for `node`: its `node-drained`
+/// call, or the `Stopped` reply of its `stop-node` call (node-left).
 pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeCommand, ctx: &CommandContext, within: Duration) -> Completion {
     let Some(incarnation) = node.incarnation_id.clone() else {
         return Completion::NotAwaited { admission: format!("{} has no known birth", node.name) };
@@ -209,7 +211,7 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
     let mut rx = commands.open(key);
     let got = tokio::time::timeout(within, rx.wait_for(|done| *done)).await.is_ok_and(|r| r.is_ok());
     tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node = %node.name, completion = cmd.completion(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, received = got, "otel.kind" = "internal")
-        .in_scope(|| tracing::info!("the completion call was awaited"));
+        .in_scope(|| tracing::info!("the completion was awaited"));
     if got {
         Completion::Received
     } else {
@@ -217,8 +219,9 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
     }
 }
 
-/// A birth's completion call (`node-drained`, `node-left`) at the admin `receiver` that commanded
-/// it: it resolves the open command it names. `sender` is the resolved caller `(node id,
+/// A birth's `node-drained` completion call at the admin `receiver` that commanded it (node-left
+/// is the reply of `stop-node`, never a call; a `NodeLeft` request is refused by name before it
+/// reaches here): it resolves the open command it names. `sender` is the resolved caller `(node id,
 /// incarnation, path.name)`; it must be the subject. A completion with no open command is
 /// refused `NotReady` naming the mismatch, never counted toward another operation.
 pub fn accept_completion(commands: &CommandBook, receiver: &str, sender: Option<(&NodeId, Option<&IncarnationId>, &str)>, req: &StatusRequest) -> StatusReply {

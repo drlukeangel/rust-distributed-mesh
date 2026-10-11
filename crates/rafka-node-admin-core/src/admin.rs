@@ -1066,6 +1066,20 @@ pub async fn reconcile_drift(
         })
         .map(|n| n.name.to_string())
         .collect();
+    // A removed Mesh whose shutdown is incomplete (mesh-leave.md, "Failure/certainty behavior"):
+    // no MeshLeft receipt, and either the view still holds a birth of it live (an incomplete leave
+    // leaves at least its final primary running) or the final primary's exact exit is recorded
+    // (the attempt failed after the owner's stop, before MeshLeft). Its attempt carries no action;
+    // the planner plans the mesh's shutdown again, which resumes from the receipts.
+    surplus.extend(
+        t.meshes
+            .iter()
+            .filter(|m| !current.topology.meshes.contains_key(&m.name) && hold(&m.name).is_none())
+            .filter_map(|m| m.id.as_ref().map(|id| (m, crate::mesh_leave::operation(id))))
+            .filter(|(_, op)| !current.steps.iter().any(|st| &st.operation == op && st.step == crate::mesh_leave::STEP_MESH_LEFT && st.outcome == crate::build_state::StepOutcome::Complete))
+            .filter(|(m, op)| t.members().any(|n| n.mesh == m.name && n.status.is_live()) || matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::FinalExited(_))))
+            .map(|(_, op)| op),
+    );
     surplus.sort();
     if first_exited.is_none() && surplus.is_empty() {
         return None;
@@ -1566,21 +1580,11 @@ pub struct AdminRunner {
     /// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a handoff for.
     pub leaves: Arc<crate::mesh_leave::LeaveBook>,
     /// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished.
-    pub leave_runs: Mutex<HashMap<crate::mesh_leave::LeaveKey, LeaveRun>>,
+    pub leave_runs: crate::mesh_leave::LeaveRuns,
     /// The fabric-primary handover: this admin's initiator, doors and recorded operations.
     pub handover: Arc<crate::fabric_handover::HandoverDoor>,
     /// The signer this admin issues a new mesh's first admin's issuing material with.
     pub issuer: Arc<crate::certs::CertIssuer>,
-}
-
-/// One mesh leave at the leaving mesh's primary.
-#[derive(Clone)]
-pub enum LeaveRun {
-    /// The member workflows are running for the owner that sent `leave-mesh`.
-    Running(NodeId),
-    /// Every other member exited and the manifest is recorded: the handoff to the owner is what
-    /// is left.
-    Exited(NodeId, crate::mesh_leave::ExitManifest),
 }
 
 /// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
@@ -3445,7 +3449,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         node_rpc: Some(node_rpc.clone()),
         lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone() })),
         leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
-        leave_runs: Mutex::new(HashMap::new()),
+        leave_runs: crate::mesh_leave::LeaveRuns::default(),
         handover: handover.clone(),
         issuer: issuer.clone(),
     });

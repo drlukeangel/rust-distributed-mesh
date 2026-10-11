@@ -212,8 +212,8 @@ pub enum BuildOperation {
         /// The birth drained.
         from_incarnation: IncarnationId,
     },
-    /// Stop the exact birth `from_incarnation` of `node` (node-stop.md): `stop-node`, the birth's
-    /// `node-left` and the provider's Exited proof. No implicit drain, no departure.
+    /// Stop the exact birth `from_incarnation` of `node` (node-stop.md): `stop-node`, its node-left
+    /// reply and the provider's Exited proof. No implicit drain, no departure.
     StopNode {
         /// The node to stop.
         node: PathName,
