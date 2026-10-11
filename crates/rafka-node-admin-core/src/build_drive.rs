@@ -14,9 +14,11 @@
 //! projection: a successor fabric-primary resumes from it, and the attempt it finds claimed it
 //! dispatches again (start-or-reattach), so no completed step runs twice.
 //!
-//! Before every claim and every dispatch the drive passes three gates: this admin holds the seat
-//! in its view, its view may authorize anything at all (a cut-off view dispatches nothing), and
-//! the Build log's sticky seat fence is not set (a fabric-primary that yielded dispatches nothing).
+//! Before every claim and every dispatch the drive passes three gates: the Build log's sticky seat
+//! fence is not set (a fabric-primary whose committed seat record names another live birth
+//! dispatches nothing), this admin holds the seat in its view, and its view may authorize anything
+//! at all (a cut-off view dispatches nothing). A seat loss names the holder the committed seat
+//! record names, never the view's.
 //! An executor that cannot be reached is replaced only on proof of its departure, never on
 //! silence.
 
