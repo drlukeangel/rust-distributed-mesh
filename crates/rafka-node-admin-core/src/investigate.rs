@@ -214,6 +214,16 @@ impl Ladder {
         Some(PeerMesh { unheard_ms: st.tracked.then(|| st.unheard.as_millis() as u64), rebirth_decided: st.verdict == Some(true) })
     }
 
+    /// What the R-D1 fence reads of `mesh`, for the Build door, the drive and the drift check alike:
+    /// `unheard` is the elapsed time since this admin's last valid direct backbone receipt from the
+    /// mesh (`DigestBook::mesh_unheard`, mesh-investigation.md: "Let t be the elapsed monotonic time
+    /// since the fabric-primary's last valid direct backbone receipt from mesh-x"), `None` for a mesh
+    /// the backbone never carried here.
+    pub fn fence(&self, mesh: &str, unheard: Option<Duration>) -> Option<PeerMesh> {
+        let _ = unheard;
+        self.peer_mesh(mesh)
+    }
+
     /// How long after `unheard` the next rung of `mesh` falls due: the driver wakes then, so a tick
     /// never moves a rung. `None` once nothing of the mesh is left to step.
     pub fn next_due(&self, mesh: &str, unheard: Duration) -> Option<Duration> {
@@ -792,6 +802,38 @@ mod tests {
         };
         let heard: BTreeSet<String> = ["mesh3".to_string()].into();
         assert_eq!(never_heard(&t, "mesh1", &heard), BTreeSet::from(["mesh2".to_string()]), "mesh2 only: mesh1 is this admin's own, mesh3 was heard on the backbone");
+    }
+
+    /// CONTRACT (R-D1: loss of peer-mesh control-plane visibility fences lifecycle mutation for every
+    /// node in that mesh; mesh-investigation.md: "Let t be the elapsed monotonic time since the
+    /// fabric-primary's last valid direct backbone receipt from mesh-x"; step 5: "No answer from any
+    /// member in either probe means hold"): the fence reads t, not whether the ladder has stepped the
+    /// mesh yet. An admin that took the fabric-primary seat a moment ago holds a ladder that has
+    /// stepped nothing, and a peer mesh its book last heard on the backbone 7 s ago is fenced from that
+    /// moment, unheard 7000 ms, no rebirth decided; a mesh heard within the tracking rung is not
+    /// fenced; a decided rebirth is read from the ladder; a mesh the backbone never carried here is
+    /// what the ladder holds of it. Must NOT happen: a node of a mesh unheard past the rung claimed or
+    /// dispatched for because the ladder has not stepped it yet (mesh_recover at a fabric-primary seat
+    /// take ran create-node:mesh1.admin.1 0.25 s before its ladder first stepped mesh1).
+    #[test]
+    fn the_fence_reads_t_from_the_last_direct_backbone_receipt_before_the_ladder_steps_the_mesh() {
+        let mut l = Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500)));
+        assert_eq!(
+            l.fence("mesh1", Some(Duration::from_secs(7))),
+            Some(PeerMesh { unheard_ms: Some(7000), rebirth_decided: false }),
+            "a seat taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is fenced"
+        );
+        assert_eq!(l.fence("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no fence");
+        for s in l.step("mesh1", Duration::from_secs(7)) {
+            if let Step::Probe { n, ticket, unheard_ms } = s {
+                l.probed("mesh1", ticket, n, CarrierEdgeLost, unheard_ms);
+            }
+        }
+        l.step("mesh1", Duration::from_secs(7));
+        l.step("mesh1", Duration::from_secs(7));
+        assert!(l.rebirth_decided("mesh1"), "two carrier-edge-lost probes decide the rebirth");
+        assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), rebirth_decided: true }), "the decided rebirth is the ladder's");
+        assert_eq!(l.fence("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
     }
 
     #[test]
