@@ -7,9 +7,9 @@
 //!   is never held mid-critical-section, so the parked admin always serves its start (node-start:
 //!   start is the only exit from stopped Leaving), and each turn waits before it sends;
 //! - a task that takes no such lock is spawned through the gate ([`ParkGate::spawn`]): while the
-//!   gate is parked its future is not polled, so it holds its place at the await it was at;
-//! - work a stop retires with the birth runs as [`ParkGate::until_parked`]: it ends at the park.
-//! The gate restarts nothing.
+//!   gate is parked its future is not polled, so it holds its place at the await it was at.
+//! Work a stop retires with the birth instead of holding it runs as [`ParkGate::until_parked`]: it
+//! ends at the park and never resumes. The gate restarts nothing.
 
 use std::future::Future;
 use std::sync::Arc;
