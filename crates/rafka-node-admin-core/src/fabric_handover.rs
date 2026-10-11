@@ -182,11 +182,17 @@ pub struct HandoverDoor {
     pub book: DigestBook,
     /// The records the election's inputs come from.
     pub records: Arc<crate::admin::Records>,
-    /// This admin's own contact addresses, once its digest is built.
-    pub contacts: OnceLock<OwnContacts>,
+    /// This admin's own contact addresses: what its new-fabric-primary announces.
+    pub contacts: OwnContacts,
     /// The handovers this node took part in.
     pub handovers: HandoverBook,
+    /// Fences this admin's Build log, naming why and the new holder, when a committed transfer takes
+    /// the seat from it.
+    pub fence_builds: FenceBuilds,
 }
+
+/// Sets the sticky fence of this admin's Build log: why, and the admin (path.name) the seat moved to.
+pub type FenceBuilds = Arc<dyn Fn(String, Option<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
     Some(HandoverBirth { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone()? })
@@ -421,10 +427,9 @@ impl HandoverDoor {
 
     async fn complete(&self, payload: Payload, committed: u64, publish: bool) {
         if publish {
-            if let Some(c) = self.contacts.get() {
-                let holder = SeatHolder { mesh: payload.successor.mesh.clone(), node_id: payload.successor.node_id.clone(), incarnation: payload.successor.incarnation.clone(), epoch: committed };
-                self.backbone.announce_new_fabric_primary(holder, c.endpoint_id.clone(), c.transport_addr, c.admin_api_base.clone()).await;
-            }
+            let holder = SeatHolder { mesh: payload.successor.mesh.clone(), node_id: payload.successor.node_id.clone(), incarnation: payload.successor.incarnation.clone(), epoch: committed };
+            let c = &self.contacts;
+            self.backbone.announce_new_fabric_primary(holder, c.endpoint_id.clone(), c.transport_addr, c.admin_api_base.clone()).await;
         }
         match self.call(&payload.incumbent.node_id, &payload.taken(committed)).await {
             Ok(Reply::Applied | Reply::AlreadyApplied) => {
@@ -534,6 +539,12 @@ impl HandoverDoor {
         if let SeatTaken::Refused { held } = self.membership.seats().take(Seat::FabricPrimary, &holder) {
             return refuse("stale-epoch", format!("a later seat record is held: {held}"), Reply::RejectedStaleEpoch { expected: committed, current: held.epoch });
         }
+        // The seat record moved: the Build log is fenced by that move itself, before anything else
+        // this admin does is answered, so no dispatch of the old seat follows the transfer. The fence
+        // names the committed successor's path.name, resolved by its node id (it is a member of this
+        // view whether or not the view's seat flags have moved yet).
+        let successor = self.topology.read().await.members().find(|n| n.node_id == payload.successor.node_id).map(|n| n.name.to_string());
+        (self.fence_builds)(format!("the seat is now {} {}", payload.successor.mesh, payload.successor.node_id), successor).await;
         if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
             return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
         }
