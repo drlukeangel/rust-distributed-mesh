@@ -105,7 +105,7 @@ pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSe
             let by = format!("the fabric seat record names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.0, h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
             crate::fabric_builds::SeatRecord::Moved { by, to }
         }
-        _ => crate::fabric_builds::SeatRecord::Open,
+        _ => crate::fabric_builds::SeatRecord::Open { holder: None },
     }
 }
 

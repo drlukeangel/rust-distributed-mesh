@@ -42,8 +42,10 @@ pub trait Gate: Send + Sync {
     /// Whether this admin's view may authorize anything now: not cut off, and not within one
     /// silence window of healing (`CutOff::authorizes`).
     fn authorizes(&self) -> bool;
-    /// The seat fence of the Build log: refused by name once this admin yielded the seat.
-    async fn fence(&self) -> Result<(), BuildStateError>;
+    /// The seat fence of the Build log, read from the committed fabric seat record: refused by name
+    /// once the record names another live birth; otherwise the path.name of the birth it names when
+    /// that is this birth, `None` when it names none or a birth proven gone.
+    async fn fence(&self) -> Result<Option<String>, BuildStateError>;
     /// Why reconciliation is frozen (a fabric shutdown is in force), when it is: no claim and no
     /// dispatch from here on.
     fn frozen(&self) -> Option<String> {
@@ -64,8 +66,8 @@ impl Gate for OpenGate {
     fn authorizes(&self) -> bool {
         true
     }
-    async fn fence(&self) -> Result<(), BuildStateError> {
-        Ok(())
+    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+        Ok(None)
     }
 }
 

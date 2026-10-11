@@ -1242,7 +1242,7 @@ impl crate::build_drive::Gate for SeatGate {
     fn authorizes(&self) -> bool {
         self.membership.authorizes()
     }
-    async fn fence(&self) -> Result<(), crate::build_state::BuildStateError> {
+    async fn fence(&self) -> Result<Option<String>, crate::build_state::BuildStateError> {
         self.builds.fence_check().await
     }
     async fn fence_set(&self) {
