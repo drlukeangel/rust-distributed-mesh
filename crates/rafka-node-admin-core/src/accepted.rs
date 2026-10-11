@@ -405,6 +405,10 @@ impl ReplaceProgress {
             let finished = done("Complete").iter().any(|s| s.output.as_ref().and_then(|o| o.get("incarnation")) == Some(&birth));
             return Self { started, finished };
         }
+        // A recovery: finished once its operation's `Complete` names the exited birth.
+        if let Some(AttemptAction::Recover { path, node_id, from_incarnation }) = &build.action {
+            return Self { started: false, finished: recovered_at(build, path, node_id, from_incarnation).is_some() };
+        }
         let Some(AttemptAction::Replace { path, from_incarnation }) = &build.action else { return Self::default() };
         let operation = format!("replace-node:{path}");
         let birth = serde_json::to_value(from_incarnation).unwrap_or_default();
@@ -459,6 +463,16 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
                 Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, from_incarnation },
                 _ => BuildOperation::StopNode { node, from_incarnation },
             });
+        }
+        return BuildPlan { operations: ops };
+    }
+    // A recovery is its one operation (node-recovery.md): the topology is unchanged, its path is
+    // never created by the generic loop, and no other member is swept. It is planned whatever the
+    // view holds at the path (the exited birth unheard, nothing, or the new node mid-attempt) until
+    // its `Complete` receipt names the exited birth.
+    if let Some(AttemptAction::Recover { path, node_id, from_incarnation }) = action {
+        if !replace_progress.finished {
+            ops.push(BuildOperation::RecoverNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() });
         }
         return BuildPlan { operations: ops };
     }
