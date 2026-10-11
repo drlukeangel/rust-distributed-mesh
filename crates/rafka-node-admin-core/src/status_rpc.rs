@@ -870,4 +870,71 @@ mod tests {
         assert_eq!(held.node(&standing.node_id, standing.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "the held birth keeps its state");
         assert_eq!(Declared::rehydrate(&*status).await.unwrap().nodes.len(), 1, "a restarted authority folds only the held birth back");
     }
+
+    /// CONTRACT (node-recovery.md "Steps": "node.create at the same path.name", "New: node.id"): a
+    /// recovered birth is superseded by a NEW node at its path.name. Once the book holds that path
+    /// under another node_id, the exited birth's declared-state rows are tombstoned (via-new-node),
+    /// whether or not the book still holds the exited birth's departure (that is held only
+    /// DEPARTED_RETENTION; an admin that rehydrates later holds none).
+    /// Must NOT happen: the exited birth's rows folded back for ever because its node_id is gone.
+    #[tokio::test]
+    async fn a_birth_whose_path_the_book_holds_under_a_new_node_leaves_no_declared_state_row_behind() {
+        let mut admin = node("mesh1.admin.1");
+        admin.mesh = "mesh1".into();
+        admin.kind = NodeKind::NodeAdmin;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let mut exited = node("mesh1.rpc.1");
+        exited.mesh = "mesh1".into();
+        exited.kind = NodeKind::RpcNode;
+        exited.endpoint_id = Some(EndpointId("mesh1.rpc.1-endpoint".into()));
+        exited.transport_addr = Some("127.0.0.1:1".parse().unwrap());
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![admin.clone(), exited.clone()],
+        }));
+        let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+        let authority = StatusAuthority {
+            me: admin.name.clone(),
+            fabric_id: topology.read().await.fabric.id.clone(),
+            topology: topology.clone(),
+            declared: Arc::new(Mutex::new(Declared::default())),
+            status_storage: status.clone(),
+            mesh_ids: Arc::new(BTreeMap::new),
+            republish: Arc::new(OnceLock::new()),
+            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            own: Arc::new(OnceLock::new()),
+            leaver: Arc::new(OnceLock::new()),
+            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake: Default::default(),
+            rounds: Default::default(),
+        };
+        let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);
+        // The recovery created a new node at the path; the exited birth's departure is no longer held.
+        let mut recovered = exited.clone();
+        recovered.node_id = NodeId::mint();
+        recovered.incarnation_id = Some(IncarnationId::mint());
+        let book = rafka_mesh_transport::membership::DigestBook::default();
+        book.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
+        let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            authority.retire_superseded(&book).await;
+        }
+        let by_new_node = capture.named("rdm.node_admin.status.remove.via-new-node");
+        for s in &by_new_node {
+            eprintln!("span {} trace_id={} {:?}", s.name, s.trace_id, s.attributes);
+        }
+        assert_eq!(
+            by_new_node.iter().map(|s| (s.attributes["node_id"].clone(), s.attributes["held_node_id"].clone(), s.attributes["outcome"].clone())).collect::<Vec<_>>(),
+            vec![(exited.node_id.to_string(), recovered.node_id.to_string(), "retired".to_string())],
+            "the exited birth is retired for the new node at its path"
+        );
+        use crate::status_storage::StatusStorage as _;
+        assert!(status.node_declared().await.unwrap().is_empty(), "no declared-state row of the exited birth is left");
+        assert_eq!(authority.declared.lock().unwrap().node(&exited.node_id, exited.incarnation_id.as_ref().unwrap()), None, "the exited birth is forgotten");
+        assert!(Declared::rehydrate(&*status).await.unwrap().nodes.is_empty(), "a restarted authority folds nothing of it back");
+    }
 }
