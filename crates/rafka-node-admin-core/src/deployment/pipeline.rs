@@ -1755,27 +1755,16 @@ impl DeploymentPipeline<'_> {
     /// drains, the seats it holds move to this executor by TakeSeats, once per run and under the
     /// run's own operation, so an identical retry of the run sends the identical call. Not run for a
     /// mesh leave member (`shutdown_member`): the leaving mesh's final primary keeps its seat.
+    /// A refusal fails the step by name and nothing is drained, a fabric seat included: it is never
+    /// taken by an executor of another mesh (`HandoverDoor::take_seats` refuses it). `OtherMesh` is a
+    /// holder of its own mesh's seat alone with no other admin in that mesh: the seat stays with it
+    /// until its birth is gone and the ordinary election seats the next.
     async fn seat_transfer_step(&self, run: &mut Run<'_>, node: &Node) -> Result<(), PipelineError> {
         if node.kind != crate::model::NodeKind::NodeAdmin {
             return Ok(());
         }
         let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
-        // The drain goes on only once the seats moved, or the target holds none, or its proven-lost
-        // birth left them to the election. An executor of another mesh cannot take them: TakeSeats
-        // moves seats inside the holder's mesh only (node-rpc-envelope.md, Boundary), so the step
-        // fails by name and nothing is drained.
-        let _: crate::fabric_handover::SeatTransferOutcome = self
-            .step(run, RetireStep::SeatTransfer.name(), async {
-                match self.observer.transfer_seats(node, &ctx).await? {
-                    crate::fabric_handover::SeatTransferOutcome::OtherMesh { holder_mesh } => Err(format!(
-                        "{} holds seats of mesh {holder_mesh} and this executor ({}) is not of that mesh: TakeSeats moves seats inside the holder's mesh only, and a mesh's last seat holder gives up the fabric seat only through TakeFabricPrimary inside a mesh-leave; nothing is drained",
-                        node.name,
-                        self.template.launcher.name
-                    )),
-                    outcome => Ok(outcome),
-                }
-            })
-            .await?;
+        let _: crate::fabric_handover::SeatTransferOutcome = self.step(run, RetireStep::SeatTransfer.name(), self.observer.transfer_seats(node, &ctx)).await?;
         Ok(())
     }
 

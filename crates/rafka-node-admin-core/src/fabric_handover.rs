@@ -177,7 +177,10 @@ pub enum SeatTransferOutcome {
     /// The holder's birth is proven gone and no transfer naming this executor is held: none
     /// happened, and the ordinary election seats the successor.
     NoTransfer,
-    /// The executor is not of the holder's mesh: TakeSeats moves seats inside the holder's mesh only.
+    /// The executor is not of the holder's mesh and the holder holds its own mesh's seat alone (no
+    /// other admin of that mesh executes): the seat stays with it until its birth is gone and the
+    /// ordinary election seats the next. A fabric seat is never taken across meshes: that is a
+    /// refusal by name.
     OtherMesh {
         /// The holder's mesh.
         holder_mesh: String,
@@ -810,10 +813,22 @@ impl HandoverDoor {
         if seats.is_empty() {
             return Ok(SeatTransferOutcome::NotAHolder);
         }
+        let t = TakeSeatsCall { fabric: self.fabric.clone(), holder: hb.clone(), successor: self.me_birth(), seats, build_id: build_id.to_string(), attempt, operation: operation.to_string() };
         if holder.mesh != self.me.mesh {
+            // TakeSeats moves seats inside the holder's mesh only (node-rpc-envelope.md, Boundary): the
+            // fabric seat leaves the holder's mesh only through TakeFabricPrimary inside a mesh-leave.
+            if t.seats.iter().any(|e| e.seat.kind() == Seat::FabricPrimary) {
+                let detail = format!(
+                    "{} holds the fabric-primary seat in mesh {} and this executor ({}) is of mesh {}: TakeSeats moves seats inside the holder's mesh only, and the fabric seat leaves mesh {} only through TakeFabricPrimary inside a mesh-leave; nothing is drained",
+                    holder.name, holder.mesh, self.me, self.me.mesh, holder.mesh
+                );
+                reject_seats("executor", "other-mesh-fabric-seat", &detail, &t);
+                return Err(detail);
+            }
+            // Its own mesh's seat alone, and no other admin of that mesh executes: the seat stays with
+            // it until its birth is gone and the ordinary election seats the next.
             return Ok(SeatTransferOutcome::OtherMesh { holder_mesh: holder.mesh.clone() });
         }
-        let t = TakeSeatsCall { fabric: self.fabric.clone(), holder: hb.clone(), successor: self.me_birth(), seats, build_id: build_id.to_string(), attempt, operation: operation.to_string() };
         let req = t.request();
         let mut seats_changed = book.subscribe();
         let mut heard = self.book.heard_changes();
