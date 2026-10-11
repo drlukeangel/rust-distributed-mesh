@@ -59,11 +59,19 @@ pub(crate) struct OfflineTickle {
     settled: HashSet<String>,
     /// The nodes held true offline now, by node id.
     offline: HashSet<String>,
+    /// This node-admin's path.name, named on every span it emits: a seat handed over mid-window is
+    /// read from which admin ran each round.
+    observer: String,
 }
 
 impl OfflineTickle {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The tickle of node-admin `observer` (its path.name).
+    pub fn observed_by(observer: String) -> Self {
+        Self { observer, ..Self::default() }
     }
 
     #[cfg(test)]
@@ -116,11 +124,11 @@ impl OfflineTickle {
             // Heard again only while the view still holds the node; a node id the view no longer
             // holds was deleted (or recovered under a new node.id at its path.name): gone.
             if in_view(&id) {
-                tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, observer = %self.observer, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!(node_id = %id, "a silent node is heard again: its tickle and its status end"));
                 report.returned.push(id);
             } else {
-                tracing::info_span!("rdm.node_admin.node.remove.via-offline-gone", node_id = %id, "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.node.remove.via-offline-gone", node_id = %id, observer = %self.observer, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!(node_id = %id, "a silent node left the view: its tickle and its status end, it was not heard again"));
                 report.gone.push(id);
             }
@@ -139,8 +147,9 @@ impl OfflineTickle {
             return report;
         }
         for SilentNode { node_id: id, path } in silent {
-            let seen = self.first_seen.get(&id).copied().unwrap_or(now_ms);
-            if now_ms.saturating_sub(seen) < probe_delay_ms || self.settled.contains(&id) {
+            // The instant this admin first saw the node silent: a seat taken mid-window tickles on it.
+            let seen_at = self.first_seen.get(&id).copied().unwrap_or(now_ms);
+            if now_ms.saturating_sub(seen_at) < probe_delay_ms || self.settled.contains(&id) {
                 continue;
             }
             if let Some(&no_path_since) = self.hold_down.get(&id) {
@@ -158,6 +167,8 @@ impl OfflineTickle {
                         "rdm.node_admin.node.resolve.via-offline-tickle-answered",
                         node_id = %id,
                         path = %path,
+                        observer = %self.observer,
+                        first_seen_ms = seen_at as i64,
                         iroh_known_addrs = %seen.known_addrs,
                         iroh_active_addrs = %seen.active_addrs,
                         "otel.kind" = "internal"
@@ -169,12 +180,12 @@ impl OfflineTickle {
                     ViaPeerVerdict::Answered { via } => {
                         self.hold_down.remove(&id);
                         self.settled.insert(id.clone());
-                        tracing::info_span!("rdm.node_admin.node.resolve.via-peer-tickle-answered", node_id = %id, path = %path, via = %via, error = %e, "otel.kind" = "internal")
+                        tracing::info_span!("rdm.node_admin.node.resolve.via-peer-tickle-answered", node_id = %id, path = %path, via = %via, error = %e, observer = %self.observer, first_seen_ms = seen_at as i64, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!(node_id = %id, via = %via, error = %e, "offline tickle failed direct but answered via peer — unreachable from me, no record"));
                         report.reachable_silent.push(id);
                     }
                     ViaPeerVerdict::CandidatesUnreadable(reason) => {
-                        tracing::info_span!("rdm.node_admin.node.reject.via-peer-tickle-candidates-unreadable", node_id = %id, path = %path, reason = %reason, error = %e, "otel.kind" = "internal")
+                        tracing::info_span!("rdm.node_admin.node.reject.via-peer-tickle-candidates-unreadable", node_id = %id, path = %path, reason = %reason, error = %e, observer = %self.observer, "otel.kind" = "internal")
                             .in_scope(|| tracing::warn!(node_id = %id, reason = %reason, error = %e, "via-peer candidates unreadable — no status change, hold-down left as it was"));
                     }
                     ViaPeerVerdict::NoPath { asked } => {
@@ -191,6 +202,8 @@ impl OfflineTickle {
                                 iroh_active_addrs = %seen.active_addrs,
                                 round = 2i64,
                                 first_no_path_ms = no_path_since as i64,
+                                observer = %self.observer,
+                                first_seen_ms = seen_at as i64,
                                 "otel.kind" = "internal",
                             )
                             .in_scope(|| tracing::info!(node_id = %id, error = %e, "offline tickle failed round 2 — TRUE OFFLINE, no restart, no delete"));
@@ -198,7 +211,7 @@ impl OfflineTickle {
                         } else {
                             self.hold_down.insert(id.clone(), now_ms);
                             let asked = asked.join(",");
-                            tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, "otel.kind" = "internal")
+                            tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, observer = %self.observer, first_seen_ms = seen_at as i64, "otel.kind" = "internal")
                                 .in_scope(|| tracing::info!(node_id = %id, asked = %asked, "offline hold down opened after round 1 no path"));
                         }
                     }
