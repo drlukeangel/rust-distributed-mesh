@@ -7947,6 +7947,28 @@ mod tests {
         eprintln!("span rdm.node_admin.node.reject.via-exit-row-unreadable trace_id={} {:?}", unreadable[0].trace_id, unreadable[0].attributes);
     }
 
+    /// CONTRACT (node-recovery.md: "Exited is the proof, recorded durably"; the projection reads
+    /// every birth's exit-proof row): a birth this admin's book never held, listed from the record
+    /// this admin published of it (a mesh leave's member run from the accepted roster, a launch not
+    /// yet heard), is listed `Dead` once its exit-proof row is read, as a birth listed from a digest
+    /// or a stop is. Must NOT happen: a proven-exited birth listed in the state its record last held.
+    #[tokio::test]
+    async fn a_birth_listed_from_its_record_alone_is_dead_once_its_exit_proof_is_read() {
+        let book = DigestBook::default();
+        let records = Records::default();
+        records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh2".into(), "mesh2.admin.2".parse().unwrap(), NodeId::mint());
+        records.set_book(book.clone());
+        let mut n = Node::allocated("mesh2.rpc.1".parse().unwrap());
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.status = NodeStatus::Leaving;
+        records.publish(n.clone());
+        let view = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records));
+        assert_eq!(view.read().await.node(&n.name).map(|v| v.status), Some(NodeStatus::Leaving), "listed from its record");
+        records.put_exit(&n, Some(0), "terminal-receipt").await.unwrap();
+        let t = records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+        assert_eq!(t.node(&n.name).map(|v| v.status), Some(NodeStatus::Dead), "the proven exit of a birth listed from its record alone");
+    }
+
     const STORE_DIR: &str = "/tmp/rdm-admin-cells/store";
 
     fn cfg(env: &[(&str, &str)]) -> AdminConfig {
