@@ -1779,7 +1779,6 @@ struct View {
     /// This node's path name, for the spans it emits.
     node: String,
     book: DigestBook,
-    statuses: StatusBook,
     concerns: ConcernInbox,
     /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
     primary: Arc<AtomicBool>,
@@ -1971,7 +1970,7 @@ impl View {
                 Vec::new()
             }
             Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
-                self.statuses.take(f, fabric);
+                self.book.statuses.take(f, fabric);
                 Vec::new()
             }
             Frame::Seated { seat, holder } => {
@@ -2384,7 +2383,7 @@ impl Membership {
         // §3.1, §3.3).
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
-                let mut frames = replay_view.statuses.held_frames(&replay_fabric, &replay_me);
+                let mut frames = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
                 frames.extend(replay_view.book.seats.held_frames());
                 frames.extend(replay_view.forwarder.lock().unwrap().replay(&replay_me, replay_clock.now_rafka_ms()));
                 frames
@@ -2504,24 +2503,24 @@ impl Membership {
 
     /// The fabric status this node holds: the last one published, until the next change.
     pub fn fabric_status(&self) -> Option<FabricStatus> {
-        self.view.statuses.fabric()
+        self.view.book.statuses.fabric()
     }
 
     /// The status of `mesh` this node holds: the last one published, until the next change.
     pub fn mesh_status(&self, mesh: &str) -> Option<MeshStatus> {
-        self.view.statuses.mesh(mesh)
+        self.view.book.statuses.mesh(mesh)
     }
 
     /// The statuses this node holds, as the frames it replays (original publisher and instant
     /// kept): what an entry pull answers (`entry::EntryAnswer::statuses`).
     pub fn status_frames(&self, me: &str) -> Vec<Frame> {
-        self.view.statuses.held_frames(&self.fabric, me)
+        self.view.book.statuses.held_frames(&self.fabric, me)
     }
 
     /// Hold the statuses an entry pull answered.
     pub fn learn_statuses(&self, frames: &[Frame]) {
         for f in frames {
-            self.view.statuses.take(f, &self.fabric);
+            self.view.book.statuses.take(f, &self.fabric);
         }
     }
 
@@ -2983,7 +2982,7 @@ impl Backbone {
         let (replay_view, replay_fabric, replay_me) = (membership.view.clone(), membership.fabric.clone(), node.to_string());
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
-                let mut frames = replay_view.statuses.held_frames(&replay_fabric, &replay_me);
+                let mut frames = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
                 frames.extend(replay_view.book.seats.held_frames());
                 frames
             } else {
@@ -3063,8 +3062,8 @@ impl Backbone {
         let (now, now_ms) = (Instant::now(), self.membership.clock.now_rafka_ms());
         let (first, announced): (Vec<Frame>, Announced) = {
             let view = &self.membership.view;
-            let heard_mesh = view.statuses.mesh(&self.mesh).map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
-            let heard_fabric = view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
+            let heard_mesh = view.book.statuses.mesh(&self.mesh).map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
+            let heard_fabric = view.book.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
             let mut mesh = self.mesh_status.lock().unwrap();
             let mut fabric = self.fabric_status.lock().unwrap();
             let frames = [mesh.observe(mesh_status, heard_mesh, mesh_round, now, now_ms), fabric.observe(fabric_status, heard_fabric, fabric_round, now, now_ms)].into_iter().flatten().collect();
@@ -3443,6 +3442,9 @@ pub struct DigestBook {
     backbone_gossip_interval: Duration,
     /// The seat holders this node holds (`Frame::Seated`, an entry read): an input to every election.
     pub seats: SeatBook,
+    /// The mesh and fabric statuses this node holds (`Frame::MeshStatus`, `Frame::FabricStatus`, a
+    /// replay or an entry answer): application routing reads a birth's mesh status here.
+    pub statuses: StatusBook,
 }
 
 impl Default for DigestBook {
@@ -3529,6 +3531,7 @@ impl DigestBook {
             staleness_floor,
             backbone_gossip_interval,
             seats: SeatBook::default(),
+            statuses: StatusBook::default(),
         }
     }
 
@@ -5129,7 +5132,7 @@ mod tests {
                 }
             }
         }
-        let mut replay = primary.statuses.held_frames(&fabric, "mesh2.admin.1");
+        let mut replay = primary.book.statuses.held_frames(&fabric, "mesh2.admin.1");
         replay.extend(primary.book.seats.held_frames());
         replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.admin.1", 3));
         for f in &replay {
@@ -5186,7 +5189,7 @@ mod tests {
         primary.take(&Frame::MeshLeft { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: op, receipt_manifest: "m".into(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None }, &fabric, "backbone");
         assert!(primary.forwarder.lock().unwrap().snapshots().iter().all(|s| s.mesh != "mesh1"), "the primary serves no topology of the departed mesh");
         let joiner = View::new("mesh2", "mesh2.rpc.9");
-        let mut replay = primary.statuses.held_frames(&fabric, "mesh2.admin.1");
+        let mut replay = primary.book.statuses.held_frames(&fabric, "mesh2.admin.1");
         replay.extend(primary.book.seats.held_frames());
         replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.admin.1", 2));
         for f in &replay {
