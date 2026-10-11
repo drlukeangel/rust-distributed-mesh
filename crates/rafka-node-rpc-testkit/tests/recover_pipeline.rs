@@ -170,7 +170,7 @@ async fn recovery_deletes_the_exited_instance_then_creates_a_new_node_over_its_d
     let log = rig.log.clone();
     let second = pipeline
         .recover(
-            &RecoverRequest { build_id: recover_build.clone(), attempt: 2, exited: first.node.clone(), handle: first.handle.clone(), exit, spec: &RPC_NODE },
+            &RecoverRequest { build_id: recover_build.clone(), attempt: 2, exited: first.node.clone(), handle: first.handle.clone(), exit, spec: &RPC_NODE, held_runtimes: Vec::new() },
             |old| async move { log.lock().unwrap().push(format!("fenced:{}", old.node_id)) },
             |_| async { Ok(()) },
         )
@@ -265,7 +265,7 @@ async fn a_recovery_whose_inherited_data_dir_has_no_endpoint_key_fails_by_name_a
     let recover_build = publish_build(&rig.builds, add_node()).await;
     let outcome = pipeline
         .recover(
-            &RecoverRequest { build_id: recover_build.clone(), attempt: 2, exited: Node { endpoint_id: None, ..first.node.clone() }, handle: first.handle.clone(), exit, spec: &RPC_NODE },
+            &RecoverRequest { build_id: recover_build.clone(), attempt: 2, exited: Node { endpoint_id: None, ..first.node.clone() }, handle: first.handle.clone(), exit, spec: &RPC_NODE, held_runtimes: Vec::new() },
             |_| async {},
             |_| async { Ok(()) },
         )

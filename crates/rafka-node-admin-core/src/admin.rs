@@ -1152,8 +1152,9 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 /// the accepted Build is settled, and a cohort the Build's topology names has fewer births than
 /// it should, at least one of its node-admins with its exact runtime inspected and found exited, it
 /// opens the next attempt of that same Build (`Fabric.build_id` unchanged: the topology did not
-/// change). An ordinary member is not repaired here: its mesh-primary proves its exit and submits its
-/// recovery (node-recovery.md).
+/// change). Only a mesh that lost its mesh-primary is repaired here (mesh recovery), and surplus is
+/// retired. A member of a mesh with a live mesh-primary, a node-admin included, is not repaired here:
+/// its mesh-primary proves its exit and submits its recovery (node-recovery.md, mesh-recovery.md:8-9).
 /// `started` holds the (build, attempt, exited births) it already opened, so a repair that fails
 /// is not opened again and again; the adapter's insert-and-fail on the attempt keeps two
 /// authorities from opening it twice.
@@ -1257,6 +1258,13 @@ pub async fn reconcile_drift(
         if n.kind != NodeKind::NodeAdmin && unheard_ms.is_none() {
             continue;
         }
+        // So is a node-admin of a mesh with a live mesh-primary (mesh-recovery.md:8-9, "A lost member
+        // of a mesh with a live mesh-primary is node recovery, driven by that mesh-primary"); a mesh
+        // primary's own loss by the admin its mesh seats. What stays here is the mesh that lost its
+        // mesh-primary (mesh recovery), the ladder's decided mesh included.
+        if n.kind == NodeKind::NodeAdmin && unheard_ms.is_none() && !decided(&n.mesh) && crate::executor::node_admin_recoverer(&n.name, t).is_some() {
+            continue;
+        }
         let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
         let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
         // A silent birth this authority cannot prove is named once, with what it lacks: it is not
@@ -1331,8 +1339,9 @@ pub async fn reconcile_drift(
     let attempt = current.attempt + 1;
     let (key, scope, action) = match first_exited {
         Some((path, birth)) => {
-            // Only a node-admin reaches here (an ordinary member is its mesh-primary's to recover), and
-            // a proven-exited birth has no process to restart (node-restart.md): it is replaced.
+            // Only a node-admin of a mesh that lost its mesh-primary reaches here (every other member is
+            // its mesh-primary's to recover), and a proven-exited birth has no process to restart
+            // (node-restart.md): it is replaced.
             let action = crate::accepted::AttemptAction::Replace { path: path.clone(), from_incarnation: birth.incarnation.clone() };
             let scope = short.iter().filter(|s| s.exited.iter().any(|e| *e == path.to_string())).map(ToString::to_string).collect::<Vec<_>>().join("; ");
             (vec![path.to_string()], scope, Some(action))
@@ -2245,7 +2254,11 @@ impl AdminRunner {
             return Err(format!("recover-node:{node}: birth {node_id} at {} still runs: it is not exited and is not recovered", from.0));
         }
         let template = self.config_seed_from_deleted_row(node).await?;
-        let req = crate::deployment::pipeline::RecoverRequest { build_id: build_id.clone(), attempt, exited, handle, exit, spec: spec_for(node.kind) };
+        // A node-admin's recovery is a node-admin birth whose maker is this mesh-primary (the
+        // template's seed): it is handed the durable runtime rows before it runs, as every admin
+        // birth is.
+        let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
+        let req = crate::deployment::pipeline::RecoverRequest { build_id: build_id.clone(), attempt, exited, handle, exit, spec: spec_for(node.kind), held_runtimes };
         let created = self
             .pipeline(&template)
             .recover(&req, |old| async move { self.fence_exited(&old).await }, |ready| async move { self.bring_into_traffic(&ready).await })
@@ -4492,12 +4505,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 }
                 retire_unwatched(&watched, &mut records.offline.lock().unwrap(), &mut verdicts.lock().unwrap(), &mut written);
                 // node-recovery.md: on TRUE OFFLINE the mesh primary asks the provider about the exact
-                // runtime of each ordinary member of its own mesh; Exited is the proof, and the
+                // runtime of each member of its own mesh, its secondary node-admins included
+                // (mesh-recovery.md:8-9); Exited is the proof, and the
                 // recovery is submitted keyed on the exited birth. Re-evaluated every tick while the
                 // member stays TRUE OFFLINE, so a recovery that failed is submitted again.
                 if holds_seat {
                     let offline = records.offline.lock().unwrap().clone();
-                    for n in watched.values().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin) {
+                    for n in watched.values().filter(|n| n.mesh == mesh) {
                         let Some(incarnation) = n.incarnation_id.clone() else { continue };
                         let birth = (n.node_id.clone(), incarnation);
                         if !offline.contains(&birth) || !in_flight.lock().unwrap().insert(birth.clone()) {
