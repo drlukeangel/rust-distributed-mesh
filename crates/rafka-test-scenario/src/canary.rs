@@ -116,10 +116,18 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(estate.nodes().await.iter().filter(|n| n["name"] == NODE).count(), 1, "the path holds exactly one birth");
 
     // 11. OTLP evidence: Build -> node operation -> start step -> the node's start, linked by ParentSpanId.
+    // A span is exported once it ends, by each process's own exporter: the chain is exported when the
+    // node's start (the rpc node's span), the restart call's request span and the restart's reconcile
+    // (the executor's outermost span, ending after the node operation and every step under it) are.
+    let restart_op = format!("restart-node:{NODE}");
     let spans = wait_for("restart span chain exported", SETTLE, || async {
         let spans = estate.spans();
         let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().any(|s| s["attributes"]["node"] == NODE && s["attributes"]["outcome"] == "started");
-        served.then_some(spans)
+        let called = named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().any(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE);
+        let reconciled = named(&spans, "rdm.node_admin.build.update.via-reconcile")
+            .into_iter()
+            .any(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == restart_op)));
+        (served && called && reconciled).then_some(spans)
     })
     .await;
     // The restart's attempt is the REST call that opened it: its reconcile is a child of that
@@ -133,7 +141,6 @@ pub async fn restart_canary(owner: Owner) -> Value {
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE)
         .expect("rdm.node_admin.build.update.via-rest for the restart call");
-    let restart_op = format!("restart-node:{NODE}");
     let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == restart_op)))
