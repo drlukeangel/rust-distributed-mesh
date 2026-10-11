@@ -6051,6 +6051,76 @@ mod tests {
         eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
     }
 
+    /// CONTRACT (node-recovery.md: "Node recovery is RDM's drift reconciliation for a member that
+    /// exits outside any workflow"; "Failure and receipts": "An exit during a workflow belongs to
+    /// that workflow"): a birth whose removal the mesh primary's book holds announced (a replace's
+    /// `NodeDeleting` overlay naming the exact birth, or its `NodeDeleted` departure) is not a
+    /// member to recover, however exited its exact runtime is proven: no exit-proof row, no
+    /// recovery submit, one `rdm.node_admin.build.reject.via-exit-inside-workflow` span naming the
+    /// workflow. The birth's own recovery's overlay names no other workflow: its proven exit is
+    /// submitted again ("a failed Build ... gets its next attempt"). Must NOT happen: the
+    /// recover-node of the predecessor a replace retired (trace 3b983b72926d8d5e3629d7e3d1f264cf:
+    /// the tick's ladder round 2 at 12:38:13.028 over the view it read before the replace's
+    /// NodeDeleting at 12.808, inspection exited at 13.049 by the replace's own TerminateRuntime,
+    /// submit at 13.059, recover-node failed NodeDeleting "the inherited data dir ... does not
+    /// exist": HandoffStorage had given it to the successor).
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_proven_exit_of_a_birth_whose_removal_was_announced_submits_no_recovery() {
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-removal-announced").unwrap();
+        for (case, workflow) in [("node-deleting", "replace-node"), ("node-deleted", "replace-node"), ("own-recovery", "recover-node")] {
+            let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+            member.node.runtime = Some(fact.clone());
+            let book = DigestBook::default();
+            for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+                book.record(d);
+            }
+            // The tick's view, read before the announcement arrived.
+            let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+            let op = rafka_mesh_entity::LifecycleOp {
+                build_id: "bld-removal".into(),
+                attempt: 2,
+                operation: format!("{workflow}:mesh2.rpc.1"),
+                node_id: member.node.node_id.clone(),
+                incarnation: member.node.incarnation.clone(),
+                name: member.node.name.clone(),
+                event_at_rafka_ms: 1,
+            };
+            assert!(book.deleting(op.clone()), "{case}: the overlay is taken");
+            if case == "node-deleted" {
+                assert!(book.depart(op.clone()), "{case}: the departure is taken");
+            }
+            // The birth's durable runtime row (every admin's blind put on first holding it): the
+            // inspection proves the exit from it once the departure dropped the digest.
+            let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
+            crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
+            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
+            let (recovery, status, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+            let capture = crate::span_capture::Capture::new(&format!("i143-3068-removal-announced-{case}"));
+            let outcome = {
+                let _g = tracing::dispatcher::set_default(&capture.dispatch);
+                recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+            };
+            assert_eq!(outcome, Inspected::Exited(Some(137), "provider"), "{case}: the provider proved the exact runtime exited");
+            let proof = status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap();
+            let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+            let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
+            if case == "own-recovery" {
+                assert_eq!(submits.len(), 1, "{case}: the birth's own recovery is no other workflow: its proven exit is submitted again: {submits:?}");
+                assert!(proof.is_some() && rejects.is_empty(), "{case}: the exit-proof row is put and nothing is refused: {rejects:?}");
+                continue;
+            }
+            assert_eq!((submits.len(), proof.is_some()), (0, false), "{case}: no recovery submit and no exit-proof row for a birth whose removal was announced: {submits:?}");
+            assert_eq!(rejects.len(), 1, "{case}: the refusal is spanned once: {rejects:?}");
+            let a = &rejects[0].attributes;
+            let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+            assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.0.clone()), "{case}: the exact birth: {a:?}");
+            assert_eq!((attr("announced"), attr("operation"), attr("build_id"), attr("attempt")), (case.to_string(), "replace-node:mesh2.rpc.1".to_string(), "bld-removal".to_string(), "2".to_string()), "{case}: the workflow the exit belongs to: {a:?}");
+            assert_eq!(attr("submitter"), "mesh2.admin.1", "{case}: {a:?}");
+            eprintln!("span rdm.node_admin.build.reject.via-exit-inside-workflow trace_id={} {a:?}", rejects[0].trace_id);
+        }
+    }
+
     /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
     /// births, those known only by a durable runtime row included; CLAUDE.md: an error state names
     /// what failed and where): when the tick's read of the durable runtime rows is refused, the
