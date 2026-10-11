@@ -1846,17 +1846,37 @@ impl DeploymentPipeline<'_> {
             let until = Instant::now() + Duration::from_secs(3);
             // Still held by the exited runtime: not released per `/proc` (a port another live
             // process was handed meanwhile, as estates sharing one block do, is released).
+            // `/proc` is read on the blocking pool; a table it cannot read fails the step by name,
+            // never reads as released.
             let exited_pid = handle.pid;
-            let still = |h: &(String, SocketAddr, super::endpoint::SlotTransport)| !super::endpoint::released_by(h.1, h.2, exited_pid);
             let started = Instant::now();
             loop {
-                held.retain(|h| still(h));
+                held = crate::record_store::blocking_io(move || {
+                    let mut still = Vec::with_capacity(held.len());
+                    for h in held {
+                        if !super::endpoint::released_by(h.1, h.2, exited_pid).map_err(|e| format!("cannot prove {} {} released: {e}", h.0, h.1))? {
+                            still.push(h);
+                        }
+                    }
+                    Ok::<_, String>(still)
+                })
+                .await
+                .map_err(|e| format!("{name} exited, but {e}"))?;
                 if held.is_empty() {
                     break;
                 }
                 if Instant::now() >= until {
-                    let names: Vec<String> = held.iter().map(|h| format!("{} {} ({})", h.0, h.1, super::endpoint::port_holder(h.1, h.2))).collect();
-                    return Err(format!("{name} exited, but the operating system still holds {} after {:?}", names.join(", "), started.elapsed()));
+                    let elapsed = started.elapsed();
+                    let names = crate::record_store::blocking_io(move || {
+                        held.iter()
+                            .map(|h| {
+                                let who = super::endpoint::port_holder(h.1, h.2).unwrap_or_else(|e| format!("holder unknown: {e}"));
+                                format!("{} {} ({who})", h.0, h.1)
+                            })
+                            .collect::<Vec<String>>()
+                    })
+                    .await;
+                    return Err(format!("{name} exited, but the operating system still holds {} after {elapsed:?}", names.join(", ")));
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
