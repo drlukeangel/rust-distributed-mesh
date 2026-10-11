@@ -460,9 +460,10 @@ impl DriveEnv {
         end
     }
 
-    /// The admin the view names as the fabric-primary when it is not this one.
+    /// The admin the view names as the fabric-primary when it is not this birth (told apart by the
+    /// node id this admin was born with, never by path.name).
     async fn seat_elsewhere(&self) -> Option<String> {
-        self.topology.read().await.fabric_primary().map(|n| n.name.clone()).filter(|n| *n != self.me).map(|n| n.to_string())
+        self.topology.read().await.fabric_primary().filter(|n| n.node_id != self.door.node_id).map(|n| n.name.to_string())
     }
 
     /// The seat, the cut-off rule and the fence: `Some` when this admin may not claim or dispatch now.
@@ -481,11 +482,17 @@ impl DriveEnv {
             drive.lose_seat(SeatLoss { why: why.clone(), to });
             return Some(DriveEnd::SeatLost(why));
         }
-        let seat = self.topology.read().await.fabric_primary().map(|n| n.name.clone());
-        if seat.as_ref() != Some(&self.me) {
-            let why = format!("{} does not hold the fabric-primary seat in its view (it shows {})", self.me, seat.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "none".into()));
+        // The seat is this admin's when the view's holder is the birth it was born as (its node id):
+        // another birth at the same path.name (a successor, a retired birth) is not this admin.
+        let (held, seat) = {
+            let t = self.topology.read().await;
+            (t.holds_fabric_seat(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
+        };
+        if !held {
+            let shows = seat.as_ref().map(|(name, id)| format!("{name} ({id})")).unwrap_or_else(|| "none".into());
+            let why = format!("{} ({}) does not hold the fabric-primary seat in its view (it shows {shows})", self.me, self.door.node_id);
             tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id, node = %self.me, detail = %why).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
-            drive.lose_seat(SeatLoss { why: why.clone(), to: seat.map(|s| s.to_string()) });
+            drive.lose_seat(SeatLoss { why: why.clone(), to: seat.map(|(name, _)| name.to_string()) });
             return Some(DriveEnd::SeatLost(why));
         }
         if let Some(why) = self.gate.frozen() {
