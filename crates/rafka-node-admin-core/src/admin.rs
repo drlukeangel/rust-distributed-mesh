@@ -4135,15 +4135,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     .await;
                 let write = async |id: &str, status: Option<NodeStatus>| {
                     let Some(node) = watched.get(id).cloned().or_else(|| view.births().find(|n| n.node_id.as_str() == id).cloned()) else { return };
-                    let Ok(contacts) = nodes_storage.contacts().await else { return };
-                    if let Some(mut row) = contacts.into_iter().find(|c| c.node_id == node.node_id) {
-                        if row.status == status {
-                            return;
-                        }
-                        row.status = status;
-                        if let Err(e) = nodes_storage.put_contact(&row).await {
-                            tracing::info!(node = %node.name, error = %e, "the node's status could not be written to nodes.storage");
-                        }
+                    if let Err(e) = crate::offline::put_silence_status(&*nodes_storage, &node, status).await {
+                        tracing::info!(node = %node.name, error = %e, "the node's status could not be written to nodes.storage");
                     }
                 };
                 if holds_seat {
