@@ -63,5 +63,6 @@ mod node_rpc_objects;
 mod process_launch_environment;
 mod provider_policy;
 mod readiness_gates;
+mod seat_transfer_step;
 mod status_declarations;
 mod topology_read;
