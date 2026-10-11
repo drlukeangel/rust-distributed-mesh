@@ -2141,118 +2141,127 @@ impl crate::node_self::Session for AdminSession {
     }
 
     async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), crate::node_self::StartFailed> {
+        let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %self.name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
+        let mut start = AdminAfterStop { session: self, root, authority: authority.clone(), retire: Some(retire), rows };
+        crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
+    }
+}
+
+/// A node-admin's start after its stop, as it plugs into `node.start`: it rejoins the admin that
+/// commanded the start, takes the control state the join answers and runs its tasks again from
+/// where they were held.
+struct AdminAfterStop<'a> {
+    session: &'a AdminSession,
+    root: tracing::Span,
+    /// The admin that commanded the start: it answers the join and is the hook's accepting authority.
+    authority: NodeId,
+    /// The new cycle's token: the hook runs under it.
+    retire: Option<rafka_node_rpc::CancelToken>,
+    /// The start's hold on this birth's connections rows, dropped once the handed name is held.
+    rows: Option<crate::connections_writer::RowsHeld>,
+}
+
+#[async_trait::async_trait]
+impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
+    type Error = crate::node_self::StartFailed;
+
+    fn starting(&self) -> crate::workflows::node_start::Starting {
+        let s = self.session;
+        crate::workflows::node_start::Starting { root: self.root.clone(), name: s.name.to_string(), path: s.name.clone(), node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
+    }
+
+    fn joining(&self) -> crate::workflows::node_start::Joining {
+        crate::workflows::node_start::Joining::Authority { label: self.authority.to_string() }
+    }
+
+    fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinThrough, crate::node_self::StartFailed> {
         use crate::node_self::StartFailed;
-        let name = self.name.to_string();
-        let boot = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %self.name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
-        let join_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-join-admitted", node = %self.name, launcher = %authority);
-        let Some((auth, _)) = self.membership.book.get(authority.as_str()) else {
+        let (s, authority) = (self.session, &self.authority);
+        let name = s.name.to_string();
+        let Some((auth, _)) = s.membership.book.get(authority.as_str()) else {
             return Err(StartFailed { step: "node.join", reason: format!("{name}: the admin that commanded the start ({authority}) is not held by this admin, so it cannot be joined through") });
         };
         let key = auth.node.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| StartFailed { step: "node.join", reason: format!("{}: its endpoint id is not an iroh key: {e}", auth.node.name) })?;
-        self.resolver.apply(rafka_node_rpc::ResolvedNode { node_id: auth.node.node_id.clone(), name: auth.node.name.clone(), endpoint_id: key, transport_addr: auth.node.transport_addr, incarnation: auth.node.incarnation.clone() }, None);
-        let mut join_digest = self.digest.lock().unwrap().clone();
-        join_digest.status = MemberStatus::Pending;
-        let joined = match crate::join::call_join(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &key.fmt_short().to_string(), &join_digest, 5).await {
-            Ok(a) => a,
-            Err(crate::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} was refused its join by {}: {why}", auth.node.name) }),
-            Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} could not join through {}: unreached: {why}", auth.node.name) }),
-        };
-        crate::rafka_time::adopt_join_answer(&join_step, &self.rafka_time, &name, &joined);
-        // The row's name and config the join handed are held on this admin's digest and by its
-        // membership before it re-enters its topic or says anything (R-JN1).
-        {
-            let mut d = self.digest.lock().unwrap();
-            if let Some(n) = &joined.control.name {
-                self.membership.set_name(n.clone());
-                d.node.name = n.clone();
-            }
-            if let Some(c) = &joined.control.config {
-                self.membership.set_config(c.clone());
-                d.config = c.clone();
-            }
-        }
-        // Only now are its connections recorded: the join's names the handed name.
-        drop(rows);
-        take_entry_control(&joined, &self.accepted, &*self.builds, &self.entry_floor).await;
-        if let Some(sd) = joined.control.shutdown.clone() {
-            let _ = self.shutdown.learn(sd, "start", &joined.served_by).await;
-        }
-        let member_cert = Some(joined.control.member_cert.clone());
-        drop(join_step);
-        let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %self.name, launcher = %authority);
-        self.membership.unpark().await;
-        self.backbone.unpark().await;
-        self.membership.learn_statuses(&joined.statuses);
-        let read = crate::topology_read::get_topology(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &auth.node.name.mesh, &self.membership, None, None)
-            .await
-            .map_err(|e| StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {}: {e}", auth.node.name) })?;
-        read.adopt_rafka_time(&self.rafka_time, &self.membership, &name, &self.name.mesh, &self.node_id, &auth.node.name.to_string())
-            .map_err(|e| StartFailed { step: "node.topology", reason: format!("{name} could not adopt rafka-time from {}: {e}", auth.node.name) })?;
-        let mesh_peers: Vec<EndpointAddr> = read
-            .installed
-            .iter()
-            .flat_map(|m| m.members.iter())
-            .filter(|d| d.fabric_id == self.fabric_id && d.node.name != self.name && d.node.name.mesh == self.name.mesh)
-            .filter_map(rafka_mesh_transport::membership::gossip_addr)
-            .collect();
-        let _ = self.membership.join_peers(mesh_peers).await;
-        drop(topology);
-        // Back on the topic means a neighbour: only then does this admin say it is back, once, as
-        // Pending, so every node that held it parked or restarting hears the rejoin.
-        self.membership.wait_for_neighbour().await;
-        let pending = self.digest.lock().unwrap().clone();
-        let _ = self.membership.publish(&pending).await;
-        // Its tasks run again, from where they were held.
-        self.gate.resume();
-        // The hook, with `AfterStop` in its context; Ready waits on it.
-        let ctx = crate::app_hydration::HydrateCtx {
-            start_kind: crate::app_hydration::StartKind::AfterStop,
-            birth: crate::app_hydration::Birth { name: self.name.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), fabric_id: self.fabric_id.clone(), mesh_id: self.mesh_id.clone(), kind: NodeKind::NodeAdmin },
-            authority: crate::app_hydration::Authority::Accepted(crate::app_hydration::AcceptingAuthority { name: auth.node.name.clone(), node_id: auth.node.node_id.clone(), incarnation: auth.node.incarnation.clone() }),
-            client: self.client.clone(),
-            membership: self.membership.clone(),
-            cancel: retire,
-            rafka_time: self.rafka_time.clone(),
-            member_cert,
-            attempt: 0,
-        };
-        let ready = {
-            let (digest, wake, name) = (self.digest.clone(), self.wake.clone(), name.clone());
-            move || {
-                let mut d = digest.lock().unwrap();
-                if d.status == MemberStatus::Pending {
-                    d.status = MemberStatus::ReadyForTraffic;
-                    drop(d);
-                    wake.wake.poke();
-                    tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-ready", node = %name, source = "self-published-membership").in_scope(|| tracing::info!("ready for traffic"));
+        s.resolver.apply(rafka_node_rpc::ResolvedNode { node_id: auth.node.node_id.clone(), name: auth.node.name.clone(), endpoint_id: key, transport_addr: auth.node.transport_addr, incarnation: auth.node.incarnation.clone() }, None);
+        Ok(crate::workflows::node_start::JoinThrough { node_id: authority.clone(), name: auth.node.name.clone(), incarnation: auth.node.incarnation.clone(), anchor: key.fmt_short().to_string() })
+    }
+
+    fn join_digest(&self) -> MeshDigest {
+        self.session.digest.lock().unwrap().clone()
+    }
+
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
+        let s = self.session;
+        step.record("mesh_id", tracing::field::display(&s.mesh_id));
+        if let Some(joined) = joined {
+            // The row's name and config the join handed are held on this admin's digest and by its
+            // membership before it re-enters its topic or says anything (R-JN1).
+            {
+                let mut d = s.digest.lock().unwrap();
+                if let Some(n) = &joined.control.name {
+                    s.membership.set_name(n.clone());
+                    d.node.name = n.clone();
+                }
+                if let Some(c) = &joined.control.config {
+                    s.membership.set_config(c.clone());
+                    d.config = c.clone();
                 }
             }
-        };
-        let driver = self.hydration.driver(ctx, crate::app_hydration::Events::new(self.membership.book.clone(), self.addressed.clone()), tracing::Span::none());
-        *self.hydration_cell.lock().unwrap() = driver.as_ref().map(|d| d.handle());
-        use crate::app_hydration::{End, Step};
-        let Some(driver) = driver else {
-            ready();
-            return Ok(());
-        };
-        match driver.attempt().await {
-            Step::Passed => {
-                ready();
-                driver.spawn_after_ready();
-                Ok(())
-            }
-            Step::Failed(why) => Err(StartFailed { step: "node.hydrate", reason: format!("{name} failed hydrate_before_ready: {why}") }),
-            Step::Retired => Err(StartFailed { step: "node.hydrate", reason: format!("{name} was retired while hydrate_before_ready ran") }),
-            blocked @ Step::Blocked(_) => {
-                *self.hydrating.lock().unwrap() = Some(tokio::spawn(async move {
-                    if driver.run(blocked).await == End::Passed {
-                        ready();
-                        driver.spawn_after_ready();
-                    }
-                }));
-                Ok(())
+            // Only now are its connections recorded: the join's names the handed name.
+            drop(self.rows.take());
+            take_entry_control(joined, &s.accepted, &*s.builds, &s.entry_floor).await;
+            if let Some(sd) = joined.control.shutdown.clone() {
+                let _ = s.shutdown.learn(sd, "start", &joined.served_by).await;
             }
         }
+        s.membership.unpark().await;
+        s.backbone.unpark().await;
+        drop(step);
+        Ok(s.membership.clone())
+    }
+
+    async fn topology_installed(&mut self, membership: &Membership, read: Option<(tracing::Span, crate::topology_read::TopologyRead)>, _: Option<crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
+        let s = self.session;
+        if let Some((step, read)) = read {
+            let mesh_peers: Vec<EndpointAddr> = read
+                .installed
+                .iter()
+                .flat_map(|m| m.members.iter())
+                .filter(|d| d.fabric_id == s.fabric_id && d.node.name != s.name && d.node.name.mesh == s.name.mesh)
+                .filter_map(rafka_mesh_transport::membership::gossip_addr)
+                .collect();
+            let _ = membership.join_peers(mesh_peers).await;
+            drop(step);
+        }
+        // Back on the topic means a neighbour: only then does this admin say it is back, once, as
+        // Pending, so every node that held it parked or restarting hears the rejoin.
+        membership.wait_for_neighbour().await;
+        let pending = s.digest.lock().unwrap().clone();
+        let _ = membership.publish(&pending).await;
+        // Its tasks run again, from where they were held.
+        s.gate.resume();
+        let report: crate::workflows::node_start::Report = {
+            let (digest, wake, name, boot) = (s.digest.clone(), s.wake.clone(), s.name.to_string(), self.root.clone());
+            Box::new(move || {
+                Box::pin(async move {
+                    let mut d = digest.lock().unwrap();
+                    if d.status == MemberStatus::Pending {
+                        d.status = MemberStatus::ReadyForTraffic;
+                        drop(d);
+                        wake.wake.poke();
+                        tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-ready", node = %name, source = "self-published-membership").in_scope(|| tracing::info!("ready for traffic"));
+                    }
+                })
+            })
+        };
+        Ok(crate::workflows::node_start::HookParts {
+            birth: crate::app_hydration::Birth { name: s.name.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
+            hydration: s.hydration.clone(),
+            events: crate::app_hydration::Events::new(membership.book.clone(), s.addressed.clone()),
+            cancel: self.retire.take().expect("the hook's token is handed once"),
+            state: s.hydration_cell.clone(),
+            runs: crate::workflows::node_start::HookRuns::Inline { report, blocked: s.hydrating.clone() },
+        })
     }
 }
 
@@ -3908,1729 +3917,1757 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // The process's one Node RPC client, built before the join: the join is its first call, and
     // the membership feed starts once the process holds a book.
     let launched_anchor = if restart.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
-    let mut pulled: Option<crate::wire::JoinAnswer> = None;
-    // The member cert the launching admin's signer issued for this birth, carried by the join that
-    // admitted it; none for a birth that made no JoinNode (the Day-0 root, a recovery start).
-    let mut member_cert: Option<Vec<u8>> = None;
-    // What a repeat of the control entry calls: the join to the launching admin, as first made.
-    let mut entry_retrieval: Option<(rafka_node_rpc::NodeTarget, String, MeshDigest)> = None;
-    if let (Some(anchor), Some(launcher), Some(runtime)) = (&launched_anchor, cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()), &launched_runtime) {
-        // This admin's first call after it binds: `JoinNode`, carrying its full digest with the
-        // addresses it really bound, to the admin that deployed it.
-        let join_digest = MeshDigest {
-            fabric_id: cfg.fabric_id.clone(),
-            node: MeshNode {
-                node_id: node_id.clone(),
-                name: name.clone(),
-                endpoint_id: EndpointId(key.public().to_string()),
-                transport_addr: mesh_addr,
-                incarnation: incarnation.clone(),
-                supersedes: supersedes.clone(),
-                runtime: Some(runtime.clone()),
-            },
-            status: MemberStatus::Pending,
-            admin_api_base: Some(api_base.clone()),
-            emitted_at_rafka_ms: 0,
-            digest_seq: 0,
-            mesh_id: cfg.mesh_id.clone(),
-            in_flight: None,
-            config: BTreeMap::new(),
-            load: None,
-            gossip: None,
-            data_dir: Some(cfg.data_dir.display().to_string()),
-        };
-        node_rpc_resolver.apply(
-            rafka_node_rpc::ResolvedNode {
-                node_id: launcher.node_id.clone(),
-                name: launcher.name.clone(),
-                endpoint_id: anchor.id,
-                transport_addr: anchor.ip_addrs().next().copied().ok_or_else(|| format!("the launching admin {} has no address in this admin's seeds", launcher.name))?,
-                incarnation: launcher.incarnation.clone(),
-            },
-            None,
-        );
-        let answer = crate::join::call_join(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &anchor.id.fmt_short().to_string(), &join_digest, 5)
-            .await
-            .map_err(|e| format!("the join to the launching admin {} failed: {e}", launcher.name))?;
-        // The authority's rafka-time is adopted as the answer carries it, before this admin's
-        // first gossip frame.
-        crate::rafka_time::adopt_join_answer(&boot, &rafka_time, &name.to_string(), &answer);
-        entry_retrieval = Some((rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), anchor.id.fmt_short().to_string(), join_digest));
-        member_cert = Some(answer.control.member_cert.clone());
-        pulled = Some(answer);
-    }
-    // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
-    // once, here. A recovery start (a flag or a restart) takes it from the nodes it reaches below.
-    if cfg.launch.is_none() && restart.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
-        crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_DAY0_ROOT);
-    }
-    let mesh_id = match (&cfg.mesh_id, &pulled) {
-        (Some(id), _) => id.clone(),
-        (None, Some(answer)) => return Err(format!("{name}: a launched admin takes its mesh's id from its launch, and this launch names none (joined {})", answer.served_by)),
-        (None, None) => MeshId::mint(),
+    let launcher_of_launch = cfg.launch.as_ref().and_then(|l| l.launcher.clone());
+    // The join's authority: the admin that deployed this one. A birth that makes no `JoinNode` (the
+    // Day-0 root, a fabric-primary reborn from its durable map, a recovery start) has none, and says why.
+    let joins_through = match (&launched_anchor, &launcher_of_launch, &launched_runtime) {
+        (Some(anchor), Some(launcher), Some(runtime)) => Some((anchor.clone(), launcher.clone(), runtime.clone())),
+        _ => None,
     };
-    // Subscribe first, pull second: what changes during the pull arrives by
-    // gossip, and the book keeps the newer copy.
-    let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-membership-joined", node = %name, mesh_id = %mesh_id, seeds = seed_addrs.len());
-    let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone())
-        .await
-        .map_err(|e| format!("membership: {e}"))?;
-    // The name this admin holds is its membership's (R12): its connections rows name it as their
-    // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
-    {
-        let (held, birth) = (membership.clone(), name.clone());
-        connections.follow_held_name(move || held.held_name(&birth))?;
-    }
-    // The row's name and config a launched admin's join handed: held before it publishes anything
-    // (R-JN1); at a first start the name is its create spec's, verified by the join.
-    let handed: Option<(Option<PathName>, Option<BTreeMap<String, String>>)> = pulled.as_ref().map(|a| (a.control.name.clone(), a.control.config.clone()));
-    if let Some((n, c)) = &handed {
-        if let Some(n) = n {
-            membership.set_name(n.clone());
-        }
-        if let Some(c) = c {
-            membership.set_config(c.clone());
-        }
-    }
-    drop(step);
-    // An admin that made no `JoinNode` and is no Day-0 root (a restart, or a recovery started with
-    // a seed) holds no rafka-time yet: it reads it from the first node it reaches, before it
-    // publishes anything or judges any lease.
-    if !rafka_time.is_adopted() {
-        // The admin that holds the fabric seat in its own seat records is the fabric's root: it
-        // adopts its own clock at once (fabric-node-lifecycle.md 2.5). Every other admin takes
-        // rafka-time from the first node it reaches that holds one.
-        let holds_fabric_seat = fabric_storage
-            .seats()
-            .await
-            .map_err(|e| e.to_string())?
-            .iter()
-            .any(|row| row.seat == rafka_mesh_entity::Seat::FabricPrimary && row.holder.node_id == node_id);
-        if holds_fabric_seat {
-            crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_FABRIC_SEAT);
-        } else {
-            let mut contacts = Vec::new();
-            for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
-                contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None });
-            }
-            crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN, &boot)
-                .await
-                .map_err(|e| format!("refusing to start: {e}"))?;
-        }
-    }
-    let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
-        .await
-        .map_err(|e| format!("backbone: {e}"))?;
-    // fabric.storage: this admin's Fabric control state. A shutdown already held there (a restart
-    // or a join during one) is in force from the start (fabric-mesh-lifecycle.md §11.1).
-    let held = fabric_storage
-        .put_identity(&crate::fabric_storage::FabricIdentity { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone() })
-        .await.map_err(|e| e.to_string())?;
-    if held.fabric_id != cfg.fabric_id {
-        return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
-    }
-    let shutdown_control = Arc::new(crate::shutdown::ShutdownControl::open(fabric_storage.clone(), name.to_string()).await.map_err(|e| e.to_string())?);
-    let mut tasks_early: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    // When the fabric seat moves to another holder, this admin, if it is a mesh primary, pulls
-    // rafka-time once from the new fabric-primary.
-    tasks_early.push(park_gate.spawn(crate::rafka_time::run_seat_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), membership.clone())));
-    // The seat records this admin held before it stopped (`fabric.storage`): it enters knowing who
-    // held the seats, and every record it hears from here on is written as its own row.
-    for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
-        membership.seats().take(row.seat, &row.holder);
-    }
-    {
-        let (seats, storage) = (membership.seats().clone(), fabric_storage.clone());
-        let mut changed = seats.subscribe();
-        let park = park_gate.clone();
-        tasks_early.push(tokio::spawn(async move {
-            let mut written: HashSet<(rafka_mesh_entity::Seat, String, u64)> = HashSet::new();
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("seat-rows").await;
-                let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
-                rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
-                for row in rows {
-                    // A record a seat transfer's own row already holds is durable: nothing more is written for it.
-                    if seats.is_durable(row.seat, &row.holder) {
-                        written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch));
-                        continue;
-                    }
-                    if written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch)) {
-                        if let Err(e) = storage.put_seat(&row).await {
-                            written.remove(&(row.seat, row.holder.mesh.clone(), row.holder.epoch));
-                            tracing::info_span!("rdm.node_admin.seat.reject.via-storage", seat = row.seat.name(), holder = %row.holder, error = %e).in_scope(|| tracing::info!("a seat record could not be written to fabric.storage"));
-                        }
-                    }
-                }
-                drop(turn);
-                if changed.changed().await.is_err() {
-                    return;
-                }
-            }
-        }));
-    }
-    // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
-    // its entry pull or the fabric control topic.
-    let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
-    let records = Arc::new(Records::default());
-    records.set_me(node_id.clone());
-    // Only the fabric seat holder puts a pointer on the store root: the file store reads the
-    // committed fabric seat record, as the Build gate does, before any pointer can be put.
-    fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
-    // The status rows of this admin's mesh on the fabric's store root (`status/<mesh>/`): written by
-    // the mesh's seat holder, folded into what this admin applied when it takes the seat.
-    let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).map_err(storage_err)?);
-    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = status_files.clone();
-    records.set_status(status_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
-    let builds = Arc::new(
-        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name), wiring.catch_up_seam.take())
-            .await
-            .map_err(|e| e.to_string())?,
-    );
-    // The Build state every consumer after hydration shares: the control routes, the executor, the
-    // pipelines and the drift check.
-    let runs = Arc::new(crate::build_run::AttemptRuns::default());
-    let builds_dyn: Arc<dyn BuildStateAdapter> = Arc::new(crate::build_run::FramedBuilds::new(crate::wiring::apply(wiring.builds.take(), builds.clone()), runs.clone()));
-    {
-        let b = builds.clone();
-        shutdown_control.set_publish(Arc::new(move |sd| {
-            let b = b.clone();
-            tokio::spawn(async move {
-                if let Err(e) = b.publish_shutdown(&sd).await {
-                    tracing::info!(error = %e, "broadcasting the fabric shutdown failed");
-                }
-            });
-        }));
-    }
-
-    // Fabric policy and the first view. The bootstrap admin takes its policy
-    // from MESH_SPAWN_TYPE. A launched admin takes its entry from the admin
-    // that launched it (its first seed) over QUIC: that admin's topology
-    // projection and the membership it is projected from, recorded as heard,
-    // so this admin's first view is its launcher's; the fabric record carries
-    // the policy. Without that answer it cannot know the policy, and it
-    // refuses to start by name.
-    let entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>> = Arc::default();
-    let _ = build_facts_slot.set(Arc::new(crate::build_facts_read::BuildFactsDoor { me: name.clone(), builds: builds_dyn.clone(), accepted: accepted.clone(), floor: entry_floor.clone() }));
-    // The topology this admin enters its mesh from, and where it came from.
-    let mut entry_map: Option<(&'static str, Vec<crate::reenter::MapNode>)> = None;
-    // The ids the maker stored for meshes it holds no snapshot of: a mesh keeps its id through a
-    // recovery, and an admin that deploys that mesh's births launches them with it.
-    let mut stored_mesh_ids: Vec<(String, MeshId)> = Vec::new();
-    let policy = match &launched_anchor {
-        Some(_) => {
-            let answer = pulled.take().ok_or_else(|| format!("{name}: a launched admin joins its launcher before it takes its entry, and its launch names no launcher or runtime to join with"))?;
-            // The topology: read from the same admin that took the join, installed per mesh only
-            // when its snapshot is complete (`GetTopology`, op `0x1E`).
-            let launcher = cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()).ok_or_else(|| format!("{name}: a launched admin joined without a launcher"))?;
-            let read = crate::topology_read::get_topology(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &launcher.name.mesh, &membership, None, None)
-                .await
-                .map_err(|e| format!("the topology read from the launching admin {} failed: {e}", launcher.name))?;
-            // Every topology read adopts the rafka-time it is served with, by the same rule as a join.
-            read.adopt_rafka_time(&rafka_time, &membership, &name.to_string(), &name.mesh, &node_id, &launcher.name.to_string())
-                .map_err(|e| format!("{name} could not adopt rafka-time from the launching admin {}: {e}", launcher.name))?;
-            // When the own mesh already has nodes, this admin is entering an existing mesh
-            // (recovery); a mesh's first birth finds none.
-            // A maker that holds no snapshot of this mesh answers from its stored map: births to
-            // reach a local node with, never installed (the node's own topology is read next).
-            let mut map = crate::reenter::map_of_read(&read, &cfg.fabric_id);
-            map.extend(crate::reenter::map_of_stored(&read));
-            stored_mesh_ids = read.stored.iter().filter_map(|m| m.mesh_id.clone().map(|id| (m.mesh.clone(), id))).collect();
-            entry_map = Some(("maker", map));
-            let mut mesh_peers = Vec::new();
-            let mut admins = Vec::new();
-            for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == cfg.fabric_id && d.node.name != name) {
-                if let Some(a) = rafka_mesh_transport::membership::gossip_addr(d) {
-                    if d.node.name.mesh == cfg.mesh {
-                        mesh_peers.push(a.clone());
-                    }
-                    if d.node.name.kind == NodeKind::NodeAdmin {
-                        admins.push(a);
-                    }
-                }
-            }
-            membership.learn_statuses(&answer.statuses);
-            let _ = membership.join_peers(mesh_peers).await;
-            backbone.join_admins(admins).await;
-            // Hydrate `Fabric.build_id` from the launching admin; without it this admin stays
-            // Pending (the Ready gate below). The Build it names arrives on the Build topic, or is
-            // fetched from a node-admin that holds it (`FetchBuildFacts`, the Ready check).
-            take_entry_control(&answer, &accepted, &*builds, &entry_floor).await;
-            // A fabric shutdown in force: this admin comes up frozen.
-            if let Some(sd) = answer.control.shutdown.clone() {
-                shutdown_control.learn(sd, "hydration", &answer.served_by).await.map_err(|e| e.to_string())?;
-            }
-            tracing::info_span!("rdm.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
-                .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
-            FabricPolicy { provider: answer.control.provider }
-        }
-        None => {
-            // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
-            // own mesh with one node-admin, and points `Fabric.build_id` at it (Build first).
-            if restart.is_some() {
-                tracing::info_span!("rdm.node_admin.fabric.update.via-restart", node = %name, build_id = %accepted.build_id().await.map(|b| b.0).unwrap_or_default())
-                    .in_scope(|| tracing::info!("Fabric.build_id and its Build reloaded from this admin's own storage"));
-            } else if cfg.fabric_primary {
-                tracing::info_span!("rdm.node_admin.fabric.update.via-recovery", node = %name, fabric_id = %cfg.fabric_id, mesh_id = %mesh_id)
-                    .in_scope(|| tracing::info!("a fabric recovery accepts no Build of its own: Fabric.build_id and its Build are taken from the nodes it reaches"));
-            } else if accepted.build_id().await.is_none() {
-                let b0 = crate::build_state::BuildAccepted {
-                    build_id: crate::build::BuildId::mint(),
-                    topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh),
-                    submitted_change: None,
-                    submitted_at_ms: rafka_time.now_ms(),
-                };
-                attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
-                builds.publish_accepted(&b0).await.map_err(|e| e.to_string())?;
-                accepted.point(&b0.build_id, b0.submitted_at_ms, "day-0").await.map_err(|e| e.to_string())?;
-            }
-            FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
-        }
-    };
-
-    if restart.is_some() && cfg.launch.is_none() {
-        // A fabric primary reborn into its mesh has no maker: its durable map is the topology.
-        let mut rows = nodes_storage.contacts().await.map_err(storage_err)?;
-        rows.retain(|r| r.node_id != node_id);
-        if let Ok(map) = crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&rows)).await {
-            entry_map = Some(("durable-map", map));
-        }
-    }
-    let entering_existing_mesh = entry_map.as_ref().is_some_and(|(_, m)| m.iter().any(|n| n.name.mesh == cfg.mesh && n.node_id != node_id));
-
-    if let Some(b) = &cfg.bindings {
-        b.check_image(provider_image(policy.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
-    }
-
-    // A restart that enters its mesh from its durable map elects nobody until its entry read has
-    // told it who holds the seats.
-    records.set_entering(entering_existing_mesh && cfg.launch.is_none());
-    let _ = records.contacts.set(nodes_storage.clone());
-    // A fabric primary reborn from its data dir holds its durable topology as its map (rule 5):
-    // every birth the accepted Build names that nodes.storage heard is in its view as not yet
-    // reached, until membership or the sweep says more. Its view is never an empty one that plans
-    // a create for every member.
-    if restart.is_some() && cfg.launch.is_none() {
-        let desired = accepted.current(&*builds_dyn).await.map(|b| b.topology);
-        for r in nodes_storage.contacts().await.map_err(storage_err)? {
-            if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
-                let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None };
-                records.publish(m.as_node(NodeStatus::PendingReconnect, policy.provider));
-            }
-        }
-    }
-    // A birth starts from its maker's topology: every settled node the maker's projection holds is
-    // in this admin's view as the maker knew it, until membership or the sweep says more. A fabric
-    // primary this admin becomes then never plans from an empty view.
-    if let Some(("maker", map)) = entry_map.as_ref().map(|(src, m)| (*src, m)) {
-        for n in map.iter().filter(|n| n.node_id != node_id && n.settled) {
-            records.publish(n.as_node(if n.ready { NodeStatus::ReadyForTraffic } else { NodeStatus::PendingReconnect }, policy.provider));
-        }
-    }
-    // The meshes the accepted Build names keep the ids this admin stored for them.
-    if let Some(named) = accepted.current(&*builds_dyn).await.map(|b| b.topology) {
-        for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| named.meshes.contains_key(&m.name)) {
-            records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
-        }
-    }
-    // The maker's stored ids are its meshes' rows on the shared root, written by each mesh's
-    // primary: held in memory here, never written again by this admin.
-    for (mesh, id) in stored_mesh_ids {
-        records.meshes.lock().unwrap().entry(mesh).or_insert(id);
-    }
-    records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
-    let book = membership.book.clone();
-    let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
-    let control = Arc::new(
-        ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()),
-    );
-    // The claim door: this admin decides a claim only while it holds the fabric-primary seat.
-    let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), node_id: node_id.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });
-    let _ = claim_slot.set(claim_door.clone());
-    {
-        let (book, records) = (book.clone(), records.clone());
-        let _ = control.absence.set(Arc::new(move |name: &PathName| describe_absence(&book, &records, name)));
-    }
-    {
-        let (book, records, fabric, fabric_id, provider) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
-        let _ = control.view_now.set(Arc::new(move || project(&fabric, &fabric_id, provider, &book, &records)));
-    }
-    let _ = control.connections.set(connections.held());
-    {
-        let book = book.clone();
-        let _ = control.loads.set(Arc::new(move || book.current(book.staleness_floor()).into_iter().filter(|d| d.load.is_some() || d.gossip.is_some()).map(|d| (d.node.node_id.to_string(), (d.load, d.gossip))).collect()));
-    }
-    // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
-    // digest exists, below.
-    let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
-    // Where this admin's own `hydrate_before_ready` stands: written by its start (and a rejoin's),
-    // read by the Ready check and by a probe naming this admin.
-    let hydration_cell: crate::status_rpc::Hydrating = Arc::default();
-    // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
-    let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
-    // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
-    let rename: crate::status_rpc::Rename = Arc::new(std::sync::OnceLock::new());
-    let commands = Arc::new(crate::node_commands::CommandBook::default());
-    let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
-    let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
-    let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
-    let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
-    let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone())));
-    {
-        let records_for_ids = records.clone();
-        let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
-            status_storage: status_storage.clone(),
-            nodes_storage: nodes_storage.clone(),
-            me: name.clone(),
-            node_id: node_id.clone(),
-            fabric_id: cfg.fabric_id.clone(),
-            topology: control.topology.clone(),
-            declared: records.declared.clone(),
-            mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
-            republish: republish.clone(),
-            commands: commands.clone(),
-            own: own_commands.clone(),
-            leaver: leaver.clone(),
-            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            wake: records.wake.clone(),
-            rounds: rounds_slot.clone(),
-            configs: configs_slot.clone(),
-            configure: configure.clone(),
-            hydration: hydration_cell.clone(),
-            rename: rename.clone(),
-            row_moved: {
-                // The moved row enters what the view is projected from, then the view is projected.
-                let moved: crate::status_rpc::RowMoved = Arc::new(std::sync::OnceLock::new());
-                let (records, project) = (records.clone(), view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()));
-                let _ = moved.set(Arc::new(move |from: PathName, node_id: NodeId, incarnation: IncarnationId, to: PathName| {
-                    records.rename_birth(&from, &node_id, &incarnation, &to);
-                    project()
-                }));
-                moved
-            },
-        }));
-    }
-    // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
-    // a fabric round is owed through it.
-    let declarer = crate::status_declare::Declarer::new();
-    let _ = rounds_slot.set(crate::fabric_rounds::FabricRounds::new(crate::fabric_rounds::RoundEnv {
-        me: name.clone(),
-        node_id: node_id.clone(),
-        incarnation: incarnation.clone(),
-        fabric_id: cfg.fabric_id.clone(),
-        topology: control.topology.clone(),
-        client: node_rpc.client.clone(),
-        accepted: accepted.clone(),
-        builds: builds_dyn.clone(),
-        contexts: attempt_contexts.clone(),
-        declarer: declarer.clone(),
-        wake: records.wake.clone(),
-        records: records.clone(),
-        hooks: fabric_hooks,
-        actions: round_actions.clone(),
-    }));
-    rounds_slot.get().expect("set above").set_gossip(backbone.clone(), membership.clone());
-
-    // The deployment hand (used while this admin is fabric primary). A provider's host-wide
-    // resources (a container fabric's network and labels) are keyed by the Fabric's id: a Fabric
-    // name is not unique on a host.
-    let prepared = match early {
-        Some(p) => p,
-        None => crate::deployment::prepare(policy, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?,
-    };
-    let mut admin_env = BTreeMap::new();
-    admin_env.insert("RDM_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
-    // A node-admin this admin launches honors the same explicit bindings: its own launches and
-    // restarts run the bound executables too.
-    admin_env.extend(cfg.bindings_env.clone());
-    let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
-    let template = LaunchTemplate {
-        fabric: cfg.fabric.clone(),
-        fabric_id: cfg.fabric_id.clone(),
-        executable: PathBuf::new(),
-        // The address this admin's mesh endpoint is bound on: where every birth it launches reaches
-        // it (loopback for a process fabric, the gateway or its own container address for a
-        // container fabric).
-        seeds: vec![(key.public().to_string(), mesh_addr)],
-        launcher: rafka_mesh_entity::launch::Launcher { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
-        env: cfg.passthrough.clone(),
-        data_root,
-        store_dir: cfg.store_dir.clone(),
-        mesh_issuer: None,
-    };
-    let mut registry = HookRegistry::new();
-    for (spec, hook) in wiring.hooks.drain(..) {
-        registry = registry.register(spec, hook);
-    }
-    let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
-    let provider_dyn: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), prepared.provider.clone());
-    let handover = Arc::new(crate::fabric_handover::HandoverDoor {
-        fabric: cfg.fabric.clone(),
-        me: name.clone(),
-        node_id: node_id.clone(),
-        incarnation: incarnation.clone(),
-        topology: control.topology.clone(),
-        membership: membership.clone(),
-        backbone: backbone.clone(),
-        storage: fabric_storage.clone(),
-        client: node_rpc.client.clone(),
-        book: book.clone(),
-        records: records.clone(),
-        contacts: crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) },
-        handovers: Default::default(),
-        decisions: builds.decisions(),
-        claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
-        project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
-        cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
-    });
-    handover.restore().await?;
-    let _ = handover_slot.set(handover.clone());
-    let runner = Arc::new(AdminRunner {
-        status_storage: status_storage.clone(),
-        provider: provider_dyn.clone(),
-        joins: joins.clone(),
-        observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone(), handover: handover_slot.clone() }),
-        records: records.clone(),
-        builds: builds_dyn.clone(),
-        local: journal.clone(),
-        template,
-        admin_env,
-        bin_dir: cfg.bin_dir.clone(),
-        bindings: cfg.bindings.clone(),
-        lifecycle: LifecycleTransitionPipeline::new(hooks, Arc::new(MemoryReceiptLog::default())),
-        handles: Mutex::new(HashMap::new()),
-        topology: control.topology.clone(),
-        fabric: cfg.fabric.clone(),
-        fabric_id: cfg.fabric_id.clone(),
-        fabric_provider: policy.provider,
-        book: book.clone(),
-        me: name.clone(),
-        node_id: node_id.clone(),
-        endpoint: Some(endpoint.clone()),
-        node_rpc: Some(node_rpc.clone()),
-        lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone() })),
-        leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
-        leave_runs: crate::mesh_leave::LeaveRuns::default(),
-        handover: handover.clone(),
-        issuer: issuer.clone(),
-    });
-    let _ = leaver.set(Arc::new(LeaveDoor { runner: runner.clone() }));
-    // The Build family on `0x20`: the executor's door for `build.attempt.run` and the fabric-primary's
-    // drive of every Build. The same admin holds both; which one a call reaches depends on the seat.
-    let drives = Arc::new(crate::build_drive::Drives::default());
-    let drive_env = {
-        let exec = Arc::new(BuildExecutor { executor: name.to_string(), builds: builds_dyn.clone(), topology: control.topology.clone(), runner: runner.clone() });
-        let run_door = Arc::new(crate::build_run::RunDoor {
-            me: name.clone(),
-            builds: builds_dyn.clone(),
-            exec,
-            runs: runs.clone(),
-            local: journal.clone(),
-        });
-        let env = Arc::new(crate::build_drive::DriveEnv {
-            me: name.clone(),
-            topology: control.topology.clone(),
-            accepted: accepted.clone(),
-            builds: builds_dyn.clone(),
-            door: claim_door.clone(),
-            dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
-            gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone(), control: control.clone() }),
-            departure: Arc::new(ProviderDeparture {
-                me: name.clone(),
-                topology: control.topology.clone(),
-                refresh: {
-                    let (topology, records, book, fabric, fabric_id, provider) = (control.topology.clone(), records.clone(), book.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
-                    Arc::new(move || {
-                        let (topology, records, book, fabric, fabric_id) = (topology.clone(), records.clone(), book.clone(), fabric.clone(), fabric_id.clone());
-                        Box::pin(async move {
-                            records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
-                        })
-                    })
-                },
-                book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
-            verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
-            rows: {
-                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
-                records.set_rows(rows.clone());
-                rows
-            },
-        });
-        let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone() }));
-        env
-    };
-
-    // This birth's exact runtime. A launched admin takes the record its
-    // launcher's pipeline made available; the bootstrap admin, which nobody
-    // launched, adopts its own process (Day 0, one receipt per step). Either
-    // way it is published with the birth.
-    let mut adoption = None;
-    let runtime = match launched_runtime {
-        Some(r) => r,
-        None => {
-            // In a container of this fabric's container runtime, its runtime is that container;
-            // a host process stays a process (it then cannot be failed over by a container admin,
-            // which refuses Ready by name).
-            let in_container = (prepared.provider.kind() == ProviderKind::Container && rafka_mesh_entity::runtime::this_container_id().is_some()).then(|| prepared.provider.control_domain());
-            let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).map_err(|e| e.to_string())?;
-            let f = a.fact().clone();
-            adoption = Some(a);
-            f
-        }
-    };
-    // The identity this process records its intentional exit under (a transport that stopped).
-    rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
-        data_dir: cfg.data_dir.clone(),
-        deployment_id: runtime.deployment_id.clone(),
-        incarnation: incarnation.0.clone(),
-    });
-    // Own digest, published on the membership cadence.
-    let digest = Arc::new(Mutex::new(MeshDigest {
+    // This admin's first call after it binds: `JoinNode`, carrying its full digest with the
+    // addresses it really bound, to the admin that deployed it.
+    let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|(_, _, runtime)| MeshDigest {
         fabric_id: cfg.fabric_id.clone(),
         node: MeshNode {
             node_id: node_id.clone(),
-            name: handed.as_ref().and_then(|(n, _)| n.clone()).unwrap_or_else(|| name.clone()),
+            name: name.clone(),
             endpoint_id: EndpointId(key.public().to_string()),
-            // The mesh endpoint as bound (a rebind may have moved it).
             transport_addr: mesh_addr,
             incarnation: incarnation.clone(),
-            supersedes,
-            // Day 0: PublishRuntimeFactAndCurrentRuntimeMetadata sets them.
-            runtime: adoption.is_none().then(|| runtime.clone()),
+            supersedes: supersedes.clone(),
+            runtime: Some(runtime.clone()),
         },
-        // Pending until it can take authority at once (the Ready gate below).
         status: MemberStatus::Pending,
         admin_api_base: Some(api_base.clone()),
-        // Stamped by `Membership::publish`: this birth's own sequence and the composed clock.
         emitted_at_rafka_ms: 0,
         digest_seq: 0,
-        mesh_id: Some(mesh_id.clone()),
+        mesh_id: cfg.mesh_id.clone(),
         in_flight: None,
-        config: handed.as_ref().and_then(|(_, c)| c.clone()).unwrap_or_default(),
+        config: BTreeMap::new(),
         load: None,
         gossip: None,
-        data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
-    }));
-    // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
-    // the same logical node in the same Mesh.
-    {
-        let d = digest.lock().unwrap().clone();
-        nodes_storage
-            .put_own(&crate::storage::NodeRecord {
-                node_id: node_id.clone(),
-                fabric_id: cfg.fabric_id.clone(),
-                name: name.clone(),
-                incarnation_id: incarnation.clone(),
-                endpoint_id: d.node.endpoint_id.clone(),
-                transport_addr: d.node.transport_addr,
-                listeners: vec![("control".into(), listener.local_addr().map_err(|e| e.to_string())?)],
-            })
-            .await.map_err(storage_err)?;
-    }
-    // nodes.storage contacts and mesh.storage: this admin's mesh's members and its Mesh row on the
-    // fabric's shared root, written while this admin holds its mesh's primary seat (the writer
-    // ladder; `MeshRowsWriter`), as bootstrap hints for a later restart of any node of the fabric.
-    // A birth is written the moment the book first holds it or it changes (the book's own birth
-    // watch, as the runtime rows are), and every member at once when the seat comes to this admin
-    // (the view install's seat watch): a hint that waits on a timer is lost to a restart that comes
-    // first. Nothing here is topology.
-    let (own_seat_tx, mut own_seat) = tokio::sync::watch::channel(false);
-    let contacts_task = {
-        let (book, fabric_id) = (membership.book.clone(), cfg.fabric_id.clone());
-        let mut writer = MeshRowsWriter::new(cfg.fabric_id.clone(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone());
-        let park = park_gate.clone();
-        tokio::spawn(async move {
-            let mut births = book.birth_changes();
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("mesh-rows").await;
-                births.borrow_and_update();
-                let seated = *own_seat.borrow_and_update();
-                let held: Vec<MeshDigest> = book.all().into_iter().filter(|d| d.fabric_id == fabric_id).collect();
-                writer.round(&held, seated).await;
-                drop(turn);
-                tokio::select! {
-                    changed = births.changed() => if changed.is_err() { return },
-                    changed = own_seat.changed() => if changed.is_err() { return },
-                }
-            }
-        })
-    };
-    if let Some(a) = adoption {
-        a.publish(|f, dir| {
-            let mut d = digest.lock().unwrap();
-            d.node.runtime = Some(f.clone());
-            d.data_dir = Some(dir);
-        })
-        .map_err(|e| e.to_string())?;
-    }
-    let _ = entry.set(EntryState {
-        name: name.clone(),
-        provider: policy.provider,
-        accepted: accepted.clone(),
-        builds: builds_dyn.clone(),
-        shutdown: shutdown_control.clone(),
-        membership: membership.clone(),
-        time: rafka_time.clone(),
+        data_dir: Some(cfg.data_dir.display().to_string()),
     });
-    // The join door: this admin verifies a node's digest against what it deployed, installs the
-    // address for its key and answers what it holds.
-    {
-        let (st, resolver, m, topo) = (entry.clone(), node_rpc_resolver.clone(), membership.clone(), membership.clone());
-        let door = Arc::new(crate::join::JoinDoor {
-            me: name.clone(),
-            joins: joins.clone(),
-            answer: Arc::new(move || {
-                let st = st.clone();
-                Box::pin(async move {
-                    match st.get() {
-                        Some(e) => e.answer().await,
-                        None => Err("this admin holds no view yet".to_string()),
-                    }
-                })
-            }),
-            install: Arc::new(move |d: &MeshDigest| {
-                // The same effect hearing the digest on gossip has: where the key is, and the
-                // live resolver's birth (which cancels every dial aimed at the key's old address).
-                m.learn(d.clone(), "join");
-                if let Ok(endpoint_id) = d.node.endpoint_id.0.parse::<iroh::PublicKey>() {
-                    let applied = resolver.apply(
-                        rafka_node_rpc::ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id, transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone() },
-                        d.node.supersedes.as_ref(),
-                    );
-                    tracing::info!(node = %d.node.name, applied = ?applied, "the resolver holds the joined birth");
-                }
-            }),
-            known: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
-            primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
-            issuer: issuer.clone(),
-            row: Arc::new({
-                let rows = nodes_storage.clone();
-                move |name: PathName| {
-                    let rows = rows.clone();
-                    Box::pin(async move { rows.node_row_at(&name).await.map_err(|e| e.to_string()) })
-                }
-            }),
-        });
-        let _ = join_slot.set(door);
-        // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
-        let own = digest.clone();
-        // For a mesh it holds no snapshot of, this admin answers from the births it stores.
-        // The births it stores and the births its book holds now: what this admin knows of a mesh
-        // does not wait on the contacts being written.
-        let (contacts, meshes, held_book, held_fabric, held_me) = (nodes_storage.clone(), mesh_storage.clone(), book.clone(), cfg.fabric_id.clone(), node_id.clone());
-        let stored: crate::topology_read::StoredSource = Arc::new(move || {
-            let (contacts, meshes, held_book, held_fabric, held_me) = (contacts.clone(), meshes.clone(), held_book.clone(), held_fabric.clone(), held_me.clone());
-            Box::pin(async move {
-                let rows = contacts.contacts().await.map_err(|e| e.to_string())?;
-                let ids = meshes.meshes().await.map_err(|e| e.to_string())?;
-                let mut nodes: BTreeMap<NodeId, rafka_node_rpc_contract::topology::StoredNode> = rows
-                    .into_iter()
-                    .map(|r| (r.node_id.clone(), rafka_node_rpc_contract::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr }))
-                    .collect();
-                for d in held_births(&held_book, &held_fabric, &held_me) {
-                    nodes.insert(
-                        d.node.node_id.clone(),
-                        rafka_node_rpc_contract::topology::StoredNode { node_id: d.node.node_id, name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
-                    );
-                }
-                Ok(crate::topology_read::StoredMap {
-                    nodes: nodes.into_values().collect(),
-                    mesh_ids: ids.into_iter().map(|m| (m.name, m.mesh_id)).collect(),
-                })
-            })
-        });
-        let gone: crate::topology_read::GoneSource = {
-            let (book, records) = (book.clone(), records.clone());
-            Arc::new(move |h: &rafka_mesh_entity::SeatHolder| incumbency_of(&book, &records).lost.contains(&h.incarnation))
-        };
-        let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone()), rafka_time.clone()).with_stored(stored).with_gone(gone)));
-    }
-    // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
-    // a blind put (a successor fabric primary proves an exit from it).
-    let runtime_rows_task = {
-        let (book, nodes_storage, me, fabric_id) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
-        let park = park_gate.clone();
-        tokio::spawn(async move {
-            let turn = park.turn("runtime-rows").await;
-            let mut written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
-            drop(turn);
-            let mut births = book.birth_changes();
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("runtime-rows").await;
-                births.borrow_and_update();
-                for d in book.all().into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me) {
-                    let key = (d.node.node_id.clone(), d.node.incarnation.clone());
-                    let Some(runtime) = d.node.runtime.clone() else { continue };
-                    if written.contains(&key) {
-                        continue;
-                    }
-                    let row = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
-                    match nodes_storage.put_runtime(&row).await {
-                        Ok(()) => {
-                            written.insert(key);
-                        }
-                        Err(e) => tracing::info!(node = %d.node.name, error = %e, "a heard birth's runtime could not be stored"),
-                    }
-                }
-                drop(turn);
-                if births.changed().await.is_err() {
-                    return;
-                }
-            }
+    let joining = match &joins_through {
+        Some((_, launcher, _)) => crate::workflows::node_start::Joining::Authority { label: launcher.name.to_string() },
+        None if restart.is_some() => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::FabricPrimaryReborn),
+        None if cfg.mesh_primary || cfg.fabric_primary => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::Recovery),
+        None => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::Day0Root),
+    };
+    let resolve: Box<dyn FnOnce() -> Result<crate::workflows::node_start::JoinThrough, crate::node_self::StartFailed> + Send> = {
+        let (resolver, through) = (node_rpc_resolver.clone(), joins_through.clone());
+        Box::new(move || {
+            let (anchor, launcher, _) = through.expect("a start that joins has its launching admin");
+            resolver.apply(
+                rafka_node_rpc::ResolvedNode {
+                    node_id: launcher.node_id.clone(),
+                    name: launcher.name.clone(),
+                    endpoint_id: anchor.id,
+                    transport_addr: anchor.ip_addrs().next().copied().ok_or_else(|| crate::node_self::StartFailed { step: "node.join", reason: format!("the launching admin {} has no address in this admin's seeds", launcher.name) })?,
+                    incarnation: launcher.incarnation.clone(),
+                },
+                None,
+            );
+            Ok(crate::workflows::node_start::JoinThrough { node_id: launcher.node_id.clone(), name: launcher.name.clone(), incarnation: launcher.incarnation.clone(), anchor: anchor.id.fmt_short().to_string() })
         })
     };
-    // A birth the book shows superseded (a later incarnation of its node held, or its node
-    // departed): the declared-state rows this admin put for it as an authority are tombstoned.
-    let superseded_rows_task = {
-        let (book, authority) = (membership.book.clone(), authority.clone());
-        let park = park_gate.clone();
-        tokio::spawn(async move {
-            let mut births = book.birth_changes();
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("superseded-rows").await;
-                births.borrow_and_update();
-                if let Some(a) = authority.get() {
-                    a.retire_superseded(&book).await;
-                }
-                drop(turn);
-                if births.changed().await.is_err() {
-                    return;
-                }
-            }
-        })
+    // What a repeat of the control entry calls: the join to the launching admin, as first made.
+    let entry_retrieval: Option<(rafka_node_rpc::NodeTarget, String, MeshDigest)> = match (&joins_through, &join_digest) {
+        (Some((anchor, launcher, _)), Some(digest)) => Some((rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), anchor.id.fmt_short().to_string(), digest.clone())),
+        _ => None,
     };
-    let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task, superseded_rows_task];
-    tasks.extend(tasks_early);
-    // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
-    // primary reborn into its mesh from its durable map): connect to a local node, read its
-    // topology and sweep the own mesh once with a Ping. Ready waits for the sweep; every node that
-    // did not answer is unheard, and node recovery's to prove (mesh-recovery.md step 6).
-    let sweep_slot: Arc<std::sync::OnceLock<crate::reenter::SweepReport>> = Arc::new(std::sync::OnceLock::new());
-    if let (true, Some((source, map))) = (entering_existing_mesh, entry_map.take()) {
-        let ctx = crate::reenter::EntryCtx { me: name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), membership: membership.clone(), time: rafka_time.clone() };
-        let (slot, records, provider_kind) = (sweep_slot.clone(), records.clone(), policy.provider);
-        tasks.push(park_gate.spawn(async move {
-            let report = crate::reenter::enter_existing_mesh(&ctx, source, map).await;
-            // The entry read has told this admin what the mesh knows of its seats (or no one could).
-            records.set_entering(false);
-            // A reply proves a live exact birth: the view holds it (until membership speaks for
-            // it). A node that did not answer stays in the map as not yet reached.
-            for n in &report.reached {
-                records.publish(n.as_node(NodeStatus::ReadyForTraffic, provider_kind));
-            }
-            for (n, _) in &report.not_reached {
-                records.publish(n.as_node(NodeStatus::PendingReconnect, provider_kind));
-            }
-            // A node not reached is unheard, so the mesh-primary's tick watches it: its tickle, then
-            // the provider's exact exit proof, then node recovery only on proof (mesh-recovery.md step 6).
-            let _ = slot.set(report);
-        }));
-    }
-    // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
-    // becomes eligible for every seat) only once it can manage every birth it
-    // holds: each live member publishes a runtime fact this admin's provider
-    // adopts in its own control domain, and the Day-0 admin holds a Complete
-    // receipt for every step of its own adoption. Until then it publishes
-    // Pending.
-    // `hydrate_before_ready` (the app's hook): run after the join is accepted, the topology installed
-    // and the mesh channel joined; the Ready check below names its blocker. A birth with no
-    // launcher has no authority to pull from, and says why.
-    let hydrate_cancel = rafka_node_rpc::Retirement::new();
-    let hydration_handle = {
-        use crate::app_hydration::{AcceptingAuthority, Authority, Birth, End, Events, HydrateCtx, NoAuthority};
-        let authority_ctx = match cfg.launch.as_ref().and_then(|l| l.launcher.clone()) {
-            Some(l) => Authority::Accepted(AcceptingAuthority { name: l.name, node_id: l.node_id, incarnation: l.incarnation }),
-            None if restart.is_some() => Authority::None(NoAuthority::FabricPrimaryReborn),
-            None if cfg.mesh_primary || cfg.fabric_primary => Authority::None(NoAuthority::Recovery),
-            None => Authority::None(NoAuthority::Day0Root),
-        };
-        let ctx = HydrateCtx {
-            start_kind: crate::app_hydration::StartKind::FirstStart,
-            birth: Birth { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), fabric_id: cfg.fabric_id.clone(), mesh_id: mesh_id.clone(), kind: NodeKind::NodeAdmin },
-            authority: authority_ctx,
-            client: node_rpc.client.clone(),
-            membership: membership.clone(),
-            cancel: hydrate_cancel.token(),
-            rafka_time: rafka_time.clone(),
-            member_cert: member_cert.clone(),
-            attempt: 0,
-        };
-        let events = Events::new(book.clone(), records.wake.hydration.clone());
-        wiring.hydration.driver(ctx, events, boot.clone()).map(|driver| {
-            let handle = driver.handle();
-            tasks.push(park_gate.spawn(async move {
-                let first = driver.attempt().await;
-                if driver.run(first).await == End::Passed {
-                    driver.spawn_after_ready();
-                }
-            }));
-            handle
-        })
-    };
-    {
-        *hydration_cell.lock().unwrap() = hydration_handle.clone();
-        let hydration_state = hydration_cell.clone();
-        let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), name.clone(), membership.clone());
-        let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
-        let (hydrated, hydrated_builds, hydrated_floor) = (accepted.clone(), builds_dyn.clone(), entry_floor.clone());
-        let mut hydrator = {
-            let topology = control.topology.clone();
-            let launcher = cfg.launch.as_ref().and_then(|l| l.launcher.clone());
-            let responders: crate::hydrate::Responders = Arc::new(move || {
-                let (topology, launcher) = (topology.clone(), launcher.clone());
-                Box::pin(async move {
-                    let t = topology.read().await;
-                    let mut out: Vec<crate::hydrate::Responder> = t.fabric_primary().map(|n| crate::hydrate::Responder { name: n.name.clone(), node_id: n.node_id.clone() }).into_iter().collect();
-                    let mut admins: Vec<&crate::model::Node> = t.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).collect();
-                    admins.sort_by(|a, b| a.name.cmp(&b.name));
-                    for n in admins {
-                        if !out.iter().any(|r| r.name == n.name) {
-                            out.push(crate::hydrate::Responder { name: n.name.clone(), node_id: n.node_id.clone() });
-                        }
-                    }
-                    if let Some(l) = launcher {
-                        if !out.iter().any(|r| r.name == l.name) {
-                            out.push(crate::hydrate::Responder { name: l.name.clone(), node_id: l.node_id.clone() });
-                        }
-                    }
-                    out
-                })
-            });
-            let entry: Option<crate::hydrate::EntryRepeat> = entry_retrieval.map(|(target, anchor, digest)| {
-                let (client, accepted, builds, floor, shutdown, rafka_time) = (node_rpc.client.clone(), accepted.clone(), builds_dyn.clone(), entry_floor.clone(), shutdown_control.clone(), rafka_time.clone());
-                Arc::new(move || {
-                    let (client, target, anchor, digest, accepted, builds, floor, shutdown, rafka_time) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), builds.clone(), floor.clone(), shutdown.clone(), rafka_time.clone());
-                    Box::pin(async move {
-                        let answer = crate::join::call_join(&client, &target, &anchor, &digest, 1).await.map_err(|e| e.to_string())?;
-                        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), &rafka_time, &digest.node.name.to_string(), &answer);
-                        take_entry_control(&answer, &accepted, &*builds, &floor).await;
-                        if let Some(sd) = answer.control.shutdown.clone() {
-                            shutdown.learn(sd, "hydration", &answer.served_by).await.map_err(|e| e.to_string())?;
-                        }
-                        Ok(())
-                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
-                }) as crate::hydrate::EntryRepeat
-            });
-            crate::hydrate::Hydrator::new(name.clone(), node_rpc.client.clone(), journal.clone(), builds_dyn.clone(), accepted.clone(), responders, entry)
-        };
-        let sweep_slot_gate = sweep_slot.clone();
-        let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
-        let runtime = runtime.clone();
-        let boot = boot.clone();
-        let (records, topology, authority, mesh_name) = (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone());
-        let park = park_gate.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut reported = None;
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("ready").await;
-                let held: Vec<MeshDigest> = book
-                    .current(book.staleness_floor())
-                    .into_iter()
-                    .filter(|d| d.node.name != me && d.status != MemberStatus::Leaving)
-                    .collect();
-                let mut blocked = authority_blockers(&held, &*provider);
-                if let Some(dir) = &day0 {
-                    blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
-                }
-                if entering_existing_mesh && sweep_slot_gate.get().is_none() {
-                    blocked.push(format!("{me}: the own-mesh sweep on entering the mesh has not finished"));
-                }
-                // The app's hook: Ready waits on it, and its blocker is named here with the others.
-                blocked.extend(hydration_state.lock().unwrap().as_ref().and_then(|h| h.state().blocker(&me)));
-                let floor = hydrated_floor.lock().unwrap().clone();
-                let hydration = hydration_blocker(&me, &hydrated, &*hydrated_builds, floor).await;
-                hydrator.tick(hydration.as_ref()).await;
-                blocked.extend(hydration.map(|b| b.to_string()));
-                // A mesh is Pending until its authority says so (e4.s11): a mesh's first admin holds
-                // its own Ready until the fabric primary applied MeshStatus::Pending at it; the Day-0
-                // root, with no upstream authority, applies its own. An admin joining a mesh whose
-                // admin cohort is already live owes nothing here.
-                let pending_applied = records.declared.lock().unwrap().meshes.contains_key(&mesh_id);
-                let cohort_live = topology.read().await.cohort(&mesh_name, NodeKind::NodeAdmin).any(|n| n.name != me && n.status.is_live());
-                match pending_gate(&me, &mesh_name, day0.is_some(), pending_applied, cohort_live) {
-                    PendingGate::Clear => {}
-                    PendingGate::Blocked(why) => blocked.push(why),
-                    PendingGate::SelfApply => match authority.get() {
-                        Some(auth) => {
-                            let reply = auth.self_apply_mesh_pending(&mesh_id).await;
-                            if !matches!(reply, rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) {
-                                blocked.push(format!("{me}: its mesh's Pending is not applied (self-apply answered {reply:?})"));
-                            }
-                        }
-                        None => blocked.push(format!("{me}: no view yet to apply its mesh's Pending to itself")),
-                    },
-                }
-                if blocked.is_empty() {
-                    // The pointer the hydration gate above found held: the Ready span names it, so
-                    // "it held Fabric.build_id before Ready" is read off the Ready itself.
-                    let held_pointer = hydrated.build_id().await.map(|b| b.0).unwrap_or_default();
-                    let mut d = digest.lock().unwrap();
-                    if d.status != MemberStatus::Pending {
-                        break;
-                    }
-                    d.status = MemberStatus::ReadyForTraffic;
-                    drop(d);
-                    records.wake.poke();
-                    tracing::info_span!(
-                        parent: &boot,
-                        "rdm.mesh.node.update.via-ready",
-                        node = %me,
-                        incarnation_id = %incarnation.0,
-                        meshes = membership.meshes_held(),
-                        node_id = %node_id,
-                        mesh_id = %mesh_id,
-                        fabric_id = %fabric_id,
-                        id_format = rafka_mesh_entity::ID_FORMAT,
-                        deployment_id = %runtime.deployment_id,
-                        provider = runtime.provider.as_str(),
-                        provider_control_domain_fingerprint = %runtime.domain_fingerprint(),
-                        runtime_locator_kind = runtime.locator.kind(),
-                        runtime_locator_fingerprint = %runtime.locator_fingerprint(),
-                        source = "self-published-membership",
-                        runtime_facts_held = held.len(),
-                        build_id = %held_pointer,
-                    )
-                    .in_scope(|| tracing::info!("ready for traffic: every held birth's runtime is adoptable"));
-                    break;
-                }
-                if reported.as_ref() != Some(&blocked) {
-                    tracing::info_span!("rdm.node_admin.runtime.reject.via-not-authority-capable", node = %me, blocked = blocked.len(), detail = %blocked.join("; "))
-                        .in_scope(|| tracing::info!("not ready: a held birth's runtime cannot be managed from here"));
-                    reported = Some(blocked);
-                }
-                drop(turn);
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }));
-    }
-    {
-        let (membership, digest) = (membership.clone(), digest.clone());
-        let _ = republish.set(Arc::new(move || {
-            let (membership, digest) = (membership.clone(), digest.clone());
+    // What the start brought up, once it did: handed to the caller.
+    let out: Arc<Mutex<Option<Running>>> = Arc::default();
+    let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.to_string(), path: name.clone(), node_id: node_id.clone(), client: node_rpc.client.clone(), rafka_time: rafka_time.clone() };
+    // The admin plugs into `node.start` by continuations: each step runs in the scope the previous
+    // one left. Its channel step also hydrates its stores; its installed-topology step takes its
+    // entry and builds what it serves and elects with; after its hook its Ready check reports.
+    let enter: crate::workflows::node_start::EnterSeam<String> = {
+        let out = out.clone();
+        Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(Membership, crate::workflows::node_start::InstalledSeam<String>), String>> {
             Box::pin(async move {
-                let peers: Vec<EndpointAddr> = membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
-                let _ = membership.join_peers(peers).await;
-                let d = digest.lock().unwrap().clone();
-                let _ = membership.publish(&d).await;
-            })
-        }));
-    }
-    {
-        // The config is held on this admin's own digest and by its membership, so every publish and
-        // every read of its own digest carries it.
-        let (membership, digest) = (membership.clone(), digest.clone());
-        let _ = configure.set(Arc::new(move |config: BTreeMap<String, String>| {
-            let (membership, digest) = (membership.clone(), digest.clone());
-            Box::pin(async move {
-                membership.set_config(config.clone());
-                let d = {
-                    let mut d = digest.lock().unwrap();
-                    d.config = config;
-                    d.clone()
+                // The member cert the launching admin's signer issued for this birth, carried by the join that
+                // admitted it; none for a birth that made no JoinNode (the Day-0 root, a recovery start).
+                let member_cert: Option<Vec<u8>> = joined.as_ref().map(|a| a.control.member_cert.clone());
+                // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
+                // once, here. A recovery start (a flag or a restart) takes it from the nodes it reaches below.
+                if cfg.launch.is_none() && restart.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
+                    crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_DAY0_ROOT);
+                }
+                let mesh_id = match (&cfg.mesh_id, &joined) {
+                    (Some(id), _) => id.clone(),
+                    (None, Some(answer)) => return Err(format!("{name}: a launched admin takes its mesh's id from its launch, and this launch names none (joined {})", answer.served_by)),
+                    (None, None) => MeshId::mint(),
                 };
-                let _ = membership.publish(&d).await;
-            })
-        }));
-    }
-    {
-        // The name is held on this admin's own digest and by its membership, taken only while it
-        // holds no connection (R-CR1); a stopped admin holds it and publishes nothing.
-        let (membership, digest, connections) = (membership.clone(), digest.clone(), connections.clone());
-        let _ = rename.set(Arc::new(move |asked: PathName| {
-            let (membership, digest, connections) = (membership.clone(), digest.clone(), connections.clone());
-            Box::pin(async move {
-                let held = digest.lock().unwrap().node.name.clone();
-                let routes = connections.held_routes().await;
-                let decision = crate::node_name::decide(&held, &asked, &routes);
-                if decision == crate::node_name::NameApply::Applied {
-                    membership.set_name(asked.clone());
-                    let d = {
-                        let mut d = digest.lock().unwrap();
-                        d.node.name = asked;
-                        d.clone()
-                    };
-                    if !crate::node_self::parking().is_parked() {
-                        let _ = membership.publish(&d).await;
-                    }
-                }
-                (held, decision)
-            })
-        }));
-    }
-    // This admin as the subject of drain-node / stop-node from its own mesh-admin.
-    {
-        let digest_for_status = digest.clone();
-        let digest_now = digest.clone();
-        let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| {
-            let mut d = digest_for_status.lock().unwrap();
-            d.status = st;
-            d.clone()
-        });
-        let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
-        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
-        own.set_connections(connections.clone());
-        own.set_session(Arc::new(AdminSession {
-            gate: park_gate.clone(),
-            name: name.clone(),
-            node_id: node_id.clone(),
-            incarnation: incarnation.clone(),
-            fabric_id: cfg.fabric_id.clone(),
-            mesh_id: mesh_id.clone(),
-            membership: membership.clone(),
-            backbone: backbone.clone(),
-            client: node_rpc.client.clone(),
-            resolver: node_rpc_resolver.clone(),
-            server: rpc_server.clone(),
-            digest: digest.clone(),
-            rafka_time: rafka_time.clone(),
-            accepted: accepted.clone(),
-            builds: builds_dyn.clone(),
-            entry_floor: entry_floor.clone(),
-            shutdown: shutdown_control.clone(),
-            hydration: wiring.hydration.clone(),
-            addressed: records.wake.hydration.clone(),
-            hydration_cell: hydration_cell.clone(),
-            hydrating: Arc::default(),
-            wake: records.clone(),
-        }));
-        let _ = own_commands.set(own);
-    }
-    // A node's own `node-drained` / `node-left`, heard on this mesh's channel: this admin carries
-    // it onto the backbone when it holds the command (gossip.md, node-drained, node-left).
-    {
-        let (commands, backbone, rounds) = (commands.clone(), backbone.clone(), rounds_slot.get().cloned().expect("the rounds are built before the carrier"));
-        membership.set_completion_carrier(Arc::new(move |f: &rafka_mesh_transport::membership::Frame| {
-            use rafka_mesh_transport::membership::Frame;
-            // A fabric round check-in by an ordinary node, carried by the mesh primary holding the round.
-            if let Frame::StateCommitted { hook, .. } | Frame::TrafficOpened { hook, .. } = f {
-                let kind = if matches!(f, Frame::StateCommitted { .. }) { crate::fabric_state::RoundKind::StateCommit } else { crate::fabric_state::RoundKind::OpenTraffic };
-                let key = crate::fabric_state::RoundKey { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
-                // A node-admin author publishes on the backbone itself; only an ordinary node's check-in is carried.
-                let ordinary = hook.publisher.parse::<PathName>().is_ok_and(|p| p.kind != NodeKind::NodeAdmin);
-                if ordinary && rounds.mesh_book.is_open(&key) {
-                    let (backbone, f) = (backbone.clone(), f.clone());
-                    tokio::spawn(async move { backbone.carry_completion(f).await });
-                }
-                return;
-            }
-            let (Frame::NodeLeft { op, .. } | Frame::NodeDrained { op, .. }) = f else { return };
-            let key = crate::node_commands::CommandKey { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() };
-            if commands.is_open(&key) {
-                let (backbone, f) = (backbone.clone(), f.clone());
-                tokio::spawn(async move { backbone.carry_completion(f).await });
-            }
-        }));
-    }
-    let d = digest.clone();
-    let publisher = membership.publish_every(gossip_interval(), move || {
-        d.lock().unwrap().clone()
-    });
-    // The declarer (i143.e4.s11, R-S2): what this admin owes its authorities over `Status`, sent
-    // when owed and again only on an eligible event, woken by its inputs; nothing it does gates
-    // gossip or readiness.
-    {
-        let declarer = declarer.clone();
-        let (digest, topology, records, me, me_id, incarnation, client, authority) =
-            (digest.clone(), control.topology.clone(), records.clone(), name.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone(), authority.clone());
-        let park = park_gate.clone();
-        tasks.push(tokio::spawn(async move {
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("declarer").await;
-                let addressed = records.wake.take_addressed();
-                let view = topology.read().await.clone();
-                let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
-                let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
-                let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
-                let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
-                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
-                declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
-                drop(turn);
-                // One coalesced wake from the inputs, never a timer: a poke during the round is
-                // the stored permit, so the next round runs at once; a burst runs one.
-                records.wake.woken().await;
-            }
-        }));
-    }
-
-    // The offline tickle (node-recovery.md "Detection and proof"): every admin keeps the silence
-    // bookkeeping; the one holding its mesh's primary seat tickles each node of its own mesh the
-    // topology shows PendingReconnect, half a floor after the mark: a ping (op 1), and when it
-    // answers the status kick (op 27); when it does not, the same kick through a live node of its
-    // mesh on the ViaPeer route. The node's status lands on its row in nodes.storage and in the view.
-    {
-        let (topology, records, status_storage, runner, me, me_id, mesh) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone());
-        let frozen = shutdown_control.clone();
-        // The recovery of a TRUE OFFLINE member of this mesh (node-recovery.md): the provider's
-        // exact-exit proof, the exit-proof row, the submit to the fabric-primary.
-        let recovery = RecoverySubmitter {
-            me: name.clone(),
-            topology: control.topology.clone(),
-            book: book.clone(),
-            provider: runner.provider.clone(),
-            nodes_storage: nodes_storage.clone(),
-            status_storage: status_storage.clone(),
-            door: build_slot.clone(),
-            client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
-        };
-        let park = park_gate.clone();
-        let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
-        tasks.push(tokio::spawn(async move {
-            // The births whose inspection or submitted recovery is in flight, and the last verdict
-            // named per birth. The tick never waits on either.
-            let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
-            let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
-            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), park.clone());
-            let floor = rafka_mesh_transport::membership::staleness_floor();
-            let mut written: WrittenSilence = HashMap::new();
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("offline-tickle").await;
-                let view = topology.read().await.clone();
-                let holds_seat = view.holds_mesh_seat(&mesh, &me_id);
-                // Every admin watches the same set, the seat holder or not, so a successor tickles on
-                // the window already running; the durable rows are read each tick (one point in time).
-                let durable = {
-                    let rows = recovery.durable_rows().await;
-                    let planned = records.planned();
-                    durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
-                };
-                let watched = watched_births(&view, &me_id, &mesh, &durable);
-                // One reading of the clocks for the tick: each birth's mark is read from the book at it.
-                let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
-                let silent = crate::offline::silent_set(watched.values(), &recovery.book, now, now_ms, floor);
-                let client = runner.node_rpc.as_ref().map(|r| r.client.clone());
-                // The tickle: ask the exact birth to reassert itself.
-                // Protocol name: ProbeNodeState.
-                let kick_of = |n: &Node| rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState {
-                    node_id: n.node_id.clone(),
-                    incarnation: n.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
-                };
-                let own_id = me_id.clone();
-                let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
-                let report = tickle
-                    .tick(
-                        now_ms,
-                        holds_seat,
-                        silent,
-                        |id: &str| in_view.contains(id),
-                        floor.as_millis() as u64 / 2,
-                        floor.as_millis() as u64,
-                        |id| {
-                            let (client, node) = (client.clone(), watched.get(&id).cloned());
-                            async move {
-                                let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
-                                let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
-                                let target = rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone());
-                                let ping = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"tickle".to_vec() };
-                                let (out, _) = client.call::<rafka_node_rpc_contract::ping::Ping>(&target, &ping, &rafka_node_rpc::CallOptions::default()).await;
-                                if out.reply().is_none() {
-                                    return Err(format!("{} did not answer the ping: {}", node.name, out.name()));
-                                }
-                                // The ping answered: the status kick. The node re-publishes its presence
-                                // and answers its status.
-                                let birth = rafka_node_admin_client::ExactBirth {
-                                    target: target.clone(),
-                                    node_id: node.node_id.clone(),
-                                    incarnation: node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
-                                };
-                                let kick = match rafka_node_admin_client::NodeRpc::new(&client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
-                                    Ok(reply) => reply.name(),
-                                    Err(end) => end.rpc_name(),
-                                };
-                                tracing::info!(node = %node.name, kick, "status kick after an answered ping");
-                                Ok(())
-                            }
-                        },
-                        |id| {
-                            let (client, node) = (client.clone(), watched.get(&id).cloned());
-                            // Carriers from the topology: every ready member of the target's mesh
-                            // other than the target and this admin, whatever its kind (every node
-                            // serves the core Forward op).
-                            let carriers: Vec<Node> = view
-                                .members()
-                                .filter(|c| node.as_ref().is_some_and(|n| c.mesh == n.mesh && c.node_id != n.node_id) && c.node_id != own_id && c.status == NodeStatus::ReadyForTraffic)
-                                .take(crate::offline::VIA_PEER_TICKLE_FANOUT)
-                                .cloned()
-                                .collect();
-                            async move {
-                                let (Some(node), Some(client)) = (node, client) else { return crate::offline::ViaPeerVerdict::CandidatesUnreadable(format!("{id} is not in the topology, or this admin has no Node RPC client")) };
-                                let incarnation = node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new()));
-                                // Every probe names the same exact birth: one kick, by node id and incarnation.
-                                let kick = kick_of(&node);
-                                let (node, client, kick) = (&node, &client, &kick);
-                                let peers: Vec<_> = carriers
-                                    .iter()
-                                    .map(|c| {
-                                        let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
-                                        let probe = async move {
-                                            let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, kick, &rafka_node_rpc::CallOptions::default()).await;
-                                            out.reply().map(|r| r.value().clone())
-                                        };
-                                        (c.name.to_string(), probe)
-                                    })
-                                    .collect();
-                                crate::offline::via_peer_verdict(&node.node_id, &incarnation, peers).await
-                            }
-                        },
-                        |id| {
-                            // One read of iroh's local view of the node, recorded beside the event.
-                            let (endpoint, key) = (runner.endpoint.clone(), watched.get(&id).and_then(|n| n.endpoint_id.as_ref()).and_then(|k| k.0.parse::<iroh::PublicKey>().ok()));
-                            async move {
-                                match endpoint {
-                                    Some(ep) => rafka_mesh_transport::iroh_obs::observe_remote(&ep, key).await,
-                                    None => rafka_mesh_transport::iroh_obs::IrohObservation::unavailable(),
-                                }
-                            }
-                        },
-                    )
-                    .await;
-                // The birth's own silence row is put blind, keyed by the exact birth this admin
-                // holds now; no other row is read or touched. What this loop last put is held here,
-                // so an unchanged status is not put again.
-                let write = async |id: &str, status: Option<NodeStatus>, written: &mut HashMap<NodeId, (Option<crate::model::IncarnationId>, Option<NodeStatus>)>| {
-                    let held = topology.read().await.births().find(|n| n.node_id.as_str() == id).cloned();
-                    let Some(node) = held.or_else(|| watched.get(id).cloned()) else { return };
-                    let fact = (node.incarnation_id.clone(), status);
-                    if written.get(&node.node_id) == Some(&fact) {
-                        return;
-                    }
-                    // A refusal is spanned where it happened (`offline::put_silence_status`); the memo
-                    // keeps the last status that stands, and nothing below waits on this row.
-                    if crate::offline::put_silence_status(&*status_storage, &node, status).await.is_ok() {
-                        written.insert(node.node_id.clone(), fact);
-                    }
-                };
-                if holds_seat {
-                    for (id, n) in &watched {
-                        if n.status == NodeStatus::PendingReconnect {
-                            write(id, Some(NodeStatus::PendingReconnect), &mut written).await;
-                        }
-                    }
-                }
-                for id in &report.offline {
-                    if let Some(n) = watched.get(id) {
-                        if let Some(inc) = n.incarnation_id.clone() {
-                            records.offline.lock().unwrap().insert((n.node_id.clone(), inc));
-                        }
-                    }
-                    write(id, Some(NodeStatus::Dead), &mut written).await;
-                }
-                for id in &report.returned {
-                    write(id, None, &mut written).await;
-                }
-                retire_unwatched(&watched, &mut records.offline.lock().unwrap(), &mut verdicts.lock().unwrap(), &mut written);
-                // node-recovery.md: on TRUE OFFLINE the mesh primary asks the provider about the exact
-                // runtime of each member of its own mesh, its secondary node-admins included
-                // (mesh-recovery.md:8-9); Exited is the proof, and the
-                // recovery is submitted keyed on the exited birth. Re-evaluated every tick while the
-                // member stays TRUE OFFLINE, so a recovery that failed is submitted again.
+                // Subscribe first, pull second: what changes during the pull arrives by
+                // gossip, and the book keeps the newer copy.
+                step.record("mesh_id", tracing::field::display(&mesh_id));
+                step.record("seeds", seed_addrs.len());
+                let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone())
+                    .await
+                    .map_err(|e| format!("membership: {e}"))?;
+                // The name this admin holds is its membership's (R12): its connections rows name it as their
+                // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
                 {
-                    let offline = records.offline.lock().unwrap().clone();
-                    for n in recovery_due(holds_seat, frozen.held().is_some(), &mesh, &watched, &offline) {
-                        let Some(incarnation) = n.incarnation_id.clone() else { continue };
-                        let birth = (n.node_id.clone(), incarnation);
-                        if !in_flight.lock().unwrap().insert(birth.clone()) {
-                            continue;
+                    let (held, birth) = (membership.clone(), name.clone());
+                    connections.follow_held_name(move || held.held_name(&birth))?;
+                }
+                // The row's name and config a launched admin's join handed: held before it publishes anything
+                // (R-JN1); at a first start the name is its create spec's, verified by the join.
+                let handed: Option<(Option<PathName>, Option<BTreeMap<String, String>>)> = joined.as_ref().map(|a| (a.control.name.clone(), a.control.config.clone()));
+                if let Some((n, c)) = &handed {
+                    if let Some(n) = n {
+                        membership.set_name(n.clone());
+                    }
+                    if let Some(c) = c {
+                        membership.set_config(c.clone());
+                    }
+                }
+                drop(step);
+                // An admin that made no `JoinNode` and is no Day-0 root (a restart, or a recovery started with
+                // a seed) holds no rafka-time yet: it reads it from the first node it reaches, before it
+                // publishes anything or judges any lease.
+                if !rafka_time.is_adopted() {
+                    // The admin that holds the fabric seat in its own seat records is the fabric's root: it
+                    // adopts its own clock at once (fabric-node-lifecycle.md 2.5). Every other admin takes
+                    // rafka-time from the first node it reaches that holds one.
+                    let holds_fabric_seat = fabric_storage
+                        .seats()
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .iter()
+                        .any(|row| row.seat == rafka_mesh_entity::Seat::FabricPrimary && row.holder.node_id == node_id);
+                    if holds_fabric_seat {
+                        crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_FABRIC_SEAT);
+                    } else {
+                        let mut contacts = Vec::new();
+                        for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
+                            contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None });
                         }
-                        let (recovery, n, verdicts) = (recovery.clone(), n.clone(), verdicts.clone());
-                        crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
-                            recovery.recover_if_proven(&n, &verdicts).await;
-                        });
+                        crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN, &boot)
+                            .await
+                            .map_err(|e| format!("refusing to start: {e}"))?;
                     }
                 }
-                drop(turn);
-                cadence.next().await;
-            }
-        }));
-    }
-
-    // The seat watch (ruling R-A2): a silent seat holder is looked at, never replaced for being
-    // silent. A mesh primary says the fabric primary's exact birth is silent (a Concern); the birth
-    // answers it; an admin of its mesh looks at it, down to its exact runtime.
-    {
-        let watch = crate::seat_watch::Watch {
-            gate: park_gate.clone(),
-            me: name.clone(),
-            me_id: node_id.clone(),
-            incarnation: incarnation.clone(),
-            membership: membership.clone(),
-            backbone: backbone.clone(),
-            topology: control.topology.clone(),
-            records: records.clone(),
-            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()) },
-            republish: republish.clone(),
-            builds: builds.clone(),
-        };
-        // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
-        tasks.push(tokio::spawn(crate::seat_watch::run(watch)));
-    }
-
-    // The open lifecycle overlays, derived from the Build facts inside each append to this admin's
-    // log (its own appends and the facts it absorbs from the fabric alike), before the append
-    // returns: a hold opens with its pre-event's receipt and closes with its operation's `Complete`
-    // or its attempt's `Converged`, and no reader of the log sees that fact while the book still
-    // holds the hold. A successor primary publishes the same overlays from the same facts. Derived
-    // once over the facts held before the hierarchy's first round, then on every fact.
-    {
-        let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));
-        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap())));
-    }
-
-    let hierarchy;
-    // The hierarchy: while this admin is its mesh's primary it publishes the
-    // mesh's members on the backbone and forwards the other meshes onto its
-    // mesh channel; while it is the fabric primary it publishes the fabric's
-    // status. It joins the backbone through every admin it knows and its mesh
-    // channel through every member of its mesh it knows.
-    {
-        let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
-        let (view_fabric, view_fabric_id, view_provider, view_book) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone());
-        let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
-        let adapter = runner.builds.clone();
-        let (records, accepted, rpc_client) = (records.clone(), accepted.clone(), node_rpc.client.clone());
-        let fabric_rounds = rounds_slot.get().cloned().expect("the rounds are built before the hierarchy runs");
-        let park = park_gate.clone();
-        hierarchy = tokio::spawn(async move {
-            // The round a new primary runs before it republishes the status it adopted (`crate::round`).
-            let mut rounds = crate::round::RoundDriver::new(me.clone(), seat_node_id.clone());
-            let mut was_fabric_primary = false;
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("hierarchy").await;
-                // The accepted Build's planned births are what a mesh's readiness is counted over.
-                if let Some(b) = accepted.current(&*adapter).await {
-                    records.set_planned(&b.topology);
+                let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
+                    .await
+                    .map_err(|e| format!("backbone: {e}"))?;
+                // fabric.storage: this admin's Fabric control state. A shutdown already held there (a restart
+                // or a join during one) is in force from the start (fabric-mesh-lifecycle.md §11.1).
+                let held = fabric_storage
+                    .put_identity(&crate::fabric_storage::FabricIdentity { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone() })
+                    .await.map_err(|e| e.to_string())?;
+                if held.fabric_id != cfg.fabric_id {
+                    return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
                 }
-                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == rafka_mesh_transport::membership::MESH_READY_FOR_TRAFFIC)).cloned().collect());
-                // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
-                records.set_heard_dead(membership.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
-                    membership.book.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
-                });
-                // Decide on the view as it is now: a cached view can predate the seat record this admin holds
-                // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
-                // The seat records are read once per decision: the projection elects from them and
-                // the announcement below supersedes only them (`seat_announcements`).
-                // Read under the view's write lock, as the projection always was: the installed
-                // view is never older than the records it replaces.
-                let mut decided = crate::election::Incumbency::default();
-                let t = records
-                    .install_projected(&topology, || {
-                        decided = incumbency_of(&view_book, &records);
-                        project_decided(&view_fabric, &view_fabric_id, view_provider, &view_book, &records, &decided)
-                    })
-                    .await;
-                // The accepted Build is the authority on which meshes the fabric has: the book
-                // takes no old aggregate of a mesh it does not name, and a mesh it does not name
-                // that has no member left keeps no recorded id (a name added again is a new mesh).
-                if let Some(b) = accepted.current(&*adapter).await {
-                    membership.book.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
-                    records.meshes.lock().unwrap().retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
+                let shutdown_control = Arc::new(crate::shutdown::ShutdownControl::open(fabric_storage.clone(), name.to_string()).await.map_err(|e| e.to_string())?);
+                let mut tasks_early: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+                // When the fabric seat moves to another holder, this admin, if it is a mesh primary, pulls
+                // rafka-time once from the new fabric-primary.
+                tasks_early.push(park_gate.spawn(crate::rafka_time::run_seat_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), membership.clone())));
+                // The seat records this admin held before it stopped (`fabric.storage`): it enters knowing who
+                // held the seats, and every record it hears from here on is written as its own row.
+                for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
+                    membership.seats().take(row.seat, &row.holder);
                 }
-                // Cut off, or within one silence window of healing, its view
-                // authorizes nothing: it publishes as no primary.
-                let live = membership.authorizes();
-                let mesh_primary = live && t.holds_mesh_seat(&mesh, &seat_node_id);
-                // The mesh's rows on the shared root follow this seat (`MeshRowsWriter`).
-                own_seat_tx.send_if_modified(|held| std::mem::replace(held, mesh_primary) != mesh_primary);
-                let fabric_primary = live && t.holds_fabric_seat(&seat_node_id);
-                backbone.set_mesh_primary(mesh_primary);
-                backbone.set_fabric_primary(fabric_primary);
-                // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
-                // new holder authors no ready on a topology reading.
-                if fabric_primary && !was_fabric_primary {
-                    let adopted = membership.fabric_status().is_some_and(|s| s.status == "degraded");
-                    records.set_adopted_degraded(adopted);
-                }
-                if fabric_primary {
-                    records.set_published_degraded(false);
-                } else {
-                    // The seat is released in one place and one order: the published `degraded` is
-                    // held before the authority records it replaces are cleared, so no projection
-                    // between the two answers ready for a fabric the holder published degraded.
-                    records.set_published_degraded(membership.fabric_status().is_some_and(|s| s.status == "degraded"));
-                    records.set_peer_recovery(None);
-                    records.set_adopted_degraded(false);
-                }
-                was_fabric_primary = fabric_primary;
-                // The fabric-primary's climb through the fabric states, one non-blocking turn per round
-                // of this loop; every other admin serves the state the holder published.
-                fabric_rounds.climb_step(crate::fabric_rounds::ClimbInputs { is_fabric_primary: fabric_primary, heard: membership.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t }).await;
-                // A seat taken is announced once, when it changes hands: the mesh primary first, then
-                // the fabric primary (R-A2).
-                for (seat, holder) in seat_announcements(&t, live, &mesh, (&seat_node_id, &seat_incarnation), &decided) {
-                    backbone.announce_seat(seat, holder).await;
-                }
-                let heard = membership.book.current(membership.book.staleness_floor());
-                let mine: Vec<MeshDigest> = backbone.own_members(&membership);
-                let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                backbone.publish(&membership, mine.clone()).await;
-                // R-NS1: as fabric primary, the publisher of record of every mesh with no primary
-                // whose births it stopped or deleted.
-                backbone.publish_for_primaryless(&membership, |m| t.cohort_primary(m, NodeKind::NodeAdmin).map(|p| p.name.to_string())).await;
-                // A status is sent when it changed, never per round (gossip.md §3.2).
-                let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                // The fabric's status as the live records state it: a round that just cleared the adopted
-                // degraded must not be answered by the older projection `t`.
-                // The fabric-primary publishes the state it holds now, not the projection's last refresh:
-                // every state the climb enters is its own frame.
-                let held_state = records.fabric_state();
-                let fabric_status = |records: &Records| {
-                    let basis = if fabric_primary { held_state.scope() } else { t.fabric.status };
-                    match basis {
-                        crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::ReadyForTraffic => {
-                            status_of(if records.adopted_degraded() || records.peer_recovery().is_some() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::ReadyForTraffic })
-                        }
-                        other => status_of(other),
-                    }
-                };
-                let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), false, false).await;
-                // A status adopted from the previous publisher is republished only when its round is
-                // complete: the planned births checked in, every mesh primary reported.
-                if announced.mesh_awaiting_round || announced.fabric_awaiting_round {
-                    let planned = match accepted.current(&*adapter).await {
-                        Some(b) => Some(crate::round::planned(&b.topology, &mesh)),
-                        None => None,
-                    };
-                    let done = rounds.step(announced, crate::round::Inputs { view: &t, planned, book: &membership.book, client: Some(&rpc_client), records: &records }).await;
-                    if done.mesh || done.fabric {
-                        announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), done.mesh, done.fabric).await;
-                    }
-                } else {
-                    rounds.end();
-                }
-                // The state just announced is the one the climb may move on from.
-                if records.set_published_fabric_state((fabric_primary && !announced.fabric_awaiting_round).then_some(held_state)) && fabric_primary {
-                    fabric_rounds.poke_climb();
-                }
-                records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_round);
-                // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
-                rounds.address_changed_mesh_primaries(&t, fabric_primary, Some(&rpc_client));
-                let addr = rafka_mesh_transport::membership::gossip_addr;
-                let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
-                builds.join_admins(admins.clone()).await;
-                backbone.join_admins(admins).await;
-                let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
-                drop(turn);
-                // The next round is due after one gossip interval, or at once when a checklist the
-                // fabric-primary waits on, or the application's answer, moved, or when the view changes
-                // what the round publishes: this admin takes or loses a seat, or its mesh's status moves
-                // (gossip.md §3.2, a material change is published at once).
-                let round_wake = backbone.round_wake(&membership, tokio::time::Instant::now() + gossip_interval());
-                tokio::pin!(round_wake);
-                loop {
-                    tokio::select! {
-                        _ = &mut round_wake => break,
-                        _ = fabric_rounds.climb_due() => break,
-                        _ = records.view_changed.notified() => {
-                            let now = topology.read().await.clone();
-                            let live = membership.authorizes();
-                            let (mp, fp) = (live && now.holds_mesh_seat(&mesh, &seat_node_id), live && now.holds_fabric_seat(&seat_node_id));
-                            let status = now.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                            if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status {
-                                break;
+                {
+                    let (seats, storage) = (membership.seats().clone(), fabric_storage.clone());
+                    let mut changed = seats.subscribe();
+                    let park = park_gate.clone();
+                    tasks_early.push(tokio::spawn(async move {
+                        let mut written: HashSet<(rafka_mesh_entity::Seat, String, u64)> = HashSet::new();
+                        loop {
+                            // Held here while the admin is parked: its own wait, outside every lock.
+                            let turn = park.turn("seat-rows").await;
+                            let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
+                            rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
+                            for row in rows {
+                                // A record a seat transfer's own row already holds is durable: nothing more is written for it.
+                                if seats.is_durable(row.seat, &row.holder) {
+                                    written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch));
+                                    continue;
+                                }
+                                if written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch)) {
+                                    if let Err(e) = storage.put_seat(&row).await {
+                                        written.remove(&(row.seat, row.holder.mesh.clone(), row.holder.epoch));
+                                        tracing::info_span!("rdm.node_admin.seat.reject.via-storage", seat = row.seat.name(), holder = %row.holder, error = %e).in_scope(|| tracing::info!("a seat record could not be written to fabric.storage"));
+                                    }
+                                }
+                            }
+                            drop(turn);
+                            if changed.changed().await.is_err() {
+                                return;
                             }
                         }
-                    }
+                    }));
                 }
-            }
-        });
-    }
-    // The projection, refreshed into the control plane's topology.
-    {
-        let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
-        let elections = ElectionLog::new(name.clone());
-        let me = name.clone();
-        let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
-        // Not spawned behind the gate: the rebuild takes the view's lock, which every handler of a
-        // parked admin reads (its start among them). It is held at its own wait instead
-        // (`view_rebuild_due`), where it holds nothing.
-        let rebuild_gate = park_gate.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut held: BTreeSet<PathName> = BTreeSet::new();
-            let mut facts = book.routing_watch();
-            let mut turn = rebuild_gate.turn("view-rebuild").await;
-            loop {
-                facts.seen();
-                let t = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
-                elections.observe(&t);
-                // A name this view held and now lacks: the exclusion is named from the same
-                // inputs at the moment it happens, not reconstructed later.
-                let now: BTreeSet<PathName> = t.members().map(|n| n.name.clone()).collect();
-                for gone in held.difference(&now) {
-                    tracing::info_span!("rdm.node_admin.topology.update.via-vanished-from-view", node = %me, name = %gone, why = %describe_absence(&book, &records, gone))
-                        .in_scope(|| tracing::info!("a name this admin's view held is excluded by the projection now"));
+                // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
+                // its entry pull or the fabric control topic.
+                let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
+                let records = Arc::new(Records::default());
+                records.set_me(node_id.clone());
+                // Only the fabric seat holder puts a pointer on the store root: the file store reads the
+                // committed fabric seat record, as the Build gate does, before any pointer can be put.
+                fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
+                // The status rows of this admin's mesh on the fabric's store root (`status/<mesh>/`): written by
+                // the mesh's seat holder, folded into what this admin applied when it takes the seat.
+                let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).map_err(storage_err)?);
+                let status_storage: Arc<dyn crate::status_storage::StatusStorage> = status_files.clone();
+                records.set_status(status_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
+                let builds = Arc::new(
+                    FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name), wiring.catch_up_seam.take())
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
+                // The Build state every consumer after hydration shares: the control routes, the executor, the
+                // pipelines and the drift check.
+                let runs = Arc::new(crate::build_run::AttemptRuns::default());
+                let builds_dyn: Arc<dyn BuildStateAdapter> = Arc::new(crate::build_run::FramedBuilds::new(crate::wiring::apply(wiring.builds.take(), builds.clone()), runs.clone()));
+                {
+                    let b = builds.clone();
+                    shutdown_control.set_publish(Arc::new(move |sd| {
+                        let b = b.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = b.publish_shutdown(&sd).await {
+                                tracing::info!(error = %e, "broadcasting the fabric shutdown failed");
+                            }
+                        });
+                    }));
                 }
-                held = now;
-                // The router serves once the Status authority is filled and the view it decides
-                // from holds this admin.
-                if authority.get().is_some() && held.contains(&me) {
-                    rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-                drop(turn);
-                turn = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
-            }
-        }));
-    }
-    // The peer-mesh investigation (`crate::investigate`): while this admin is the fabric primary,
-    // a peer mesh it stops hearing on the backbone is probed through its own members and reborn
-    // only when one of them cannot reach its own node-admin. Its decision is what releases the
-    // drift check below to replace that mesh's node-admins.
-    let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::configured())));
-    {
-        // The R-D1 fence as the Build door and the drive read it: t from this admin's last direct
-        // backbone receipt of the mesh, whether or not the ladder has stepped the mesh yet.
-        let (ladder, book) = (ladder.clone(), book.clone());
-        let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now()))));
-    }
-    {
-        let held = connections.held();
-        let watch = crate::investigate::Watch {
-            gate: park_gate.clone(),
-            me: name.clone(),
-            me_id: node_id.clone(),
-            round: rafka_mesh_transport::membership::backbone_gossip_interval(),
-            membership: membership.clone(),
-            topology: control.topology.clone(),
-            records: records.clone(),
-            settled: { let (accepted, builds) = (accepted.clone(), builds_dyn.clone()); Arc::new(move || { let (accepted, builds) = (accepted.clone(), builds.clone()); Box::pin(async move { accepted.current(&*builds).await.is_some_and(|b| !matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running)) }) }) },
-            client: node_rpc.client.clone(),
-            connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rafka_mesh_entity::connections::ConnectionState::Connected)),
-            ladder: ladder.clone(),
-            carriers: Mutex::new(BTreeMap::new()),
-        };
-        // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
-        tasks.push(tokio::spawn(crate::investigate::run(watch)));
-    }
-    let executor;
-    // The reconcile loop: the drift check, and the fabric-primary's drive of every active Build
-    // (`build_drive`). Only the fabric-primary drives; an executor runs what it is called with
-    // (`build_run`) and picks nothing up from its projection. A launched admin starts it only after
-    // its entry pull, so its first view is its launcher's.
-    {
-        let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
-        let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
-        let (me, me_id, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), node_id.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
-        let drift_admission = control.admission.clone();
-        let (drives, drive_env) = (drives.clone(), drive_env.clone());
-        let frozen = shutdown_control.clone();
-        let drift_time = rafka_time.clone();
-        let drift_nodes = nodes_storage.clone();
-        let ladder = ladder.clone();
-        let park = park_gate.clone();
-        executor = tokio::spawn(async move {
-            let mut started = HashSet::new();
-            let mut held = HashSet::new();
-            loop {
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("executor").await;
-                // A fabric shutdown freezes reconciliation: no Build attempt, no drift recovery, no
-                // rebirth from here on (fabric-mesh-lifecycle.md §11.1).
-                if frozen.held().is_some() {
-                    return;
-                }
-                // Decide on, and plan from, the view as it is now: a cached view
-                // can predate the members that make another admin primary.
-                let now = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
-                // Every Build whose next operation this admin executes; none
-                // while it is cut off or within one silence window of healing
-                // (its view then authorizes nothing). The fabric authority first
-                // starts a reconciliation Build for proven drift.
-                if cut_off_view.authorizes() {
-                    let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
-                    // The proofs the pass just took are in the view the attempt is planned from: a birth
-                    // proven exited is not live there, and holds no seat.
-                    if opened.is_some() {
-                        records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
-                    }
-                    if now.holds_fabric_seat(&me_id) {
-                        crate::build_op::ensure_active(&drives, &drive_env).await;
-                    }
-                }
-                drop(turn);
-                tokio::select! {
-                    _ = submitted.notified() => {}
-                    _ = tokio::time::sleep(Duration::from_millis(300)) => {}
-                }
-            }
-        });
-    }
-    // The stopped-node garbage collector (fabric-node-lifecycle.md §6.9): a sweep every ttl, by the
-    // fabric-primary only, while its view authorizes and no fabric shutdown froze reconciliation.
-    // A blank ttl runs no sweep. The sweep submits one ordinary node.delete Build and deletes nothing.
-    if let Some(ttl) = cfg.stopped_node_ttl {
-        let (control, frozen, cut_off_view) = (control.clone(), shutdown_control.clone(), membership.clone());
-        let park = park_gate.clone();
-        tasks.push(tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(ttl).await;
-                // Held here while the admin is parked: its own wait, outside every lock.
-                let turn = park.turn("stopped-sweep").await;
-                if frozen.held().is_some() {
-                    return;
-                }
-                if cut_off_view.authorizes() {
-                    let swept = control.sweep_stopped(Some(ttl)).await;
-                    tracing::debug!(?swept, "stopped-node sweep");
-                }
-                drop(turn);
-            }
-        }));
-    }
-    // A fabric shutdown: freeze (the executor stops, this admin says Draining), then this admin's
-    // part of the drain. The fabric-primary stops itself last by waking the shutdown route.
-    {
-        let (abort, digest_w, membership_w, me, me_id, records_w, runs_w) = (executor.abort_handle(), digest.clone(), membership.clone(), name.clone(), node_id.clone(), records.clone(), runs.clone());
-        let (seen, drain_control) = (shutdown_control.subscribe(), shutdown_control.clone());
-        let stopper: Arc<dyn crate::shutdown::Stopper> = Arc::new(AdminStopper { runner: runner.clone(), topology: control.topology.clone() });
-        let done = control.shutdown.clone();
-        let _ = control.fabric_shutdown.set(Arc::new(crate::http::ShutdownSeat {
-            control: shutdown_control.clone(),
-            me: name.clone(),
-            node_id: node_id.clone(),
-        }));
-        let park = park_gate.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut seen = seen;
-            while seen.borrow_and_update().is_none() {
-                if seen.changed().await.is_err() {
-                    return;
-                }
-            }
-            // Held here while the admin is parked: its own wait, outside every lock.
-            let turn = park.turn("shutdown-drain").await;
-            // The seats stay as they were before any admin drained (FML-26): held before this
-            // admin says Draining, so no view of its own moves them.
-            records_w.hold_seats();
-            abort.abort();
-            runs_w.abort_all();
-            let d = {
-                let mut d = digest_w.lock().unwrap();
-                d.status = MemberStatus::Draining;
-                d.clone()
-            };
-            let _ = membership_w.publish(&d).await;
-            tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me)
-                .in_scope(|| tracing::info!("reconciliation frozen; Draining"));
-            drop(turn);
-            if crate::shutdown::drain(me, me_id, drain_control, stopper).await {
-                done.notify_waiters();
-            }
-        }));
-    }
-    let app = router(control.clone(), axum::Router::new());
-    tasks.push(park_gate.spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::info!(error = %e, "control API stopped");
-        }
-    }));
-    let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs") })
+
+                // Fabric policy and the first view. The bootstrap admin takes its policy
+                // from MESH_SPAWN_TYPE. A launched admin takes its entry from the admin
+                // that launched it (its first seed) over QUIC: that admin's topology
+                // projection and the membership it is projected from, recorded as heard,
+                // so this admin's first view is its launcher's; the fabric record carries
+                // the policy. Without that answer it cannot know the policy, and it
+                // refuses to start by name.
+                let entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>> = Arc::default();
+                let _ = build_facts_slot.set(Arc::new(crate::build_facts_read::BuildFactsDoor { me: name.clone(), builds: builds_dyn.clone(), accepted: accepted.clone(), floor: entry_floor.clone() }));
+                // The topology this admin enters its mesh from, and where it came from.
+                let mut entry_map: Option<(&'static str, Vec<crate::reenter::MapNode>)> = None;
+                // The ids the maker stored for meshes it holds no snapshot of: a mesh keeps its id through a
+                // recovery, and an admin that deploys that mesh's births launches them with it.
+                let mut stored_mesh_ids: Vec<(String, MeshId)> = Vec::new();
+                let channel = membership.clone();
+                let installed: crate::workflows::node_start::InstalledSeam<String> = Box::new(
+                    move |read: Option<(tracing::Span, crate::topology_read::TopologyRead)>, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(crate::workflows::node_start::HookParts, crate::workflows::node_start::AfterHook<String>), String>> {
+                        Box::pin(async move {
+                            let policy = match (read, joined) {
+                                (Some((topology_step, read)), Some(answer)) => {
+                                    // When the own mesh already has nodes, this admin is entering an existing mesh
+                                    // (recovery); a mesh's first birth finds none.
+                                    // A maker that holds no snapshot of this mesh answers from its stored map: births to
+                                    // reach a local node with, never installed (the node's own topology is read next).
+                                    let mut map = crate::reenter::map_of_read(&read, &cfg.fabric_id);
+                                    map.extend(crate::reenter::map_of_stored(&read));
+                                    stored_mesh_ids = read.stored.iter().filter_map(|m| m.mesh_id.clone().map(|id| (m.mesh.clone(), id))).collect();
+                                    entry_map = Some(("maker", map));
+                                    let mut mesh_peers = Vec::new();
+                                    let mut admins = Vec::new();
+                                    for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == cfg.fabric_id && d.node.name != name) {
+                                        if let Some(a) = rafka_mesh_transport::membership::gossip_addr(d) {
+                                            if d.node.name.mesh == cfg.mesh {
+                                                mesh_peers.push(a.clone());
+                                            }
+                                            if d.node.name.kind == NodeKind::NodeAdmin {
+                                                admins.push(a);
+                                            }
+                                        }
+                                    }
+                                    membership.learn_statuses(&answer.statuses);
+                                    let _ = membership.join_peers(mesh_peers).await;
+                                    backbone.join_admins(admins).await;
+                                    drop(topology_step);
+                                    // Hydrate `Fabric.build_id` from the launching admin; without it this admin stays
+                                    // Pending (the Ready gate below). The Build it names arrives on the Build topic, or is
+                                    // fetched from a node-admin that holds it (`FetchBuildFacts`, the Ready check).
+                                    take_entry_control(&answer, &accepted, &*builds, &entry_floor).await;
+                                    // A fabric shutdown in force: this admin comes up frozen.
+                                    if let Some(sd) = answer.control.shutdown.clone() {
+                                        shutdown_control.learn(sd, "hydration", &answer.served_by).await.map_err(|e| e.to_string())?;
+                                    }
+                                    tracing::info_span!("rdm.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
+                                        .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
+                                    FabricPolicy { provider: answer.control.provider }
+                                }
+                                _ => {
+                                    // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
+                                    // own mesh with one node-admin, and points `Fabric.build_id` at it (Build first).
+                                    if restart.is_some() {
+                                        let build_id = accepted.build_id().await.map(|b| b.0).unwrap_or_default();
+                                        tracing::info_span!("rdm.node_admin.fabric.update.via-restart", node = %name, build_id = %build_id)
+                                            .in_scope(|| tracing::info!("Fabric.build_id and its Build reloaded from this admin's own storage"));
+                                    } else if cfg.fabric_primary {
+                                        tracing::info_span!("rdm.node_admin.fabric.update.via-recovery", node = %name, fabric_id = %cfg.fabric_id, mesh_id = %mesh_id)
+                                            .in_scope(|| tracing::info!("a fabric recovery accepts no Build of its own: Fabric.build_id and its Build are taken from the nodes it reaches"));
+                                    } else if accepted.build_id().await.is_none() {
+                                        let b0 = crate::build_state::BuildAccepted {
+                                            build_id: crate::build::BuildId::mint(),
+                                            topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh),
+                                            submitted_change: None,
+                                            submitted_at_ms: rafka_time.now_ms(),
+                                        };
+                                        attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
+                                        builds.publish_accepted(&b0).await.map_err(|e| e.to_string())?;
+                                        accepted.point(&b0.build_id, b0.submitted_at_ms, "day-0").await.map_err(|e| e.to_string())?;
+                                    }
+                                    FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
+                                }
+                            };
+
+                            if restart.is_some() && cfg.launch.is_none() {
+                                // A fabric primary reborn into its mesh has no maker: its durable map is the topology.
+                                let mut rows = nodes_storage.contacts().await.map_err(storage_err)?;
+                                rows.retain(|r| r.node_id != node_id);
+                                if let Ok(map) = crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&rows)).await {
+                                    entry_map = Some(("durable-map", map));
+                                }
+                            }
+                            let entering_existing_mesh = entry_map.as_ref().is_some_and(|(_, m)| m.iter().any(|n| n.name.mesh == cfg.mesh && n.node_id != node_id));
+
+                            if let Some(b) = &cfg.bindings {
+                                b.check_image(provider_image(policy.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
+                            }
+
+                            // A restart that enters its mesh from its durable map elects nobody until its entry read has
+                            // told it who holds the seats.
+                            records.set_entering(entering_existing_mesh && cfg.launch.is_none());
+                            let _ = records.contacts.set(nodes_storage.clone());
+                            // A fabric primary reborn from its data dir holds its durable topology as its map (rule 5):
+                            // every birth the accepted Build names that nodes.storage heard is in its view as not yet
+                            // reached, until membership or the sweep says more. Its view is never an empty one that plans
+                            // a create for every member.
+                            if restart.is_some() && cfg.launch.is_none() {
+                                let desired = accepted.current(&*builds_dyn).await.map(|b| b.topology);
+                                for r in nodes_storage.contacts().await.map_err(storage_err)? {
+                                    if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
+                                        let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None };
+                                        records.publish(m.as_node(NodeStatus::PendingReconnect, policy.provider));
+                                    }
+                                }
+                            }
+                            // A birth starts from its maker's topology: every settled node the maker's projection holds is
+                            // in this admin's view as the maker knew it, until membership or the sweep says more. A fabric
+                            // primary this admin becomes then never plans from an empty view.
+                            if let Some(("maker", map)) = entry_map.as_ref().map(|(src, m)| (*src, m)) {
+                                for n in map.iter().filter(|n| n.node_id != node_id && n.settled) {
+                                    records.publish(n.as_node(if n.ready { NodeStatus::ReadyForTraffic } else { NodeStatus::PendingReconnect }, policy.provider));
+                                }
+                            }
+                            // The meshes the accepted Build names keep the ids this admin stored for them.
+                            if let Some(named) = accepted.current(&*builds_dyn).await.map(|b| b.topology) {
+                                for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| named.meshes.contains_key(&m.name)) {
+                                    records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
+                                }
+                            }
+                            // The maker's stored ids are its meshes' rows on the shared root, written by each mesh's
+                            // primary: held in memory here, never written again by this admin.
+                            for (mesh, id) in stored_mesh_ids {
+                                records.meshes.lock().unwrap().entry(mesh).or_insert(id);
+                            }
+                            records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
+                            let book = membership.book.clone();
+                            let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
+                            let control = Arc::new(
+                                ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()),
+                            );
+                            // The claim door: this admin decides a claim only while it holds the fabric-primary seat.
+                            let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), node_id: node_id.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });
+                            let _ = claim_slot.set(claim_door.clone());
+                            {
+                                let (book, records) = (book.clone(), records.clone());
+                                let _ = control.absence.set(Arc::new(move |name: &PathName| describe_absence(&book, &records, name)));
+                            }
+                            {
+                                let (book, records, fabric, fabric_id, provider) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
+                                let _ = control.view_now.set(Arc::new(move || project(&fabric, &fabric_id, provider, &book, &records)));
+                            }
+                            let _ = control.connections.set(connections.held());
+                            {
+                                let book = book.clone();
+                                let _ = control.loads.set(Arc::new(move || book.current(book.staleness_floor()).into_iter().filter(|d| d.load.is_some() || d.gossip.is_some()).map(|d| (d.node.node_id.to_string(), (d.load, d.gossip))).collect()));
+                            }
+                            // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
+                            // digest exists, below.
+                            let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
+                            // Where this admin's own `hydrate_before_ready` stands: written by its start (and a rejoin's),
+                            // read by the Ready check and by a probe naming this admin.
+                            let hydration_cell: crate::status_rpc::Hydrating = Arc::default();
+                            // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
+                            let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
+                            // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
+                            let rename: crate::status_rpc::Rename = Arc::new(std::sync::OnceLock::new());
+                            let commands = Arc::new(crate::node_commands::CommandBook::default());
+                            let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
+                            let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
+                            let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
+                            let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
+                            let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone())));
+                            {
+                                let records_for_ids = records.clone();
+                                let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
+                                    status_storage: status_storage.clone(),
+                                    nodes_storage: nodes_storage.clone(),
+                                    me: name.clone(),
+                                    node_id: node_id.clone(),
+                                    fabric_id: cfg.fabric_id.clone(),
+                                    topology: control.topology.clone(),
+                                    declared: records.declared.clone(),
+                                    mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
+                                    republish: republish.clone(),
+                                    commands: commands.clone(),
+                                    own: own_commands.clone(),
+                                    leaver: leaver.clone(),
+                                    hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                                    wake: records.wake.clone(),
+                                    rounds: rounds_slot.clone(),
+                                    configs: configs_slot.clone(),
+                                    configure: configure.clone(),
+                                    hydration: hydration_cell.clone(),
+                                    rename: rename.clone(),
+                                    row_moved: {
+                                        // The moved row enters what the view is projected from, then the view is projected.
+                                        let moved: crate::status_rpc::RowMoved = Arc::new(std::sync::OnceLock::new());
+                                        let (records, project) = (records.clone(), view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()));
+                                        let _ = moved.set(Arc::new(move |from: PathName, node_id: NodeId, incarnation: IncarnationId, to: PathName| {
+                                            records.rename_birth(&from, &node_id, &incarnation, &to);
+                                            project()
+                                        }));
+                                        moved
+                                    },
+                                }));
+                            }
+                            // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
+                            // a fabric round is owed through it.
+                            let declarer = crate::status_declare::Declarer::new();
+                            let _ = rounds_slot.set(crate::fabric_rounds::FabricRounds::new(crate::fabric_rounds::RoundEnv {
+                                me: name.clone(),
+                                node_id: node_id.clone(),
+                                incarnation: incarnation.clone(),
+                                fabric_id: cfg.fabric_id.clone(),
+                                topology: control.topology.clone(),
+                                client: node_rpc.client.clone(),
+                                accepted: accepted.clone(),
+                                builds: builds_dyn.clone(),
+                                contexts: attempt_contexts.clone(),
+                                declarer: declarer.clone(),
+                                wake: records.wake.clone(),
+                                records: records.clone(),
+                                hooks: fabric_hooks,
+                                actions: round_actions.clone(),
+                            }));
+                            rounds_slot.get().expect("set above").set_gossip(backbone.clone(), membership.clone());
+
+                            // The deployment hand (used while this admin is fabric primary). A provider's host-wide
+                            // resources (a container fabric's network and labels) are keyed by the Fabric's id: a Fabric
+                            // name is not unique on a host.
+                            let prepared = match early {
+                                Some(p) => p,
+                                None => crate::deployment::prepare(policy, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?,
+                            };
+                            let mut admin_env = BTreeMap::new();
+                            admin_env.insert("RDM_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
+                            // A node-admin this admin launches honors the same explicit bindings: its own launches and
+                            // restarts run the bound executables too.
+                            admin_env.extend(cfg.bindings_env.clone());
+                            let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
+                            let template = LaunchTemplate {
+                                fabric: cfg.fabric.clone(),
+                                fabric_id: cfg.fabric_id.clone(),
+                                executable: PathBuf::new(),
+                                // The address this admin's mesh endpoint is bound on: where every birth it launches reaches
+                                // it (loopback for a process fabric, the gateway or its own container address for a
+                                // container fabric).
+                                seeds: vec![(key.public().to_string(), mesh_addr)],
+                                launcher: rafka_mesh_entity::launch::Launcher { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
+                                env: cfg.passthrough.clone(),
+                                data_root,
+                                store_dir: cfg.store_dir.clone(),
+                                mesh_issuer: None,
+                            };
+                            let mut registry = HookRegistry::new();
+                            for (spec, hook) in wiring.hooks.drain(..) {
+                                registry = registry.register(spec, hook);
+                            }
+                            let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
+                            let provider_dyn: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), prepared.provider.clone());
+                            let handover = Arc::new(crate::fabric_handover::HandoverDoor {
+                                fabric: cfg.fabric.clone(),
+                                me: name.clone(),
+                                node_id: node_id.clone(),
+                                incarnation: incarnation.clone(),
+                                topology: control.topology.clone(),
+                                membership: membership.clone(),
+                                backbone: backbone.clone(),
+                                storage: fabric_storage.clone(),
+                                client: node_rpc.client.clone(),
+                                book: book.clone(),
+                                records: records.clone(),
+                                contacts: crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) },
+                                handovers: Default::default(),
+                                decisions: builds.decisions(),
+                                claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
+                                project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
+                                cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
+                            });
+                            handover.restore().await?;
+                            let _ = handover_slot.set(handover.clone());
+                            let runner = Arc::new(AdminRunner {
+                                status_storage: status_storage.clone(),
+                                provider: provider_dyn.clone(),
+                                joins: joins.clone(),
+                                observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone(), handover: handover_slot.clone() }),
+                                records: records.clone(),
+                                builds: builds_dyn.clone(),
+                                local: journal.clone(),
+                                template,
+                                admin_env,
+                                bin_dir: cfg.bin_dir.clone(),
+                                bindings: cfg.bindings.clone(),
+                                lifecycle: LifecycleTransitionPipeline::new(hooks, Arc::new(MemoryReceiptLog::default())),
+                                handles: Mutex::new(HashMap::new()),
+                                topology: control.topology.clone(),
+                                fabric: cfg.fabric.clone(),
+                                fabric_id: cfg.fabric_id.clone(),
+                                fabric_provider: policy.provider,
+                                book: book.clone(),
+                                me: name.clone(),
+                                node_id: node_id.clone(),
+                                endpoint: Some(endpoint.clone()),
+                                node_rpc: Some(node_rpc.clone()),
+                                lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone() })),
+                                leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
+                                leave_runs: crate::mesh_leave::LeaveRuns::default(),
+                                handover: handover.clone(),
+                                issuer: issuer.clone(),
+                            });
+                            let _ = leaver.set(Arc::new(LeaveDoor { runner: runner.clone() }));
+                            // The Build family on `0x20`: the executor's door for `build.attempt.run` and the fabric-primary's
+                            // drive of every Build. The same admin holds both; which one a call reaches depends on the seat.
+                            let drives = Arc::new(crate::build_drive::Drives::default());
+                            let drive_env = {
+                                let exec = Arc::new(BuildExecutor { executor: name.to_string(), builds: builds_dyn.clone(), topology: control.topology.clone(), runner: runner.clone() });
+                                let run_door = Arc::new(crate::build_run::RunDoor {
+                                    me: name.clone(),
+                                    builds: builds_dyn.clone(),
+                                    exec,
+                                    runs: runs.clone(),
+                                    local: journal.clone(),
+                                });
+                                let env = Arc::new(crate::build_drive::DriveEnv {
+                                    me: name.clone(),
+                                    topology: control.topology.clone(),
+                                    accepted: accepted.clone(),
+                                    builds: builds_dyn.clone(),
+                                    door: claim_door.clone(),
+                                    dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
+                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone(), control: control.clone() }),
+                                    departure: Arc::new(ProviderDeparture {
+                                        me: name.clone(),
+                                        topology: control.topology.clone(),
+                                        refresh: {
+                                            let (topology, records, book, fabric, fabric_id, provider) = (control.topology.clone(), records.clone(), book.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
+                                            Arc::new(move || {
+                                                let (topology, records, book, fabric, fabric_id) = (topology.clone(), records.clone(), book.clone(), fabric.clone(), fabric_id.clone());
+                                                Box::pin(async move {
+                                                    records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                                                })
+                                            })
+                                        },
+                                        book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
+                                    verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
+                                    rows: {
+                                        let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
+                                        records.set_rows(rows.clone());
+                                        rows
+                                    },
+                                });
+                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone() }));
+                                env
+                            };
+
+                            // This birth's exact runtime. A launched admin takes the record its
+                            // launcher's pipeline made available; the bootstrap admin, which nobody
+                            // launched, adopts its own process (Day 0, one receipt per step). Either
+                            // way it is published with the birth.
+                            let mut adoption = None;
+                            let runtime = match launched_runtime {
+                                Some(r) => r,
+                                None => {
+                                    // In a container of this fabric's container runtime, its runtime is that container;
+                                    // a host process stays a process (it then cannot be failed over by a container admin,
+                                    // which refuses Ready by name).
+                                    let in_container = (prepared.provider.kind() == ProviderKind::Container && rafka_mesh_entity::runtime::this_container_id().is_some()).then(|| prepared.provider.control_domain());
+                                    let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).map_err(|e| e.to_string())?;
+                                    let f = a.fact().clone();
+                                    adoption = Some(a);
+                                    f
+                                }
+                            };
+                            // The identity this process records its intentional exit under (a transport that stopped).
+                            rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
+                                data_dir: cfg.data_dir.clone(),
+                                deployment_id: runtime.deployment_id.clone(),
+                                incarnation: incarnation.0.clone(),
+                            });
+                            // Own digest, published on the membership cadence.
+                            let digest = Arc::new(Mutex::new(MeshDigest {
+                                fabric_id: cfg.fabric_id.clone(),
+                                node: MeshNode {
+                                    node_id: node_id.clone(),
+                                    name: handed.as_ref().and_then(|(n, _)| n.clone()).unwrap_or_else(|| name.clone()),
+                                    endpoint_id: EndpointId(key.public().to_string()),
+                                    // The mesh endpoint as bound (a rebind may have moved it).
+                                    transport_addr: mesh_addr,
+                                    incarnation: incarnation.clone(),
+                                    supersedes,
+                                    // Day 0: PublishRuntimeFactAndCurrentRuntimeMetadata sets them.
+                                    runtime: adoption.is_none().then(|| runtime.clone()),
+                                },
+                                // Pending until it can take authority at once (the Ready gate below).
+                                status: MemberStatus::Pending,
+                                admin_api_base: Some(api_base.clone()),
+                                // Stamped by `Membership::publish`: this birth's own sequence and the composed clock.
+                                emitted_at_rafka_ms: 0,
+                                digest_seq: 0,
+                                mesh_id: Some(mesh_id.clone()),
+                                in_flight: None,
+                                config: handed.as_ref().and_then(|(_, c)| c.clone()).unwrap_or_default(),
+                                load: None,
+                                gossip: None,
+                                data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
+                            }));
+                            // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
+                            // the same logical node in the same Mesh.
+                            {
+                                let d = digest.lock().unwrap().clone();
+                                nodes_storage
+                                    .put_own(&crate::storage::NodeRecord {
+                                        node_id: node_id.clone(),
+                                        fabric_id: cfg.fabric_id.clone(),
+                                        name: name.clone(),
+                                        incarnation_id: incarnation.clone(),
+                                        endpoint_id: d.node.endpoint_id.clone(),
+                                        transport_addr: d.node.transport_addr,
+                                        listeners: vec![("control".into(), listener.local_addr().map_err(|e| e.to_string())?)],
+                                    })
+                                    .await.map_err(storage_err)?;
+                            }
+                            // nodes.storage contacts and mesh.storage: this admin's mesh's members and its Mesh row on the
+                            // fabric's shared root, written while this admin holds its mesh's primary seat (the writer
+                            // ladder; `MeshRowsWriter`), as bootstrap hints for a later restart of any node of the fabric.
+                            // A birth is written the moment the book first holds it or it changes (the book's own birth
+                            // watch, as the runtime rows are), and every member at once when the seat comes to this admin
+                            // (the view install's seat watch): a hint that waits on a timer is lost to a restart that comes
+                            // first. Nothing here is topology.
+                            let (own_seat_tx, mut own_seat) = tokio::sync::watch::channel(false);
+                            let contacts_task = {
+                                let (book, fabric_id) = (membership.book.clone(), cfg.fabric_id.clone());
+                                let mut writer = MeshRowsWriter::new(cfg.fabric_id.clone(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone());
+                                let park = park_gate.clone();
+                                tokio::spawn(async move {
+                                    let mut births = book.birth_changes();
+                                    loop {
+                                        // Held here while the admin is parked: its own wait, outside every lock.
+                                        let turn = park.turn("mesh-rows").await;
+                                        births.borrow_and_update();
+                                        let seated = *own_seat.borrow_and_update();
+                                        let held: Vec<MeshDigest> = book.all().into_iter().filter(|d| d.fabric_id == fabric_id).collect();
+                                        writer.round(&held, seated).await;
+                                        drop(turn);
+                                        tokio::select! {
+                                            changed = births.changed() => if changed.is_err() { return },
+                                            changed = own_seat.changed() => if changed.is_err() { return },
+                                        }
+                                    }
+                                })
+                            };
+                            if let Some(a) = adoption {
+                                a.publish(|f, dir| {
+                                    let mut d = digest.lock().unwrap();
+                                    d.node.runtime = Some(f.clone());
+                                    d.data_dir = Some(dir);
+                                })
+                                .map_err(|e| e.to_string())?;
+                            }
+                            let _ = entry.set(EntryState {
+                                name: name.clone(),
+                                provider: policy.provider,
+                                accepted: accepted.clone(),
+                                builds: builds_dyn.clone(),
+                                shutdown: shutdown_control.clone(),
+                                membership: membership.clone(),
+                                time: rafka_time.clone(),
+                            });
+                            // The join door: this admin verifies a node's digest against what it deployed, installs the
+                            // address for its key and answers what it holds.
+                            {
+                                let (st, resolver, m, topo) = (entry.clone(), node_rpc_resolver.clone(), membership.clone(), membership.clone());
+                                let door = Arc::new(crate::join::JoinDoor {
+                                    me: name.clone(),
+                                    joins: joins.clone(),
+                                    answer: Arc::new(move || {
+                                        let st = st.clone();
+                                        Box::pin(async move {
+                                            match st.get() {
+                                                Some(e) => e.answer().await,
+                                                None => Err("this admin holds no view yet".to_string()),
+                                            }
+                                        })
+                                    }),
+                                    install: Arc::new(move |d: &MeshDigest| {
+                                        // The same effect hearing the digest on gossip has: where the key is, and the
+                                        // live resolver's birth (which cancels every dial aimed at the key's old address).
+                                        m.learn(d.clone(), "join");
+                                        if let Ok(endpoint_id) = d.node.endpoint_id.0.parse::<iroh::PublicKey>() {
+                                            let applied = resolver.apply(
+                                                rafka_node_rpc::ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id, transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone() },
+                                                d.node.supersedes.as_ref(),
+                                            );
+                                            tracing::info!(node = %d.node.name, applied = ?applied, "the resolver holds the joined birth");
+                                        }
+                                    }),
+                                    known: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
+                                    primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
+                                    issuer: issuer.clone(),
+                                    row: Arc::new({
+                                        let rows = nodes_storage.clone();
+                                        move |name: PathName| {
+                                            let rows = rows.clone();
+                                            Box::pin(async move { rows.node_row_at(&name).await.map_err(|e| e.to_string()) })
+                                        }
+                                    }),
+                                });
+                                let _ = join_slot.set(door);
+                                // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
+                                let own = digest.clone();
+                                // For a mesh it holds no snapshot of, this admin answers from the births it stores.
+                                // The births it stores and the births its book holds now: what this admin knows of a mesh
+                                // does not wait on the contacts being written.
+                                let (contacts, meshes, held_book, held_fabric, held_me) = (nodes_storage.clone(), mesh_storage.clone(), book.clone(), cfg.fabric_id.clone(), node_id.clone());
+                                let stored: crate::topology_read::StoredSource = Arc::new(move || {
+                                    let (contacts, meshes, held_book, held_fabric, held_me) = (contacts.clone(), meshes.clone(), held_book.clone(), held_fabric.clone(), held_me.clone());
+                                    Box::pin(async move {
+                                        let rows = contacts.contacts().await.map_err(|e| e.to_string())?;
+                                        let ids = meshes.meshes().await.map_err(|e| e.to_string())?;
+                                        let mut nodes: BTreeMap<NodeId, rafka_node_rpc_contract::topology::StoredNode> = rows
+                                            .into_iter()
+                                            .map(|r| (r.node_id.clone(), rafka_node_rpc_contract::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr }))
+                                            .collect();
+                                        for d in held_births(&held_book, &held_fabric, &held_me) {
+                                            nodes.insert(
+                                                d.node.node_id.clone(),
+                                                rafka_node_rpc_contract::topology::StoredNode { node_id: d.node.node_id, name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
+                                            );
+                                        }
+                                        Ok(crate::topology_read::StoredMap {
+                                            nodes: nodes.into_values().collect(),
+                                            mesh_ids: ids.into_iter().map(|m| (m.name, m.mesh_id)).collect(),
+                                        })
+                                    })
+                                });
+                                let gone: crate::topology_read::GoneSource = {
+                                    let (book, records) = (book.clone(), records.clone());
+                                    Arc::new(move |h: &rafka_mesh_entity::SeatHolder| incumbency_of(&book, &records).lost.contains(&h.incarnation))
+                                };
+                                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone()), rafka_time.clone()).with_stored(stored).with_gone(gone)));
+                            }
+                            // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
+                            // a blind put (a successor fabric primary proves an exit from it).
+                            let runtime_rows_task = {
+                                let (book, nodes_storage, me, fabric_id) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
+                                let park = park_gate.clone();
+                                tokio::spawn(async move {
+                                    let turn = park.turn("runtime-rows").await;
+                                    let mut written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
+                                    drop(turn);
+                                    let mut births = book.birth_changes();
+                                    loop {
+                                        // Held here while the admin is parked: its own wait, outside every lock.
+                                        let turn = park.turn("runtime-rows").await;
+                                        births.borrow_and_update();
+                                        for d in book.all().into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me) {
+                                            let key = (d.node.node_id.clone(), d.node.incarnation.clone());
+                                            let Some(runtime) = d.node.runtime.clone() else { continue };
+                                            if written.contains(&key) {
+                                                continue;
+                                            }
+                                            let row = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
+                                            match nodes_storage.put_runtime(&row).await {
+                                                Ok(()) => {
+                                                    written.insert(key);
+                                                }
+                                                Err(e) => tracing::info!(node = %d.node.name, error = %e, "a heard birth's runtime could not be stored"),
+                                            }
+                                        }
+                                        drop(turn);
+                                        if births.changed().await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                })
+                            };
+                            // A birth the book shows superseded (a later incarnation of its node held, or its node
+                            // departed): the declared-state rows this admin put for it as an authority are tombstoned.
+                            let superseded_rows_task = {
+                                let (book, authority) = (membership.book.clone(), authority.clone());
+                                let park = park_gate.clone();
+                                tokio::spawn(async move {
+                                    let mut births = book.birth_changes();
+                                    loop {
+                                        // Held here while the admin is parked: its own wait, outside every lock.
+                                        let turn = park.turn("superseded-rows").await;
+                                        births.borrow_and_update();
+                                        if let Some(a) = authority.get() {
+                                            a.retire_superseded(&book).await;
+                                        }
+                                        drop(turn);
+                                        if births.changed().await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                })
+                            };
+                            let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task, superseded_rows_task];
+                            tasks.extend(tasks_early);
+                            // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
+                            // primary reborn into its mesh from its durable map): connect to a local node, read its
+                            // topology and sweep the own mesh once with a Ping. Ready waits for the sweep; every node that
+                            // did not answer is unheard, and node recovery's to prove (mesh-recovery.md step 6).
+                            let sweep_slot: Arc<std::sync::OnceLock<crate::reenter::SweepReport>> = Arc::new(std::sync::OnceLock::new());
+                            if let (true, Some((source, map))) = (entering_existing_mesh, entry_map.take()) {
+                                let ctx = crate::reenter::EntryCtx { me: name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), membership: membership.clone(), time: rafka_time.clone() };
+                                let (slot, records, provider_kind) = (sweep_slot.clone(), records.clone(), policy.provider);
+                                tasks.push(park_gate.spawn(async move {
+                                    let report = crate::reenter::enter_existing_mesh(&ctx, source, map).await;
+                                    // The entry read has told this admin what the mesh knows of its seats (or no one could).
+                                    records.set_entering(false);
+                                    // A reply proves a live exact birth: the view holds it (until membership speaks for
+                                    // it). A node that did not answer stays in the map as not yet reached.
+                                    for n in &report.reached {
+                                        records.publish(n.as_node(NodeStatus::ReadyForTraffic, provider_kind));
+                                    }
+                                    for (n, _) in &report.not_reached {
+                                        records.publish(n.as_node(NodeStatus::PendingReconnect, provider_kind));
+                                    }
+                                    // A node not reached is unheard, so the mesh-primary's tick watches it: its tickle, then
+                                    // the provider's exact exit proof, then node recovery only on proof (mesh-recovery.md step 6).
+                                    let _ = slot.set(report);
+                                }));
+                            }
+                            // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
+                            // becomes eligible for every seat) only once it can manage every birth it
+                            // holds: each live member publishes a runtime fact this admin's provider
+                            // adopts in its own control domain, and the Day-0 admin holds a Complete
+                            // receipt for every step of its own adoption. Until then it publishes
+                            // Pending.
+                            // `hydrate_before_ready` (the app's hook): `node.start` runs it after the join is accepted, the
+                            // topology installed and the mesh channel joined, in a task behind this admin's gate; the Ready
+                            // check below names its blocker. A birth with no launcher has no authority to pull from, and
+                            // says why.
+                            let hydrate_cancel = rafka_node_rpc::Retirement::new();
+                            let parts = crate::workflows::node_start::HookParts {
+                                birth: crate::app_hydration::Birth { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), fabric_id: cfg.fabric_id.clone(), mesh_id: mesh_id.clone(), kind: NodeKind::NodeAdmin },
+                                hydration: wiring.hydration.clone(),
+                                events: crate::app_hydration::Events::new(book.clone(), records.wake.hydration.clone()),
+                                cancel: hydrate_cancel.token(),
+                                state: hydration_cell.clone(),
+                                runs: crate::workflows::node_start::HookRuns::Spawned {
+                                    spawn: {
+                                        let park = park_gate.clone();
+                                        Box::new(move |hook: crate::workflows::node_start::BoxFut<()>| park.spawn(hook))
+                                    },
+                                },
+                            };
+                            let started: Box<dyn FnOnce(Option<tokio::task::JoinHandle<()>>) -> crate::workflows::node_start::BoxFut<Result<(), String>> + Send> = Box::new(move |hook: Option<tokio::task::JoinHandle<()>>| -> crate::workflows::node_start::BoxFut<Result<(), String>> {
+                                Box::pin(async move {
+                                    tasks.extend(hook);
+                                    {
+                                        let hydration_state = hydration_cell.clone();
+                                        let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), name.clone(), membership.clone());
+                                        let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
+                                        let (hydrated, hydrated_builds, hydrated_floor) = (accepted.clone(), builds_dyn.clone(), entry_floor.clone());
+                                        let mut hydrator = {
+                                            let topology = control.topology.clone();
+                                            let launcher = cfg.launch.as_ref().and_then(|l| l.launcher.clone());
+                                            let responders: crate::hydrate::Responders = Arc::new(move || {
+                                                let (topology, launcher) = (topology.clone(), launcher.clone());
+                                                Box::pin(async move {
+                                                    let t = topology.read().await;
+                                                    let mut out: Vec<crate::hydrate::Responder> = t.fabric_primary().map(|n| crate::hydrate::Responder { name: n.name.clone(), node_id: n.node_id.clone() }).into_iter().collect();
+                                                    let mut admins: Vec<&crate::model::Node> = t.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).collect();
+                                                    admins.sort_by(|a, b| a.name.cmp(&b.name));
+                                                    for n in admins {
+                                                        if !out.iter().any(|r| r.name == n.name) {
+                                                            out.push(crate::hydrate::Responder { name: n.name.clone(), node_id: n.node_id.clone() });
+                                                        }
+                                                    }
+                                                    if let Some(l) = launcher {
+                                                        if !out.iter().any(|r| r.name == l.name) {
+                                                            out.push(crate::hydrate::Responder { name: l.name.clone(), node_id: l.node_id.clone() });
+                                                        }
+                                                    }
+                                                    out
+                                                })
+                                            });
+                                            let entry: Option<crate::hydrate::EntryRepeat> = entry_retrieval.map(|(target, anchor, digest)| {
+                                                let (client, accepted, builds, floor, shutdown, rafka_time) = (node_rpc.client.clone(), accepted.clone(), builds_dyn.clone(), entry_floor.clone(), shutdown_control.clone(), rafka_time.clone());
+                                                Arc::new(move || {
+                                                    let (client, target, anchor, digest, accepted, builds, floor, shutdown, rafka_time) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), builds.clone(), floor.clone(), shutdown.clone(), rafka_time.clone());
+                                                    Box::pin(async move {
+                                                        let answer = crate::join::call_join(&client, &target, &anchor, &digest, 1).await.map_err(|e| e.to_string())?;
+                                                        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), &rafka_time, &digest.node.name.to_string(), &answer);
+                                                        take_entry_control(&answer, &accepted, &*builds, &floor).await;
+                                                        if let Some(sd) = answer.control.shutdown.clone() {
+                                                            shutdown.learn(sd, "hydration", &answer.served_by).await.map_err(|e| e.to_string())?;
+                                                        }
+                                                        Ok(())
+                                                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+                                                }) as crate::hydrate::EntryRepeat
+                                            });
+                                            crate::hydrate::Hydrator::new(name.clone(), node_rpc.client.clone(), journal.clone(), builds_dyn.clone(), accepted.clone(), responders, entry)
+                                        };
+                                        let sweep_slot_gate = sweep_slot.clone();
+                                        let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
+                                        let runtime = runtime.clone();
+                                        let boot = boot.clone();
+                                        let (records, topology, authority, mesh_name) = (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone());
+                                        let park = park_gate.clone();
+                                        tasks.push(tokio::spawn(async move {
+                                            let mut reported = None;
+                                            loop {
+                                                // Held here while the admin is parked: its own wait, outside every lock.
+                                                let turn = park.turn("ready").await;
+                                                let held: Vec<MeshDigest> = book
+                                                    .current(book.staleness_floor())
+                                                    .into_iter()
+                                                    .filter(|d| d.node.name != me && d.status != MemberStatus::Leaving)
+                                                    .collect();
+                                                let mut blocked = authority_blockers(&held, &*provider);
+                                                if let Some(dir) = &day0 {
+                                                    blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
+                                                }
+                                                if entering_existing_mesh && sweep_slot_gate.get().is_none() {
+                                                    blocked.push(format!("{me}: the own-mesh sweep on entering the mesh has not finished"));
+                                                }
+                                                // The app's hook: Ready waits on it, and its blocker is named here with the others.
+                                                blocked.extend(hydration_state.lock().unwrap().as_ref().and_then(|h| h.state().blocker(&me)));
+                                                let floor = hydrated_floor.lock().unwrap().clone();
+                                                let hydration = hydration_blocker(&me, &hydrated, &*hydrated_builds, floor).await;
+                                                hydrator.tick(hydration.as_ref()).await;
+                                                blocked.extend(hydration.map(|b| b.to_string()));
+                                                // A mesh is Pending until its authority says so (e4.s11): a mesh's first admin holds
+                                                // its own Ready until the fabric primary applied MeshStatus::Pending at it; the Day-0
+                                                // root, with no upstream authority, applies its own. An admin joining a mesh whose
+                                                // admin cohort is already live owes nothing here.
+                                                let pending_applied = records.declared.lock().unwrap().meshes.contains_key(&mesh_id);
+                                                let cohort_live = topology.read().await.cohort(&mesh_name, NodeKind::NodeAdmin).any(|n| n.name != me && n.status.is_live());
+                                                match pending_gate(&me, &mesh_name, day0.is_some(), pending_applied, cohort_live) {
+                                                    PendingGate::Clear => {}
+                                                    PendingGate::Blocked(why) => blocked.push(why),
+                                                    PendingGate::SelfApply => match authority.get() {
+                                                        Some(auth) => {
+                                                            let reply = auth.self_apply_mesh_pending(&mesh_id).await;
+                                                            if !matches!(reply, rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) {
+                                                                blocked.push(format!("{me}: its mesh's Pending is not applied (self-apply answered {reply:?})"));
+                                                            }
+                                                        }
+                                                        None => blocked.push(format!("{me}: no view yet to apply its mesh's Pending to itself")),
+                                                    },
+                                                }
+                                                if blocked.is_empty() {
+                                                    // The pointer the hydration gate above found held: the Ready span names it, so
+                                                    // "it held Fabric.build_id before Ready" is read off the Ready itself.
+                                                    let held_pointer = hydrated.build_id().await.map(|b| b.0).unwrap_or_default();
+                                                    let mut d = digest.lock().unwrap();
+                                                    if d.status != MemberStatus::Pending {
+                                                        break;
+                                                    }
+                                                    d.status = MemberStatus::ReadyForTraffic;
+                                                    drop(d);
+                                                    records.wake.poke();
+                                                    tracing::info_span!(
+                                                        parent: &boot,
+                                                        "rdm.mesh.node.update.via-ready",
+                                                        node = %me,
+                                                        incarnation_id = %incarnation.0,
+                                                        meshes = membership.meshes_held(),
+                                                        node_id = %node_id,
+                                                        mesh_id = %mesh_id,
+                                                        fabric_id = %fabric_id,
+                                                        id_format = rafka_mesh_entity::ID_FORMAT,
+                                                        deployment_id = %runtime.deployment_id,
+                                                        provider = runtime.provider.as_str(),
+                                                        provider_control_domain_fingerprint = %runtime.domain_fingerprint(),
+                                                        runtime_locator_kind = runtime.locator.kind(),
+                                                        runtime_locator_fingerprint = %runtime.locator_fingerprint(),
+                                                        source = "self-published-membership",
+                                                        runtime_facts_held = held.len(),
+                                                        build_id = %held_pointer,
+                                                    )
+                                                    .in_scope(|| tracing::info!("ready for traffic: every held birth's runtime is adoptable"));
+                                                    break;
+                                                }
+                                                if reported.as_ref() != Some(&blocked) {
+                                                    tracing::info_span!("rdm.node_admin.runtime.reject.via-not-authority-capable", node = %me, blocked = blocked.len(), detail = %blocked.join("; "))
+                                                        .in_scope(|| tracing::info!("not ready: a held birth's runtime cannot be managed from here"));
+                                                    reported = Some(blocked);
+                                                }
+                                                drop(turn);
+                                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                            }
+                                        }));
+                                    }
+                                    {
+                                        let (membership, digest) = (membership.clone(), digest.clone());
+                                        let _ = republish.set(Arc::new(move || {
+                                            let (membership, digest) = (membership.clone(), digest.clone());
+                                            Box::pin(async move {
+                                                let peers: Vec<EndpointAddr> = membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
+                                                let _ = membership.join_peers(peers).await;
+                                                let d = digest.lock().unwrap().clone();
+                                                let _ = membership.publish(&d).await;
+                                            })
+                                        }));
+                                    }
+                                    {
+                                        // The config is held on this admin's own digest and by its membership, so every publish and
+                                        // every read of its own digest carries it.
+                                        let (membership, digest) = (membership.clone(), digest.clone());
+                                        let _ = configure.set(Arc::new(move |config: BTreeMap<String, String>| {
+                                            let (membership, digest) = (membership.clone(), digest.clone());
+                                            Box::pin(async move {
+                                                membership.set_config(config.clone());
+                                                let d = {
+                                                    let mut d = digest.lock().unwrap();
+                                                    d.config = config;
+                                                    d.clone()
+                                                };
+                                                let _ = membership.publish(&d).await;
+                                            })
+                                        }));
+                                    }
+                                    {
+                                        // The name is held on this admin's own digest and by its membership, taken only while it
+                                        // holds no connection (R-CR1); a stopped admin holds it and publishes nothing.
+                                        let (membership, digest, connections) = (membership.clone(), digest.clone(), connections.clone());
+                                        let _ = rename.set(Arc::new(move |asked: PathName| {
+                                            let (membership, digest, connections) = (membership.clone(), digest.clone(), connections.clone());
+                                            Box::pin(async move {
+                                                let held = digest.lock().unwrap().node.name.clone();
+                                                let routes = connections.held_routes().await;
+                                                let decision = crate::node_name::decide(&held, &asked, &routes);
+                                                if decision == crate::node_name::NameApply::Applied {
+                                                    membership.set_name(asked.clone());
+                                                    let d = {
+                                                        let mut d = digest.lock().unwrap();
+                                                        d.node.name = asked;
+                                                        d.clone()
+                                                    };
+                                                    if !crate::node_self::parking().is_parked() {
+                                                        let _ = membership.publish(&d).await;
+                                                    }
+                                                }
+                                                (held, decision)
+                                            })
+                                        }));
+                                    }
+                                    // This admin as the subject of drain-node / stop-node from its own mesh-admin.
+                                    {
+                                        let digest_for_status = digest.clone();
+                                        let digest_now = digest.clone();
+                                        let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| {
+                                            let mut d = digest_for_status.lock().unwrap();
+                                            d.status = st;
+                                            d.clone()
+                                        });
+                                        let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
+                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
+                                        own.set_connections(connections.clone());
+                                        own.set_session(Arc::new(AdminSession {
+                                            gate: park_gate.clone(),
+                                            name: name.clone(),
+                                            node_id: node_id.clone(),
+                                            incarnation: incarnation.clone(),
+                                            fabric_id: cfg.fabric_id.clone(),
+                                            mesh_id: mesh_id.clone(),
+                                            membership: membership.clone(),
+                                            backbone: backbone.clone(),
+                                            client: node_rpc.client.clone(),
+                                            resolver: node_rpc_resolver.clone(),
+                                            server: rpc_server.clone(),
+                                            digest: digest.clone(),
+                                            rafka_time: rafka_time.clone(),
+                                            accepted: accepted.clone(),
+                                            builds: builds_dyn.clone(),
+                                            entry_floor: entry_floor.clone(),
+                                            shutdown: shutdown_control.clone(),
+                                            hydration: wiring.hydration.clone(),
+                                            addressed: records.wake.hydration.clone(),
+                                            hydration_cell: hydration_cell.clone(),
+                                            hydrating: Arc::default(),
+                                            wake: records.clone(),
+                                        }));
+                                        let _ = own_commands.set(own);
+                                    }
+                                    // A node's own `node-drained` / `node-left`, heard on this mesh's channel: this admin carries
+                                    // it onto the backbone when it holds the command (gossip.md, node-drained, node-left).
+                                    {
+                                        let (commands, backbone, rounds) = (commands.clone(), backbone.clone(), rounds_slot.get().cloned().expect("the rounds are built before the carrier"));
+                                        membership.set_completion_carrier(Arc::new(move |f: &rafka_mesh_transport::membership::Frame| {
+                                            use rafka_mesh_transport::membership::Frame;
+                                            // A fabric round check-in by an ordinary node, carried by the mesh primary holding the round.
+                                            if let Frame::StateCommitted { hook, .. } | Frame::TrafficOpened { hook, .. } = f {
+                                                let kind = if matches!(f, Frame::StateCommitted { .. }) { crate::fabric_state::RoundKind::StateCommit } else { crate::fabric_state::RoundKind::OpenTraffic };
+                                                let key = crate::fabric_state::RoundKey { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
+                                                // A node-admin author publishes on the backbone itself; only an ordinary node's check-in is carried.
+                                                let ordinary = hook.publisher.parse::<PathName>().is_ok_and(|p| p.kind != NodeKind::NodeAdmin);
+                                                if ordinary && rounds.mesh_book.is_open(&key) {
+                                                    let (backbone, f) = (backbone.clone(), f.clone());
+                                                    tokio::spawn(async move { backbone.carry_completion(f).await });
+                                                }
+                                                return;
+                                            }
+                                            let (Frame::NodeLeft { op, .. } | Frame::NodeDrained { op, .. }) = f else { return };
+                                            let key = crate::node_commands::CommandKey { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() };
+                                            if commands.is_open(&key) {
+                                                let (backbone, f) = (backbone.clone(), f.clone());
+                                                tokio::spawn(async move { backbone.carry_completion(f).await });
+                                            }
+                                        }));
+                                    }
+                                    let d = digest.clone();
+                                    let publisher = membership.publish_every(gossip_interval(), move || {
+                                        d.lock().unwrap().clone()
+                                    });
+                                    // The declarer (i143.e4.s11, R-S2): what this admin owes its authorities over `Status`, sent
+                                    // when owed and again only on an eligible event, woken by its inputs; nothing it does gates
+                                    // gossip or readiness.
+                                    {
+                                        let declarer = declarer.clone();
+                                        let (digest, topology, records, me, me_id, incarnation, client, authority) =
+                                            (digest.clone(), control.topology.clone(), records.clone(), name.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone(), authority.clone());
+                                        let park = park_gate.clone();
+                                        tasks.push(tokio::spawn(async move {
+                                            loop {
+                                                // Held here while the admin is parked: its own wait, outside every lock.
+                                                let turn = park.turn("declarer").await;
+                                                let addressed = records.wake.take_addressed();
+                                                let view = topology.read().await.clone();
+                                                let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
+                                                let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
+                                                let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
+                                                let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
+                                                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
+                                                declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
+                                                drop(turn);
+                                                // One coalesced wake from the inputs, never a timer: a poke during the round is
+                                                // the stored permit, so the next round runs at once; a burst runs one.
+                                                records.wake.woken().await;
+                                            }
+                                        }));
+                                    }
+
+                                    // The offline tickle (node-recovery.md "Detection and proof"): every admin keeps the silence
+                                    // bookkeeping; the one holding its mesh's primary seat tickles each node of its own mesh the
+                                    // topology shows PendingReconnect, half a floor after the mark: a ping (op 1), and when it
+                                    // answers the status kick (op 27); when it does not, the same kick through a live node of its
+                                    // mesh on the ViaPeer route. The node's status lands on its row in nodes.storage and in the view.
+                                    {
+                                        let (topology, records, status_storage, runner, me, me_id, mesh) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone());
+                                        let frozen = shutdown_control.clone();
+                                        // The recovery of a TRUE OFFLINE member of this mesh (node-recovery.md): the provider's
+                                        // exact-exit proof, the exit-proof row, the submit to the fabric-primary.
+                                        let recovery = RecoverySubmitter {
+                                            me: name.clone(),
+                                            topology: control.topology.clone(),
+                                            book: book.clone(),
+                                            provider: runner.provider.clone(),
+                                            nodes_storage: nodes_storage.clone(),
+                                            status_storage: status_storage.clone(),
+                                            door: build_slot.clone(),
+                                            client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
+                                        };
+                                        let park = park_gate.clone();
+                                        let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
+                                        tasks.push(tokio::spawn(async move {
+                                            // The births whose inspection or submitted recovery is in flight, and the last verdict
+                                            // named per birth. The tick never waits on either.
+                                            let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
+                                            let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
+                                            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), park.clone());
+                                            let floor = rafka_mesh_transport::membership::staleness_floor();
+                                            let mut written: WrittenSilence = HashMap::new();
+                                            loop {
+                                                // Held here while the admin is parked: its own wait, outside every lock.
+                                                let turn = park.turn("offline-tickle").await;
+                                                let view = topology.read().await.clone();
+                                                let holds_seat = view.holds_mesh_seat(&mesh, &me_id);
+                                                // Every admin watches the same set, the seat holder or not, so a successor tickles on
+                                                // the window already running; the durable rows are read each tick (one point in time).
+                                                let durable = {
+                                                    let rows = recovery.durable_rows().await;
+                                                    let planned = records.planned();
+                                                    durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
+                                                };
+                                                let watched = watched_births(&view, &me_id, &mesh, &durable);
+                                                // One reading of the clocks for the tick: each birth's mark is read from the book at it.
+                                                let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
+                                                let silent = crate::offline::silent_set(watched.values(), &recovery.book, now, now_ms, floor);
+                                                let client = runner.node_rpc.as_ref().map(|r| r.client.clone());
+                                                // The tickle: ask the exact birth to reassert itself.
+                                                // Protocol name: ProbeNodeState.
+                                                let kick_of = |n: &Node| rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState {
+                                                    node_id: n.node_id.clone(),
+                                                    incarnation: n.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
+                                                };
+                                                let own_id = me_id.clone();
+                                                let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
+                                                let report = tickle
+                                                    .tick(
+                                                        now_ms,
+                                                        holds_seat,
+                                                        silent,
+                                                        |id: &str| in_view.contains(id),
+                                                        floor.as_millis() as u64 / 2,
+                                                        floor.as_millis() as u64,
+                                                        |id| {
+                                                            let (client, node) = (client.clone(), watched.get(&id).cloned());
+                                                            async move {
+                                                                let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
+                                                                let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
+                                                                let target = rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone());
+                                                                let ping = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"tickle".to_vec() };
+                                                                let (out, _) = client.call::<rafka_node_rpc_contract::ping::Ping>(&target, &ping, &rafka_node_rpc::CallOptions::default()).await;
+                                                                if out.reply().is_none() {
+                                                                    return Err(format!("{} did not answer the ping: {}", node.name, out.name()));
+                                                                }
+                                                                // The ping answered: the status kick. The node re-publishes its presence
+                                                                // and answers its status.
+                                                                let birth = rafka_node_admin_client::ExactBirth {
+                                                                    target: target.clone(),
+                                                                    node_id: node.node_id.clone(),
+                                                                    incarnation: node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
+                                                                };
+                                                                let kick = match rafka_node_admin_client::NodeRpc::new(&client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
+                                                                    Ok(reply) => reply.name(),
+                                                                    Err(end) => end.rpc_name(),
+                                                                };
+                                                                tracing::info!(node = %node.name, kick, "status kick after an answered ping");
+                                                                Ok(())
+                                                            }
+                                                        },
+                                                        |id| {
+                                                            let (client, node) = (client.clone(), watched.get(&id).cloned());
+                                                            // Carriers from the topology: every ready member of the target's mesh
+                                                            // other than the target and this admin, whatever its kind (every node
+                                                            // serves the core Forward op).
+                                                            let carriers: Vec<Node> = view
+                                                                .members()
+                                                                .filter(|c| node.as_ref().is_some_and(|n| c.mesh == n.mesh && c.node_id != n.node_id) && c.node_id != own_id && c.status == NodeStatus::ReadyForTraffic)
+                                                                .take(crate::offline::VIA_PEER_TICKLE_FANOUT)
+                                                                .cloned()
+                                                                .collect();
+                                                            async move {
+                                                                let (Some(node), Some(client)) = (node, client) else { return crate::offline::ViaPeerVerdict::CandidatesUnreadable(format!("{id} is not in the topology, or this admin has no Node RPC client")) };
+                                                                let incarnation = node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new()));
+                                                                // Every probe names the same exact birth: one kick, by node id and incarnation.
+                                                                let kick = kick_of(&node);
+                                                                let (node, client, kick) = (&node, &client, &kick);
+                                                                let peers: Vec<_> = carriers
+                                                                    .iter()
+                                                                    .map(|c| {
+                                                                        let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
+                                                                        let probe = async move {
+                                                                            let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, kick, &rafka_node_rpc::CallOptions::default()).await;
+                                                                            out.reply().map(|r| r.value().clone())
+                                                                        };
+                                                                        (c.name.to_string(), probe)
+                                                                    })
+                                                                    .collect();
+                                                                crate::offline::via_peer_verdict(&node.node_id, &incarnation, peers).await
+                                                            }
+                                                        },
+                                                        |id| {
+                                                            // One read of iroh's local view of the node, recorded beside the event.
+                                                            let (endpoint, key) = (runner.endpoint.clone(), watched.get(&id).and_then(|n| n.endpoint_id.as_ref()).and_then(|k| k.0.parse::<iroh::PublicKey>().ok()));
+                                                            async move {
+                                                                match endpoint {
+                                                                    Some(ep) => rafka_mesh_transport::iroh_obs::observe_remote(&ep, key).await,
+                                                                    None => rafka_mesh_transport::iroh_obs::IrohObservation::unavailable(),
+                                                                }
+                                                            }
+                                                        },
+                                                    )
+                                                    .await;
+                                                // The birth's own silence row is put blind, keyed by the exact birth this admin
+                                                // holds now; no other row is read or touched. What this loop last put is held here,
+                                                // so an unchanged status is not put again.
+                                                let write = async |id: &str, status: Option<NodeStatus>, written: &mut HashMap<NodeId, (Option<crate::model::IncarnationId>, Option<NodeStatus>)>| {
+                                                    let held = topology.read().await.births().find(|n| n.node_id.as_str() == id).cloned();
+                                                    let Some(node) = held.or_else(|| watched.get(id).cloned()) else { return };
+                                                    let fact = (node.incarnation_id.clone(), status);
+                                                    if written.get(&node.node_id) == Some(&fact) {
+                                                        return;
+                                                    }
+                                                    // A refusal is spanned where it happened (`offline::put_silence_status`); the memo
+                                                    // keeps the last status that stands, and nothing below waits on this row.
+                                                    if crate::offline::put_silence_status(&*status_storage, &node, status).await.is_ok() {
+                                                        written.insert(node.node_id.clone(), fact);
+                                                    }
+                                                };
+                                                if holds_seat {
+                                                    for (id, n) in &watched {
+                                                        if n.status == NodeStatus::PendingReconnect {
+                                                            write(id, Some(NodeStatus::PendingReconnect), &mut written).await;
+                                                        }
+                                                    }
+                                                }
+                                                for id in &report.offline {
+                                                    if let Some(n) = watched.get(id) {
+                                                        if let Some(inc) = n.incarnation_id.clone() {
+                                                            records.offline.lock().unwrap().insert((n.node_id.clone(), inc));
+                                                        }
+                                                    }
+                                                    write(id, Some(NodeStatus::Dead), &mut written).await;
+                                                }
+                                                for id in &report.returned {
+                                                    write(id, None, &mut written).await;
+                                                }
+                                                retire_unwatched(&watched, &mut records.offline.lock().unwrap(), &mut verdicts.lock().unwrap(), &mut written);
+                                                // node-recovery.md: on TRUE OFFLINE the mesh primary asks the provider about the exact
+                                                // runtime of each member of its own mesh, its secondary node-admins included
+                                                // (mesh-recovery.md:8-9); Exited is the proof, and the
+                                                // recovery is submitted keyed on the exited birth. Re-evaluated every tick while the
+                                                // member stays TRUE OFFLINE, so a recovery that failed is submitted again.
+                                                {
+                                                    let offline = records.offline.lock().unwrap().clone();
+                                                    for n in recovery_due(holds_seat, frozen.held().is_some(), &mesh, &watched, &offline) {
+                                                        let Some(incarnation) = n.incarnation_id.clone() else { continue };
+                                                        let birth = (n.node_id.clone(), incarnation);
+                                                        if !in_flight.lock().unwrap().insert(birth.clone()) {
+                                                            continue;
+                                                        }
+                                                        let (recovery, n, verdicts) = (recovery.clone(), n.clone(), verdicts.clone());
+                                                        crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
+                                                            recovery.recover_if_proven(&n, &verdicts).await;
+                                                        });
+                                                    }
+                                                }
+                                                drop(turn);
+                                                cadence.next().await;
+                                            }
+                                        }));
+                                    }
+
+                                    // The seat watch (ruling R-A2): a silent seat holder is looked at, never replaced for being
+                                    // silent. A mesh primary says the fabric primary's exact birth is silent (a Concern); the birth
+                                    // answers it; an admin of its mesh looks at it, down to its exact runtime.
+                                    {
+                                        let watch = crate::seat_watch::Watch {
+                                            gate: park_gate.clone(),
+                                            me: name.clone(),
+                                            me_id: node_id.clone(),
+                                            incarnation: incarnation.clone(),
+                                            membership: membership.clone(),
+                                            backbone: backbone.clone(),
+                                            topology: control.topology.clone(),
+                                            records: records.clone(),
+                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()) },
+                                            republish: republish.clone(),
+                                            builds: builds.clone(),
+                                        };
+                                        // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
+                                        tasks.push(tokio::spawn(crate::seat_watch::run(watch)));
+                                    }
+
+                                    // The open lifecycle overlays, derived from the Build facts inside each append to this admin's
+                                    // log (its own appends and the facts it absorbs from the fabric alike), before the append
+                                    // returns: a hold opens with its pre-event's receipt and closes with its operation's `Complete`
+                                    // or its attempt's `Converged`, and no reader of the log sees that fact while the book still
+                                    // holds the hold. A successor primary publishes the same overlays from the same facts. Derived
+                                    // once over the facts held before the hierarchy's first round, then on every fact.
+                                    {
+                                        let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));
+                                        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap())));
+                                    }
+
+                                    let hierarchy;
+                                    // The hierarchy: while this admin is its mesh's primary it publishes the
+                                    // mesh's members on the backbone and forwards the other meshes onto its
+                                    // mesh channel; while it is the fabric primary it publishes the fabric's
+                                    // status. It joins the backbone through every admin it knows and its mesh
+                                    // channel through every member of its mesh it knows.
+                                    {
+                                        let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
+                                        let (view_fabric, view_fabric_id, view_provider, view_book) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone());
+                                        let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
+                                        let adapter = runner.builds.clone();
+                                        let (records, accepted, rpc_client) = (records.clone(), accepted.clone(), node_rpc.client.clone());
+                                        let fabric_rounds = rounds_slot.get().cloned().expect("the rounds are built before the hierarchy runs");
+                                        let park = park_gate.clone();
+                                        hierarchy = tokio::spawn(async move {
+                                            // The round a new primary runs before it republishes the status it adopted (`crate::round`).
+                                            let mut rounds = crate::round::RoundDriver::new(me.clone(), seat_node_id.clone());
+                                            let mut was_fabric_primary = false;
+                                            loop {
+                                                // Held here while the admin is parked: its own wait, outside every lock.
+                                                let turn = park.turn("hierarchy").await;
+                                                // The accepted Build's planned births are what a mesh's readiness is counted over.
+                                                if let Some(b) = accepted.current(&*adapter).await {
+                                                    records.set_planned(&b.topology);
+                                                }
+                                                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == rafka_mesh_transport::membership::MESH_READY_FOR_TRAFFIC)).cloned().collect());
+                                                // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
+                                                records.set_heard_dead(membership.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
+                                                    membership.book.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
+                                                });
+                                                // Decide on the view as it is now: a cached view can predate the seat record this admin holds
+                                                // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
+                                                // The seat records are read once per decision: the projection elects from them and
+                                                // the announcement below supersedes only them (`seat_announcements`).
+                                                // Read under the view's write lock, as the projection always was: the installed
+                                                // view is never older than the records it replaces.
+                                                let mut decided = crate::election::Incumbency::default();
+                                                let t = records
+                                                    .install_projected(&topology, || {
+                                                        decided = incumbency_of(&view_book, &records);
+                                                        project_decided(&view_fabric, &view_fabric_id, view_provider, &view_book, &records, &decided)
+                                                    })
+                                                    .await;
+                                                // The accepted Build is the authority on which meshes the fabric has: the book
+                                                // takes no old aggregate of a mesh it does not name, and a mesh it does not name
+                                                // that has no member left keeps no recorded id (a name added again is a new mesh).
+                                                if let Some(b) = accepted.current(&*adapter).await {
+                                                    membership.book.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
+                                                    records.meshes.lock().unwrap().retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
+                                                }
+                                                // Cut off, or within one silence window of healing, its view
+                                                // authorizes nothing: it publishes as no primary.
+                                                let live = membership.authorizes();
+                                                let mesh_primary = live && t.holds_mesh_seat(&mesh, &seat_node_id);
+                                                // The mesh's rows on the shared root follow this seat (`MeshRowsWriter`).
+                                                own_seat_tx.send_if_modified(|held| std::mem::replace(held, mesh_primary) != mesh_primary);
+                                                let fabric_primary = live && t.holds_fabric_seat(&seat_node_id);
+                                                backbone.set_mesh_primary(mesh_primary);
+                                                backbone.set_fabric_primary(fabric_primary);
+                                                // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
+                                                // new holder authors no ready on a topology reading.
+                                                if fabric_primary && !was_fabric_primary {
+                                                    let adopted = membership.fabric_status().is_some_and(|s| s.status == "degraded");
+                                                    records.set_adopted_degraded(adopted);
+                                                }
+                                                if fabric_primary {
+                                                    records.set_published_degraded(false);
+                                                } else {
+                                                    // The seat is released in one place and one order: the published `degraded` is
+                                                    // held before the authority records it replaces are cleared, so no projection
+                                                    // between the two answers ready for a fabric the holder published degraded.
+                                                    records.set_published_degraded(membership.fabric_status().is_some_and(|s| s.status == "degraded"));
+                                                    records.set_peer_recovery(None);
+                                                    records.set_adopted_degraded(false);
+                                                }
+                                                was_fabric_primary = fabric_primary;
+                                                // The fabric-primary's climb through the fabric states, one non-blocking turn per round
+                                                // of this loop; every other admin serves the state the holder published.
+                                                fabric_rounds.climb_step(crate::fabric_rounds::ClimbInputs { is_fabric_primary: fabric_primary, heard: membership.fabric_status().as_ref().map(|f| f.status.as_str()), view: &t }).await;
+                                                // A seat taken is announced once, when it changes hands: the mesh primary first, then
+                                                // the fabric primary (R-A2).
+                                                for (seat, holder) in seat_announcements(&t, live, &mesh, (&seat_node_id, &seat_incarnation), &decided) {
+                                                    backbone.announce_seat(seat, holder).await;
+                                                }
+                                                let heard = membership.book.current(membership.book.staleness_floor());
+                                                let mine: Vec<MeshDigest> = backbone.own_members(&membership);
+                                                let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                                                backbone.publish(&membership, mine.clone()).await;
+                                                // R-NS1: as fabric primary, the publisher of record of every mesh with no primary
+                                                // whose births it stopped or deleted.
+                                                backbone.publish_for_primaryless(&membership, |m| t.cohort_primary(m, NodeKind::NodeAdmin).map(|p| p.name.to_string())).await;
+                                                // A status is sent when it changed, never per round (gossip.md §3.2).
+                                                let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
+                                                // The fabric's status as the live records state it: a round that just cleared the adopted
+                                                // degraded must not be answered by the older projection `t`.
+                                                // The fabric-primary publishes the state it holds now, not the projection's last refresh:
+                                                // every state the climb enters is its own frame.
+                                                let held_state = records.fabric_state();
+                                                let fabric_status = |records: &Records| {
+                                                    let basis = if fabric_primary { held_state.scope() } else { t.fabric.status };
+                                                    match basis {
+                                                        crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::ReadyForTraffic => {
+                                                            status_of(if records.adopted_degraded() || records.peer_recovery().is_some() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::ReadyForTraffic })
+                                                        }
+                                                        other => status_of(other),
+                                                    }
+                                                };
+                                                let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), false, false).await;
+                                                // A status adopted from the previous publisher is republished only when its round is
+                                                // complete: the planned births checked in, every mesh primary reported.
+                                                if announced.mesh_awaiting_round || announced.fabric_awaiting_round {
+                                                    let planned = match accepted.current(&*adapter).await {
+                                                        Some(b) => Some(crate::round::planned(&b.topology, &mesh)),
+                                                        None => None,
+                                                    };
+                                                    let done = rounds.step(announced, crate::round::Inputs { view: &t, planned, book: &membership.book, client: Some(&rpc_client), records: &records }).await;
+                                                    if done.mesh || done.fabric {
+                                                        announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), done.mesh, done.fabric).await;
+                                                    }
+                                                } else {
+                                                    rounds.end();
+                                                }
+                                                // The state just announced is the one the climb may move on from.
+                                                if records.set_published_fabric_state((fabric_primary && !announced.fabric_awaiting_round).then_some(held_state)) && fabric_primary {
+                                                    fabric_rounds.poke_climb();
+                                                }
+                                                records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_round);
+                                                // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
+                                                rounds.address_changed_mesh_primaries(&t, fabric_primary, Some(&rpc_client));
+                                                let addr = rafka_mesh_transport::membership::gossip_addr;
+                                                let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
+                                                builds.join_admins(admins.clone()).await;
+                                                backbone.join_admins(admins).await;
+                                                let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
+                                                drop(turn);
+                                                // The next round is due after one gossip interval, or at once when a checklist the
+                                                // fabric-primary waits on, or the application's answer, moved, or when the view changes
+                                                // what the round publishes: this admin takes or loses a seat, or its mesh's status moves
+                                                // (gossip.md §3.2, a material change is published at once).
+                                                let round_wake = backbone.round_wake(&membership, tokio::time::Instant::now() + gossip_interval());
+                                                tokio::pin!(round_wake);
+                                                loop {
+                                                    tokio::select! {
+                                                        _ = &mut round_wake => break,
+                                                        _ = fabric_rounds.climb_due() => break,
+                                                        _ = records.view_changed.notified() => {
+                                                            let now = topology.read().await.clone();
+                                                            let live = membership.authorizes();
+                                                            let (mp, fp) = (live && now.holds_mesh_seat(&mesh, &seat_node_id), live && now.holds_fabric_seat(&seat_node_id));
+                                                            let status = now.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
+                                                            if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status {
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                    // The projection, refreshed into the control plane's topology.
+                                    {
+                                        let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
+                                        let elections = ElectionLog::new(name.clone());
+                                        let me = name.clone();
+                                        let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
+                                        // Not spawned behind the gate: the rebuild takes the view's lock, which every handler of a
+                                        // parked admin reads (its start among them). It is held at its own wait instead
+                                        // (`view_rebuild_due`), where it holds nothing.
+                                        let rebuild_gate = park_gate.clone();
+                                        tasks.push(tokio::spawn(async move {
+                                            let mut held: BTreeSet<PathName> = BTreeSet::new();
+                                            let mut facts = book.routing_watch();
+                                            let mut turn = rebuild_gate.turn("view-rebuild").await;
+                                            loop {
+                                                facts.seen();
+                                                let t = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                                                elections.observe(&t);
+                                                // A name this view held and now lacks: the exclusion is named from the same
+                                                // inputs at the moment it happens, not reconstructed later.
+                                                let now: BTreeSet<PathName> = t.members().map(|n| n.name.clone()).collect();
+                                                for gone in held.difference(&now) {
+                                                    tracing::info_span!("rdm.node_admin.topology.update.via-vanished-from-view", node = %me, name = %gone, why = %describe_absence(&book, &records, gone))
+                                                        .in_scope(|| tracing::info!("a name this admin's view held is excluded by the projection now"));
+                                                }
+                                                held = now;
+                                                // The router serves once the Status authority is filled and the view it decides
+                                                // from holds this admin.
+                                                if authority.get().is_some() && held.contains(&me) {
+                                                    rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                }
+                                                drop(turn);
+                                                turn = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
+                                            }
+                                        }));
+                                    }
+                                    // The peer-mesh investigation (`crate::investigate`): while this admin is the fabric primary,
+                                    // a peer mesh it stops hearing on the backbone is probed through its own members and reborn
+                                    // only when one of them cannot reach its own node-admin. Its decision is what releases the
+                                    // drift check below to replace that mesh's node-admins.
+                                    let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::configured())));
+                                    {
+                                        // The R-D1 fence as the Build door and the drive read it: t from this admin's last direct
+                                        // backbone receipt of the mesh, whether or not the ladder has stepped the mesh yet.
+                                        let (ladder, book) = (ladder.clone(), book.clone());
+                                        let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now()))));
+                                    }
+                                    {
+                                        let held = connections.held();
+                                        let watch = crate::investigate::Watch {
+                                            gate: park_gate.clone(),
+                                            me: name.clone(),
+                                            me_id: node_id.clone(),
+                                            round: rafka_mesh_transport::membership::backbone_gossip_interval(),
+                                            membership: membership.clone(),
+                                            topology: control.topology.clone(),
+                                            records: records.clone(),
+                                            settled: { let (accepted, builds) = (accepted.clone(), builds_dyn.clone()); Arc::new(move || { let (accepted, builds) = (accepted.clone(), builds.clone()); Box::pin(async move { accepted.current(&*builds).await.is_some_and(|b| !matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running)) }) }) },
+                                            client: node_rpc.client.clone(),
+                                            connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rafka_mesh_entity::connections::ConnectionState::Connected)),
+                                            ladder: ladder.clone(),
+                                            carriers: Mutex::new(BTreeMap::new()),
+                                        };
+                                        // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
+                                        tasks.push(tokio::spawn(crate::investigate::run(watch)));
+                                    }
+                                    let executor;
+                                    // The reconcile loop: the drift check, and the fabric-primary's drive of every active Build
+                                    // (`build_drive`). Only the fabric-primary drives; an executor runs what it is called with
+                                    // (`build_run`) and picks nothing up from its projection. A launched admin starts it only after
+                                    // its entry pull, so its first view is its launcher's.
+                                    {
+                                        let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
+                                        let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
+                                        let (me, me_id, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), node_id.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
+                                        let drift_admission = control.admission.clone();
+                                        let (drives, drive_env) = (drives.clone(), drive_env.clone());
+                                        let frozen = shutdown_control.clone();
+                                        let drift_time = rafka_time.clone();
+                                        let drift_nodes = nodes_storage.clone();
+                                        let ladder = ladder.clone();
+                                        let park = park_gate.clone();
+                                        executor = tokio::spawn(async move {
+                                            let mut started = HashSet::new();
+                                            let mut held = HashSet::new();
+                                            loop {
+                                                // Held here while the admin is parked: its own wait, outside every lock.
+                                                let turn = park.turn("executor").await;
+                                                // A fabric shutdown freezes reconciliation: no Build attempt, no drift recovery, no
+                                                // rebirth from here on (fabric-mesh-lifecycle.md §11.1).
+                                                if frozen.held().is_some() {
+                                                    return;
+                                                }
+                                                // Decide on, and plan from, the view as it is now: a cached view
+                                                // can predate the members that make another admin primary.
+                                                let now = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                                                // Every Build whose next operation this admin executes; none
+                                                // while it is cut off or within one silence window of healing
+                                                // (its view then authorizes nothing). The fabric authority first
+                                                // starts a reconciliation Build for proven drift.
+                                                if cut_off_view.authorizes() {
+                                                    let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+                                                    // The proofs the pass just took are in the view the attempt is planned from: a birth
+                                                    // proven exited is not live there, and holds no seat.
+                                                    if opened.is_some() {
+                                                        records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+                                                    }
+                                                    if now.holds_fabric_seat(&me_id) {
+                                                        crate::build_op::ensure_active(&drives, &drive_env).await;
+                                                    }
+                                                }
+                                                drop(turn);
+                                                tokio::select! {
+                                                    _ = submitted.notified() => {}
+                                                    _ = tokio::time::sleep(Duration::from_millis(300)) => {}
+                                                }
+                                            }
+                                        });
+                                    }
+                                    // The stopped-node garbage collector (fabric-node-lifecycle.md §6.9): a sweep every ttl, by the
+                                    // fabric-primary only, while its view authorizes and no fabric shutdown froze reconciliation.
+                                    // A blank ttl runs no sweep. The sweep submits one ordinary node.delete Build and deletes nothing.
+                                    if let Some(ttl) = cfg.stopped_node_ttl {
+                                        let (control, frozen, cut_off_view) = (control.clone(), shutdown_control.clone(), membership.clone());
+                                        let park = park_gate.clone();
+                                        tasks.push(tokio::spawn(async move {
+                                            loop {
+                                                tokio::time::sleep(ttl).await;
+                                                // Held here while the admin is parked: its own wait, outside every lock.
+                                                let turn = park.turn("stopped-sweep").await;
+                                                if frozen.held().is_some() {
+                                                    return;
+                                                }
+                                                if cut_off_view.authorizes() {
+                                                    let swept = control.sweep_stopped(Some(ttl)).await;
+                                                    tracing::debug!(?swept, "stopped-node sweep");
+                                                }
+                                                drop(turn);
+                                            }
+                                        }));
+                                    }
+                                    // A fabric shutdown: freeze (the executor stops, this admin says Draining), then this admin's
+                                    // part of the drain. The fabric-primary stops itself last by waking the shutdown route.
+                                    {
+                                        let (abort, digest_w, membership_w, me, me_id, records_w, runs_w) = (executor.abort_handle(), digest.clone(), membership.clone(), name.clone(), node_id.clone(), records.clone(), runs.clone());
+                                        let (seen, drain_control) = (shutdown_control.subscribe(), shutdown_control.clone());
+                                        let stopper: Arc<dyn crate::shutdown::Stopper> = Arc::new(AdminStopper { runner: runner.clone(), topology: control.topology.clone() });
+                                        let done = control.shutdown.clone();
+                                        let _ = control.fabric_shutdown.set(Arc::new(crate::http::ShutdownSeat {
+                                            control: shutdown_control.clone(),
+                                            me: name.clone(),
+                                            node_id: node_id.clone(),
+                                        }));
+                                        let park = park_gate.clone();
+                                        tasks.push(tokio::spawn(async move {
+                                            let mut seen = seen;
+                                            while seen.borrow_and_update().is_none() {
+                                                if seen.changed().await.is_err() {
+                                                    return;
+                                                }
+                                            }
+                                            // Held here while the admin is parked: its own wait, outside every lock.
+                                            let turn = park.turn("shutdown-drain").await;
+                                            // The seats stay as they were before any admin drained (FML-26): held before this
+                                            // admin says Draining, so no view of its own moves them.
+                                            records_w.hold_seats();
+                                            abort.abort();
+                                            runs_w.abort_all();
+                                            let d = {
+                                                let mut d = digest_w.lock().unwrap();
+                                                d.status = MemberStatus::Draining;
+                                                d.clone()
+                                            };
+                                            let _ = membership_w.publish(&d).await;
+                                            tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me)
+                                                .in_scope(|| tracing::info!("reconciliation frozen; Draining"));
+                                            drop(turn);
+                                            if crate::shutdown::drain(me, me_id, drain_control, stopper).await {
+                                                done.notify_waiters();
+                                            }
+                                        }));
+                                    }
+                                    let app = router(control.clone(), axum::Router::new());
+                                    tasks.push(park_gate.spawn(async move {
+                                        if let Err(e) = axum::serve(listener, app).await {
+                                            tracing::info!(error = %e, "control API stopped");
+                                        }
+                                    }));
+                                    let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs") });
+                                    Ok::<_, String>(())
+                                })
+                            });
+                            Ok::<_, String>((parts, crate::workflows::node_start::AfterHook::Started(started)))
+                        })
+                    },
+                );
+                Ok::<_, String>((channel, installed))
+            })
+        })
+    };
+    let mut start = crate::workflows::node_start::FirstStart {
+        starting: Some(starting),
+        joining: Some(joining),
+        resolve: Some(resolve),
+        digest: join_digest,
+        // A node-admin takes the status frames its join answered once the topology is installed.
+        statuses_before_topology: false,
+        enter: Some(enter),
+        installed: None,
+        after_hook: None,
+    };
+    crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::FirstStart).await?;
+    let running = out.lock().unwrap().take();
+    running.ok_or_else(|| "the start ended without the node-admin it brought up".to_string())
 }
 
 #[cfg(test)]

@@ -117,6 +117,22 @@ pub struct StartFailed {
     pub reason: String,
 }
 
+impl std::fmt::Display for StartFailed {
+    /// The reason: it names the node, the step's authority and what failed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for StartFailed {}
+
+/// A first start whose refusal is a string (a node-admin's) carries the step's reason.
+impl From<StartFailed> for String {
+    fn from(failed: StartFailed) -> Self {
+        failed.reason
+    }
+}
+
 /// How a process leaves its mesh when parked and joins it again when started: the part of
 /// stop and start that differs by node kind.
 #[async_trait::async_trait]
