@@ -294,6 +294,10 @@ async fn a_dialed_calls_dial_span_ends_with_the_dial_under_its_call_span_while_t
     assert_eq!(attr(&dial[0], "outcome").as_deref(), Some("connected"));
     assert_eq!(steps(&dial[0]), ["direct-addrs-replaced", "connect-returned"], "the dial's steps are its events");
     assert!(dial[0].end_time <= call[0].end_time, "the dial ended before the call that waited on it");
+    eprintln!(
+        "trace {trace}: test.caller {parent} > rdm.node_rpc.request.update.via-call {} outcome={:?} > rdm.node_rpc.connection.create.via-dial {} outcome={:?} steps={:?}; pooled={}",
+        call[0].span_context.span_id(), attr(&call[0], "outcome"), dial[0].span_context.span_id(), attr(&dial[0], "outcome"), steps(&dial[0]), c.pooled().len()
+    );
 
     // The next call reuses the pooled connection: no dial, and its call span ends too.
     let (caller, trace, _, fut) = caller_call(&c, &p, b"pooled");
