@@ -570,6 +570,12 @@ impl StatusStorage for Refusing {
     async fn put_mesh_status_of(&self, mesh: &str, row: &rafka_node_admin_core::status_storage::MeshStatusRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.inner.put_mesh_status_of(mesh, row).await
     }
+    async fn node_exit_of(&self, mesh: &str, node_id: &rafka_mesh_entity::NodeId, incarnation_id: &rafka_mesh_entity::IncarnationId) -> Result<Option<rafka_node_admin_core::status_storage::NodeExitRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_exit_of(mesh, node_id, incarnation_id).await
+    }
+    async fn put_node_exit_of(&self, mesh: &str, row: &rafka_node_admin_core::status_storage::NodeExitRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.put_node_exit_of(mesh, row).await
+    }
 }
 
 /// CONTRACT (#2805, acceptance 9): a Mesh status or Fabric event is answered `Applied` only after

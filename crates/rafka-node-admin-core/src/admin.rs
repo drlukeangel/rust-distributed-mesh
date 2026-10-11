@@ -6637,6 +6637,37 @@ mod tests {
         eprintln!("span rdm.node_admin.node.delete.via-node-row trace_id={} {:?}", deleted.trace_id, deleted.attributes);
     }
 
+    /// CONTRACT (fabric-node-lifecycle-elections.md §4.1: "Only the provider's exit proof vacates a
+    /// seat"; node-recovery.md: "Exited is the proof, recorded durably"; CLAUDE.md read rule: a read
+    /// is a point read through the store index, and node-local state that should be the durable
+    /// answer is replaced by that read, never fed from it): the election's lost set is a read of the
+    /// durable exit-proof rows. A fresh fabric-primary (its records hold nothing proven) whose store
+    /// holds the exit-proof row of mesh2's seated final primary, among mesh2's status rows, resolves
+    /// mesh2 with no primary at its first install: the exited birth is shown Dead, holds no seat, and
+    /// the fabric-primary is the writer of mesh2's node rows (mesh-leave.md step 7: acting primary of
+    /// a mesh with none left). Must NOT happen: the exited holder kept seated because no proof was
+    /// fed into this admin's memory (the proof exists only as a durable row: written by another
+    /// admin, or by this one before it restarted).
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_fresh_admin_whose_store_holds_the_final_primarys_exit_proof_resolves_its_mesh_with_no_primary() {
+        use crate::status_storage::StatusStorage;
+        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
+        let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage).await;
+        assert_eq!(view.read().await.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh2.admin.1"), "seated before any proof is read");
+        // The proof as the store holds it: mesh2's status rows, written by whoever proved the exit.
+        let status = Arc::new(crate::status_storage::MemoryStatusStorage::default());
+        let proof = crate::status_storage::NodeExitRow { node_id: last.node.node_id.clone(), name: last.node.name.clone(), incarnation_id: last.node.incarnation.clone(), exit_code: Some(0), proof: "provider".into(), observed_at_ms: 1 };
+        status.put_node_exit_of("mesh2", &proof).await.unwrap();
+        records.set_status(status.clone(), "mesh1".into(), fp.node.name.clone(), fp.node.node_id.clone());
+        let installed = records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+        let held = installed.node(&last.node.name).map(|n| (n.status, n.is_primary));
+        assert_eq!(held, Some((NodeStatus::Dead, false)), "the proven-exited holder is Dead and holds no seat");
+        assert_eq!(installed.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string()), None, "mesh2 has no primary");
+        assert!(crate::node_rows::writes_for(&installed, &fp.node.node_id, "mesh2"), "the fabric-primary writes mesh2's rows as acting primary");
+    }
+
     /// CONTRACT (R-MD1 = A, i143-rulings-2026-10-11-dev.md: "The mesh-primary commits the mesh row
     /// Dead at mesh.deleted ... At mesh-left the fabric-primary writes the final primary's row
     /// Deleted, unchanged. Its ensure-Dead operation returns AlreadyApplied if the mesh-primary wrote

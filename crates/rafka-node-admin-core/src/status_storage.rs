@@ -196,6 +196,11 @@ pub trait StatusStorage: Send + Sync {
     /// A blind put of the Mesh status fact `row` among the status rows of the mesh named `mesh`: the
     /// fabric-primary as acting primary of a leaving mesh with none left (mesh-leave.md step 7, R-MD1).
     async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError>;
+    /// The exit-proof row of the birth `(node_id, incarnation_id)` among the status rows of the mesh
+    /// named `mesh` (this store's own or another's): a point read of its key.
+    async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError>;
+    /// A blind put of the exit-proof row `row` among the status rows of the mesh named `mesh`.
+    async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError>;
 }
 
 fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {
@@ -220,6 +225,8 @@ pub struct MemoryStatusStorage {
     /// The Mesh status rows of each mesh named through the `_of` reads and puts: a store held in
     /// memory names no mesh of its own, so every named mesh keeps its own rows.
     meshes_named: Mutex<std::collections::BTreeMap<String, Vec<MeshStatusRow>>>,
+    /// The exit-proof rows of each mesh named through the `_of` reads and puts, by row key.
+    exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
 }
 
 #[async_trait]
@@ -283,6 +290,13 @@ impl StatusStorage for MemoryStatusStorage {
         }
         Ok(())
     }
+    async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+        Ok(self.exits_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&NodeExitRow::key_of(node_id, incarnation_id)).cloned()))
+    }
+    async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
+        self.exits_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
 }
 
 const MESH_STATUS_FORMAT: &str = "mesh-status/1";
@@ -307,8 +321,9 @@ pub struct FileStatusStorage {
     mesh: String,
     root: crate::store_root::StoreRoot,
     writer: IncarnationId,
-    /// Every other mesh's Mesh status rows this admin has read or written, opened on first use.
-    others: Mutex<std::collections::BTreeMap<String, std::sync::Arc<FileRecords>>>,
+    /// Every other mesh's status rows this admin has read or written (`meshes`, `exits`), by mesh
+    /// and directory, opened on first use.
+    others: Mutex<std::collections::BTreeMap<(String, &'static str), std::sync::Arc<FileRecords>>>,
     /// Set when the fabric-primary seat this admin held moved (a seat transfer's cut-off): every
     /// other mesh's status rows, those opened later included, refuse writes naming it.
     others_cut_off: Mutex<Option<String>>,
@@ -339,15 +354,16 @@ impl FileStatusStorage {
         [&self.meshes, &self.fabric, &self.declared, &self.silence, &self.exits]
     }
 
-    /// The Mesh status rows of `mesh` on the shared root: this store's own, or another mesh's opened
+    /// The `dir` status rows (`meshes`, `exits`) of another mesh `mesh` on the shared root, opened
     /// outside the lock and kept once under it (the cut-off read under the same lock).
-    async fn meshes_of(&self, mesh: &str) -> Result<std::sync::Arc<FileRecords>, StorageError> {
-        if let Some(m) = self.others.lock().unwrap_or_else(|e| e.into_inner()).get(mesh) {
+    async fn other(&self, mesh: &str, dir: &'static str) -> Result<std::sync::Arc<FileRecords>, StorageError> {
+        let key = (mesh.to_string(), dir);
+        if let Some(m) = self.others.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
             return Ok(m.clone());
         }
-        let opened = std::sync::Arc::new(FileRecords::open(&self.root.status(mesh), "meshes", &self.writer).await?);
+        let opened = std::sync::Arc::new(FileRecords::open(&self.root.status(mesh), dir, &self.writer).await?);
         let mut others = self.others.lock().unwrap_or_else(|e| e.into_inner());
-        let m = others.entry(mesh.to_string()).or_insert(opened).clone();
+        let m = others.entry(key).or_insert(opened).clone();
         if let Some(reason) = self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             m.cut_off(reason);
         }
@@ -418,13 +434,25 @@ impl StatusStorage for FileStatusStorage {
         if mesh == self.mesh {
             return self.meshes.holds(&row.key()).await;
         }
-        self.meshes_of(mesh).await?.holds(&row.key()).await
+        self.other(mesh, "meshes").await?.holds(&row.key()).await
     }
     async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError> {
         if mesh == self.mesh {
             return self.meshes.write(&row.key(), MESH_STATUS_FORMAT, row).await;
         }
-        self.meshes_of(mesh).await?.write(&row.key(), MESH_STATUS_FORMAT, row).await
+        self.other(mesh, "meshes").await?.write(&row.key(), MESH_STATUS_FORMAT, row).await
+    }
+    async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.node_exit(node_id, incarnation_id).await;
+        }
+        self.other(mesh, "exits").await?.read(&NodeExitRow::key_of(node_id, incarnation_id), NODE_EXIT_FORMAT).await
+    }
+    async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.put_node_exit(row).await;
+        }
+        self.other(mesh, "exits").await?.write(&row.key(), NODE_EXIT_FORMAT, row).await
     }
 }
 
