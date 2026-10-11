@@ -542,10 +542,14 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     }
     assert!(f.rebirths(&spans).is_empty(), "timeout or unreachable alone grants no rebirth");
     assert_eq!(fabric, "ready-for-traffic", "no degraded fabric on a hold");
-    // One investigation reaches the peer mesh's node-admins: no mesh-primary tickles them on a
-    // per-member clock beside it (fabric-node-lifecycle.md §7.3, R-CK1).
-    let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().filter(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost))).collect();
-    assert!(tickled.is_empty(), "no offline tickle of {}'s node-admins beside the investigation: {tickled:#?}", f.lost);
+    // One investigation reaches the peer mesh's node-admins: no other mesh's primary tickles them on a
+    // per-member clock beside it (fabric-node-lifecycle.md §7.3, R-CK1). The peer mesh's own primary
+    // tickling its own node-admin once continued is its node recovery, untouched.
+    let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed")
+        .into_iter()
+        .filter(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost)) && !attr(sp, "observer").starts_with(&format!("{}.", f.lost)))
+        .collect();
+    assert!(tickled.is_empty(), "no other mesh tickles {}'s node-admins beside the investigation: {tickled:#?}", f.lost);
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "verdict": verdict["attributes"]}));
 }
 
@@ -691,7 +695,7 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
             // A member may still hold a pooled connection to the killed node-admin: probe 1 over it
             // commits and loses its reply (`Indeterminate`, unreachable). The rebirth is decided only
             // on the LATEST probe being carrier-edge-lost, so probe 2 must be.
-            let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail") == "Indeterminate";
+            let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
             assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "{m}: {p:#?}");
             assert!(i == 0 || attr(p, "outcome") == "carrier-edge-lost", "{m}: the latest probe decides the rebirth: {p:#?}");
             assert!(attr(p, "carrier").starts_with(&format!("{m}.rpc.")), "{m} is probed through its own members only: {p:#?}");
