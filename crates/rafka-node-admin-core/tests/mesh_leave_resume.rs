@@ -637,10 +637,12 @@ fn mesh_left_writes_the_final_primarys_row_deleted_and_the_mesh_row_dead_and_onl
         let after = mesh_left_rows(Some(&rows), &status, &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&last), &RosterBirth::of(&last).unwrap()).await;
         let row = storage.node_row_at(&last.name).await.unwrap();
         let statuses = status.mesh_statuses().await.unwrap();
+        let dead_held = status.mesh_status_held_of("mesh2", &rafka_node_admin_core::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
         // mesh2 created again: its first admin's claim wins over the Deleted row.
         let again = rows.claim(&last.name, &NodeId::mint(), "create-node:mesh2.admin.1").await;
-        (second, after, row, statuses, again, trace_id)
+        (second, after, row, (statuses, dead_held), again, trace_id)
     });
+    let (statuses, dead_held) = statuses;
     let spans = cap.spans();
     let dir = artifact_dir().join("mesh-left-rows");
     std::fs::create_dir_all(&dir).unwrap();
@@ -651,7 +653,8 @@ fn mesh_left_writes_the_final_primarys_row_deleted_and_the_mesh_row_dead_and_onl
     after.unwrap_or_else(|e| panic!("mesh-left writes its rows: {e}"));
     let row = row.expect("the final primary's row stays, readable at its path.name");
     assert_eq!((row.status, &row.node_id, &row.config), (NodeStatus::Deleted, &last.node_id, &last.config), "{row:?}");
-    assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Dead), "the mesh row is Dead: {statuses:?}");
+    assert!(dead_held, "the mesh row is Dead among mesh2's own status rows (status/mesh2/, R-MD1)");
+    assert_eq!(statuses.get(&mesh_id), None, "no row of mesh2 among the fabric-primary's own mesh's status rows: {statuses:?}");
     assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Dead), "and held as applied");
     match &again {
         Ok(Claimed::Written { row, seeded_from }) => {
@@ -664,7 +667,7 @@ fn mesh_left_writes_the_final_primarys_row_deleted_and_the_mesh_row_dead_and_onl
     let deleted = named("rdm.node_admin.node.delete.via-node-row");
     assert!(deleted.iter().any(|s| s["attributes"]["subject"] == FINAL && s["attributes"]["outcome"] == "row-deleted" && s["attributes"]["node"] == "mesh1.admin.1"), "{deleted:#?}");
     let dead = named("rdm.node_admin.mesh.update.via-dead-row");
-    assert!(dead.iter().any(|s| s["attributes"]["mesh_id"] == mesh_id.as_str() && s["attributes"]["outcome"] == "applied"), "{dead:#?}");
+    assert!(dead.iter().any(|s| s["attributes"]["mesh_id"] == mesh_id.as_str() && s["attributes"]["outcome"] == "applied" && s["attributes"]["writer"] == "acting-primary"), "no primary survived: the fabric-primary writes Dead as acting primary: {dead:#?}");
     let claims: Vec<String> = named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s["attributes"]["subject"] == FINAL).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(claims, ["row-held-by-node", "name-held", "row-seeded"], "{claims:?}");
     eprintln!("trace {trace_id}: via-node-row claim name-held, delete.via-node-row row-deleted, mesh.update.via-dead-row applied, via-node-row claim row-seeded seeded_from={}", last.node_id);

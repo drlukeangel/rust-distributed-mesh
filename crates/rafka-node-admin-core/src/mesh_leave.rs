@@ -796,13 +796,38 @@ pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, execut
 #[allow(clippy::too_many_arguments)]
 pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, records: &[Node], final_primary: &RosterBirth) -> Result<(), String> {
     birth_row_deleted(rows, executor, &key.operation, records, final_primary).await?;
-    let committed = crate::status_rpc::commit_mesh_state(status, declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Dead).await;
-    tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = committed.name())
-        .in_scope(|| tracing::info!("mesh-left: the mesh row Dead is stored and applied before the MeshLeft receipt; the mesh's name is released"));
-    match committed {
-        StatusReply::Applied | StatusReply::AlreadyApplied => Ok(()),
-        refused => Err(format!("{}: the mesh row Dead of {mesh} ({}) is not committed: {} ({refused:?})", key.operation, key.mesh_id, refused.name())),
-    }
+    ensure_mesh_dead(status, declared, executor, key, mesh).await
+}
+
+/// mesh-left's ensure-Dead (R-MD1 = A): the mesh row Dead among the leaving mesh's own status rows
+/// (`status/<mesh>/`), read by its key. The row held is the mesh-primary's commit at mesh.deleted
+/// (or this fabric-primary's earlier write): AlreadyApplied, nothing written, no second transition.
+/// No row held means no primary survived to write it: this fabric-primary puts it as acting primary
+/// of a mesh with none left (mesh-leave.md step 7) and records it as applied. One
+/// `rdm.node_admin.mesh.update.via-dead-row` span names the outcome and who wrote the row.
+async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str) -> Result<(), String> {
+    let dead = rafka_node_rpc_contract::status::MeshState::Dead;
+    let row = crate::status_storage::MeshStatusRow { mesh_id: key.mesh_id.clone(), state: dead };
+    let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, error = tracing::field::Empty);
+    let refused = |e: String| {
+        span.record("outcome", "not-committed");
+        span.record("error", e.as_str());
+        span.in_scope(|| tracing::info!("mesh-left: the mesh row Dead is not committed"));
+        format!("{}: the mesh row Dead of {mesh} ({}) is not committed: {e}", key.operation, key.mesh_id)
+    };
+    let held = status.mesh_status_held_of(mesh, &row).await.map_err(|e| refused(format!("the row among {mesh}'s status rows could not be read: {e}")))?;
+    let applied_here = declared.lock().unwrap().meshes.get(&key.mesh_id) == Some(&dead);
+    let (outcome, writer) = if held {
+        ("already-applied", if applied_here { "acting-primary" } else { "mesh-primary" })
+    } else {
+        status.put_mesh_status_of(mesh, &row).await.map_err(|e| refused(format!("status.storage refused the row among {mesh}'s status rows: {e}")))?;
+        declared.lock().unwrap().meshes.insert(key.mesh_id.clone(), dead);
+        ("applied", "acting-primary")
+    };
+    span.record("outcome", outcome);
+    span.record("writer", writer);
+    span.in_scope(|| tracing::info!("mesh-left: the mesh row Dead stands among the mesh's status rows before the MeshLeft receipt; the mesh's name is released"));
+    Ok(())
 }
 
 /// What the fabric-primary decides of a `MeshLeave` handoff from the Build facts it read from the
