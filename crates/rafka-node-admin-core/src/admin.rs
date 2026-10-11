@@ -2656,6 +2656,7 @@ impl AdminRunner {
             data_dir: record.data_dir.clone().ok_or_else(|| format!("{} has no known data dir", record.name))?,
             // The name this authority last accepted for this exact birth: its held stopped digest's (R-JN1).
             last_accepted_name: admitted.as_ref().map(|d| d.node.name.clone()),
+            held: true,
         })
     }
 
@@ -2711,6 +2712,7 @@ impl AdminRunner {
             runtime: handle.fact().ok_or_else(|| format!("{}: the handle names no exact runtime to verify its rejoin against", record.name))?,
             data_dir: record.data_dir.clone().or_else(|| admitted.as_ref().and_then(|d| d.data_dir.clone())).ok_or_else(|| format!("{} has no known data dir", record.name))?,
             last_accepted_name: admitted.as_ref().map(|d| d.node.name.clone()),
+            held: true,
         })
     }
 
@@ -5917,6 +5919,7 @@ mod tests {
             runtime,
             data_dir: "/data/mesh1.admin.2".into(),
             last_accepted_name: None,
+            held: false,
         };
         let joins = Arc::new(Joins::default());
         let _wait = joins.expect(deployed);

@@ -48,6 +48,13 @@ pub struct Deployed {
     /// holds the birth: the join of a stopped node renamed while stopped presents it. `None` at a
     /// first start, whose name is the create spec's.
     pub last_accepted_name: Option<PathName>,
+    /// The authority holds this birth: the deployment is a later start of a node it admitted
+    /// before (a parked or restarted birth), whose join is reconciled to its row and handed its
+    /// row's config; `false` at a first start, admitted under its create spec's name whatever row
+    /// stands at that path.name (R-JN1 item 6). Set by the one that registers the deployment, never
+    /// inferred from the last accepted name, which an admin that joined after the stop lacks
+    /// (`MeshMembership::parked_unheard`).
+    pub held: bool,
 }
 
 /// The first field of a digest that disagrees with what was deployed.
@@ -172,7 +179,7 @@ impl Joins {
     pub fn standing(&self, d: &MeshDigest) -> Standing {
         if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
             return match s.deployed.verify(d) {
-                Ok(()) => Standing::Deployed { name: s.deployed.name.clone(), held: s.deployed.last_accepted_name.is_some() },
+                Ok(()) => Standing::Deployed { name: s.deployed.name.clone(), held: s.deployed.held },
                 Err(m) => Standing::Mismatch(m),
             };
         }
@@ -443,6 +450,7 @@ mod tests {
             runtime: fact(),
             data_dir: "/d".into(),
             last_accepted_name: None,
+            held: false,
         }
     }
 
@@ -514,7 +522,7 @@ mod tests {
     /// The deployment of a birth this authority holds, stopped as `mesh1.rpc.1` and renamed in its
     /// row to `mesh1.rpc.1.old` while stopped (R-JN1).
     fn renamed_while_stopped() -> Deployed {
-        Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), ..deployed() }
+        Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), held: true, ..deployed() }
     }
 
     // @feature: node-lifecycle
