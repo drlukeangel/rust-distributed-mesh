@@ -476,11 +476,13 @@ async fn alive_but_unheard_admin_answers_the_probe_and_is_not_reborn() {
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "cut_unix_ms": cut_ms, "probe": first["attributes"]}));
 }
 
-/// CONTRACT (#2803 detection): the peer mesh is heard again between the probes and the
-/// investigation is cancelled. Both node-admins of the peer mesh are frozen (SIGSTOP: no backbone
-/// word, no exit) until halfway between probe 1's rung and probe 2's, then continued: the fabric primary hears the
-/// mesh on the backbone again, records the cancel as the verdict `heard-again`, sends no second
-/// probe and rebirths nothing.
+/// CONTRACT (#2803 detection; mesh-investigation.md step 4: "Direct backbone receipt from mesh-x at
+/// any point cancels the investigation and resets the unheard interval"): the peer mesh is heard
+/// again between the probes and the investigation is cancelled. Both node-admins of the peer mesh
+/// are frozen (SIGSTOP: no backbone word, no exit) until after probe 1's rung and before their own
+/// view passes the staleness floor, then continued: the fabric primary hears the mesh on the
+/// backbone again before probe 2's rung, records the cancel as the verdict `heard-again`, sends no
+/// second probe and rebirths nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     let cell = "peer_mesh_heard_again_between_probes_cancels_the_investigation";
@@ -492,9 +494,19 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     for (_, pid) in &admins {
         signal(*pid, "-STOP");
     }
-    // Probe 1 is due at its rung and takes as long as the contacts to a frozen node-admin do; the
-    // mesh is continued halfway between probe 1's rung and probe 2's.
-    tokio::time::sleep((rungs().probe1 + rungs().probe2) / 2).await;
+    // When the admins are continued, from the cadence the estate runs:
+    // - after probe 1's rung: the fabric primary's t was already up to one backbone interval old at
+    //   the freeze, so probe 1 is asked by `probe1` after it;
+    // - before the frozen admins' own view passes the staleness floor (`mark`, the shared staleness
+    //   mark of step 2): each last heard a peer up to one gossip interval before the freeze, and a
+    //   node that hears no other member past the floor is cut off (`via-cut-off`) and goes on unheard
+    //   after it is continued, which a resume at the mark raced;
+    // so halfway between `probe1` and `mark` less one gossip interval. Heard again at most one
+    //   backbone interval after the resume, the fabric primary's t is then below probe 2's rung.
+    let (r, gossip, backbone) = (rungs(), rafka_mesh_entity::cadence::gossip_interval(), rafka_mesh_entity::cadence::backbone_gossip_interval());
+    let resume = (r.probe1 + r.mark - gossip) / 2;
+    assert!(r.probe1 < resume && resume + gossip < r.mark && backbone + resume + backbone < r.probe2, "the cadence leaves no resume strictly between probe 1 and the cut-off with probe 2 still ahead: {r:?}, gossip {gossip:?}, backbone {backbone:?}");
+    tokio::time::sleep(resume).await;
     for (_, pid) in &admins {
         signal(*pid, "-CONT");
     }
