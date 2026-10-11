@@ -10,7 +10,7 @@ use crate::names::NodeOp;
 use crate::{BuildId, ClientError};
 use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
 use rafka_node_rpc::stream::StreamItem;
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
+use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, RouteChoice};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_contract::streaming::FrameKind;
@@ -331,10 +331,19 @@ impl<'a> NodeRpc<'a> {
     }
 
     /// The fabric-primary's call to the exact birth: hold this whole config and carry it in the next digest.
-    /// The route to the birth (direct, or through its mesh primary) is the client's.
-    pub async fn config_apply(&self, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+    /// `route` is the caller's choice: `Direct` to the birth, or `ViaPeer` through the birth's
+    /// mesh-primary (Forward `0x1A`), executed exactly as chosen (`NodeRpcClient::call_routed`).
+    pub async fn config_apply(&self, birth: &ExactBirth, route: &RouteChoice, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::ApplyNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
-        self.status(NodeOp::ConfigUpdate, birth, req, opts).await
+        let span = NodeOp::ConfigUpdate.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(&birth.node_id, route, &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::ConfigUpdate.name(), route = route.token(), "an object call ended"));
+        r
     }
 
     /// `node.get` of one exact birth: it reasserts its presence and answers its current state.
