@@ -32,7 +32,7 @@ fn end(name: &str) -> ConnectionEnd {
 }
 
 fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-    NodeConnection { source: source.clone(), destination: destination.clone(), kind, state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+    NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
 }
 
 /// Every span this process emitted, from the evidence exporter's JSONL files in `dir`.

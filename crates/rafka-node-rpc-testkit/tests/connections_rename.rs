@@ -4,9 +4,10 @@
 //! and `ApplyNodeName` makes it hold and publish the renamed one).
 //!
 //! CONTRACT: `mesh1.rpc.1` is born `mesh1.rpc.1.new`, and its join to its admin is a connections
-//! entry naming `mesh1.rpc.1.new` as its source. Told `ApplyNodeName { mesh1.rpc.1 }` with nothing
-//! in flight it answers `Applied`; its peer `mesh1.rpc.2` hears the renamed digest and resolves the
-//! birth at `mesh1.rpc.1`, and nothing at `mesh1.rpc.1.new`. The peer then dials it: the renamed
+//! entry naming `mesh1.rpc.1.new` as its source. It is stopped (R-CR1a: its stop deletes every
+//! connection), its row is renamed `mesh1.rpc.1` while it is stopped, and it starts under the row's
+//! name; its peer `mesh1.rpc.2` hears the renamed digest and resolves the birth at `mesh1.rpc.1`, and
+//! nothing at `mesh1.rpc.1.new`. The peer then dials it: the renamed
 //! node's accept entry names `mesh1.rpc.1` as its source with its own node id and birth, and is held
 //! as its own Direct; the peer's dial entry names `mesh1.rpc.1` as its destination with the same
 //! node id. The entry written before the rename stays exactly as written (the log is kept). What
@@ -21,6 +22,8 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, P
 use rafka_node_rpc::{CallOptions, NodeResolver, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+use rafka_node_admin_core::model::NodeStatus;
+use rafka_node_admin_core::storage::NodeRow;
 use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
@@ -41,6 +44,10 @@ fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<
 
 #[test]
 fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends() {
+    // The stop parks the process (its parking flag is process-wide): the cell runs in a process of its own.
+    if crate::own_process::delegated(module_path!(), "a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends") {
+        return;
+    }
     let cap = crate::common::capture("a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -111,15 +118,28 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             "the join is an entry naming the birth's name as its source: {before:#?}"
         );
 
-        // The rename, with nothing in flight.
+        // The rename (R-CR1a): stopped, which deletes every connection it held, its row renamed while
+        // it is stopped, then started under the row's name.
         let (d, _) = book.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
-        let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.to_string() };
-        match admin.observer.client.call::<Status>(&NodeTarget::ExactNode(renamed.node_id.clone()), &apply, &opts).await.0 {
-            RpcOutcome::Reply(r) => assert_eq!(r.into_value(), StatusReply::Applied),
-            other => panic!("ApplyNodeName did not end in a reply: {other:?}"),
-        }
+        let target = NodeTarget::ExactNode(renamed.node_id.clone());
+        let call = |req: StatusRequest| {
+            let (client, target, opts) = (&admin.observer.client, &target, &opts);
+            async move {
+                match client.call::<Status>(target, &req, opts).await.0 {
+                    RpcOutcome::Reply(r) => r.into_value(),
+                    other => panic!("{} did not end in a reply: {other:?}", req.op()),
+                }
+            }
+        };
+        let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 1, operation: format!("stop-node:{born}") };
+        assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
+        admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default() });
+        let key = node::load_or_mint_key(&root.join(born.to_string())).unwrap();
+        admin.deployed_as(&renamed, &key, taken.clone(), Some(born.clone()));
+        let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 2, operation: format!("start-node:{taken}") };
+        assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");
 
         // The peer hears the renamed digest, and the feed of its own process takes it into its
         // resolver: each answer change ticks the resolver. Its book holds the digest before the

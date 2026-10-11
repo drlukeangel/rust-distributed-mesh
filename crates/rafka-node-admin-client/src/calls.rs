@@ -365,10 +365,27 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
+    /// `node.connections.delete` of the exact birth's connections named by `scope`, the caller's single
+    /// call to the node's mesh-primary `mesh_primary` (R-CR2, R-CR3): it carries the cut to the exact
+    /// birth and holds the birth's `node.connections.deleted` for its rename precondition, answering the
+    /// birth's reply. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
+    pub async fn connections_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rafka_node_rpc_contract::status::ConnectionScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::DeleteConnections { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
+        let span = NodeOp::ConnectionsDelete.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), route = route.token(), scope = scope.name(), "an object call ended"));
+        r
+    }
+
     /// The mesh-primary's call to the exact birth, after it wrote the renamed row: take this name and carry
     /// it in every digest from now on (`ApplyNodeName`, R12/R13). `Applied` once the birth holds and
-    /// published it, `AlreadyApplied` for the name it holds, `Busy` naming its in-flight count while it
-    /// routes traffic. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
+    /// published it, `AlreadyApplied` for the name it holds, `Busy` naming the connections it holds
+    /// while it holds any (R-CR1). `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
     pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
         let span = NodeOp::Update.span();

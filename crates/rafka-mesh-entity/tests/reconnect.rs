@@ -22,6 +22,7 @@ fn held_for(own: &ConnectionEnd) -> ConnectionsHeld {
 
 fn connected(source: &ConnectionEnd, destination: &ConnectionEnd, at: u64) -> NodeConnection {
     NodeConnection {
+        id: rafka_mesh_entity::ConnectionId::mint(),
         source: source.clone(),
         destination: destination.clone(),
         kind: ConnectionKind::Direct,
@@ -99,6 +100,7 @@ fn cutback_to_direct_happens_only_after_the_proxy_retirement_is_applied_and_a_fa
     let mut h = held_for(&own);
     h.apply(connected(&carrier, &dest, 10)).unwrap();
     let proxy = NodeConnection {
+        id: rafka_mesh_entity::ConnectionId::mint(),
         source: own.clone(),
         destination: dest.clone(),
         kind: ConnectionKind::Proxy,

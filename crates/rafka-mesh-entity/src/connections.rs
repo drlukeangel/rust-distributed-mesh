@@ -126,6 +126,9 @@ pub struct ConnectionIndex {
 /// One connection fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeConnection {
+    /// The entry's own minted id: every fact written is a new entry with a new id, never a copy of
+    /// an earlier one's. An entry without one is refused when it is read.
+    pub id: crate::ConnectionId,
     /// The node that holds the connection.
     pub source: ConnectionEnd,
     /// The node it reaches.

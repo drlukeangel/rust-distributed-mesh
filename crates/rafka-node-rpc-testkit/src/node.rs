@@ -547,6 +547,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         };
         Arc::new(rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), membership.clone(), set_status, current, Some(declare)).with_retire(cancel.clone()))
     };
+    own.set_connections(connections.clone());
     let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
     let hydration_cell: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>> = Arc::default();
     let hydrating_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
@@ -995,7 +996,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
                 me.addressed.note(&from.node.node_id);
             }
-            if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
+            if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::DeleteConnections { .. }) {
                 let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) else {
                     return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
                 };
@@ -1102,9 +1103,13 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             return Ok(StatusReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt });
                         }
                     };
-                    // The apply call itself is in flight and is not traffic (as node_self's drain).
-                    let in_flight = rafka_node_rpc::ServerStats::get(&me.stats.in_flight).saturating_sub(1);
-                    let decision = rafka_node_admin_core::node_name::decide(&held, &asked, in_flight);
+                    // R-CR1: the name moves only while the node holds no connection, read from its
+                    // connections writer once every observation has landed.
+                    let routes = match me.own.held_routes().await {
+                        Ok(r) => r,
+                        Err(reason) => return Ok(StatusReply::NotReady { reason }),
+                    };
+                    let decision = rafka_node_admin_core::node_name::decide(&held, &asked, &routes);
                     let published = match decision {
                         rafka_node_admin_core::node_name::NameApply::Applied => {
                             me.membership.set_name(asked.clone());
@@ -1121,7 +1126,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         }
                         _ => "unchanged",
                     };
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, in_flight, digest = published, outcome = decision.name(), "otel.kind" = "internal")
+                    let held_routes = routes.iter().map(rafka_node_admin_core::node_name::route_name).collect::<Vec<_>>().join(", ");
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
                     Ok(rafka_node_admin_core::node_name::reply(&held, &asked, &decision))
                 }
