@@ -476,7 +476,7 @@ fn a_rename_the_seat_holder_never_saw_announced_moves_the_row_from_the_old_name_
 /// CONTRACT: the fabric-primary claims a birth's row when its view holds the birth for the first
 /// time in its seat (ops-naming "Node data": the row is written once, from the held record), never
 /// again on a later view install. A birth that left the view (a departure the projection dropped)
-/// and is put back by a forwarded copy of a peer mesh's view (gossip.md §3.2 forwarded grace) is
+/// and is put back by a later backbone copy of a peer mesh's view is
 /// the same birth, not a new arrival: one `via-node-row` span for it, the row written once.
 #[test]
 fn a_birth_that_leaves_the_view_and_returns_is_claimed_once() {

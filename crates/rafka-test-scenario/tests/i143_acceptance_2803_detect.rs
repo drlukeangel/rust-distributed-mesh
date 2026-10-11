@@ -9,7 +9,7 @@
 //! rounds (`RDM_BACKBONE_INTERVAL_MS`): probe 1 at 10 rounds unheard, the silent mark at 15,
 //! probe 2 at 20, the decision at 30 (20 s, 30 s, 40 s, 60 s at the 2 s default).
 
-use rafka_test_scenario::estate::{iroh_observation_shape, named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -512,8 +512,7 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
 /// mesh (admins and rpc nodes) is frozen (SIGSTOP; the host has no root to cut the mesh's UDP, the
 /// frozen processes answer nothing and are not exited): both probes find no member that answers
 /// the Ping, the verdict at 30 rounds is `unreachable`, and the fabric primary holds. No rebirth,
-/// no degraded fabric. After the mesh is continued it is heard again. A frozen node-admin is
-/// tickled to round 2 and that failed tickle carries iroh's local view of it (A1).
+/// no degraded fabric. After the mesh is continued it is heard again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     let cell = "peer_mesh_whose_members_all_stay_silent_is_held_not_reborn";
@@ -522,29 +521,13 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     let mut f = fixture(cell).await;
     let all: Vec<(String, u32)> = f.lost_admins().into_iter().chain(f.lost_members()).collect();
     assert_eq!(all.len(), 5, "every runtime of {}: {all:?}", f.lost);
-    let frozen_at = std::time::Instant::now();
+
     for (_, pid) in &all {
         signal(*pid, "-STOP");
     }
     let verdict = wait_for("the verdict is recorded", Duration::from_secs(180), || {
         let spans = f.estate.spans();
         let found = f.verdicts(&spans).into_iter().find(|v| attr(v, "outcome") == "unreachable").cloned();
-        async move { found }
-    })
-    .await;
-    // The offline tickle of a silent node-admin is on the staleness floors, not on the backbone rounds.
-    // The fabric primary holds the peer mesh's node-admins from their primary's forwarded topology, so
-    // it marks them at the forwarded staleness floor; round 1 half a floor later (at most one tickle
-    // round), round 2 at least one floor after round 1 found no path (at most one tickle round), and
-    // the tickle loop sleeps one gossip interval between ticks. The failed round 2 is awaited for
-    // exactly that long from the freeze.
-    let tickle_round = rafka_node_admin_core::offline::tickle_round_at_default_budget();
-    let floor = Duration::from_millis(floor_ms());
-    let marked = rafka_mesh_transport::membership::forwarded_staleness_floor();
-    let round_two_by = marked + floor / 2 + tickle_round + floor + tickle_round + rafka_mesh_transport::membership::gossip_interval() * 2;
-    wait_for("a frozen node-admin of the peer mesh is tickled to round 2", round_two_by.saturating_sub(frozen_at.elapsed()), || {
-        let spans = f.estate.spans();
-        let found = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().find(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost))).cloned();
         async move { found }
     })
     .await;
@@ -562,12 +545,10 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     }
     assert!(f.rebirths(&spans).is_empty(), "timeout or unreachable alone grants no rebirth");
     assert_eq!(fabric, "ready-for-traffic", "no degraded fabric on a hold");
-    // A1: a frozen node-admin's round-2 failed tickle carries iroh's local view of it.
-    let failed: Vec<_> = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().filter(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost))).collect();
-    assert!(!failed.is_empty(), "a frozen node-admin of {} is tickled to round 2", f.lost);
-    for sp in &failed {
-        iroh_observation_shape(sp).unwrap_or_else(|why| panic!("{why}"));
-    }
+    // One investigation reaches the peer mesh's node-admins: no mesh-primary tickles them on a
+    // per-member clock beside it (fabric-node-lifecycle.md §7.3, R-CK1).
+    let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().filter(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost))).collect();
+    assert!(tickled.is_empty(), "no offline tickle of {}'s node-admins beside the investigation: {tickled:#?}", f.lost);
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "verdict": verdict["attributes"]}));
 }
 
