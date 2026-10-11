@@ -11,9 +11,11 @@
 //!   -> AwaitNodeDrained (bounded; a deadline is an arm, never a failure)
 //!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (its `Stopped` reply, bounded, likewise)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
-//!   -> ReleaseStorage (a removal: by the Build's StorageMeta)
 //!   -> RemoveTopologyMembership -> Complete
 //! ```
+//!
+//! A removal releases identity, never storage: the data dir and its endpoint key stay
+//! (node-delete.md "Storage"), and no step here deletes a node's storage.
 //!
 //! Node-admin is the brain: identity, endpoints, storage and readiness are
 //! decided here; the provider only realises or retires the runtime. Every
@@ -51,7 +53,7 @@ use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
 use crate::model::{DeploymentId, EndpointId, IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::meta::{PersistentRetireDisposition, StorageMeta};
+use rafka_mesh_entity::meta::StorageMeta;
 use rafka_mesh_entity::{LifecycleOp, RuntimeFact};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -185,8 +187,6 @@ pub enum RetireStep {
     /// and the committed seats installed (node-drain.md step 0; node-rpc-envelope.md "TakeSeats").
     /// Not in [`Self::ORDER`]: no other target runs it.
     SeatTransfer,
-    /// Only on a removal.
-    ReleaseStorage,
     /// Remove the node from the local topology.
     RemoveTopologyMembership,
     /// The node is retired.
@@ -195,7 +195,7 @@ pub enum RetireStep {
 
 impl RetireStep {
     /// Every retire step in order.
-    pub const ORDER: [RetireStep; 10] = [
+    pub const ORDER: [RetireStep; 9] = [
         Self::NodeDeleting,
         Self::DrainNode,
         Self::AwaitNodeDrained,
@@ -203,7 +203,6 @@ impl RetireStep {
         Self::AwaitNodeLeft,
         Self::TerminateRuntime,
         Self::NodeDeleted,
-        Self::ReleaseStorage,
         Self::RemoveTopologyMembership,
         Self::Complete,
     ];
@@ -220,7 +219,6 @@ impl RetireStep {
             Self::StopNode => "StopNode",
             Self::AwaitNodeLeft => "AwaitNodeLeft",
             Self::TerminateRuntime => "TerminateRuntime",
-            Self::ReleaseStorage => "ReleaseStorage",
             Self::RemoveTopologyMembership => "RemoveTopologyMembership",
             Self::Complete => "Complete",
         }
@@ -505,7 +503,7 @@ pub(crate) fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operati
 /// The lifecycle events a Mesh executor publishes around a retirement: the pre-notice once its
 /// own journal holds the step that records it, the departure once the provider proved the
 /// runtime terminal. Membership carries them; this trait is how the pipeline reaches it.
-/// Why a birth is being retired: the storage disposition and the lifecycle events follow it.
+/// Why a birth is being retired: the lifecycle events follow it. Neither kind releases storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RetireKind {
@@ -515,8 +513,10 @@ pub enum RetireKind {
     Restart,
 }
 
-/// What a removal did with the logical node's storage, by the accepted Build's
-/// `StorageMeta` for its path: the ReleaseStorage step's receipt.
+/// The typed output of a `ReleaseStorage` receipt ([`crate::wire::RELEASE_STORAGE_STEP`]). No step
+/// of this pipeline runs it: a delete retains the data dir and endpoint key (node-delete.md
+/// "Storage"). It stays the receipt's shape so the Build topic's positional layout
+/// ([`crate::wire`]) and a receipt an earlier build wrote still decode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "arm", rename_all = "kebab-case")]
 pub enum StorageDisposition {
@@ -1781,9 +1781,8 @@ impl DeploymentPipeline<'_> {
             let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.deleted(&op).await;
         }
-        if req.kind == RetireKind::Removal {
-            self.release_storage_step(&mut run, &req.build_id, &node).await?;
-        }
+        // node-delete.md step 3: the data dir, node-identity.json and endpoint key are retained; no
+        // step of the delete touches the birth's storage.
         self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
             self.sink.remove(name);
             Ok(())
@@ -2020,42 +2019,6 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// The storage disposition of a removal (the lock's StorageMeta): what the accepted Build's
-    /// meta for this path says, read here and interpreted here, never by the provider. The receipt
-    /// names the disposition.
-    pub(crate) async fn release_storage_step(&self, run: &mut Run<'_>, build_id: &BuildId, node: &Node) -> Result<(), PipelineError> {
-        let name = &node.name;
-        let _disposition: StorageDisposition = self
-            .step(run, RetireStep::ReleaseStorage.name(), async {
-                let storage = self
-                    .builds
-                    .read_build(build_id)
-                    .await
-                    .ok()
-                    .and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
-                let release = match storage {
-                    Some(StorageMeta::Ephemeral) | Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }) => true,
-                    Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }) => false,
-                    // No meta for this path in the Build: storage is never destroyed on missing evidence.
-                    None => return Ok(StorageDisposition::PreservedNoMeta),
-                };
-                if !release {
-                    return Ok(StorageDisposition::Preserved);
-                }
-                match node.data_dir.as_deref() {
-                    Some(dir) => match std::fs::remove_dir_all(dir) {
-                        Ok(()) => Ok(StorageDisposition::Released { locator: dir.to_string() }),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StorageDisposition::Released { locator: dir.to_string() }),
-                        Err(e) => Err(format!("{dir}: {e}")),
-                    },
-                    None => Ok(StorageDisposition::Released { locator: String::new() }),
-                }
-            })
-            .await?;
-
-        Ok(())
-    }
-
     /// The directory of `node`'s birth as it is now: the data dir its record names, else the
     /// root's `<path>-<node_id>`.
     fn birth_dir(&self, node: &Node) -> PathBuf {
@@ -2071,8 +2034,11 @@ impl DeploymentPipeline<'_> {
     ///   -> RenamePredecessor -> AllocateIdentity -> PrepareStorage -> PrepareNetwork
     ///   -> TerminateRuntime -> HandoffStorage
     ///   -> DeployRuntime -> ... -> WaitForBind -> ... -> WaitForMeshJoin -> WaitForNodeReady
-    ///   -> NodeDeleted -> ReleaseStorage -> Complete
+    ///   -> NodeDeleted -> Complete
     /// ```
+    ///
+    /// The old identity's delete releases no storage (node-delete.md "Storage"): the predecessor's
+    /// directory keeps what HandoffStorage did not move, its identity files and endpoint key.
     ///
     /// A predecessor that is not parked by its `stopped` reply (it did not admit stop-node, or the
     /// provider already proves it terminal) is renamed only on its exit proof: TerminateRuntime
@@ -2167,7 +2133,6 @@ impl DeploymentPipeline<'_> {
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
         let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
         self.lifecycle.deleted(&op).await;
-        self.release_storage_step(&mut run, &req.build_id, &old).await?;
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
             Ok(())

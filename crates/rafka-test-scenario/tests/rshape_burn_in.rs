@@ -3340,9 +3340,9 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
     let wanted: &[&str] = if replace {
-        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "Complete"]
+        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor", "TerminateRuntime", "NodeDeleted", "Complete"]
     } else {
-        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "RemoveTopologyMembership", "Complete"]
+        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
     };
     for want in wanted.iter().copied() {
         let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the retire pipeline has no `{want}` step: {names:?}"));
