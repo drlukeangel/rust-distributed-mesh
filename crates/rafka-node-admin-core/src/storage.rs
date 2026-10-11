@@ -348,10 +348,15 @@ impl MeshNodes {
 
     /// The id index after `row` was written at its key over `previous`, the row it replaced there
     /// (written after the row, so an entry never names a row not yet written): the row's node names
-    /// the key, and a previous row of another node no longer holds it.
+    /// the key, and a previous row of another node no longer holds it. An entry that already names
+    /// the key is left as it is: a put of the row a node holds (a status change, a delete's Deleted
+    /// row) is the one write of its row.
     async fn index_put(&self, previous: Option<&NodeRow>, row: &NodeRow) -> Result<(), StorageError> {
         if let Some(p) = previous.filter(|p| p.node_id != row.node_id) {
             self.index_drop(&p.node_id, &p.name).await?;
+        }
+        if self.ids.read::<RowId>(row.node_id.as_str(), ROW_ID_FORMAT).await?.is_some_and(|e| e.name == row.name) {
+            return Ok(());
         }
         self.ids.write(row.node_id.as_str(), ROW_ID_FORMAT, &RowId { node_id: row.node_id.clone(), name: row.name.clone() }).await
     }
@@ -538,11 +543,7 @@ impl NodesStorage for FileNodesStorage {
             // The node holds the key: its entry names it once the claim answers, also when the write
             // that put the row ended before its entry was written (the row and its entry are two
             // files), so a retried move never leaves the node's row unnamed.
-            Ok(Claimed::HeldByNode) => {
-                if rows.ids.read::<RowId>(row.node_id.as_str(), ROW_ID_FORMAT).await?.is_none_or(|e| e.name != row.name) {
-                    rows.index_put(None, row).await?;
-                }
-            }
+            Ok(Claimed::HeldByNode) => rows.index_put(None, row).await?,
             Err(_) => {}
         }
         Ok(claimed)
