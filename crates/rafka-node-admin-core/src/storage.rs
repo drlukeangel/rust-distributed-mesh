@@ -190,19 +190,33 @@ pub trait NodesStorage: Send + Sync {
     async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError>;
     /// The record at `name`: a point read through the `path.name` key; `None` when none was ever written.
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
-    /// Claim `row.name` for `row.node_id` and keep `row` there: insert-and-fail on the `path.name`
-    /// key, decided by the store in one step, never a read then a write by the caller. The key is
-    /// free when no row is there, when the row there is `Deleted`, or when it is the same node's;
-    /// any other row holds the name and the claim is refused [`NameHeld`] naming its node.
-    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError>;
+    /// Claim `row.name` for `row.node_id`: insert-and-fail on the `path.name` key, decided by the
+    /// store in one step, never a read then a write by the caller. A row of the same node already
+    /// there satisfies the claim and is left exactly as it is ([`Claimed::HeldByNode`]: a claim
+    /// never overwrites what its node holds). The key is free when no row is there or the row there
+    /// is another node's `Deleted` row: `row` is kept ([`Claimed::Written`]). Any other row holds
+    /// the name and the claim is refused [`NameHeld`] naming its node.
+    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError>;
     /// Release the key `name`: its row goes (a renamed node let go of the name).
     async fn remove_node_row(&self, name: &PathName) -> Result<(), StorageError>;
 }
 
-/// What a claim of `row`'s name meets in `held`, the row at that key: `Some` when another live
-/// holder refuses it.
-fn held_against(held: Option<&NodeRow>, row: &NodeRow) -> Option<NameHeld> {
-    held.filter(|h| h.status != crate::model::NodeStatus::Deleted && h.node_id != row.node_id).map(|h| NameHeld { name: row.name.clone(), by: h.node_id.clone() })
+/// What a claim that was not refused did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claimed {
+    /// The key was free: the claimed row is kept there.
+    Written,
+    /// The same node already holds the key: nothing was written, its row stands as it was.
+    HeldByNode,
+}
+
+/// What a claim of `row`'s name meets in `held`, the row at that key.
+fn claim_against(held: Option<&NodeRow>, row: &NodeRow) -> Result<Claimed, NameHeld> {
+    match held {
+        Some(h) if h.node_id == row.node_id => Ok(Claimed::HeldByNode),
+        Some(h) if h.status != crate::model::NodeStatus::Deleted => Err(NameHeld { name: row.name.clone(), by: h.node_id.clone() }),
+        _ => Ok(Claimed::Written),
+    }
 }
 
 /// A nodes store held in memory.
@@ -248,13 +262,13 @@ impl NodesStorage for MemoryNodesStorage {
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         Ok(self.rows.lock().unwrap().get(&name.to_string()).cloned())
     }
-    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
+    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
         let mut rows = self.rows.lock().unwrap();
-        if let Some(held) = held_against(rows.get(&row.name.to_string()), row) {
-            return Ok(Err(held));
+        let claimed = claim_against(rows.get(&row.name.to_string()), row);
+        if claimed == Ok(Claimed::Written) {
+            rows.insert(row.name.to_string(), row.clone());
         }
-        rows.insert(row.name.to_string(), row.clone());
-        Ok(Ok(()))
+        Ok(claimed)
     }
     async fn remove_node_row(&self, name: &PathName) -> Result<(), StorageError> {
         self.rows.lock().unwrap().remove(&name.to_string());
@@ -315,13 +329,14 @@ impl NodesStorage for FileNodesStorage {
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         self.rows.read(&name.to_string(), ROW_FORMAT)
     }
-    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
+    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
         let _one = self.row_writes.lock().await;
         let key = row.name.to_string();
-        if let Some(held) = held_against(self.rows.read::<NodeRow>(&key, ROW_FORMAT)?.as_ref(), row) {
-            return Ok(Err(held));
+        let claimed = claim_against(self.rows.read::<NodeRow>(&key, ROW_FORMAT)?.as_ref(), row);
+        if claimed == Ok(Claimed::Written) {
+            self.rows.write(&key, ROW_FORMAT, row).await?;
         }
-        self.rows.write(&key, ROW_FORMAT, row).await.map(Ok)
+        Ok(claimed)
     }
     async fn remove_node_row(&self, name: &PathName) -> Result<(), StorageError> {
         let _one = self.row_writes.lock().await;

@@ -3,18 +3,22 @@
 //!
 //! The fabric-primary is the only writer of a node's row. It writes the whole row from the record
 //! it holds (its topology), a blind put of the `path.name` key, and never reads the store on that
-//! write. Two moments of a Build it drives write a row, each read off the live `Step` frame the
-//! executor streams:
+//! write. A row is written at two moments:
 //!
-//! - `node.delete` (`retire-node:<path>`): at `NodeDeleted` the row is written with status
-//!   `Deleted`, the record and its config kept. The record is the one held when the executor
-//!   announced the removal (`NodeDeleting`): the node is still found and live in every view then,
-//!   while by `NodeDeleted` its departure may already have left the view.
-//! - `node.create` (`create-node:<path>`): at `Complete` the new birth's row is claimed at its
-//!   `path.name` (insert-and-fail), its config seeded from the previous row at that `path.name`.
+//! - `node.delete` (`retire-node:<path>`), read off the live `Step` frame the executor streams: at
+//!   `NodeDeleted` the row is written with status `Deleted`, the record and its config kept. The
+//!   record is the one held when the executor announced the removal (`NodeDeleting`): the node is
+//!   still found and live in every view then, while by `NodeDeleted` its departure may already
+//!   have left the view.
+//! - A birth the fabric-primary's own view holds for the first time (`Records::install_projected`):
+//!   its row is claimed at its `path.name` (insert-and-fail) from that held record, its config
+//!   seeded from the previous row at that `path.name`. A birth of a peer mesh reaches the
+//!   fabric-primary's view through the forwarded aggregate, after its create's last frame, so the
+//!   row follows the view, never the create's frames. An admin that takes the seat claims every
+//!   member's row; a row a node already holds is never overwritten.
 
 use crate::model::{Node, NodeStatus, PathName};
-use crate::storage::{NodeRow, NodesStorage};
+use crate::storage::{Claimed, NodeRow, NodesStorage};
 use crate::topology::Topology;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -52,7 +56,6 @@ impl NodeRows {
                 }
             }
             ("retire-node", "NodeDeleted") => self.deleted(me, view, operation, &name).await,
-            ("create-node", "Complete") => self.created(me, view, &name).await,
             _ => {}
         }
     }
@@ -99,39 +102,58 @@ impl NodeRows {
         }
     }
 
-    /// The create's `Complete`: claim the new birth's row at its `path.name`, its config seeded
-    /// from the previous row there (a `Deleted` row, or the same node's own row on a restart). The
-    /// previous row is a point read through the `path.name` key (ops-naming "Node data": "from the
-    /// fabric-primary's held record or a point read through the `path.name` index").
-    async fn created(&self, me: &PathName, view: &RwLock<Topology>, name: &PathName) {
+    /// The births of `now`, the view being installed over `prev`, whose rows this admin claims:
+    /// none unless `now` names it the fabric-primary; every member when `prev` did not (the seat was
+    /// just taken: the rebuild after a handover, which never overwrites a row a node holds); else
+    /// each member birth `prev` did not hold. Read under the view lock, so of two installs each
+    /// sees the arrivals its own change made.
+    pub fn arrivals(&self, prev: &Topology, now: &Topology) -> Vec<Node> {
+        if now.fabric_primary().map(|n| &n.name) != Some(&self.me) {
+            return Vec::new();
+        }
+        let took_seat = prev.fabric_primary().map(|n| &n.name) != Some(&self.me);
+        now.members()
+            .filter(|n| n.incarnation_id.is_some())
+            .filter(|n| took_seat || !prev.members().any(|p| p.node_id == n.node_id && p.incarnation_id == n.incarnation_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Claim the row of each birth in `arrivals`, the fabric-primary's view having first held it.
+    pub async fn claim_arrivals(&self, arrivals: Vec<Node>) {
+        for birth in arrivals {
+            self.claim(&birth).await;
+        }
+    }
+
+    /// The birth's row at its `path.name`, claimed from the record the view holds (ops-naming "Node
+    /// data": "writes the whole row from that held record"), its config seeded from the previous
+    /// row at that `path.name` (a `Deleted` row), read through the `path.name` key ("from the
+    /// fabric-primary's held record or a point read through the `path.name` index"). A row the
+    /// same node holds already is left as it is.
+    async fn claim(&self, birth: &Node) -> Option<NodeRow> {
+        let (me, name) = (&self.me, &birth.name);
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
             node = %me,
             subject = %name,
-            node_id = tracing::field::Empty,
+            node_id = %birth.node_id,
             seeded_from = tracing::field::Empty,
             keys = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        let Some(birth) = held_at(view, name).await else {
-            let detail = format!("{me}: the create of {name} completed and this fabric-primary's view holds no birth at {name}; no row is claimed");
-            span.record("outcome", "not-in-view").record("detail", detail.as_str());
-            span.in_scope(|| tracing::info!("node.create: no row claimed"));
-            return;
-        };
-        span.record("node_id", birth.node_id.as_str());
         let previous = match self.storage.node_row_at(name).await {
             Ok(p) => p,
             Err(e) => {
-                let detail = format!("{me}: the previous row at {name} could not be read for the create of {}: {e}", birth.node_id);
+                let detail = format!("{me}: the previous row at {name} could not be read for the birth {}: {e}", birth.node_id);
                 span.record("outcome", "row-unreadable").record("detail", detail.as_str());
                 span.in_scope(|| tracing::info!("node.create: no row claimed"));
-                return;
+                return None;
             }
         };
-        let seed = previous.filter(|p| p.status == NodeStatus::Deleted || p.node_id == birth.node_id);
+        let seed = previous.filter(|p| p.status == NodeStatus::Deleted && p.node_id != birth.node_id);
         let config = seed.as_ref().map_or_else(|| birth.config.clone(), |p| p.config.clone());
         if let Some(p) = &seed {
             span.record("seeded_from", p.node_id.as_str());
@@ -139,19 +161,27 @@ impl NodeRows {
         span.record("keys", config.len() as u64);
         let row = NodeRow { name: name.clone(), node_id: birth.node_id.clone(), status: birth.status, config };
         match self.storage.claim_node_row(&row).await {
-            Ok(Ok(())) => {
+            Ok(Ok(Claimed::Written)) => {
                 span.record("outcome", if seed.is_some() { "row-seeded" } else { "row-claimed" });
                 span.in_scope(|| tracing::info!("node.create: the birth holds the row at its path.name"));
+                seed.map(|_| row)
+            }
+            Ok(Ok(Claimed::HeldByNode)) => {
+                span.record("outcome", "row-held-by-node");
+                span.in_scope(|| tracing::info!("node.create: the node already holds its row; nothing is written"));
+                None
             }
             Ok(Err(held)) => {
-                let detail = format!("{me}: the create of {name} ({}) claimed a held name: {held}", birth.node_id);
+                let detail = format!("{me}: the birth {} at {name} claimed a held name: {held}", birth.node_id);
                 span.record("outcome", "name-held").record("detail", detail.as_str());
                 span.in_scope(|| tracing::info!("node.create: the name is held"));
+                None
             }
             Err(e) => {
                 let detail = format!("{me}: nodes.storage refused the row of {name} ({}): {e}", birth.node_id);
                 span.record("outcome", "row-refused").record("detail", detail.as_str());
                 span.in_scope(|| tracing::info!("node.create: the row was refused"));
+                None
             }
         }
     }
@@ -211,7 +241,7 @@ impl NodeRows {
         }
         let row = NodeRow { name: body.name.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
         match self.storage.claim_node_row(&row).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(_)) => {}
             Ok(Err(name_held)) => return Err(RenameRefused::NameHeld(name_held)),
             Err(e) => return Err(RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {} for {}: {e}", body.name, record.node_id))),
         }

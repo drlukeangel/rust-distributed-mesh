@@ -415,7 +415,8 @@ async fn a_config_over_its_cap_is_refused_by_name_and_nothing_is_applied() {
     assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the node");
 }
 
-/// A nodes store that refuses every node-row put, by name; every other row is the memory store's.
+/// A nodes store that refuses every node-row write (put, claim, release), by name; every other row is
+/// the memory store's.
 #[derive(Default)]
 struct RefusingRows(MemoryNodesStorage);
 
@@ -448,11 +449,11 @@ impl NodesStorage for RefusingRows {
     async fn node_row_at(&self, name: &rafka_node_admin_core::model::PathName) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
         self.0.node_row_at(name).await
     }
-    async fn claim_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<(), rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
-        self.0.claim_node_row(row).await
+    async fn claim_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<rafka_node_admin_core::storage::Claimed, rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
+        Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the claim".into() })
     }
     async fn remove_node_row(&self, name: &rafka_node_admin_core::model::PathName) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
-        self.0.remove_node_row(name).await
+        Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
     }
 }
 
