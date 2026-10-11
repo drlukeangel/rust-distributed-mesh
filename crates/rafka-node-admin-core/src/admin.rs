@@ -5849,6 +5849,39 @@ mod tests {
         assert!(attr(&unreadable, "error").contains("Input/output error (os error 5)"), "{unreadable:?}");
     }
 
+    /// CONTRACT (fabric-node-lifecycle: a re-run never calls the lost executor or proves its exit
+    /// again): the fabric-primary's departure proof answers `recorded` from the exits its records
+    /// hold for the EXACT birth the view names for the executor. Must NOT happen: `recorded` false
+    /// for a birth whose exit is recorded (the drive would call the lost executor again and a
+    /// second via-executor-exit-proof would follow), or true for an earlier birth of the same node.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_departure_recorded_for_the_executors_exact_birth_is_answered_without_a_new_proof() {
+        use crate::build_drive::DepartureProof as _;
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-recorded").unwrap();
+        let executor = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
+        let book = DigestBook::default();
+        book.record(executor.clone());
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let records = Arc::new(Records::default());
+        let departure = ProviderDeparture {
+            me: "mesh1.admin.1".parse().unwrap(),
+            topology: Arc::new(RwLock::new(view)),
+            refresh: Arc::new(|| Box::pin(async {})),
+            book,
+            provider: Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() }),
+            nodes: Arc::new(CountsRuntimeLists::default()),
+            records: records.clone(),
+        };
+        let name: PathName = "mesh2.admin.1".parse().unwrap();
+        assert!(!departure.recorded(&name).await, "nothing is recorded yet");
+        records.mark_exited(&executor.node.node_id, &IncarnationId("an-earlier-birth".into()));
+        assert!(!departure.recorded(&name).await, "an earlier birth's exit is not this birth's");
+        records.mark_exited(&executor.node.node_id, &executor.node.incarnation);
+        assert!(departure.recorded(&name).await, "the exact birth's exit is recorded, so the drive takes over without a new proof");
+        assert!(!departure.recorded(&"mesh9.admin.1".parse().unwrap()).await, "a node outside the view names no birth");
+    }
+
     /// The mesh primary `mesh2.admin.1`'s recovery of its own mesh's births, over `book`, `provider`
     /// and `nodes_storage`, and the TRUE OFFLINE member `mesh2.rpc.1` of `view`.
     fn recovery_of(view: &Topology, book: DigestBook, provider: Arc<dyn DeploymentProvider>, nodes_storage: Arc<dyn crate::storage::NodesStorage>, status: Arc<dyn crate::status_storage::StatusStorage>) -> (RecoverySubmitter, Arc<dyn crate::status_storage::StatusStorage>, Node) {
