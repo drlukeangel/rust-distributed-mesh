@@ -565,7 +565,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.local.facts().await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.local.recovery_of(path, node_id, incarnation).await
     }
 

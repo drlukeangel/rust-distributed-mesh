@@ -351,22 +351,25 @@ impl ControlPlane {
     /// Build still Pending or Running answers `BuildInProgress`. No live-status check: the node is
     /// silent or absent by definition.
     ///
-    /// Keyed on the exited birth: once the accepted Build's `recover-node:<path>` operation completed
-    /// for that exact birth, a repeat answers [`Recovery::AlreadyApplied`] naming the attempt that
-    /// recovered it, and nothing is opened. A node-admin is node-recovered only while its mesh holds
+    /// Keyed on the exited birth: once a node workflow that deletes a birth (`recover-node:<path>`,
+    /// or a `replace-node:<path>` / `retire-node:<path>` the birth exited inside) completed for that
+    /// exact birth, a submit answers [`Recovery::AlreadyApplied`] naming that workflow's attempt,
+    /// and nothing is opened. A node-admin is node-recovered only while its mesh holds
     /// another live admin to recover it (mesh-recovery.md:8-9); otherwise it is mesh recovery.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.0, outcome = tracing::field::Empty);
         let outer = tracing::Span::current();
         let r = async {
             self.authority(route).await?;
-            // Keyed on the exited birth across the Build log: a recovery already applied is answered
-            // as applied whatever Build is accepted or in flight now (a later topology Build holds
-            // none of its receipts), and nothing is opened.
-            if let Some((build_id, attempt)) = self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)? {
+            // Keyed on the exited birth across the Build log: a birth a node workflow already
+            // deleted (its recovery, or a replace or retire it exited inside: node-recovery.md
+            // "Failure and receipts") is answered as applied by that workflow's attempt, whatever
+            // Build is accepted or in flight now (a later topology Build holds none of its
+            // receipts), and nothing is opened.
+            if let Some((build_id, attempt, operation)) = self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)? {
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id, attempt, node = %path, node_id = %node_id, incarnation_id = %incarnation.0)
-                        .in_scope(|| tracing::info!("the exited birth was recovered by this attempt: nothing is opened"))
+                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id, attempt, operation = %operation, node = %path, node_id = %node_id, incarnation_id = %incarnation.0)
+                        .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by this attempt's {operation}: its exit belongs to that workflow, nothing is opened"))
                 });
                 return Ok(Recovery::AlreadyApplied(Opened { build_id, attempt }));
             }

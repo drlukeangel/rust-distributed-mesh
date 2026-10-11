@@ -402,7 +402,7 @@ impl rafka_node_admin_core::build_state::BuildStateAdapter for RefusingAccept {
     async fn facts(&self) -> Result<Vec<BuildFact>, rafka_node_admin_core::build_state::BuildStateError> {
         self.0.facts().await
     }
-    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32)>, rafka_node_admin_core::build_state::BuildStateError> {
+    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
         self.0.recovery_of(path, node_id, incarnation).await
     }
     async fn forget(&self, b: &BuildId) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {

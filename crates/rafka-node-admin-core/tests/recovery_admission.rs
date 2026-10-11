@@ -333,7 +333,7 @@ async fn a_recovery_run_by_a_mesh_primary_that_is_not_the_fabric_primary_is_answ
     }
     mp.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     until("the fabric-primary hears the recovery attempt converge", &*fp, &b0, |p| p.state == rafka_node_admin_core::build_state::BuildState::Complete && p.attempt == first.attempt).await;
-    assert_eq!(fp.recovery_of(&path, &node_id, &birth).await.unwrap(), Some((b0.clone(), first.attempt)), "the fabric-primary's recovery index holds the exited birth from the heard receipts");
+    assert_eq!(fp.recovery_of(&path, &node_id, &birth).await.unwrap(), Some((b0.clone(), first.attempt, format!("recover-node:{path}"))), "the fabric-primary's recovery index holds the exited birth from the heard receipts");
 
     // The repeat submit, at the fabric-primary.
     let before = opened(&fp.facts().await.unwrap());

@@ -64,7 +64,7 @@ impl BuildStateAdapter for Losing {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
-    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32)>, BuildStateError> {
+    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {

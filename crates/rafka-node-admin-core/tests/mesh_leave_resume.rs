@@ -134,7 +134,7 @@ impl BuildStateAdapter for WireBuilds {
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.0.forget(id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.0.recovery_of(path, node_id, incarnation).await
     }
 }
