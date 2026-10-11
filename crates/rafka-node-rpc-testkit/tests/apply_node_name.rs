@@ -60,6 +60,8 @@ fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_
         .expect("the node comes up");
 
         let book = &admin.observer.membership.book;
+        // Every digest the admin's book takes ticks this count: the cell awaits a published digest, never the cadence.
+        let mut digests = book.digest_changes();
         let mut heard = book.heard_changes();
         while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
@@ -90,9 +92,9 @@ fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_
                 other => panic!("a node with a call in flight answered {other:?}"),
             }
             let seq = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
+            digests.borrow_and_update();
             while book.get(launch.node_id.as_str()).unwrap().0.digest_seq == seq {
-                // The book has no per-digest signal: a fresher digest of the same birth is read on the cadence.
-            tokio::time::sleep(Duration::from_millis(50)).await;
+                digests.changed().await.unwrap();
             }
             assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
             // Nothing in flight from here: the held call answers once released.
@@ -103,14 +105,13 @@ fn a_live_node_takes_its_rows_name_only_with_nothing_in_flight_and_publishes_it_
 
         assert_eq!(call(apply.clone()).await, StatusReply::Applied);
         // The node published the name before it answered; the admin hears that digest.
+        digests.borrow_and_update();
         while book.get(launch.node_id.as_str()).unwrap().0.node.name != taken {
-            // The book has no per-digest signal: a fresher digest of the same birth is read on the cadence.
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            digests.changed().await.unwrap();
         }
         let seq = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
         while book.get(launch.node_id.as_str()).unwrap().0.digest_seq <= seq + 1 {
-            // The book has no per-digest signal: a fresher digest of the same birth is read on the cadence.
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            digests.changed().await.unwrap();
         }
         assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, taken, "later cadence digests keep the applied name");
 
