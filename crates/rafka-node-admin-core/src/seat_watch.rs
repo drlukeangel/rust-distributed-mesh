@@ -481,16 +481,13 @@ mod tests {
         (view(vec![holder.clone(), standby.clone(), outsider.clone()]), holder, standby, outsider)
     }
 
-    /// CONTRACT (fabric-primary-handover.md step 3, "Its fabric writes are fenced by the committed
-    /// transfer"; node-rpc-envelope.md "Build carrier": "A committed seat move ends the outer stream
-    /// with the typed new-seat frame", which names the new fabric-primary seat): a birth that held the
-    /// fabric seat record and finds it naming another birth fences its Build log naming that birth's
-    /// path.name, resolved from the view by the node id the record names, whether the record moved by
-    /// the handover door's commit or was heard on the backbone first. Once per move; a birth that
-    /// never held the record owes nothing. What must NOT happen: a fence naming no admin while the
-    /// record names the holder, which ends the caller's stream with a new-seat frame naming none.
+    /// CONTRACT: a birth that held the fabric seat record and finds it naming another birth owes one
+    /// hand-over of its committed Build facts, naming that birth's path.name (resolved by the node id
+    /// the record names), whether the record moved by the handover door's commit or was heard on the
+    /// backbone first. Once per move; a birth that never held the record owes nothing. The moved
+    /// record itself is the fence (`fabric_seat_record`); this pass writes none.
     #[test]
-    fn a_held_fabric_seat_record_that_moves_fences_the_build_log_naming_the_new_holder() {
+    fn a_held_fabric_seat_record_that_moves_owes_one_hand_over_naming_the_new_holder() {
         let (t, holder, standby, outsider) = world();
         let record = |n: &Node, epoch: u64| SeatHolder { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), epoch };
         let (me, mut held) = (me_of(&holder), false);
