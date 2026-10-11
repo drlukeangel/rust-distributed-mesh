@@ -164,7 +164,8 @@ struct Round {
     path: String,
     /// The mark (or first sighting) the round ran on, named on its spans.
     seen_at: u64,
-    task: tokio::task::JoinHandle<RoundEnd>,
+    /// `None`: the round was cancelled at a stop's park.
+    task: tokio::task::JoinHandle<Option<RoundEnd>>,
 }
 
 /// The exact birth a round runs for: node id and incarnation.
@@ -319,9 +320,11 @@ impl OfflineTickle {
                 continue;
             }
             let Some(Round { started_at_ms, path, seen_at, task }) = self.running.remove(&birth) else { continue };
-            // A round that panicked takes the loop with it, as one run inside the pass did.
+            // A round that panicked takes the loop with it, as one run inside the pass did. A round
+            // cancelled at a stop's park found nothing: nothing is folded, and the birth is due again.
             let end = match task.await {
-                Ok(end) => end,
+                Ok(Some(end)) => end,
+                Ok(None) => continue,
                 Err(e) => std::panic::resume_unwind(e.into_panic()),
             };
             let id = n.node_id.clone();
@@ -403,10 +406,12 @@ impl OfflineTickle {
             }
             report.tickled.push(id.clone());
             // The round: the direct connect, and only when it fails, the via-peer rung, its probes
-            // under one span of this round. It takes no lock and waits on nothing of this admin's.
+            // under one span of this round. It takes no lock and waits on nothing of this admin's; a
+            // stop's park cancels it where it stands (`ParkGate::until_parked`), and it never resumes.
             let (direct, carried) = (tickle(id.clone()), via_peer(id.clone()));
             let (node_id, at, observer) = (id.clone(), path.clone(), self.observer.clone());
-            let task = tokio::spawn(async move {
+            let (cancelled_id, cancelled_path, cancelled_by) = (id.clone(), path.clone(), self.observer.clone());
+            let round = self.gate.until_parked(async move {
                 match direct.await {
                     Ok(()) => RoundEnd::Direct,
                     Err(error) => {
@@ -421,6 +426,13 @@ impl OfflineTickle {
                     }
                 }
             });
+            let task = tokio::spawn(async move {
+                let end = round.await;
+                if end.is_none() {
+                    tracing::info!(node_id = %cancelled_id, path = %cancelled_path, observer = %cancelled_by, "the tickle round was cancelled at the stop's park: it proves nothing, and the birth is due again");
+                }
+                end
+            });
             self.running.insert(birth, Round { started_at_ms: now_ms, path, seen_at, task });
         }
         report
@@ -429,14 +441,19 @@ impl OfflineTickle {
 
 /// The recovery of a TRUE OFFLINE birth (`follow`: the provider's proof, the submit, and the Build
 /// followed to its end, `RecoverySubmitter::recover_if_proven`), run beside the mesh-primary's loop.
-/// The birth leaves `in_flight` when it ends, so a later tick submits it again.
+/// A stop's park cancels it where it stands, the view lock it holds or waits on included, and does not
+/// wait for it (`ParkGate::until_parked`); a submit it already made is answered AlreadyApplied or
+/// BuildInProgress when it comes again. The birth leaves `in_flight` either way, so the first tick
+/// that finds it due again, after a start or at the seat's next holder, submits it again.
 pub(crate) fn spawn_recovery_follower<F>(gate: &crate::park_gate::ParkGate, in_flight: std::sync::Arc<std::sync::Mutex<HashSet<(crate::model::NodeId, crate::model::IncarnationId)>>>, birth: (crate::model::NodeId, crate::model::IncarnationId), follow: F) -> tokio::task::JoinHandle<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    let _ = gate;
+    let follow = gate.until_parked(follow);
     tokio::spawn(async move {
-        follow.await;
+        if follow.await.is_none() {
+            tracing::info!(node_id = %birth.0, incarnation = %birth.1 .0, "the recovery follower was cancelled at the stop's park: the next tick that finds the birth due submits it again");
+        }
         in_flight.lock().unwrap().remove(&birth);
     })
 }
