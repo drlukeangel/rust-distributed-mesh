@@ -86,6 +86,14 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
         }
     }
+    // A parked birth (its stop published): the book dropped it, and so does the path it held.
+    let parked = book.parked().into_iter().map(|d| (d.node.node_id, d.node.incarnation, d.node.name)).chain(book.parked_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+    for (node_id, incarnation, name) in parked {
+        if resolver.park(&node_id, &incarnation) {
+            tracing::info_span!("rdm.node_rpc.node.update.via-membership", node, target = %name, target_id = %node_id, incarnation_id = %incarnation.0, change = "Parked")
+                .in_scope(|| tracing::info!("the resolver holds the parked birth by its exact id only: its path is given up"));
+        }
+    }
     for d in book.all() {
         let Some(birth) = resolved(&d) else { continue };
         let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.0.clone());

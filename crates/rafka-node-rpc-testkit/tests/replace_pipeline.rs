@@ -4,7 +4,7 @@
 //! predecessor is stopped with the provider's exact terminal proof and its storage handed over, the
 //! successor starts, joins and is ready, and only then is the old identity deleted.
 //!
-//! Its own test binary: it asserts spans (see `process_pipeline_failure.rs`).
+//! The span-asserting cell runs in its own process (`own_process`).
 
 use crate::common;
 
@@ -179,6 +179,11 @@ fn receipts(steps: &[rafka_node_admin_core::build_state::BuildStepReceipt], oper
 /// birth at the path, the successor, and the path resolves to the successor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
+    // It installs a scoped subscriber: tracing's process-wide callsite interest cache is not shared
+    // with the cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "replace_admits_the_successor_before_the_old_identity_is_deleted") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let rig = rig().await;

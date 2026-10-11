@@ -1148,7 +1148,7 @@ impl DeploymentPipeline<'_> {
 
     /// Every create step through `WaitForNodeReady`, as steps of `run`. A replacement runs them
     /// inside its own operation ([`Replacing`]): once the successor's identity, storage and network
-    /// are decided, the predecessor is stopped and its storage handed over, and only then does the
+    /// are decided, the predecessor (parked by its stop) is ended and its storage handed over, and only then does the
     /// successor start.
     async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, replacing: Option<&Replacing<'_>>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
@@ -1225,11 +1225,11 @@ impl DeploymentPipeline<'_> {
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
-        // A replacement: the successor now has its identity, key and directory. The predecessor is
-        // stopped, with the provider's exact terminal proof, and its storage handed over into that
-        // directory before the successor's process exists.
+        // A replacement: the successor now has its identity, key and directory. The predecessor, parked
+        // by its stop, is ended with the provider's exact terminal proof, and its storage handed over
+        // into that directory before the successor's process exists.
         if let Some(replacing) = replacing {
-            self.stop_and_hand_over(run, replacing, &data_dir).await?;
+            self.end_and_hand_over(run, replacing, &data_dir).await?;
         }
         let launch = Launch {
             fabric: self.template.fabric.clone(),
@@ -1913,7 +1913,7 @@ impl DeploymentPipeline<'_> {
     ///
     /// ```text
     /// NodeDeleting
-    ///   -> [MarkDraining -> WaitForDrain -> PublishLeaving -> CloseRpcAdmission]  (a birth not yet proven terminal)
+    ///   -> [DrainNode -> AwaitNodeDrained -> StopNode -> AwaitNodeLeft (NodeStopped)]  (a birth not yet proven terminal: parked)
     ///   -> RenamePredecessor -> AllocateIdentity -> PrepareStorage -> PrepareNetwork
     ///   -> TerminateRuntime -> HandoffStorage
     ///   -> DeployRuntime -> ... -> WaitForBind -> ... -> WaitForMeshJoin -> WaitForNodeReady
@@ -1958,8 +1958,14 @@ impl DeploymentPipeline<'_> {
         self.lifecycle.deleting(&op).await;
         // A birth the provider already proves terminal is sent nothing (node-recovery.md: no RPC can
         // be required from the proven-terminal old birth); any other birth drains first.
+        // The recipe's first step (node-replace.md 1): the complete stop leaves the predecessor parked,
+        // and the stop's departure (`NodeStopped`) drops it from every book, before it gives up its
+        // name and before anything of the successor exists.
         if !matches!(self.provider.inspect(&req.handle).await, DeploymentStatus::Exited { .. }) {
             self.drain_steps(&mut run, &mut old, &req.handle).await?;
+            // The complete stop (node-stop.md): `stopped` received, or the step fails by name; a stop
+            // without it parked nothing and published no departure.
+            self.stop_steps_with(&mut run, &mut old, &req.handle, true, StopEnd::Park { publish_stopped: true }).await?;
         }
         let to = format!("{name}.old");
         self.step(&mut run, ReplaceStep::RenamePredecessor.name(), async {
@@ -1997,17 +2003,11 @@ impl DeploymentPipeline<'_> {
         Ok(created)
     }
 
-    /// The predecessor stops, with the provider's exact terminal proof, and its storage goes into the
-    /// successor's directory: after the successor's identity exists and before its process does.
-    async fn stop_and_hand_over(&self, run: &mut Run<'_>, replacing: &Replacing<'_>, successor_dir: &std::path::Path) -> Result<(), PipelineError> {
-        // A birth the provider already proves terminal is asked only for that proof; any other birth is
-        // stopped through the stop leg (stop-node, node-left, the provider's stop and inspection).
-        if matches!(self.provider.inspect(replacing.handle).await, DeploymentStatus::Exited { .. }) {
-            self.terminate_step(run, replacing.predecessor, replacing.handle).await?;
-        } else {
-            let mut old = replacing.predecessor.clone();
-            self.stop_steps(run, &mut old, replacing.handle).await?;
-        }
+    /// The predecessor, parked since its stop (or proven terminal already), is ended with the
+    /// provider's exact terminal proof, and its storage goes into the successor's directory: after the
+    /// successor's identity exists and before its process does.
+    async fn end_and_hand_over(&self, run: &mut Run<'_>, replacing: &Replacing<'_>, successor_dir: &std::path::Path) -> Result<(), PipelineError> {
+        self.terminate_step(run, replacing.predecessor, replacing.handle).await?;
         self.step(run, ReplaceStep::HandoffStorage.name(), async { self.hand_over_storage(replacing, successor_dir).await }).await
     }
 
