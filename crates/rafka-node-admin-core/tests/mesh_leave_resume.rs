@@ -995,3 +995,32 @@ fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row
     assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no runtime row")), "no digest and no row: unproven, naming both: {without_row:?}");
     assert_eq!(with_row, Finding::Exited { code: Some(0) }, "the runtime row recorded at launch is what the provider inspects");
 }
+
+/// CONTRACT: the leaving mesh-primary admits `LeaveMesh` for a Build whose Accepted fact gossip has
+/// not yet brought it (the command outran the fact, gate 044519ab canonical_ids: admitted at .810,
+/// "no Build" at .811, Accepted heard at .905). Its own log holding no fact of the Build is the case
+/// "its own do not yet admit it": the owner's Build facts are read (FetchBuildFacts) and absorbed
+/// into its own Build log (node-build-hydration.md: "Facts are absorbed into the existing Build
+/// log"), and the leave runs over the roster the owner accepted. Its own log then holds the Build.
+#[test]
+fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners_facts() {
+    let records: Vec<Node> = [FINAL, EXITING].iter().map(|n| node(n)).collect();
+    let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 49_000 + i as u32))).collect();
+    let me = RosterBirth::of(&records[0]).unwrap();
+    let my_runtime = RuntimeProof::of(&handles[FINAL].fact().unwrap());
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (roster, held) = rt.block_on(async {
+        let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
+        let build_id = BuildId::mint();
+        let mesh_id = MeshId::mint();
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 1, operation: operation(&mesh_id) };
+        owner.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        accepted_roster(&owner, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &my_runtime, || live_roster(&records)).await.unwrap();
+        let owner_facts = owner.facts().await.unwrap();
+        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &key, FINAL, &me, &my_runtime, || live_roster(&records), || async { Ok(owner_facts) }).await;
+        (roster, own.read_build(&build_id).await.map(|p| p.steps.len()))
+    });
+    let (roster, _) = roster.unwrap_or_else(|e| panic!("a leaving primary that has not heard the Build runs the leave over the owner's facts: {e}"));
+    assert_eq!(sorted(roster), sorted(live_roster(&records).unwrap()), "the roster is the one the owner accepted");
+    assert!(held.is_ok(), "the owner's facts are absorbed: this admin's own log holds the Build: {held:?}");
+}
