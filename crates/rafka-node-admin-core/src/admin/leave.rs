@@ -223,6 +223,18 @@ impl AdminRunner {
         let Some(owner) = sender.map(|n| n.node_id.clone()) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } };
         };
+        // states.md: the mesh's `leaving` is entered by this down op, and "one commit stores the row,
+        // applies it, gossips it and answers the op" (the command hook's mesh-leaving is the owner's);
+        // fabric-node-lifecycle.md 2.7: the mesh's primary writes every status of its own mesh row.
+        // The row is put and applied before the leave is admitted: a refused put admits nothing and
+        // answers NotReady naming the store, so the owner's repeated leave-mesh is decided afresh.
+        let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, mesh_id, rafka_node_rpc_contract::status::MeshState::Leaving).await;
+        tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
+            .in_scope(|| tracing::info!("leave-mesh admitted at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
+        match committed {
+            StatusReply::Applied | StatusReply::AlreadyApplied => {}
+            refused => return refused,
+        }
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
         let resend = match self.leave_runs.admit(&key, &owner) {
             crate::mesh_leave::LeaveAdmission::Running => return StatusReply::AlreadyApplied,
