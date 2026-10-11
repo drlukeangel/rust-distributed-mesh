@@ -308,21 +308,10 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
     assert_eq!(outcome("mesh1.admin.2"), vec!["row-claimed"], "{spans:#?}");
 }
 
-/// CONTRACT (R14 item 7 and acceptance "a mesh seat change: the successor rebuilds and holds the
-/// predecessor's rows (Node rows, `.old`, Deleted, config)"): the predecessor P and the successor N
-/// are two admins with their own data dirs and their own store instances over one shared root. P
-/// held the seat and wrote the rows: a live member's row (status Draining, config platinum), a
-/// replaced predecessor's row moved to `mesh1.rpc.2.old` (Deleted, config bronze) and a deleted
-/// node's row at `mesh1.rpc.3` (Deleted, config silver). N takes the seat over a view whose live
-/// digests hold mesh1.rpc.1 ready, a successor at mesh1.rpc.2 and a new node at mesh1.rpc.3. N's
-/// rebuild reads P's rows from the shared root: the live member's row stands untouched, the new
-/// node at the Deleted row's name is seeded silver, the successor is seeded bronze from the `.old`
-/// row, and N holds every one of P's rows. A row never overrides a live digest's status: N's view
-/// holds mesh1.rpc.1 ready-for-traffic while its row says Draining.
-#[test]
-fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
-    let cap = capture();
-    let (rows, view_status, succ, fresh, old_pred, deleted_pred) = cap.run(async {
+type Rebuilt = (BTreeMap<String, Option<NodeRow>>, Option<NodeStatus>, NodeId, NodeId, NodeId, NodeId, String);
+
+/// The rebuild cell's story: P's writes, then N's seat taken over one shared root.
+async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let d = std::env::temp_dir().join(format!("node-rows-shared-root-{}", NodeId::mint()));
         let root = rafka_node_admin_core::store_root::StoreRoot::at(&d.join("store"));
         let open = |data: &str| -> Arc<dyn NodesStorage> {
@@ -365,15 +354,37 @@ fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() 
         }
         let view_status = topology.read().await.node(&rpc1.name).map(|n| n.status);
         let _ = std::fs::remove_dir_all(&d);
-        (rows, view_status, succ, fresh_id, old_pred, deleted_pred)
+        (rows, view_status, succ, fresh_id, old_pred, deleted_pred, trace_id)
+}
+
+/// CONTRACT (R14 item 7 and acceptance "a mesh seat change: the successor rebuilds and holds the
+/// predecessor's rows (Node rows, `.old`, Deleted, config)"): the predecessor P and the successor N
+/// are two admins with their own data dirs and their own store instances over one shared root. P
+/// held the seat and wrote the rows: a live member's row (status Draining, config platinum), a
+/// replaced predecessor's row moved to `mesh1.rpc.2.old` (Deleted, config bronze) and a deleted
+/// node's row at `mesh1.rpc.3` (Deleted, config silver). N takes the seat over a view whose live
+/// digests hold mesh1.rpc.1 ready, a successor at mesh1.rpc.2 and a new node at mesh1.rpc.3. N's
+/// rebuild reads P's rows from the shared root: the live member's row stands untouched, the new
+/// node at the Deleted row's name is seeded silver, the successor is seeded bronze from the `.old`
+/// row, and N holds every one of P's rows. A row never overrides a live digest's status: N's view
+/// holds mesh1.rpc.1 ready-for-traffic while its row says Draining.
+#[test]
+fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
+    let cap = crate::mesh_leave_resume::capture();
+    let (rows, view_status, succ, fresh, old_pred, deleted_pred, trace_id) = cap.run(async {
+        let root_span = tracing::info_span!("rdm.test.node.create.via-shared-root-rebuild");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root_span);
+        tracing::Instrument::instrument(rebuild_over_one_root(trace_id), root_span).await
     });
+    println!("trace_id={trace_id}");
     let row = |name: &str| rows[name].clone().unwrap_or_else(|| panic!("the successor holds no row at {name}: {rows:#?}"));
     assert_eq!((row("mesh1.rpc.1").status, row("mesh1.rpc.1").config), (NodeStatus::Draining, tier("platinum")), "the live member's row stands as P wrote it");
     assert_eq!((row("mesh1.rpc.2.old").node_id, row("mesh1.rpc.2.old").status), (old_pred.clone(), NodeStatus::Deleted), "N holds P's .old row");
     assert_eq!((row("mesh1.rpc.2").node_id, row("mesh1.rpc.2").config), (succ.clone(), tier("bronze")), "the successor is seeded from the .old row");
     assert_eq!((row("mesh1.rpc.3").node_id, row("mesh1.rpc.3").config), (fresh.clone(), tier("silver")), "the node created at the Deleted row's name is seeded from it, its row overwritten at that key");
     assert_eq!(view_status, Some(NodeStatus::ReadyForTraffic), "a row never overrides a live digest's status");
-    let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    let spans: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row").collect();
+    assert!(spans.iter().all(|s| s["trace_id"] == trace_id.as_str()), "every rebuild claim is the cell's own story: {spans:#?}");
     let outcome = |name: &str| spans.iter().filter(|s| s["attributes"]["subject"] == name).map(|s| (s["attributes"]["outcome"].as_str().unwrap_or("").to_string(), s["attributes"]["seeded_from"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>();
     assert_eq!(outcome("mesh1.rpc.1"), vec![("row-held-by-node".to_string(), String::new())], "{spans:#?}");
     assert_eq!(outcome("mesh1.rpc.2"), vec![("row-seeded".to_string(), old_pred.to_string())], "{spans:#?}");
