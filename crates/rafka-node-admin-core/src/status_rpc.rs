@@ -31,10 +31,11 @@ pub struct Declared {
     pub meshes: std::collections::HashMap<MeshId, MeshState>,
     /// Per fabric id: the events applied, in order, each once.
     pub fabric: std::collections::HashMap<FabricId, Vec<String>>,
-    /// Per mesh name: the latest `ReadyForTraffic` report this admin received as the fabric-primary,
-    /// from the mesh's primary and the exact birth that sent it. Memory of this process's tenure; it is
-    /// never stored or rehydrated, because a report is evidence only while it is fresh.
-    pub reports: BTreeMap<String, MeshReport>,
+    /// Per mesh name, per reporter: when this admin, as the fabric-primary, last received a
+    /// `ReadyForTraffic` declaration of that mesh from that reporter ([`Declared::report_of`] reads
+    /// the one that counts). Memory of this process's tenure; it is never stored or rehydrated,
+    /// because a report is evidence only while it is fresh.
+    pub reports: BTreeMap<String, std::collections::HashMap<Reporter, std::time::Instant>>,
     /// Per birth `(node id, incarnation)` of this admin's mesh: the `node.connections.deleted` it
     /// answered the last `node.connections.delete` this mesh-primary carried to it, in its current
     /// cycle (R-CR2: what a rename of a live birth needs). Memory of this tenure: a successor holds
@@ -62,10 +63,47 @@ pub struct MeshReport {
     pub at: std::time::Instant,
 }
 
+/// Who sent a Mesh's round-complete report, as this admin could name it when it arrived: the birth
+/// its view held for the calling endpoint, or only that endpoint when its view held no birth for it
+/// yet (nothing inside the mesh checks who is calling, node-rpc.md §14, so such a report is taken).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Reporter {
+    /// The exact birth that sent it.
+    Birth(IncarnationId),
+    /// The transport-proven endpoint that sent it, its birth not yet in this admin's view.
+    Endpoint(String),
+}
+
 impl Declared {
     /// The state the birth `(node_id, incarnation)` declared, when it declared one.
     pub fn node(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<NodeState> {
         self.nodes.get(&(node_id.clone(), incarnation.clone())).copied()
+    }
+
+    /// Hold `mesh`'s round-complete report from `reporter`, received `at`: one per reporter, so a
+    /// report from one birth never displaces another's.
+    pub fn record_report(&mut self, mesh: &str, reporter: Reporter, at: std::time::Instant) {
+        self.reports.entry(mesh.to_string()).or_default().insert(reporter, at);
+    }
+
+    /// The report of `mesh` that counts for `primary`, the birth this admin's view names its primary
+    /// now: the one that birth sent, or the one its endpoint sent before the view held the birth.
+    /// Else the latest report another birth sent, named by that birth (`report-of-another-birth` at
+    /// the reader); `None` when no birth reported.
+    pub fn report_of(&self, mesh: &str, primary: Option<&crate::model::Node>) -> Option<MeshReport> {
+        let by = self.reports.get(mesh)?;
+        if let Some((p, incarnation)) = primary.and_then(|p| p.incarnation_id.clone().map(|i| (p, i))) {
+            let own = by.get(&Reporter::Birth(incarnation.clone())).or_else(|| p.endpoint_id.as_ref().and_then(|e| by.get(&Reporter::Endpoint(e.0.clone()))));
+            if let Some(at) = own {
+                return Some(MeshReport { incarnation, at: *at });
+            }
+        }
+        by.iter()
+            .filter_map(|(r, at)| match r {
+                Reporter::Birth(i) => Some(MeshReport { incarnation: i.clone(), at: *at }),
+                Reporter::Endpoint(_) => None,
+            })
+            .max_by_key(|r| r.at)
     }
 }
 
@@ -453,9 +491,13 @@ impl StatusAuthority {
         // A `ReadyForTraffic` Mesh declaration the authority took (applied now or already applied) is
         // the mesh primary's round-complete report: the primary sends it only when its checklist is
         // complete. Whichever it was, the report is what this admin received now from that exact birth.
-        if let (StatusRequest::DeclareMeshState { state: MeshState::ReadyForTraffic, .. }, StatusReply::Applied | StatusReply::AlreadyApplied, Some(from)) = (req, &reply, sender.as_ref()) {
-            if let Some(incarnation) = from.incarnation_id.clone() {
-                self.declared.lock().unwrap().reports.insert(from.mesh.clone(), MeshReport { incarnation, at: std::time::Instant::now() });
+        // It is kept for the mesh the declaration names, from the birth that sent it (or its endpoint
+        // while this admin's view holds no birth for it), never under the caller's own mesh.
+        if let (StatusRequest::DeclareMeshState { mesh_id, state: MeshState::ReadyForTraffic }, StatusReply::Applied | StatusReply::AlreadyApplied) = (req, &reply) {
+            let mesh = (self.mesh_ids)().into_iter().find(|(_, id)| id == mesh_id).map(|(name, _)| name).or_else(|| view.meshes.iter().find(|m| m.id.as_ref() == Some(mesh_id)).map(|m| m.name.clone()));
+            let reporter = sender.as_ref().and_then(|from| from.incarnation_id.clone()).map(Reporter::Birth).or_else(|| peer.map(|k| Reporter::Endpoint(k.to_string())));
+            if let (Some(mesh), Some(reporter)) = (mesh, reporter) {
+                self.declared.lock().unwrap().record_report(&mesh, reporter, std::time::Instant::now());
             }
         }
         tracing::info_span!(
@@ -1269,9 +1311,22 @@ mod tests {
         assert_eq!(auth.apply(Some(m2_primary.clone()), &ready).await, R::Applied);
         assert_eq!(auth.apply(Some(m2_member.clone()), &ready).await, R::AlreadyApplied, "decided for mesh2, whoever sends it");
         assert_eq!(auth.apply(Some(m1_member.clone()), &ready).await, R::AlreadyApplied);
-        let reports = auth.declared.lock().unwrap().reports.clone();
-        assert_eq!(reports.get("mesh2").map(|r| r.incarnation.clone()), m2_primary.incarnation_id.clone(), "the primary's report stands: {reports:?}");
-        assert!(!reports.contains_key("mesh1"), "a declaration of mesh2 is never mesh1's report: {reports:?}");
+        let held = auth.declared.lock().unwrap().clone();
+        assert_eq!(held.report_of("mesh2", Some(&m2_primary)).map(|r| r.incarnation), m2_primary.incarnation_id.clone(), "the primary's report stands: {:?}", held.reports);
+        assert!(held.report_of("mesh1", Some(&fp)).is_none(), "a declaration of mesh2 is never mesh1's report: {:?}", held.reports);
+        // A mesh's primary this admin's view does not hold yet: its report is kept by its endpoint and
+        // counts for its birth once the view holds it.
+        let m3_id = MeshId::mint();
+        let m3_primary = admin("mesh3.admin.1", "mesh3", true, false);
+        auth.topology.write().await.meshes.push(crate::model::Mesh { id: Some(m3_id.clone()), name: "mesh3".into(), status: crate::model::ScopeStatus::Pending });
+        let key = iroh::SecretKey::generate().public();
+        let mut m3_primary = m3_primary;
+        m3_primary.endpoint_id = Some(EndpointId(key.to_string()));
+        let ready3 = StatusRequest::DeclareMeshState { mesh_id: m3_id, state: MeshState::ReadyForTraffic };
+        assert_eq!(auth.apply_from(Some(key), None, &ready3).await, R::Applied, "decided for mesh3 from an endpoint the view holds no birth for");
+        let held = auth.declared.lock().unwrap().clone();
+        assert_eq!(held.report_of("mesh3", Some(&m3_primary)).map(|r| r.incarnation), m3_primary.incarnation_id.clone(), "the endpoint's report counts for the birth the view holds at it: {:?}", held.reports);
+        assert!(held.report_of("mesh3", Some(&m2_member)).is_none(), "and for no other birth");
     }
 
     fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rafka_mesh_entity::MeshDigest {
