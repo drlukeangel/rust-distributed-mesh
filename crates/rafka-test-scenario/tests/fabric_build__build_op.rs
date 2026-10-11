@@ -409,6 +409,57 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     estate.record_trace_url(run["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (acceptance 5): a planned seat move mid-Build ends the caller's outer stream with the
+/// typed new-seat frame, never `Indeterminate`. `mesh1` holds the fabric-primary seat, and the Build
+/// retires `mesh1`: the fabric-primary hands the seat to `mesh2`'s primary (op `0x21`) as the retire
+/// is prepared, and the Build goes on at the new seat. The old fabric-primary's dispatch after the
+/// handover is refused with `Fenced` in its span; the caller re-submits by the Build id at the seat the
+/// frame names and streams it to `Complete`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_seat_and_the_old_seat_dispatches_nothing() {
+    let test = "a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_seat_and_the_old_seat_dispatches_nothing";
+    let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
+    let caller = Caller::of(&estate.admin).await;
+    let carrier = born(&estate, &caller, &SHAPE).await;
+    let old_seat = carrier.fabric_primary().to_string();
+    assert!(old_seat.starts_with("mesh1."), "mesh1 holds the fabric-primary seat: {old_seat}");
+
+    // The Build retires mesh1; the seat leaves with it, by a planned handover inside the Build.
+    let keep = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
+    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(keep)).await.expect("the fabric-primary accepts the retire");
+    let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
+    let new_seat = loop {
+        match stream.next().await {
+            Some(Ok(BuildFrame::SeatMoved { fabric_primary })) => break fabric_primary.expect("the old seat names the new one"),
+            Some(Ok(BuildFrame::Complete { .. })) => panic!("the old fabric-primary cannot finish a retire of its own mesh"),
+            Some(Ok(BuildFrame::Failed { operation, step, reason, .. })) => panic!("the Build failed at {operation} {step}: {reason}"),
+            Some(Ok(_)) => continue,
+            Some(Err(end)) => panic!("a planned seat move ends the outer stream with the typed new-seat frame, never as {end:?}"),
+            None => panic!("the stream ended without a terminal frame"),
+        }
+    };
+    assert!(new_seat.starts_with("mesh2."), "the seat moved to mesh2's primary: {new_seat}");
+    assert_ne!(new_seat, old_seat);
+
+    // The caller re-submits the same Build at the seat the frame names.
+    let at_new_seat = BuildCarrier::new(caller.client.clone(), path(&new_seat));
+    let mut resumed = at_new_seat.resubmit(&build_id, attempt).await.expect("the new seat accepts the re-submit by build_id");
+    assert_eq!(resumed.build_id(), &build_id, "never a second Build");
+    until_complete(&mut resumed).await;
+
+    let base = caller.bases.lock().unwrap().get(&new_seat).cloned().expect("the new seat's control API is known");
+    estate.admin = base;
+    estate.stop().await;
+    let spans = estate.spans();
+    let build = &build_id.0;
+    let handover_calls = spans_named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| sp["attributes"]["op"].as_str().and_then(|o| o.parse::<u64>().ok()).or_else(|| sp["attributes"]["op"].as_u64()) == Some(0x21)).count();
+    assert!(handover_calls >= 1, "the seat moved by the fabric-primary handover, op 0x21");
+    let fenced: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
+    assert!(!fenced.is_empty(), "the old fabric-primary's dispatch after the fence was refused, Fenced in its span");
+    assert!(fenced.iter().all(|sp| s(&sp["attributes"]["node"]) == old_seat), "{fenced:?}");
+    estate.record_trace_url(fenced[0]["trace_id"].as_str().unwrap_or(""));
+}
+
 impl Caller {
     /// The control API bases of the node-admins other than `dead`, as the answering admin's view
     /// held them before it died.

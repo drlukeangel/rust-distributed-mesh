@@ -347,7 +347,10 @@ impl NodeRpcClient {
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(e.to_string())), Some(evidence));
             }
-            Err(_) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
+            Err(_) => {
+                tracing::info!(step = "stream-open-deadline", waited_ms = opened_at.elapsed().as_millis() as u64, "no request stream opened within the send budget");
+                return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence));
+            }
         };
         let payload = match payload {
             Payload::Ready(bytes) => bytes,

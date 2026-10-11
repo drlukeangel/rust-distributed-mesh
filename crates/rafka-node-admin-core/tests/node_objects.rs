@@ -32,18 +32,16 @@ use std::time::Duration;
 
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder().with_simple_exporter(exporter.clone()).build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("node-objects"));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture("node-objects", exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
 impl Capture {
@@ -60,16 +58,51 @@ impl Capture {
     }
 
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
-        self.exporter
-            .get_finished_spans()
-            .unwrap()
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let finished = self.exporter.get_finished_spans().unwrap();
+        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
+        finished
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
                 json!({"name": s.name, "attributes": attributes})
             })
             .collect()
+    }
+}
+
+/// A cell that panics leaves its trace: every span its capture holds (name, ids, attributes) goes to
+/// `target/i143-testkit/node_objects/<cell>.<pid>.spans.json`, so a red reads from its own spans
+/// (did the admin accept the connection, how did the call end) and never from a rerun.
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let flushed = self.capture.flush(Duration::from_secs(10));
+        let spans: Vec<Value> = self
+            .exporter
+            .get_finished_spans()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
+                json!({
+                    "name": s.name,
+                    "trace_id": s.span_context.trace_id().to_string(),
+                    "span_id": s.span_context.span_id().to_string(),
+                    "parent_span_id": s.parent_span_id.to_string(),
+                    "start": s.start_time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0),
+                    "end": s.end_time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0),
+                    "attributes": attributes,
+                })
+            })
+            .collect();
+        let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/node_objects");
+        let path = dir.join(format!("{cell}.{}.spans.json", std::process::id()));
+        let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&spans).unwrap()));
+        eprintln!("node_objects: the panicking cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());
     }
 }
 
@@ -174,12 +207,12 @@ async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
         topology: control.topology.clone(),
         accepted,
         builds: rig.builds.clone(),
-        door: Arc::new(ClaimDoor { me: me.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: Arc::new(Local(run.clone())),
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
 }
@@ -200,12 +233,12 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         topology: control.topology.clone(),
         accepted,
         builds: fp.clone(),
-        door: Arc::new(ClaimDoor { me: me.clone(), topology: control.topology.clone(), builds: fp.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: fp.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: Arc::new(Local(run.clone())),
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
 }

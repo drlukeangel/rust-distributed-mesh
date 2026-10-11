@@ -65,7 +65,7 @@ pub fn refusal_reply(r: Refusal) -> BuildReply {
         Refusal::NotAuthority(p) => BuildReply::NotFabricPrimary { fabric_primary: p },
         Refusal::AttemptTaken(d) => BuildReply::AttemptTaken { detail: d },
         Refusal::Unavailable(d) => BuildReply::NotReady { reason: d },
-        Refusal::State(BuildStateError::Fenced { node, by }) => BuildReply::Fenced { node, by },
+        Refusal::State(BuildStateError::Fenced { node, by, .. }) => BuildReply::Fenced { node, by },
         Refusal::State(e) => BuildReply::NotReady { reason: format!("the Build state: {e}") },
     }
 }
@@ -111,10 +111,11 @@ impl BuildDoor {
 
     /// Only the fabric-primary accepts a Build call; any other admin names the one it sees.
     async fn not_fabric_primary(&self) -> Option<BuildReply> {
-        let seat = self.control.topology.read().await.fabric_primary().map(|n| n.name.clone());
+        // Decided by the node id this admin was born with (its claim door's), never by path.name.
+        let seat = self.control.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
         match seat {
-            Some(n) if n.to_string() == self.me.to_string() => None,
-            other => Some(BuildReply::NotFabricPrimary { fabric_primary: other.map(|n| n.to_string()) }),
+            Some((_, id)) if id == self.env.door.node_id => None,
+            other => Some(BuildReply::NotFabricPrimary { fabric_primary: other.map(|(n, _)| n.to_string()) }),
         }
     }
 
@@ -305,14 +306,17 @@ async fn started(sink: ReplySink<Build, NotStarted>, frame: BuildReply) -> Resul
     sink.started(frame).await.map_err(gone)
 }
 
-/// Read a drive's frames to the caller until its terminal. A seat that moved ends the stream
-/// without a terminal: the caller sees it end `Indeterminate` and re-submits by build id.
+/// Read a drive's frames to the caller until its terminal. A seat that moved ends the stream with
+/// the typed `SeatMoved` terminal naming the new seat: the caller re-submits the Build id there.
 async fn stream_frames(mut sink: ReplySink<Build, rafka_node_rpc::stream::Streaming>, mut reader: crate::build_drive::DriveReader) -> Result<BuildReply, HandlerFault> {
     while let Some(t) = reader.next().await {
         match t {
             Read::Frame(f) => sink.data(f).await.map_err(gone)?,
             Read::Terminal(t) => return Ok(t),
-            Read::SeatLost(why) => return Err(HandlerFault::invariant_broken(format!("the fabric-primary seat moved off this admin; re-submit the Build by its id at the new seat: {why}"))),
+            Read::SeatLost(loss) => {
+                tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %reader.build_id(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
+                return Ok(BuildReply::SeatMoved { build_id: reader.build_id().0.clone(), fabric_primary: loss.to });
+            }
         }
     }
     Err(HandlerFault::invariant_broken("the drive's frames ended without a terminal"))

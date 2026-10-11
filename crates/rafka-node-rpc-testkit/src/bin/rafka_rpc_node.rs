@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
+    // A stop that arrives while the node boots is heard from here on.
+    node::listen_for_stop();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node");
     let launch = match Launch::from_env(|k| std::env::var(k).ok()) {
         Ok(l) => l,
@@ -46,13 +48,24 @@ async fn main() {
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        match node::start_with_seams(&launch, |b, seams| {
+        let started = node::start_with_seams(&launch, |b, seams| {
             let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch), seams.resolver.clone(), &launch), declare_client.clone(), &launch);
             rafka_node_rpc_testkit::originate::serve(b, seams, &launch)
         })
-            .instrument(tracing::Span::none())
-            .await
-        {
+        .instrument(tracing::Span::none());
+        let started = tokio::select! {
+            r = started => r,
+            () = node::stop_requested() => {
+                // Stopped before it booted: the boot ends by name and the process exits through
+                // its telemetry drain (the guard drops as main returns).
+                boot.in_scope(|| tracing::info!("stopped by signal before the node booted"));
+                drop(boot);
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = false)
+                    .in_scope(|| tracing::info!("stopping"));
+                return;
+            }
+        };
+        match started {
             Ok(r) => r,
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
@@ -92,7 +105,7 @@ async fn main() {
         drain.record("in_flight_at_deadline", left);
         drop(drain);
     }
-    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation)
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true)
         .in_scope(|| tracing::info!("stopping"));
     if node::stop_commanded() {
         running.stop_commanded().await;

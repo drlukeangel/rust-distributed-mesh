@@ -42,6 +42,8 @@ fn view() -> Topology {
 struct Switch {
     authorizes: AtomicBool,
     fenced: AtomicBool,
+    /// The admin a committed seat transfer named in the fence, when the cell sets one.
+    successor: Mutex<Option<String>>,
 }
 
 #[async_trait::async_trait]
@@ -51,7 +53,7 @@ impl Gate for Switch {
     }
     async fn fence(&self) -> Result<(), BuildStateError> {
         if self.fenced.load(Ordering::SeqCst) {
-            Err(BuildStateError::Fenced { node: "mesh1.admin.1".into(), by: "leaving".into() })
+            Err(BuildStateError::Fenced { node: "mesh1.admin.1".into(), by: "leaving".into(), to: self.successor.lock().unwrap().clone() })
         } else {
             Ok(())
         }
@@ -88,25 +90,26 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let topology = Arc::new(RwLock::new(t.clone()));
+    let fp_id = t.node(&"mesh1.admin.1".parse().unwrap()).expect("the fabric-primary is in the view").node_id.clone();
     let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
     cp.topology = topology.clone();
     let opened = cp.submit("test", change).await.unwrap();
     let ran = Arc::new(Creates(Mutex::new(Vec::new())));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false) });
+    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: topology.clone(),
         accepted,
         builds: builds.clone(),
-        door: Arc::new(ClaimDoor { me, topology, builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: fp_id.clone(), me, topology, builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: dispatch.clone(),
         gate: switch.clone(),
         departure: proofs.clone(),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), fp_id, Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id }
 }
@@ -132,7 +135,81 @@ async fn a_fabric_primary_that_yielded_its_seat_claims_and_dispatches_nothing() 
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
     assert!(r.ran.0.lock().unwrap().is_empty());
-    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(why)) if why.contains("leaving")));
+    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.why.contains("leaving") && loss.to.is_none()));
+}
+
+/// CONTRACT: an admin knows the fabric-primary seat is its own by the node id it was born with,
+/// never by path.name. When its view shows another birth at its own path.name holding the seat (a
+/// successor or a retired birth of that path), the drive ends `SeatLost` naming that holder, claims
+/// no attempt and calls no executor, and the callers' streams end naming the holder.
+#[tokio::test]
+async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_holding_the_seat_dispatches_nothing() {
+    let r = rig().await;
+    let other = rafka_mesh_entity::NodeId::mint();
+    {
+        let mut t = r.env.topology.write().await;
+        let fp = t.nodes.iter_mut().find(|n| n.is_fabric_primary).expect("the view shows a fabric-primary");
+        assert_eq!(fp.name, r.env.me, "the seat is shown at this admin's own path.name");
+        fp.node_id = other.clone();
+        fp.incarnation_id = Some(IncarnationId::mint());
+    }
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match r.env.run(&drive).await {
+        DriveEnd::SeatLost(why) => assert!(why.contains("does not hold the fabric-primary seat") && why.contains(other.as_str()), "the refusal names the birth that holds the seat: {why}"),
+        other => panic!("another birth of this path holding the seat ends the drive SeatLost: {other:?}"),
+    }
+    assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
+    assert!(r.ran.0.lock().unwrap().is_empty());
+    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh1.admin.1")));
+}
+
+/// CONTRACT: the Build log's fence decides before the view does. A fabric-primary whose seat record
+/// moved is fenced by that move while its view may still show the old holder or already show the new
+/// one: either way its dispatch is refused `Fenced`, and the callers' streams end naming the admin
+/// its view shows as the holder now.
+#[tokio::test]
+async fn a_fenced_fabric_primary_is_refused_fenced_whatever_its_view_shows_and_names_the_new_seat() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", true, false));
+    let r = rig_for(t, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
+    for n in r.env.topology.write().await.nodes.iter_mut() {
+        n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
+    }
+    r.switch.fenced.store(true, Ordering::SeqCst);
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match r.env.run(&drive).await {
+        DriveEnd::SeatLost(why) => assert!(why.contains("yielded the fabric-primary seat"), "the fence refused it, not the view: {why}"),
+        other => panic!("a fenced seat ends the drive SeatLost: {other:?}"),
+    }
+    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")));
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
+}
+
+/// CONTRACT: a committed seat transfer names the new holder in the fence itself. The old seat's view
+/// is re-projected on its own clock, so right after the transfer it may still show this admin as the
+/// fabric-primary: the callers' streams still end naming the successor the transfer committed, never
+/// an empty seat read from a view that has not moved yet.
+#[tokio::test]
+async fn a_fence_set_by_a_committed_transfer_names_the_successor_while_the_view_still_shows_the_old_seat() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", true, false));
+    let r = rig_for(t, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
+    assert_eq!(r.env.topology.read().await.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the view still shows the old seat");
+    *r.switch.successor.lock().unwrap() = Some("mesh2.admin.1".into());
+    r.switch.fenced.store(true, Ordering::SeqCst);
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    assert!(matches!(r.env.run(&drive).await, DriveEnd::SeatLost(_)), "a fenced seat ends the drive SeatLost");
+    match next_within(&mut reader).await {
+        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh2.admin.1"), "the stream names the committed successor: {loss:?}"),
+        other => panic!("the reader ends with the seat loss, got {other:?}"),
+    }
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
 }
 
 /// CONTRACT: a cut-off view dispatches nothing. It authorizes no claim and no call; the drive

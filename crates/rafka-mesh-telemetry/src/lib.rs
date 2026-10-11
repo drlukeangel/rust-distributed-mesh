@@ -21,7 +21,7 @@ pub mod logs;
 mod log_sink;
 pub mod watchdog;
 mod pipeline;
-pub use pipeline::{install_span_capture, span_export_layer, span_processor, CountingBatchProcessor, SpanCapture, SpanLoss};
+pub use pipeline::{install_span_capture, span_capture, span_export_layer, span_processor, CountingBatchProcessor, SpanCapture, SpanLoss};
 
 use export::{ExportRuntime, WatchedLogs, WatchedSpans};
 
@@ -364,6 +364,13 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
         }
         Box::pin(async move { r.map_err(|e| opentelemetry::trace::TraceError::Other(format!("evidence write failed: {e}").into())) })
     }
+}
+
+/// The JSONL evidence exporter [`init_evidence_telemetry`] writes with, for a consumer that builds
+/// its own pipeline ([`span_capture`]): one line per span to
+/// `<dir>/<service>.<pid>-<pid namespace inode>.spans.jsonl`, appended on the export thread.
+pub fn jsonl_span_exporter(dir: &std::path::Path, service: &str) -> std::io::Result<impl opentelemetry_sdk::export::trace::SpanExporter + 'static> {
+    JsonlSpanExporter::create(dir, service)
 }
 
 /// Telemetry for i143 binaries. Spans go to the JSONL evidence sink when

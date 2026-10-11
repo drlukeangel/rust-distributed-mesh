@@ -34,27 +34,23 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     }
 }
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     /// The resource's `service.name` this capture exports under.
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2805-{cell}");
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2805"));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
 impl Capture {
@@ -74,10 +70,10 @@ impl Capture {
 
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
-        self.exporter
-            .get_finished_spans()
-            .unwrap()
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let finished = self.exporter.get_finished_spans().unwrap();
+        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
+        finished
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
@@ -145,6 +141,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let fabric_id = topology.read().await.fabric.id.clone();
     let authority = Arc::new(StatusAuthority {
         me: me.node.name.clone(),
+        node_id: me.node.node_id.clone(),
         fabric_id,
         topology,
         declared: Arc::new(Mutex::new(declared)),
@@ -896,13 +893,13 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
     capture.run(async {
         let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let handoff = |rig: &Rig, mesh_id: MeshId, target: Node| {
-            let (topology, me) = (rig.authority.topology.clone(), fp.node.name.clone());
+            let (topology, me, me_id) = (rig.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
             let ep_key = fp.key.clone();
             async move {
                 let ep = rafka_node_rpc::endpoint::bind(ep_key, "127.0.0.1:0".parse().unwrap()).await.unwrap();
                 let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
                 let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
-                rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &topology, "mesh2", &mesh_id.to_string(), &target).await
+                rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), &target).await
             }
         };
         let target_of = |rig: &Rig| {
@@ -992,7 +989,7 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
         r.ready.store(false, Ordering::SeqCst);
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
-        let (topology, me) = (r.authority.topology.clone(), fp.node.name.clone());
+        let (topology, me, me_id) = (r.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
         let ep = rafka_node_rpc::endpoint::bind(fp.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
         let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
@@ -1002,7 +999,7 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
             gate.store(true, Ordering::SeqCst);
         });
         let started = std::time::Instant::now();
-        rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &topology, "mesh2", &mesh_id.to_string(), &target).await.expect("Pending applies once the authority is filled");
+        rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), &target).await.expect("Pending applies once the authority is filled");
         let waited = started.elapsed();
         opener.await.unwrap();
         assert!(waited >= Duration::from_millis(1000), "the hand-off did not pass while the gate was closed: {waited:?}");

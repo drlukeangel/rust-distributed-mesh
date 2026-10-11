@@ -1,6 +1,13 @@
 //! The crate's one integration-test executable: every file in this directory is a module
 //! here, so the crate links once. A stem runs alone as `<exe> <stem>::`.
 
+/// Only this story's spans reached the exporter: every one is RDM's own (`rdm.*`). A transport
+/// internal (iroh, noq) or any other foreign span in a cell's trace is a defect of the capture.
+pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
+    let foreign: std::collections::BTreeSet<&str> = names.into_iter().filter(|n| !n.starts_with("rdm.")).collect();
+    assert!(foreign.is_empty(), "spans outside the cell's story were exported: {foreign:?}");
+}
+
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 
@@ -26,8 +33,11 @@ pub fn adopted_time() -> rafka_mesh_transport::clock::RafkaTime {
 }
 
 mod admin_serves_forward;
+mod boot_stop;
 mod loopback;
+mod mesh_leave_resume;
 mod build_catch_up;
+mod build_admission;
 mod build_claim;
 mod build_drive;
 mod build_facts_read;

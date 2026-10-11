@@ -72,26 +72,45 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     }
 }
 
-/// The admin primary of `target`'s mesh once `target` drains; `None` when no other admin of the
-/// mesh can hold the seat.
+/// The admin primary of `target`'s mesh once `target`'s birth is gone; `None` when no other admin
+/// of the mesh can hold the seat.
 fn mesh_successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
-    let mut nodes: Vec<_> = t.members().cloned().collect();
-    for n in nodes.iter_mut().filter(|n| n.name == *target) {
-        n.status = crate::model::NodeStatus::Draining;
-    }
-    crate::election::resolve(&mut nodes);
-    nodes.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == target.mesh && n.is_primary && n.name != *target).map(|n| n.name)
+    seated_once_gone(target, t).into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == target.mesh && n.is_primary && n.name != *target).map(|n| n.name)
 }
 
-/// The fabric primary the election resolves in `t` once `target` drains; `None` when no other
-/// admin can hold the seat.
+/// The fabric primary the election seats once `target`'s birth is gone: the admin its own mesh
+/// seats while any node-admin of that mesh survives, another mesh's primary only when none does
+/// (fabric-node-lifecycle-elections.md sections 4.3 and 5); `None` when no other admin can hold
+/// the seat yet.
 fn successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
+    seated_once_gone(target, t).into_iter().find(|n| n.is_fabric_primary && n.name != *target).map(|n| n.name)
+}
+
+/// The members of `t` as the election seats them once `target`'s exact birth is gone. The seat
+/// records are the holders `t` was decided against (its fabric primary and each mesh's admin
+/// primary: `t` is the projection of this admin's held records), and `target`'s birth is the one
+/// proven gone, so every seat it holds is filled by its own mesh's rule and every other seat
+/// stays with its holder (election.rs `resolve_with`).
+fn seated_once_gone(target: &PathName, t: &Topology) -> Vec<crate::model::Node> {
     let mut nodes: Vec<_> = t.members().cloned().collect();
-    for n in nodes.iter_mut().filter(|n| n.name == *target) {
-        n.status = crate::model::NodeStatus::Draining;
+    let record = |n: &crate::model::Node| n.incarnation_id.clone().map(|incarnation| rafka_mesh_entity::SeatHolder { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation, epoch: 0 });
+    let mut inc = crate::election::Incumbency { fabric: t.fabric_primary().and_then(record), ..Default::default() };
+    for mesh in &t.meshes {
+        if let Some(h) = t.cohort_primary(&mesh.name, NodeKind::NodeAdmin).and_then(record) {
+            inc.meshes.insert(mesh.name.clone(), h);
+        }
     }
-    crate::election::resolve(&mut nodes);
-    nodes.into_iter().find(|n| n.is_fabric_primary && n.name != *target).map(|n| n.name)
+    for n in nodes.iter_mut().filter(|n| n.name == *target) {
+        match n.incarnation_id.clone() {
+            Some(birth) => {
+                inc.lost.insert(birth);
+            }
+            // A birth with no incarnation names no record to yield; it is no candidate either.
+            None => n.status = crate::model::NodeStatus::Leaving,
+        }
+    }
+    crate::election::resolve_with(&mut nodes, &inc);
+    nodes
 }
 
 /// The admin that executes what is left of a plan: the first operation's
@@ -292,6 +311,7 @@ mod tests {
     fn node(name: &str, primary: bool, fabric: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());
         n.status = NodeStatus::ReadyForTraffic;
+        n.incarnation_id = Some(crate::model::IncarnationId::mint());
         n.is_primary = primary;
         n.is_fabric_primary = fabric;
         n
@@ -394,6 +414,44 @@ mod tests {
             n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
         }
         assert_eq!(who(&shutdown("mesh1"), &moved), "mesh2.admin.1", "once the seat moved, the new fabric primary is the executor");
+    }
+
+    /// CONTRACT (fabric-node-lifecycle-elections.md section 5: "a holder that yields or whose exact
+    /// birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of its own mesh";
+    /// section 4.3: the fabric seat leaves its holder's mesh only when every node-admin birth of that
+    /// mesh is gone): the fabric primary P holds both seats of mesh1; mesh1.admin.2 is Ready with a
+    /// HIGHER NodeId than mesh2's primary. P's replace, retire, restart, drain and stop are executed
+    /// by mesh1.admin.2, the admin its own mesh seats once P's birth is gone, never by the
+    /// lowest-NodeId mesh primary of another mesh. With no other admin in mesh1, the seat leaves the
+    /// mesh: mesh2's primary executes.
+    #[test]
+    fn the_fabric_primarys_own_operations_go_to_its_own_meshs_successor_whatever_the_node_ids() {
+        let with = |path: &str, id: &str, primary: bool, fabric: bool| {
+            let mut n = node(path, primary, fabric);
+            n.node_id = rafka_mesh_entity::ids::NodeId::parse(id).unwrap();
+            n
+        };
+        let mut t = mm(true);
+        t.nodes = vec![
+            with("mesh1.admin.1", "5000000000aa", true, true),
+            with("mesh1.admin.2", "9000000000aa", false, false),
+            with("mesh1.rpc.1", "6000000000aa", true, false),
+            with("mesh2.admin.1", "1000000000aa", true, false),
+        ];
+        let p: PathName = "mesh1.admin.1".parse().unwrap();
+        let birth = || crate::model::IncarnationId::mint();
+        for op in [
+            BuildOperation::ReplaceNode { node: p.clone(), from_incarnation: birth() },
+            BuildOperation::RetireNode { node: p.clone() },
+            BuildOperation::RestartNode { node: p.clone() },
+            BuildOperation::DrainNode { node: p.clone(), from_incarnation: birth() },
+            BuildOperation::StopNode { node: p.clone(), from_incarnation: birth() },
+        ] {
+            assert_eq!(who(&op, &t), "mesh1.admin.2", "{op:?}: P's own mesh seats mesh1.admin.2 once P is gone; mesh2.admin.1's lower NodeId is no input");
+        }
+        // mesh1's only admin: no birth of mesh1 survives, so the seat leaves the mesh.
+        t.nodes.retain(|n| n.name.to_string() != "mesh1.admin.2");
+        assert_eq!(who(&BuildOperation::ReplaceNode { node: p.clone(), from_incarnation: birth() }, &t), "mesh2.admin.1");
     }
 
     #[test]

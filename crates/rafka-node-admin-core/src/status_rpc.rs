@@ -72,8 +72,11 @@ impl Declared {
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
 pub struct StatusAuthority {
-    /// This admin's `path.name`.
+    /// This admin's `path.name`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
+    /// The node id this admin was born with: how it finds its own row and its seats in a view
+    /// ([`Topology::own`]), never by `path.name`.
+    pub node_id: NodeId,
     /// The fabric's minted id.
     pub fabric_id: FabricId,
     /// This admin's observed topology.
@@ -127,7 +130,7 @@ pub enum Effect {
 /// The decision, pure over a view and what was applied: what the admin does with a declaration
 /// from `sender`. It reads `declared` and returns the effect to commit; it writes nothing.
 pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, sender: Option<&crate::model::Node>, req: &StatusRequest) -> (StatusReply, Option<Effect>) {
-    let me = match view.members().find(|n| n.name == auth.me) {
+    let me = match view.own(&auth.node_id) {
         Some(n) => n,
         None => return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } }, None),
     };
@@ -285,7 +288,7 @@ impl StatusAuthority {
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {
-                    Some(configs) => configs.update(&self.me, &view, &*self.nodes_storage, req).await,
+                    Some(configs) => configs.update(&self.me, &self.node_id, &view, &*self.nodes_storage, req).await,
                     None => StatusReply::NotReady { reason: format!("{} has no node-RPC client yet; {} is refused", self.me, req.op()) },
                 };
             }
@@ -293,12 +296,12 @@ impl StatusAuthority {
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
-        if let Some(me) = view.members().find(|n| n.name == self.me) {
+        if let Some(me) = view.own(&self.node_id) {
             if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.configure, &self.wake).await {
                 return reply;
             }
         }
-        let receiver_is_primary = view.members().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
+        let receiver_is_primary = view.own(&self.node_id).is_some_and(|n| n.is_primary);
         let (reply, effect) = {
             let declared = self.declared.lock().unwrap();
             decide(self, &view, &declared, sender.as_ref(), req)
@@ -358,8 +361,8 @@ impl StatusAuthority {
             .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
     }
 
-    /// A birth's completion call (`node-drained`, `node-left`) at the admin that commanded it: it
-    /// resolves the open command it names, by `(build_id, attempt, operation, node_id,
+    /// A birth's `node-drained` completion call at the admin that commanded it (node-left is the
+    /// reply of `stop-node`, never a call): it resolves the open command it names, by `(build_id, attempt, operation, node_id,
     /// incarnation)`. The sender must be the subject. A completion with no open command is
     /// refused `NotReady` naming the mismatch, never counted toward another operation.
     fn accept_completion(&self, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
@@ -370,11 +373,11 @@ impl StatusAuthority {
     /// node-admin (its owning mesh-admin).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
         let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. } | StatusRequest::StartNode { node_id, incarnation, .. }) = req else { unreachable!("serve_command is called for commands only") };
-        let me = view.members().find(|n| n.name == self.me);
+        let me = view.own(&self.node_id);
         let reply = match (me, sender, self.own.get()) {
             (Some(me), _, _) if me.node_id != *node_id => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } },
             (Some(me), _, _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().expect("checked") },
-            (_, Some(from), Some(own)) if from.kind == NodeKind::NodeAdmin && from.name != self.me => {
+            (_, Some(from), Some(own)) if from.kind == NodeKind::NodeAdmin && from.node_id != self.node_id => {
                 let spare = from.endpoint_id.as_ref().and_then(|e| e.0.parse::<iroh::PublicKey>().ok());
                 own.serve(&from.node_id, spare, req).await.expect("a command")
             }
@@ -448,7 +451,7 @@ impl StatusAuthority {
     /// for its own mesh; the seat check does not apply because no seat exists yet. The same span
     /// as every decision, with the sender named as itself.
     pub(crate) async fn self_apply_mesh_pending(&self, mesh_id: &MeshId) -> StatusReply {
-        let receiver_is_primary = self.topology.read().await.members().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
+        let receiver_is_primary = self.topology.read().await.own(&self.node_id).is_some_and(|n| n.is_primary);
         let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
         let reply = match effect {
             Some(effect) => self.persist_then_commit(effect).await,
@@ -511,7 +514,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
     // forward carries no origin identity: the target authenticates the carrier, node-rpc.md 36.1).
     // An apply changes the node: only a node-admin may ask (the fabric-primary's config reaches a
     // node of another mesh through that mesh's primary, which is the sender this node authenticates).
-    let sender_may = |s: &crate::model::Node| s.name != me.name && (matches!(req, StatusRequest::ProbeNodeState { .. }) || s.kind == NodeKind::NodeAdmin);
+    let sender_may = |s: &crate::model::Node| s.node_id != me.node_id && (matches!(req, StatusRequest::ProbeNodeState { .. }) || s.kind == NodeKind::NodeAdmin);
     if me.node_id != *node_id || !sender.is_some_and(sender_may) {
         return None;
     }
@@ -635,5 +638,76 @@ mod tests {
         assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &Configure::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "an apply from a member is not the subject's to answer");
         assert!(self_subject(&admin, Some(&admin), &probe, &republish, &Configure::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "a node-admin is not its own sender");
         assert!(self_subject(&admin, None, &probe, &republish, &Configure::default(), &crate::status_declare::DeclareWake::default()).await.is_none(), "an unresolved peer is answered by no one");
+    }
+
+    /// The status authority of the admin born as `me`, deciding over `view`.
+    fn authority_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
+        StatusAuthority {
+            me: me.name.clone(),
+            node_id: me.node_id.clone(),
+            fabric_id: view.fabric.id.clone(),
+            topology: Arc::new(tokio::sync::RwLock::new(view)),
+            declared: Default::default(),
+            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
+            mesh_ids: Arc::new(BTreeMap::new),
+            republish: Default::default(),
+            commands: Default::default(),
+            own: Default::default(),
+            leaver: Default::default(),
+            hold_next_reply: Default::default(),
+            wake: Default::default(),
+            rounds: Default::default(),
+            configs: Default::default(),
+            configure: Default::default(),
+        }
+    }
+
+    /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): a replace or a recovery keeps the
+    /// path.name and mints a new node id. The view holds one row per path.name (`admin::project_at`
+    /// keys it by `PathName`), so until the retired birth's digest goes non-live or departs, the row
+    /// at this admin's path can be the retired birth's, live and seated, and this admin's own row is
+    /// absent. The authority finds itself by the node id it was born with: it decides nothing from
+    /// the retired birth's seat and refuses naming the true reason, "a view holding this admin"; a
+    /// drain-node naming its node id goes on to the subject's own door (`NodeSelf::serve`, which
+    /// checks the exact birth itself), here not yet filled. What must NOT happen: a member's
+    /// declaration `Applied` on the retired birth's mesh-primary seat, or a drain-node naming this
+    /// admin refused as "not the subject node itself".
+    #[tokio::test]
+    async fn an_authority_whose_view_holds_its_retired_birth_at_its_path_answers_as_itself() {
+        let mut retired = node("mesh1.admin.1");
+        retired.kind = NodeKind::NodeAdmin;
+        retired.mesh = "mesh1".into();
+        retired.status = crate::model::NodeStatus::Draining;
+        retired.is_primary = true;
+        retired.is_fabric_primary = true;
+        let mut reborn = node("mesh1.admin.1");
+        reborn.kind = NodeKind::NodeAdmin;
+        reborn.mesh = "mesh1".into();
+        let mut member = node("mesh1.rpc.1");
+        member.kind = NodeKind::RpcNode;
+        member.mesh = "mesh1".into();
+        member.status = crate::model::NodeStatus::ReadyForTraffic;
+        let mut owner = node("mesh1.admin.2");
+        owner.kind = NodeKind::NodeAdmin;
+        owner.mesh = "mesh1".into();
+        owner.status = crate::model::NodeStatus::ReadyForTraffic;
+        let view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![retired.clone(), member.clone(), owner.clone()],
+        };
+        assert_ne!(retired.node_id, reborn.node_id, "a replace mints a new node id");
+        assert_eq!(view.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh1's seat in this view");
+        let auth = authority_of(&reborn, view.clone());
+        let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
+
+        let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let (reply, effect) = decide(&auth, &view, &Declared::default(), Some(&member), &declare);
+        assert!(holding_me(&reply) && effect.is_none(), "the retired birth's seat is not this admin's: {reply:?}");
+
+        let drain = StatusRequest::DrainNode { node_id: reborn.node_id.clone(), incarnation: reborn.incarnation_id.clone().unwrap(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.admin.1".into() };
+        let reply = auth.apply(Some(owner.clone()), &drain).await;
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a drain-node naming this admin's node id reaches the subject's own door: {reply:?}");
     }
 }

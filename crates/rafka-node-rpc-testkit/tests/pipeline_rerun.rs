@@ -108,6 +108,8 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+    // A cell that fails before its own terminate leaves no node running.
+    let _reap = common::ReapOnDrop(template.data_root.clone());
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
     let sink = Published::default();
@@ -189,12 +191,18 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let _ = std::fs::remove_dir_all(&template.data_root);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_pipeline_killed_after_spawning_reruns_without_a_second_runtime() {
-    killed_then_rerun(KillAt::AfterSpawn).await;
+#[test]
+fn a_pipeline_killed_after_spawning_reruns_without_a_second_runtime() {
+    let cap = crate::common::capture("a_pipeline_killed_after_spawning_reruns_without_a_second_runtime");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        killed_then_rerun(KillAt::AfterSpawn).await;
+    })
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_pipeline_killed_while_waiting_for_the_join_reruns_from_that_step() {
-    killed_then_rerun(KillAt::InWaitForMeshJoin).await;
+#[test]
+fn a_pipeline_killed_while_waiting_for_the_join_reruns_from_that_step() {
+    let cap = crate::common::capture("a_pipeline_killed_while_waiting_for_the_join_reruns_from_that_step");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        killed_then_rerun(KillAt::InWaitForMeshJoin).await;
+    })
 }

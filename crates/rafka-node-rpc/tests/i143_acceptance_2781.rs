@@ -55,30 +55,23 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     }
 }
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`:
+/// product's span filter and its `BatchSpanProcessor`, so ending a span only queues it and the sink
+/// runs on the export thread) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer as _;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2781-{cell}");
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
-        .build();
-    // Only this story's spans: the Node RPC runtime's own (`rdm.*`) and the cell's control calls.
-    // Iroh's transport internals are not part of it.
-    let layer = tracing_opentelemetry::layer()
-        .with_tracer(provider.tracer("i143-2781"))
-        .with_filter(tracing_subscriber::filter::filter_fn(|m| m.name().starts_with("rdm.")));
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
     let dbg = std::env::var("I2781_TRACE").ok().map(|_| {
         tracing_subscriber::fmt::layer()
             .with_test_writer()
@@ -86,7 +79,14 @@ fn capture(cell: &str) -> Capture {
             .with_ansi(false)
             .with_filter(tracing_subscriber::EnvFilter::new(std::env::var("I2781_FILTER").unwrap_or_else(|_| "iroh::_events=debug,noq=info,iroh::socket::remote_map=debug".into())))
     });
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer).with(dbg)), service }
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer).with(dbg)), service }
+}
+
+/// Only this story's spans reached the exporter: every one is RDM's own (`rdm.*`). A transport
+/// internal (iroh, noq) or any other foreign span in a cell's trace is a defect of the capture.
+fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
+    let foreign: std::collections::BTreeSet<&str> = names.into_iter().filter(|n| !n.starts_with("rdm.")).collect();
+    assert!(foreign.is_empty(), "spans outside the cell's story were exported: {foreign:?}");
 }
 
 impl Capture {
@@ -104,10 +104,10 @@ impl Capture {
 
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
-        self.exporter
-            .get_finished_spans()
-            .unwrap()
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let finished = self.exporter.get_finished_spans().unwrap();
+        assert_own_story(finished.iter().map(|s| s.name.as_ref()));
+        finished
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();

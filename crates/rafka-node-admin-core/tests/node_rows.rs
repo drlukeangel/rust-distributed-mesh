@@ -23,20 +23,21 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
+/// A cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its
+/// span filter and `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher
+/// installed on every thread of the cell's own runtime.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder().with_simple_exporter(exporter.clone()).build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("node-rows"));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture("node-rows", exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
 impl Capture {
@@ -53,7 +54,7 @@ impl Capture {
     }
 
     fn spans_named(&self, name: &str) -> Vec<Value> {
-        let _ = self.provider.force_flush();
+        self.capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
         self.exporter
             .get_finished_spans()
             .unwrap()
@@ -161,7 +162,8 @@ async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesSto
     cp.topology = topology.clone();
     let opened = cp.submit("test", change).await.unwrap();
     let me: PathName = "mesh1.admin.1".parse().unwrap();
-    let rows = Arc::new(NodeRows::new(me.clone(), storage.clone()));
+    let me_id = topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone();
+    let rows = Arc::new(NodeRows::new(me.clone(), me_id.clone(), storage.clone()));
     let records = Arc::new(Records::default());
     records.set_rows(rows.clone());
     let env = Arc::new(DriveEnv {
@@ -169,7 +171,7 @@ async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesSto
         topology: topology.clone(),
         accepted,
         builds: builds.clone(),
-        door: Arc::new(ClaimDoor { me, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { me, node_id: me_id, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: Arc::new(Script { acts: Mutex::new(Some(acts)), view: topology, records: records.clone() }),
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
@@ -276,11 +278,12 @@ fn a_rename_into_a_name_another_row_holds_is_written_never_refused_name_held() {
         let mut t = view();
         t.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
         t.nodes.extend([holder.clone(), renaming.clone()]);
+        let me_id = t.node(&me).expect("the fabric-primary is in the view").node_id.clone();
         let view = RwLock::new(t);
         for n in [&holder, &renaming] {
             storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone() }).await.unwrap();
         }
-        let rows = NodeRows::new("mesh1.admin.1".parse().unwrap(), storage.clone());
+        let rows = NodeRows::new(me.clone(), me_id, storage.clone());
         let held = meta_of(&renaming);
         let body = rafka_node_admin_client::NodeMeta { name: renaming.name.renamed(), ..held.clone() };
 
@@ -311,8 +314,9 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_gets_its_row_at_once() {
         let storage = Arc::new(MemoryNodesStorage::default());
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let records = Records::default();
-        records.set_rows(Arc::new(NodeRows::new(me, storage.clone())));
         let topology = RwLock::new(view());
+        let me_id = topology.try_read().expect("the view is free").node(&me).expect("the admin is in the view").node_id.clone();
+        records.set_rows(Arc::new(NodeRows::new(me, me_id, storage.clone())));
         let other = NodeId::mint();
         storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: other.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver") }).await.unwrap();
         let birth = node("mesh1.rpc.2", false, false);
@@ -372,8 +376,8 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         let storage = Arc::new(MemoryNodesStorage::default());
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let records = Records::default();
-        records.set_rows(Arc::new(NodeRows::new(me.clone(), storage.clone())));
         let mut before = view();
+        records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), storage.clone())));
         for n in before.nodes.iter_mut() {
             n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";
         }
@@ -625,8 +629,9 @@ fn a_birth_that_leaves_the_view_and_returns_is_written_once() {
         let storage = Arc::new(MemoryNodesStorage::default());
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let records = Records::default();
-        records.set_rows(Arc::new(NodeRows::new(me, storage.clone())));
-        let topology = RwLock::new(view());
+        let t = view();
+        records.set_rows(Arc::new(NodeRows::new(me.clone(), t.node(&me).expect("the fabric-primary is in the view").node_id.clone(), storage.clone())));
+        let topology = RwLock::new(t);
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         let again = birth.clone();

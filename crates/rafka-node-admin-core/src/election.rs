@@ -98,7 +98,8 @@ impl Incumbency {
 enum Holding {
     /// The exact birth is in the view and keeps the seat.
     Living(usize),
-    /// The birth yields, was replaced by a later one, or is proven gone.
+    /// The birth was replaced by a later one or is proven gone. A holder's status never yields
+    /// it: a seat moves by an explicit transfer (a new holder record) or a proven loss.
     Yielded,
     /// The view has not heard the birth the record names.
     Unseen,
@@ -113,10 +114,7 @@ fn holding(nodes: &[Node], h: &SeatHolder, inc: &Incumbency) -> Holding {
     if n.incarnation_id.as_ref().is_some_and(|inc| *inc != h.incarnation) {
         return Holding::Yielded;
     }
-    match n.status {
-        NodeStatus::Draining | NodeStatus::Leaving | NodeStatus::Restarting => Holding::Yielded,
-        _ => Holding::Living(i),
-    }
+    Holding::Living(i)
 }
 
 /// The lowest Ready node among `members` that is not proven gone.
@@ -196,18 +194,16 @@ fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String,
     lowest_primary(Some(h.mesh.as_str()))
 }
 
-/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it: every node
-/// of `mesh` stands as Leaving, so the incumbent's mesh holds no candidate, and the lowest Ready
-/// mesh primary of another mesh wins (the explicit committed handover of
-/// fabric-node-lifecycle-elections.md section 4.4). `None` when no other mesh has an eligible Ready
-/// mesh primary: the handover is blocked.
+/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it (the
+/// explicit committed handover of fabric-node-lifecycle-elections.md section 4.4): the departing
+/// mesh holds no candidate, and the fabric record is the one the hand-over vacates, so the lowest
+/// Ready mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh
+/// primary: the handover is blocked.
 pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) -> Option<Node> {
-    let mut hypothetical: Vec<Node> = nodes.to_vec();
-    for n in hypothetical.iter_mut().filter(|n| n.mesh == mesh) {
-        n.status = NodeStatus::Leaving;
-    }
-    resolve_with(&mut hypothetical, inc);
-    hypothetical.into_iter().find(|n| n.is_fabric_primary && n.mesh != mesh)
+    let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| n.mesh != mesh).cloned().collect();
+    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), lost: inc.lost.clone() };
+    resolve_with(&mut hypothetical, &vacated);
+    hypothetical.into_iter().find(|n| n.is_fabric_primary)
 }
 
 /// A seat's holder as a span names it.
@@ -677,20 +673,52 @@ mod tests {
         }
     }
 
-    /// CONTRACT (R-A2): a holder that yields (Draining, Leaving, Restarting) or whose birth a
-    /// later birth of the same NodeId replaced no longer holds; its mesh fills the seat.
+    /// CONTRACT (R-A2): a holder whose birth a later birth of the same NodeId replaced no longer
+    /// holds; its mesh fills the seat with the lowest Ready NodeId.
     #[test]
-    fn a_yielding_or_replaced_holder_hands_the_seat_to_its_own_mesh() {
+    fn a_replaced_holder_hands_the_seat_to_its_own_mesh() {
         let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
-        for yielded in [Draining, Leaving, Restarting] {
-            let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", yielded), born("mesh1.admin.2", "800000000000", "a2", Ready), born("mesh2.admin.1", "100000000000", "b1", Ready)];
-            resolve_with(&mut nodes, &inc);
-            assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.2"), "{yielded:?}");
-        }
-        // The same NodeId, a later birth: the recorded birth is gone.
         let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a9", Pending), born("mesh1.admin.2", "800000000000", "a2", Ready)];
         resolve_with(&mut nodes, &inc);
         assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.2"));
+        assert_eq!(mesh_primary(&nodes, "mesh1").as_deref(), Some("mesh1.admin.2"));
+    }
+
+    /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md sections 5-6): a seat moves only by an
+    /// explicit yield or a proven loss, never by the holder's status. A holder that is Draining (a
+    /// FabricShutdown this observer has not installed yet), Leaving or Restarting keeps both its
+    /// seats against a lower Ready NodeId of its own mesh. Must NOT happen: the observer reading the
+    /// status as a yield and seating the lower id (gate 144a45bd: mesh2.admin.2 seated itself over
+    /// the Draining mesh2.admin.1 95 ms after that holder installed the shutdown).
+    #[test]
+    fn a_draining_leaving_or_restarting_holder_keeps_both_seats() {
+        let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        for status in [Draining, Leaving, Restarting] {
+            let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", status), born("mesh1.admin.2", "200000000000", "a2", Ready), born("mesh2.admin.1", "100000000000", "b1", Ready)];
+            resolve_with(&mut nodes, &inc);
+            assert_eq!(mesh_primary(&nodes, "mesh1").as_deref(), Some("mesh1.admin.1"), "{status:?}");
+            assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.1"), "{status:?}");
+        }
+    }
+
+    /// CONTRACT (section 4.4): the explicit hand-over's successor is the leadership calculation with
+    /// the departing mesh excluded, whatever the incumbent's status: the lowest Ready mesh primary
+    /// of another mesh. Must NOT happen: the incumbent, still a living holder, selected as its own
+    /// successor (no eligible successor, the hand-over blocked).
+    #[test]
+    fn the_handover_successor_is_the_lowest_ready_primary_outside_the_departing_mesh() {
+        let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1), holder("mesh2", "900000000000", "b1", 1), holder("mesh3", "700000000000", "c1", 1)]);
+        for status in [Ready, Draining] {
+            let nodes = vec![
+                born("mesh1.admin.1", "500000000000", "a1", status),
+                born("mesh1.admin.2", "100000000000", "a2", Ready),
+                born("mesh2.admin.1", "900000000000", "b1", Ready),
+                born("mesh2.admin.2", "200000000000", "b2", Ready),
+                born("mesh3.admin.1", "700000000000", "c1", Ready),
+            ];
+            let successor = fabric_successor_excluding(&nodes, &inc, "mesh1").map(|n| n.name.to_string());
+            assert_eq!(successor.as_deref(), Some("mesh3.admin.1"), "the lowest Ready mesh primary outside mesh1, its seats held ({status:?})");
+        }
     }
 
     /// CONTRACT (R-A2): a holder record names a birth this view has not heard: the seat waits for

@@ -587,3 +587,20 @@ impl NodeSelf {
         .in_scope(|| tracing::info!("the completion call was made to the commanding admin"));
     }
 }
+
+/// The record this runtime's provider wrote for it (`rafka_mesh_entity::runtime::read_own_record`),
+/// waited for on the caller's runtime for at most `within`: a boot that ends (a stop signal) drops
+/// the wait at once, where a blocking wait would hold the runtime's shutdown until `within` passed.
+pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Duration) -> Result<rafka_mesh_entity::RuntimeFact, String> {
+    let until = tokio::time::Instant::now() + within;
+    loop {
+        let last = match rafka_mesh_entity::runtime::read_own_record(dir) {
+            Ok(f) => return Ok(f),
+            Err(e) => e,
+        };
+        if tokio::time::Instant::now() >= until {
+            return Err(format!("the provider wrote no runtime record for this runtime within {within:?}: {last}"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}

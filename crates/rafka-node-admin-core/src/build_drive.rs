@@ -117,12 +117,22 @@ pub trait Dispatcher: Send + Sync {
     async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
 }
 
+/// Why a drive ended without the seat: what the old seat says, and the admin its view names as the
+/// seat's holder now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatLoss {
+    /// Why this admin may not act as the fabric-primary.
+    pub why: String,
+    /// The admin (path.name) that holds the seat now, when this admin's view names one.
+    pub to: Option<String>,
+}
+
 #[derive(Default)]
 struct DriveState {
     events: Vec<BuildReply>,
     seen: HashSet<String>,
     terminal: Option<BuildReply>,
-    lost: Option<String>,
+    lost: Option<SeatLoss>,
     stall: Option<String>,
 }
 
@@ -202,10 +212,10 @@ impl Drive {
     }
 
     /// The seat moved: the callers' streams end, and a caller re-submits by build id at the new seat.
-    pub fn lose_seat(&self, reason: String) {
+    pub fn lose_seat(&self, loss: SeatLoss) {
         let mut s = self.state.lock().unwrap();
         if s.lost.is_none() && s.terminal.is_none() {
-            s.lost = Some(reason);
+            s.lost = Some(loss);
         }
         drop(s);
         self.wake.notify_waiters();
@@ -275,8 +285,8 @@ pub enum Read {
     Frame(BuildReply),
     /// The terminal frame.
     Terminal(BuildReply),
-    /// The seat moved; the stream ends, and the caller re-submits.
-    SeatLost(String),
+    /// The seat moved; the stream ends with the typed new-seat frame, and the caller re-submits.
+    SeatLost(SeatLoss),
 }
 
 /// A caller's read position in a [`Drive`].
@@ -288,6 +298,11 @@ pub struct DriveReader {
 }
 
 impl DriveReader {
+    /// The Build this reader follows.
+    pub fn build_id(&self) -> &BuildId {
+        &self.drive.build_id
+    }
+
     /// The next frame, the terminal, or the seat loss; `None` after the end.
     pub async fn next(&mut self) -> Option<Read> {
         if self.done {
@@ -309,9 +324,9 @@ impl DriveReader {
                     self.done = true;
                     return Some(Read::Terminal(t.clone()));
                 }
-                if let Some(why) = &s.lost {
+                if let Some(loss) = &s.lost {
                     self.done = true;
-                    return Some(Read::SeatLost(why.clone()));
+                    return Some(Read::SeatLost(loss.clone()));
                 }
             }
             notified.await;
@@ -445,13 +460,39 @@ impl DriveEnv {
         end
     }
 
+    /// The admin the view names as the fabric-primary when it is not this birth (told apart by the
+    /// node id this admin was born with, never by path.name).
+    async fn seat_elsewhere(&self) -> Option<String> {
+        self.topology.read().await.fabric_primary().filter(|n| n.node_id != self.door.node_id).map(|n| n.name.to_string())
+    }
+
     /// The seat, the cut-off rule and the fence: `Some` when this admin may not claim or dispatch now.
+    /// The Build log's sticky fence is checked before the view: it is set by the committed seat move
+    /// itself, while the view follows it.
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
-        let seat = self.topology.read().await.fabric_primary().map(|n| n.name.clone());
-        if seat.as_ref() != Some(&self.me) {
-            let why = format!("{} does not hold the fabric-primary seat in its view (it shows {})", self.me, seat.map(|s| s.to_string()).unwrap_or_else(|| "none".into()));
+        if let Err(e) = self.gate.fence().await {
+            let why = e.to_string();
+            // A committed transfer named the new holder in the fence itself; a yield without one
+            // (leaving, drain, stop) names the holder this admin's view shows.
+            let to = match e {
+                BuildStateError::Fenced { to: Some(to), .. } => Some(to),
+                _ => self.seat_elsewhere().await,
+            };
+            tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat was yielded"));
+            drive.lose_seat(SeatLoss { why: why.clone(), to });
+            return Some(DriveEnd::SeatLost(why));
+        }
+        // The seat is this admin's when the view's holder is the birth it was born as (its node id):
+        // another birth at the same path.name (a successor, a retired birth) is not this admin.
+        let (held, seat) = {
+            let t = self.topology.read().await;
+            (t.holds_fabric_seat(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
+        };
+        if !held {
+            let shows = seat.as_ref().map(|(name, id)| format!("{name} ({id})")).unwrap_or_else(|| "none".into());
+            let why = format!("{} ({}) does not hold the fabric-primary seat in its view (it shows {shows})", self.me, self.door.node_id);
             tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id, node = %self.me, detail = %why).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
-            drive.lose_seat(why.clone());
+            drive.lose_seat(SeatLoss { why: why.clone(), to: seat.map(|(name, _)| name.to_string()) });
             return Some(DriveEnd::SeatLost(why));
         }
         if let Some(why) = self.gate.frozen() {
@@ -463,12 +504,6 @@ impl DriveEnv {
                 tracing::info_span!("rdm.node_admin.build.reject.via-cut-off", build_id = %drive.build_id, node = %self.me).in_scope(|| tracing::info!("dispatch refused: a cut-off view authorizes nothing"));
             }
             return Some(DriveEnd::Paused(why));
-        }
-        if let Err(e) = self.gate.fence().await {
-            let why = e.to_string();
-            tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why).in_scope(|| tracing::info!("dispatch refused: the seat was yielded"));
-            drive.lose_seat(why.clone());
-            return Some(DriveEnd::SeatLost(why));
         }
         None
     }

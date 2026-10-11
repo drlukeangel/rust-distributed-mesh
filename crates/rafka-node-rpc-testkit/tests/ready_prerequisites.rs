@@ -86,10 +86,13 @@ impl NodeObserver for Counting<'_> {
     }
 }
 
-async fn create_losing(lose: Option<&'static str>) {
+/// Create toward one rpc node with `lose`'s receipts never kept; returns the pid of the runtime it launched.
+async fn create_losing(lose: Option<&'static str>) -> u32 {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+    // A cell that fails before its own terminate leaves no node running.
+    let _reap = common::ReapOnDrop(template.data_root.clone());
     let inner = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&inner, add_node()).await;
     let builds = Losing { inner, lose };
@@ -133,26 +136,40 @@ async fn create_losing(lose: Option<&'static str>) {
             provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
         }
     }
-    // Whatever runs for this node stops with the test.
-    if let Some(h) = view.steps.iter().find(|r| r.step == CreateStep::DeployRuntime.name()).and_then(|r| r.output.clone()) {
-        if let Ok(h) = serde_json::from_value(h) {
-            let _ = provider.terminate(&h, TerminationMode::Immediate).await;
-        }
-    }
+    // Whatever runs for this node stops with the test, by signal: it drains, stops and exports its
+    // queued spans before it exits.
+    let handle: rafka_node_admin_core::deployment::provider::DeploymentHandle = view
+        .steps
+        .iter()
+        .find(|r| r.step == CreateStep::DeployRuntime.name())
+        .and_then(|r| r.output.clone())
+        .and_then(|h| serde_json::from_value(h).ok())
+        .expect("the runtime was deployed and its handle receipted");
+    provider.terminate(&handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
     let _ = std::fs::remove_dir_all(&template.data_root);
+    handle.pid.expect("a process handle carries its pid")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ready_waits_on_a_complete_receipt_for_every_runtime_prerequisite() {
-    for (i, lost) in READY_PREREQUISITES.iter().enumerate() {
-        let _ = i;
-        create_losing(Some(lost.name())).await;
+#[test]
+fn ready_waits_on_a_complete_receipt_for_every_runtime_prerequisite() {
+    let cap = crate::common::capture("ready_waits_on_a_complete_receipt_for_every_runtime_prerequisite");
+    let pids = cap.run(crate::common::Threads::Workers(4), async move {
+        let mut pids = Vec::new();
+        for lost in READY_PREREQUISITES {
+            pids.push(create_losing(Some(lost.name())).await);
+        }
+        pids
+    });
+    for pid in pids {
+        crate::common::assert_launched_node_stopped_with_its_spans(&cap.dir, pid);
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ready_follows_every_runtime_prerequisite_receipt() {
-    create_losing(None).await;
+#[test]
+fn ready_follows_every_runtime_prerequisite_receipt() {
+    let cap = crate::common::capture("ready_follows_every_runtime_prerequisite_receipt");
+    let pid = cap.run(crate::common::Threads::Workers(4), async move { create_losing(None).await });
+    crate::common::assert_launched_node_stopped_with_its_spans(&cap.dir, pid);
 }
 
 /// The live observer, except the birth's runtime exits the moment readiness is first asked, as a
@@ -179,31 +196,36 @@ impl NodeObserver for ExitsWhenAsked<'_> {
 
 /// CONTRACT: a create whose runtime has exited is refused at `WaitForNodeReady` naming the exit,
 /// as soon as the provider proves it; it does not wait out the readiness deadline.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
-    let fabric = FabricId::mint();
-    let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    let builds = MemoryBuildStateAdapter::new();
-    let build_id = publish_build(&builds, add_node()).await;
-    let provider = ProcessDeploymentProvider::new();
-    let observer = ExitsWhenAsked { live: &admin.observer, provider: &provider, builds: &builds, build_id: build_id.clone() };
-    let sink = Published::default();
-    let pipeline = DeploymentPipeline {
-        provider: &provider,
-        joins: &admin.joins,
-        observer: &observer,
-        sink: &sink,
-        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
-        builds: &builds,
-        template: &template,
-        timeouts: Timeouts { ready: Duration::from_secs(120), ..Timeouts::default() },
-    };
-    let req = CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
-    let asked = std::time::Instant::now();
-    let err = pipeline.create(&req).await.err().expect("a create over an exited runtime");
-    assert!(asked.elapsed() < Duration::from_secs(60), "the create waited {:?} on a runtime already proven exited", asked.elapsed());
-    assert_eq!(err.step, CreateStep::WaitForNodeReady.name());
-    assert!(err.reason.contains("runtime exited") && err.reason.contains("before it was Ready"), "{}", err.reason);
-    let _ = std::fs::remove_dir_all(&template.data_root);
+#[test]
+fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
+    let cap = crate::common::capture("ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let fabric = FabricId::mint();
+        let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
+        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+        // A cell that fails before its own terminate leaves no node running.
+        let _reap = common::ReapOnDrop(template.data_root.clone());
+        let builds = MemoryBuildStateAdapter::new();
+        let build_id = publish_build(&builds, add_node()).await;
+        let provider = ProcessDeploymentProvider::new();
+        let observer = ExitsWhenAsked { live: &admin.observer, provider: &provider, builds: &builds, build_id: build_id.clone() };
+        let sink = Published::default();
+        let pipeline = DeploymentPipeline {
+            provider: &provider,
+            joins: &admin.joins,
+            observer: &observer,
+            sink: &sink,
+            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+            builds: &builds,
+            template: &template,
+            timeouts: Timeouts { ready: Duration::from_secs(120), ..Timeouts::default() },
+        };
+        let req = CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+        let asked = std::time::Instant::now();
+        let err = pipeline.create(&req).await.err().expect("a create over an exited runtime");
+        assert!(asked.elapsed() < Duration::from_secs(60), "the create waited {:?} on a runtime already proven exited", asked.elapsed());
+        assert_eq!(err.step, CreateStep::WaitForNodeReady.name());
+        assert!(err.reason.contains("runtime exited") && err.reason.contains("before it was Ready"), "{}", err.reason);
+        let _ = std::fs::remove_dir_all(&template.data_root);
+    })
 }

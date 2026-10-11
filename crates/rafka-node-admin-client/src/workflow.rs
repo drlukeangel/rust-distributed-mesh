@@ -56,6 +56,12 @@ pub enum Frame {
         /// The step's own reason.
         reason: String,
     },
+    /// The fabric-primary seat moved while the workflow ran (a planned handover). Terminal for this
+    /// stream, not a failure: the Build goes on at the new seat, and the caller resumes it there.
+    SeatMoved {
+        /// The admin (path.name) that holds the seat now, when the old seat's view named one.
+        fabric_primary: Option<String>,
+    },
 }
 
 impl Frame {
@@ -429,6 +435,12 @@ impl WorkflowStream {
                     self.span.record("failed_step", node_step.name());
                     self.span.in_scope(|| tracing::info!(step = node_step.name(), reason = %reason, "the workflow failed at a step"));
                     return Some(Ok(Frame::Failed { step: node_step, reason }));
+                }
+                BuildFrame::SeatMoved { fabric_primary } => {
+                    self.ended = true;
+                    self.span.record("outcome", "seat-moved");
+                    self.span.in_scope(|| tracing::info!(fabric_primary = fabric_primary.as_deref().unwrap_or("none"), "the fabric-primary seat moved; the Build goes on at the new seat"));
+                    return Some(Ok(Frame::SeatMoved { fabric_primary }));
                 }
                 other => return Some(Err(self.broke(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a workflow stream carried {other:?}") }))),
             }

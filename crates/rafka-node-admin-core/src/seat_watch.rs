@@ -80,7 +80,7 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHe
     let mesh = &me.mesh;
 
     // A mesh primary says the fabric primary's exact birth is silent, once per mark.
-    if view.cohort_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| &n.name == me) {
+    if view.holds_mesh_seat(mesh, &me_birth.0) {
         for n in view.members().filter(|n| n.is_fabric_primary && n.status == NodeStatus::PendingReconnect) {
             if let Some(b) = birth(n) {
                 if said.concerned.insert(b.clone()) {
@@ -104,7 +104,7 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHe
     // What this admin sees itself: a silent seat holder of its own mesh, and any silent node-admin
     // of the mesh that holds the fabric seat (a standby, or a candidate looking from outside).
     let fabric_mesh = view.members().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
-    for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect && &n.name != me) {
+    for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect && n.node_id != me_birth.0) {
         let own_holder = &n.mesh == mesh && (n.is_primary || n.is_fabric_primary);
         let incumbent = fabric_mesh.as_ref() == Some(&n.mesh);
         if !(own_holder || incumbent) {
@@ -170,6 +170,8 @@ impl Finding {
 pub struct Looker {
     /// This admin's path.name.
     pub me: PathName,
+    /// The node id this admin was born with: it is never its own carrier.
+    pub me_id: NodeId,
     /// Its mesh membership.
     pub membership: Membership,
     /// Its Node RPC client.
@@ -193,7 +195,7 @@ impl Looker {
             return Finding::Answered;
         }
         // 2. The same kick through a live member of the birth's mesh.
-        for c in view.members().filter(|c| c.mesh == n.mesh && c.node_id != n.node_id && c.name != self.me && c.status == NodeStatus::ReadyForTraffic).take(crate::offline::VIA_PEER_TICKLE_FANOUT) {
+        for c in view.members().filter(|c| c.mesh == n.mesh && c.node_id != n.node_id && c.node_id != self.me_id && c.status == NodeStatus::ReadyForTraffic).take(crate::offline::VIA_PEER_TICKLE_FANOUT) {
             let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
             let (out, _, _) = self.client.call_routed::<rafka_node_rpc_contract::status::Status>(&n.node_id, &route, &kick, &CallOptions::default()).await;
             if matches!(out.reply().map(|r| r.value()), Some(rafka_node_rpc_contract::status::StatusReply::Current { .. })) {
@@ -415,5 +417,24 @@ mod tests {
         t.nodes.push(admin("mesh3.admin.1", "500000000000", "x1", NodeStatus::PendingReconnect));
         assert!(plan(&t, &standby.name, &me_of(&standby), &[], &mut said).investigate.is_empty());
         let _ = holder;
+    }
+
+    /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
+    /// path.name (`admin::project_at` keys it by `PathName`), so after a replace of mesh2's primary
+    /// the row at mesh2.admin.1 can be the retired birth's, live and still seated, while the reborn
+    /// admin's own row is absent. The reborn admin decides its seat by the node id it was born with:
+    /// it holds no mesh primary seat and says no Concern. What must NOT happen: the retired birth's
+    /// seat read as this admin's, a Concern published as a mesh primary it is not.
+    #[test]
+    fn a_reborn_admin_whose_view_seats_its_retired_birth_says_no_concern() {
+        let (mut t, holder, _, outsider) = world();
+        let mut retired = outsider.clone();
+        retired.status = NodeStatus::Draining;
+        t.nodes.retain(|n| n.node_id != outsider.node_id);
+        t.nodes.push(retired.clone());
+        let reborn = admin("mesh2.admin.1", "600000000000", "r2", NodeStatus::ReadyForTraffic);
+        assert_eq!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh2's seat in this view");
+        let p = plan(&t, &reborn.name, &me_of(&reborn), &[], &mut Said::default());
+        assert!(p.concerns.is_empty(), "the reborn admin holds no seat: it says no Concern about {}, got {:?}", holder.name, p.concerns);
     }
 }

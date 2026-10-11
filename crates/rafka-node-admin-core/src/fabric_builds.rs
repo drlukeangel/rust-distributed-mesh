@@ -27,8 +27,7 @@ use crate::build_state::{
 };
 use crate::fabric_storage::FabricRecord;
 use futures_lite::StreamExt as _;
-use iroh::address_lookup::MemoryLookup;
-use iroh::{Endpoint, EndpointAddr};
+use iroh::EndpointAddr;
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
@@ -175,7 +174,17 @@ pub struct FabricBuildStateAdapter {
 /// decision of a yielded holder is made after the new holder acts.
 pub struct Authority {
     node: String,
-    fenced: tokio::sync::Mutex<Option<String>>,
+    fenced: tokio::sync::Mutex<Option<SeatFence>>,
+}
+
+/// The sticky fence of a Build log: why it was set, and the admin a committed seat transfer named as
+/// the holder now (none when the seat was yielded without a named successor: leaving, drain, stop).
+#[derive(Debug, Clone)]
+pub struct SeatFence {
+    /// Why the fence was set.
+    pub by: String,
+    /// The admin (path.name) the committed transfer moved the seat to.
+    pub to: Option<String>,
 }
 
 impl Authority {
@@ -185,22 +194,22 @@ impl Authority {
     }
 
     /// Enter the gate for one mutation: refused by name once the fence is set.
-    pub async fn enter(&self) -> Result<tokio::sync::MutexGuard<'_, Option<String>>, BuildStateError> {
+    pub async fn enter(&self) -> Result<tokio::sync::MutexGuard<'_, Option<SeatFence>>, BuildStateError> {
         let held = self.fenced.lock().await;
         match &*held {
-            Some(by) => Err(BuildStateError::Fenced { node: self.node.clone(), by: by.clone() }),
+            Some(f) => Err(BuildStateError::Fenced { node: self.node.clone(), by: f.by.clone(), to: f.to.clone() }),
             None => Ok(held),
         }
     }
 
-    /// Set the fence, after the mutation in flight (if any) committed. Returns whether it was set
-    /// by this call.
-    pub async fn fence(&self, by: &str) -> bool {
+    /// Set the fence, after the mutation in flight (if any) committed, naming the admin the seat moved
+    /// to when a committed transfer names one. Returns whether it was set by this call.
+    pub async fn fence(&self, by: &str, to: Option<String>) -> bool {
         let mut held = self.fenced.lock().await;
         if held.is_some() {
             return false;
         }
-        *held = Some(by.to_string());
+        *held = Some(SeatFence { by: by.to_string(), to });
         true
     }
 }
@@ -214,7 +223,7 @@ impl FabricBuildStateAdapter {
     /// this admin in evidence.
     pub async fn join(
         gossip: &Gossip,
-        endpoint: &Endpoint,
+        book: &rafka_mesh_transport::membership::LocationBook,
         fabric: &rafka_mesh_entity::FabricId,
         peers: Vec<EndpointAddr>,
         local: Arc<dyn LocalBuildLog>,
@@ -225,11 +234,9 @@ impl FabricBuildStateAdapter {
     ) -> Result<Self, BuildStateError> {
         let io = |e: String| BuildStateError::Io(format!("fabric Build topic {fabric}: {e}"));
         let node_name = node.clone();
-        let lookup = MemoryLookup::new();
         for p in &peers {
-            lookup.add_endpoint_info(p.clone());
+            book.fill(p);
         }
-        endpoint.address_lookup().map_err(|e| io(e.to_string()))?.add(lookup);
         // Seeds are bootstrap hints, never a start barrier: a recorded seed can be dead (an admin
         // that restarted binds a new mesh port), and a dead seed must not keep this admin from the
         // point where it can take part in recovery. Subscribe locally; the seeds are dialled as the
@@ -376,13 +383,27 @@ impl FabricBuildStateAdapter {
         self.authority.enter().await.map(|_| ())
     }
 
+    /// The committed seat transfer fenced this admin's Build log: set the sticky fence naming the
+    /// admin the seat moved to, nothing more. The yield that follows the seat record (`yield_seat`)
+    /// hands the committed facts on.
+    pub async fn fence_seat(&self, by: &str, to: Option<String>) -> bool {
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence-at-handover", node = %self.authority.node, by, to = to.as_deref().unwrap_or("none"), fenced = tracing::field::Empty);
+        async {
+            let fenced = self.authority.fence(by, to).await;
+            tracing::Span::current().record("fenced", fenced);
+            fenced
+        }
+        .instrument(span)
+        .await
+    }
+
     /// The fabric-primary seat was yielded: set the sticky fence under the gate's lock (so a
     /// decision in flight has committed durably), then hand every active committed fact to the
     /// neighbours before the new holder acts. Returns how many facts were sent.
     pub async fn yield_seat(&self, by: &str) -> Result<usize, BuildStateError> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence", node = %self.authority.node, by, facts = tracing::field::Empty, fenced = tracing::field::Empty);
         async {
-            let fenced = self.authority.fence(by).await;
+            let fenced = self.authority.fence(by, None).await;
             tracing::Span::current().record("fenced", fenced);
             let facts = active_facts(&*self.local, None).await;
             let n = facts.len();
@@ -570,7 +591,7 @@ mod tests {
         let gate = authority.enter().await.unwrap();
         let (a, c) = (authority.clone(), committed.clone());
         let fencing = tokio::spawn(async move {
-            let set = a.fence("leaving").await;
+            let set = a.fence("leaving", None).await;
             (set, c.load(std::sync::atomic::Ordering::SeqCst))
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -579,9 +600,9 @@ mod tests {
         drop(gate);
         assert_eq!(fencing.await.unwrap(), (true, true), "the fence was set after the decision committed");
         match authority.enter().await {
-            Err(BuildStateError::Fenced { node, by }) => assert_eq!((node.as_str(), by.as_str()), ("mesh1.admin.1", "leaving")),
+            Err(BuildStateError::Fenced { node, by, .. }) => assert_eq!((node.as_str(), by.as_str()), ("mesh1.admin.1", "leaving")),
             other => panic!("a decision after the fence must be refused by name, got {:?}", other.map(|_| ())),
         }
-        assert!(!authority.fence("again").await, "the fence is set once and sticky");
+        assert!(!authority.fence("again", None).await, "the fence is set once and sticky");
     }
 }

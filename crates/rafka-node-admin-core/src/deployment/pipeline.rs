@@ -9,7 +9,7 @@
 //!   -> WaitForNodeReady -> Complete
 //! retire: DrainNode (drain-node to the exact birth; its receipt carries the CommandAdmission)
 //!   -> AwaitNodeDrained (bounded; a deadline is an arm, never a failure)
-//!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (bounded, likewise)
+//!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (its `Stopped` reply, bounded, likewise)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
 //!   -> ReleaseStorage (a removal: by the Build's StorageMeta)
 //!   -> RemoveTopologyMembership -> Complete
@@ -170,7 +170,8 @@ pub enum RetireStep {
     AwaitNodeDrained,
     /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit drain.
     StopNode,
-    /// Wait, bounded, for the birth's `node-left` completion call.
+    /// Wait, bounded, for node-left: the `Stopped` reply of the birth's `stop-node` call (R-ON1;
+    /// the birth makes no upward node-left call).
     AwaitNodeLeft,
     /// Stop the runtime through the provider.
     TerminateRuntime,
@@ -445,8 +446,8 @@ pub trait NodeObserver: Send + Sync {
     async fn send_command(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext) -> CommandAdmission {
         CommandAdmission::NotSent { reason: format!("this observer holds no Node RPC client to command {}", node.name) }
     }
-    /// Wait up to `within` for the commanded birth's completion call (`node-drained` /
-    /// `node-left`) at this admin.
+    /// Wait up to `within` for the commanded birth's completion at this admin: its `node-drained`
+    /// call, or node-left, which is the `Stopped` reply of its `stop-node` call.
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
         Completion::NotAwaited { admission: format!("this observer holds no command book for {}", node.name) }
     }
@@ -629,7 +630,8 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
     }
 }
 
-/// Whether the exact birth's completion call (`node-drained`, `node-left`) reached this admin: the
+/// Whether the exact birth's completion (its `node-drained` call, or node-left: the `Stopped` reply
+/// of its `stop-node` call) reached this admin: the
 /// AwaitNodeDrained / AwaitNodeLeft step's receipt. A missing completion is indeterminate, never
 /// success; the provider's terminal proof is what ends a stop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -870,8 +872,9 @@ pub struct StartRequest {
 
 /// What follows a stop's `stopped`: the process stays parked (a standalone stop, a restart), or the
 /// provider ends it and proves the exit (a delete, a replace, a mesh leave). `publish_stopped` is
-/// whether the mesh primary publishes `NodeStopped` from the `stopped` reply: a restart holds the birth
-/// with `NodeRestarting` instead, and a mesh leave and a replace are announced by their own events.
+/// whether the mesh primary publishes `NodeStopped` from the `stopped` reply: every whole node.stop
+/// does (node-stop.md step 5), a delete's, a replace's and a mesh leave member's included; a restart
+/// holds the birth with `NodeRestarting` instead (node-restart.md).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StopEnd {
     Park { publish_stopped: bool },
@@ -1687,7 +1690,7 @@ impl DeploymentPipeline<'_> {
             None
         };
         // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
-        // drain-node and its node-drained, then stop-node, its node-left and the provider's
+        // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
         // terminal proof. A caller that puts other work between them (a replace) calls the halves.
         self.drain_steps(&mut run, &mut node, handle).await?;
         if req.kind == RetireKind::Restart {
@@ -1754,7 +1757,7 @@ impl DeploymentPipeline<'_> {
     /// run, whose operation is the outer `shutdown-mesh:<mesh_id>` correlated with the member's path.
     /// The children keep their `drain-node:<path>` and `stop-node:<path>` identities. The result is
     /// the provider's terminal receipt of the exact runtime.
-    pub(crate) async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
+    pub async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let path = node.name.clone();
         let span = self.pipeline_span("shutdown-member", build_id, &path, attempt, false);
@@ -1809,10 +1812,11 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
-    /// drain), the wait for its `node-left` completion call, then the provider's stop and
-    /// inspection of the exact runtime: only its `Exited` is terminal proof.
+    /// drain), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
+    /// `NodeStopped` from that matching reply, then the provider's stop and inspection of the exact
+    /// runtime: only its `Exited` is terminal proof.
     pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        let terminal = self.stop_steps_with(run, node, handle, false, StopEnd::Terminate { publish_stopped: false }).await?;
+        let terminal = self.stop_steps_with(run, node, handle, false, StopEnd::Terminate { publish_stopped: true }).await?;
         Ok(terminal.expect("a stop that terminates yields the provider's receipt"))
     }
 

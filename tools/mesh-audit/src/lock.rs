@@ -12,7 +12,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The seventeen #2927 ratchets, the telemetry ownership ratchet, R-W1's wire ratchet and the span-guard ratchet.
+/// The #2927 ratchets, the telemetry ownership ratchet, R-W1's wire ratchet and the span-guard ratchet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ratchet {
     TagIsDescriptiveOnly,

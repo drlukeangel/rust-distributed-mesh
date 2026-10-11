@@ -17,6 +17,8 @@ pub async fn run(service: &str) {
 /// called once with the configuration the environment produced, inside the runtime, before the
 /// admin starts.
 pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
+    // Heard from the first line: a stop that arrives while the admin boots ends the boot by name.
+    listen_for_stop();
     let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(service);
     let cfg = match AdminConfig::from_env(|k| std::env::var(k).ok()) {
         Ok(c) => c,
@@ -44,7 +46,18 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     // hold the boot span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        match start_with(cfg, wiring).instrument(tracing::Span::none()).await {
+        let started = tokio::select! {
+            r = start_with(cfg, wiring).instrument(tracing::Span::none()) => r,
+            () = stop_requested() => {
+                // Stopped before it booted: the boot ends by name and the process exits through its
+                // telemetry drain (the guard drops as this returns).
+                boot.in_scope(|| tracing::info!("stopped by signal before the node-admin booted"));
+                drop(boot);
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown = false, booted = false).in_scope(|| tracing::info!("stopping"));
+                return;
+            }
+        };
+        match started {
             Ok(r) => r,
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
@@ -64,7 +77,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     tokio::pin!(by_route);
     let fabric_shutdown = tokio::select! {
         _ = &mut by_route => true,
-        _ = signal() => false,
+        () = stop_requested() => false,
         // A hook that failed ends the node by name, as an unaccepted join does.
         why = running.hydration_failed() => {
             let node = running.digest.lock().unwrap().node.name.to_string();
@@ -96,15 +109,38 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     running.leave().instrument(span).await;
 }
 
-async fn signal() {
-    #[cfg(unix)]
-    {
+/// The stop signal of this process (SIGTERM or ctrl-c), latched from the moment [`listen_for_stop`]
+/// is first called. A node binary calls it on its first line: the handler then replaces the default
+/// disposition (which would end the process before its telemetry drained) for the whole boot, and a
+/// stop that arrives before anything awaits it is not lost.
+static STOP: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>> = std::sync::OnceLock::new();
+
+/// Start listening for this process's stop signal (idempotent). Call it on the process's runtime.
+pub fn listen_for_stop() {
+    STOP.get_or_init(|| {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        #[cfg(unix)]
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = term.recv() => {}
-            _ = tokio::signal::ctrl_c() => {}
-        }
+        tokio::spawn(async move {
+            #[cfg(unix)]
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = tokio::signal::ctrl_c() => {}
+            }
+            #[cfg(not(unix))]
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = tx.send(true);
+        });
+        rx
+    });
+}
+
+/// Resolves once this process has been told to stop ([`listen_for_stop`]).
+pub async fn stop_requested() {
+    listen_for_stop();
+    let mut rx = STOP.get().expect("listening for the stop signal").clone();
+    if rx.wait_for(|stop| *stop).await.is_err() {
+        // The listener's runtime is gone: no signal can arrive through it.
+        std::future::pending::<()>().await;
     }
-    #[cfg(not(unix))]
-    let _ = tokio::signal::ctrl_c().await;
 }

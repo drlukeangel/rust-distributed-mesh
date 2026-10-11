@@ -34,8 +34,11 @@ use tokio::sync::RwLock;
 
 /// The fabric-primary's writer of node rows.
 pub struct NodeRows {
-    /// This admin's `path.name`: it writes only while its view names it the fabric-primary.
+    /// This admin's `path.name`, the name its spans and refusals carry.
     me: PathName,
+    /// The node id this admin was born with: it writes only while its view names that birth the
+    /// fabric-primary (never by path.name: a replace keeps the path.name and mints a new node id).
+    me_id: NodeId,
     storage: Arc<dyn NodesStorage>,
     /// The config door a seeded birth is told its config through (`crate::node_config`).
     configs: Option<crate::node_config::NodeConfigsSlot>,
@@ -54,9 +57,9 @@ pub struct NodeRows {
 }
 
 impl NodeRows {
-    /// The writer of the admin `me` over `storage`, the fabric-primary's nodes store.
-    pub fn new(me: PathName, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(None), parked_old: Mutex::new(HashMap::new()) }
+    /// The writer of the admin `me`, born as `me_id`, over `storage`, the fabric-primary's nodes store.
+    pub fn new(me: PathName, me_id: NodeId, storage: Arc<dyn NodesStorage>) -> Self {
+        Self { me, me_id, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(None), parked_old: Mutex::new(HashMap::new()) }
     }
 
     /// Tell each birth whose row is seeded its config through `configs`, the fabric-primary's
@@ -236,12 +239,12 @@ impl NodeRows {
     pub fn arrivals(&self, prev: &Topology, now: &Topology) -> Vec<Node> {
         let births = |t: &Topology| t.members().filter_map(|n| n.incarnation_id.clone().map(|inc| (n.node_id.clone(), inc))).collect::<HashSet<_>>();
         let mut held = self.held.lock().unwrap();
-        if now.fabric_primary().map(|n| &n.name) != Some(&self.me) {
+        if !now.holds_fabric_seat(&self.me_id) {
             *held = None;
             self.parked_old.lock().unwrap().clear();
             return Vec::new();
         }
-        let took_seat = prev.fabric_primary().map(|n| &n.name) != Some(&self.me);
+        let took_seat = !prev.holds_fabric_seat(&self.me_id);
         // The seat began with this install (every member arrives), or before this admin installed
         // any view through this door (the births `prev` holds were held in the seat already).
         let seat = held.get_or_insert_with(|| if took_seat { HashSet::new() } else { births(prev) });
@@ -286,10 +289,10 @@ impl NodeRows {
         let Some(incarnation) = birth.incarnation_id.clone() else { return };
         span.record("told", "config-door");
         let req = rafka_node_rpc_contract::status::StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation, config: row.config };
-        let (me, view, storage) = (self.me.clone(), now.clone(), self.storage.clone());
+        let (me, me_id, view, storage) = (self.me.clone(), self.me_id.clone(), now.clone(), self.storage.clone());
         tokio::spawn(tracing::Instrument::instrument(
             async move {
-                door.update(&me, &view, &*storage, &req).await;
+                door.update(&me, &me_id, &view, &*storage, &req).await;
             },
             span.clone(),
         ));

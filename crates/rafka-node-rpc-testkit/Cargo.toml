@@ -42,10 +42,8 @@ rafka-node-rpc-testkit = { path = ".", features = ["rig"] }
 rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 libc = "0.2"
 tracing-subscriber = { workspace = true }
-# i143_acceptance_2775: the UNIT cell captures its own spans in an in-memory OTel exporter.
-opentelemetry = { workspace = true }
+# i143_acceptance_2775: the UNIT cell captures its own spans through the product pipeline into an in-memory exporter.
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-tracing-opentelemetry = { workspace = true }
 
 [[bin]]
 name = "rafka-rpc-node"
@@ -62,3 +60,7 @@ path = "src/bin/faulted_node_admin.rs"
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+# `src/taskdump.rs`: the hang-capture build passes these two cfgs in RUSTFLAGS.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(tokio_taskdump)"] }

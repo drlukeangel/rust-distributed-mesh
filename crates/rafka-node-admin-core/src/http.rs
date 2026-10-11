@@ -71,6 +71,10 @@ pub struct ControlPlane {
     pub contexts: Arc<crate::build_claim::AttemptContexts>,
     /// The rafka-time this admin stamps its Builds, attempts and shutdown with.
     pub time: rafka_mesh_transport::clock::RafkaTime,
+    /// Where this fabric-primary admits a Build or an attempt: held from the check that no Build is
+    /// reconciling to the durable write that makes the next one, by every path that starts work
+    /// (a submitted change, an opened attempt, the drift check).
+    pub admission: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// What `/api/shutdown` and `/api/fabric` need of this admin's fabric shutdown state.
@@ -105,6 +109,7 @@ impl ControlPlane {
             parked_old: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
             time,
+            admission: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -126,14 +131,18 @@ impl ControlPlane {
     }
 
     /// The accepted Build, and the refusal when another Build is still reconciling.
-    async fn current_settled(&self) -> Result<crate::build_state::BuildProjection, Refusal> {
+    /// The admission is taken first and returned with the Build: the caller holds it through its write.
+    async fn current_settled(&self) -> Result<(tokio::sync::OwnedMutexGuard<()>, crate::build_state::BuildProjection), Refusal> {
+        let admission = self.admission.clone().lock_owned().await;
         let current = self.accepted.current(&*self.builds).await.ok_or_else(|| {
             Refusal::Unavailable("this admin holds no accepted Build yet (Fabric.build_id is not hydrated); submit through a Ready node-admin".into())
         })?;
         if matches!(current.state, BuildState::Pending | BuildState::Running) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id, state = ?current.state)
+                .in_scope(|| tracing::info!("another Build is reconciling: one Build in flight"));
             return Err(Refusal::BuildInProgress(current.build_id.clone()));
         }
-        Ok(current)
+        Ok((admission, current))
     }
 
     /// Compile `change` once against the accepted topology into the next complete Build, persist
@@ -157,7 +166,7 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.authority(route).await?;
-            let current = self.current_settled().await?;
+            let (_admitted, current) = self.current_settled().await?;
             let observed = self.topology.read().await.clone();
             let topology = match compile(&current.topology, &change, &observed) {
                 Ok(t) => t,
@@ -241,7 +250,7 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.authority(route).await?;
-            let current = self.current_settled().await?;
+            let (_admitted, current) = self.current_settled().await?;
             // The topology never names a `.old` path: the parked predecessor a replacement left there
             // is found in the view alone, and only a delete acts on it.
             let parked_old = kind == ActionKind::Delete && path.old;

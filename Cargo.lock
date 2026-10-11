@@ -3378,7 +3378,6 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "libc",
- "opentelemetry",
  "opentelemetry_sdk",
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
@@ -3392,7 +3391,6 @@ dependencies = [
  "tokio",
  "tower 0.5.3",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
@@ -3458,7 +3456,6 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "libc",
- "opentelemetry",
  "opentelemetry_sdk",
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
@@ -3473,7 +3470,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
@@ -3486,7 +3482,6 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "libc",
- "opentelemetry",
  "opentelemetry_sdk",
  "rafka-chaos",
  "rafka-mesh-entity",
@@ -3502,7 +3497,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "yaml_serde",
 ]

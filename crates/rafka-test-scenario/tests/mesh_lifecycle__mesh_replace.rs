@@ -202,7 +202,40 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     assert!(left_recorded.iter().any(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4), "the owner recorded MeshLeft over all four births: {left_recorded:?}");
     let heard = |name: &str| -> Vec<&Value> { named(&spans, &format!("rdm.mesh.membership.update.{name}")).into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.")).collect() };
     let leaving = heard("via-mesh-leaving");
-    assert!(leaving.iter().any(|sp| attr_u(sp, "members_marked") > 0), "a mesh2 node marked mesh1's births Leaving: {leaving:?}");
+    assert!(!leaving.is_empty(), "a mesh2 node heard mesh-leaving: {spans_len} spans", spans_len = spans.len());
+    // R4: no mesh-level hold at a peer. A mesh2 node learns mesh1's members are leaving from each
+    // member's own Draining and Leaving in what it installs, and routes none of them while they say so.
+    let states: Vec<&Value> = heard("via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]).starts_with("mesh1.")).collect();
+    let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "Draining" | "Leaving")).collect();
+    assert!(!leaving_states.is_empty(), "a mesh2 node held a mesh1 member's own Draining or Leaving: {states:?}");
+    assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying Draining or Leaving is not routable at mesh2: {leaving_states:?}");
+    // The forwarder leg: mesh2's ordinary nodes, which hear no backbone, hold it from what their
+    // mesh primary forwards onto the mesh channel.
+    assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
+    // gossip.md, node-stopped lifecycle overlay: mesh1's primary publishes NodeStopped from each member's
+    // matching stopped reply, for every member it stops. The overlay is a material change (gossip.md
+    // "an in_flight overlay added or cleared" bumps topology_version), and the Members row publishes
+    // "at once on a material change": the primary's round is woken by its own projection's move
+    // (via-material-change, proven per event in rafka-mesh-transport round_wake; another wake of the same
+    // round may win the race) and publishes a new mesh1 version carrying the overlay, so EVERY member it
+    // stops, the other node-admin included, is held Leaving and parked, not routable, at a mesh2 admin
+    // (backbone) and a mesh2 ordinary node (mesh channel, forwarded by mesh2's primary).
+    let stopped_members: Vec<String> = ["mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string()].into_iter().chain(tier2.iter().map(|n| n.to_string())).collect();
+    let published_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped");
+    let stopped_at = |m: &str| -> u64 {
+        published_stopped.iter().find(|sp| s(&sp["attributes"]["node"]) == m && s(&sp["attributes"]["operation"]) == format!("stop-node:{m}")).map(|sp| start_ns(sp)).unwrap_or_else(|| panic!("mesh1's primary published NodeStopped for {m}: {published_stopped:?}"))
+    };
+    let mesh1_publications: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
+    let mesh1_wakes: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-material-change").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
+    let parked = |sp: &Value| sp["attributes"]["parked"] == "true" || sp["attributes"]["parked"] == json!(true);
+    assert!(!mesh1_wakes.is_empty(), "mesh1's primary's round was woken by its own projection's move");
+    for m in &stopped_members {
+        let at = stopped_at(m);
+        assert!(mesh1_publications.iter().any(|p| *p >= at), "mesh1's primary published a new version after {m}'s NodeStopped at {at}: publications {mesh1_publications:?}");
+        let held: Vec<&Value> = leaving_states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == *m && parked(sp)).collect();
+        assert!(held.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.admin.") && sp["attributes"]["channel"] == "backbone"), "a mesh2 admin held {m} parked from mesh1's backbone Members.in_flight: {held:?}");
+        assert!(held.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held {m} parked from what mesh2's primary forwarded: {held:?}");
+    }
     let left = heard("via-mesh-left");
     assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a mesh2 node held mesh1's births departed on mesh-left: {left:?}");
     let last_exit = tier2_last.max(terminal_end(&final_name));
@@ -266,4 +299,30 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
         (attr(child, "node").as_str(), attr(child, "source").as_str(), attr(child, "via").as_str(), attr(child, "seat").as_str(), attr(child, "served_by").as_str()),
         (other, "pull", "get-topology", "fabric-primary", holder.as_str())
     );
+
+    // gossip.md "New-fabric-primary and contact addresses": every surviving mesh hears
+    // new-fabric-primary naming the exact committed holder birth at the committed epoch, with that
+    // birth's own endpoint key, QUIC address and application contact; the holder those contacts
+    // name is the one the other surviving mesh primary reached and adopted from above.
+    let h = after.iter().find(|n| s(&n["name"]) == holder).unwrap();
+    let (succ_mesh, succ_rest) = s(&committed["attributes"]["successor"]).split_once(':').map(|(m, r)| (m.to_string(), r.to_string())).unwrap();
+    let (succ_id, succ_inc) = succ_rest.split_once(':').map(|(i, c)| (i.to_string(), c.to_string())).unwrap();
+    let exact = format!("{succ_mesh}:{succ_id}@{succ_inc} (epoch {})", attr_u(&committed, "committed_epoch"));
+    assert_eq!((succ_id.as_str(), succ_inc.as_str()), (s(&h["node_id"]).as_str(), s(&h["incarnation_id"]).as_str()), "the committed successor is the holder's exact birth: {h}");
+    let announce = &announced[0];
+    assert_eq!(s(&announce["attributes"]["holder"]), exact, "new-fabric-primary names the committed holder birth and epoch: {announce}");
+    assert_eq!(s(&announce["attributes"]["endpoint_id"]), s(&h["endpoint_id"]), "the announced endpoint key is the holder's: {announce} {h}");
+    for m in ["mesh2", "mesh3"] {
+        let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-new-fabric-primary").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.")) && s(&sp["attributes"]["node"]) != holder).collect();
+        assert!(!heard.is_empty(), "{m}: an admin other than the holder heard new-fabric-primary on the backbone");
+        for sp in &heard {
+            let a = &sp["attributes"];
+            assert_eq!(s(&a["holder"]), exact, "{m}: the frame names the exact holder birth: {sp}");
+            assert_ne!(s(&a["outcome"]), "refused-not-newer", "{m}: the committed holder is taken: {sp}");
+            assert_eq!(s(&a["via"]), "backbone", "{m}: heard on the backbone: {sp}");
+            for k in ["endpoint_id", "transport_addr", "admin_api_base"] {
+                assert_eq!(s(&a[k]), s(&announce["attributes"][k]), "{m}: {k} is the holder's own, as announced: {sp}");
+            }
+        }
+    }
 }

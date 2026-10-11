@@ -51,7 +51,9 @@ pub fn backbone_topic(fabric: &FabricId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-backbone:{fabric}").as_bytes()).as_bytes())
 }
 
-/// Tell `endpoint` where `peers` are (no discovery service runs).
+/// Tell `endpoint` where `peers` are (no discovery service runs): a lookup of its own that only
+/// adds. For a raw gossip observer with no [`Membership`]; an endpoint that holds a
+/// [`LocationBook`] installs every address through that book.
 pub fn learn_addresses(endpoint: &Endpoint, peers: &[EndpointAddr]) -> Result<()> {
     let lookup = MemoryLookup::new();
     for p in peers {
@@ -68,13 +70,62 @@ pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
 }
 
 /// The newest birth and heartbeat each key's address was registered from (rafka-v2 node-base
-/// `peer_location_wall_time`): governs the address book only, never the held view. Ordered as the
-/// held view is: by `digest_seq` within one incarnation, and along the lineage across incarnations.
-type LocationMark = (rafka_mesh_entity::IncarnationId, u64, Option<rafka_mesh_entity::IncarnationId>);
+/// `peer_location_wall_time`), and the socket that birth named: governs the address book only,
+/// never the held view. Ordered as the held view is: by `digest_seq` within one incarnation, and
+/// along the lineage across incarnations.
+type LocationMark = (rafka_mesh_entity::IncarnationId, u64, Option<rafka_mesh_entity::IncarnationId>, std::net::SocketAddr);
 
-fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, LocationMark>> {
-    static W: std::sync::OnceLock<Mutex<HashMap<iroh::PublicKey, LocationMark>>> = std::sync::OnceLock::new();
-    W.get_or_init(Mutex::default)
+/// The marks of one peer-location book, by key. Each book holds its own: a newer birth one node of
+/// a process consumed is still newer to every other node of that process.
+pub type LocationMarks = Mutex<HashMap<iroh::PublicKey, LocationMark>>;
+
+/// The peer-location book of one endpoint: the ONE address book its address lookup reads. Every
+/// channel and topic the endpoint joins installs where a key is through it, and only a birth's
+/// ordered digest changes a key's address (gossip.md, contact fields: "Contact changes continue
+/// through the birth's ordered digest updates"). A move retires every other direct path the
+/// endpoint holds to the key (R-I1, `Endpoint::replace_direct_addrs`). An address from anything
+/// else (a seed, a peer list) fills a key the book holds no address for and never adds a second
+/// one: iroh merges every address lookup service's answer when it dials a key with no selected
+/// path, so a socket kept in a second book is dialled again after its key moved.
+#[derive(Clone)]
+pub struct LocationBook {
+    lookup: MemoryLookup,
+    endpoint: Endpoint,
+    marks: Arc<LocationMarks>,
+    /// The node this book belongs to: the observer every location span names.
+    observer: String,
+}
+
+impl LocationBook {
+    /// The book of `endpoint`, held by `observer`, installed as an address lookup of the endpoint.
+    pub fn new(endpoint: &Endpoint, observer: &str) -> Result<Self> {
+        let lookup = MemoryLookup::new();
+        endpoint.address_lookup().map_err(|e| anyhow::anyhow!("address_lookup: {e}"))?.add(lookup.clone());
+        Ok(Self { lookup, endpoint: endpoint.clone(), marks: Arc::default(), observer: observer.to_string() })
+    }
+
+    /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
+    pub fn register(&self, d: &MeshDigest) {
+        retire_superseded(&self.endpoint, &self.observer, register_location(&self.marks, &self.lookup, d));
+    }
+
+    /// Fill `addr` for its key when the book holds no address for that key; an address the book
+    /// holds is changed only by a newer birth's digest ([`LocationBook::register`]).
+    pub fn fill(&self, addr: &EndpointAddr) {
+        if self.lookup.get_endpoint_info(addr.id).is_none_or(|e| e.ip_addrs().next().is_none()) {
+            self.lookup.add_endpoint_info(addr.clone());
+        }
+    }
+
+    /// Forget every address of `key`: a birth under an open restart or removal is never handed out.
+    pub fn forget(&self, key: iroh::PublicKey) {
+        self.lookup.remove_endpoint_info(key);
+    }
+
+    /// The direct addresses this book holds for `key`.
+    pub fn addrs(&self, key: iroh::PublicKey) -> Vec<std::net::SocketAddr> {
+        self.lookup.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect()).unwrap_or_default()
+    }
 }
 
 /// The `(node.id, incarnation)` pairs a `node.deleted` fenced in the peer-location book: a digest of
@@ -104,9 +155,11 @@ fn incarnation_fenced(node_id: &NodeId, incarnation: &rafka_mesh_entity::Incarna
 /// not newer (replayed, late, or an aggregate copy of an older view) only fills a key that has no
 /// address, so it never puts an old socket back.
 ///
-/// Returns the key and the new socket when a newer birth MOVED the key: the caller then retires
-/// the endpoint's paths to every other socket (`retire_superseded`).
-pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) -> Option<(iroh::PublicKey, std::net::SocketAddr)> {
+/// Returns the key, the socket it moved from and the new socket when a newer birth MOVED the key:
+/// the caller then retires the endpoint's paths to every other socket (`retire_superseded`). The
+/// socket it moved from is the one the book last registered for the key, or else the one it holds:
+/// a book that forgot the key under an open restart still knows where the key was.
+pub fn register_location(marks: &LocationMarks, lookup: &MemoryLookup, d: &MeshDigest) -> Option<LocationMove> {
     let addr = gossip_addr(d)?;
     let key = addr.id;
     if incarnation_fenced(&d.node.node_id, &d.node.incarnation) {
@@ -120,46 +173,73 @@ pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) -> Option<(iroh:
         .in_scope(|| tracing::info!("a digest of a deleted incarnation: its socket is not registered for the key"));
         return None;
     }
-    let fresher = {
-        let mut w = location_watermarks().lock().unwrap();
+    let (fresher, marked) = {
+        let mut w = marks.lock().unwrap();
+        let marked = w.get(&key).map(|m| m.3);
         let fresher = match w.get(&key) {
             None => true,
-            Some((incarnation, seq, _)) if *incarnation == d.node.incarnation => d.digest_seq > *seq,
-            Some((_, _, supersedes)) => supersedes.as_ref() != Some(&d.node.incarnation),
+            Some((incarnation, seq, _, _)) if *incarnation == d.node.incarnation => d.digest_seq > *seq,
+            Some((_, _, supersedes, _)) => supersedes.as_ref() != Some(&d.node.incarnation),
         };
         if fresher {
-            w.insert(key, (d.node.incarnation.clone(), d.digest_seq, d.node.supersedes.clone()));
+            w.insert(key, (d.node.incarnation.clone(), d.digest_seq, d.node.supersedes.clone(), d.node.transport_addr));
         }
-        fresher
+        (fresher, marked)
     };
-    let old = lookup.get_endpoint_info(key).and_then(|e| e.ip_addrs().next().cloned());
+    let held = lookup.get_endpoint_info(key).and_then(|e| e.ip_addrs().next().cloned());
     let mut moved = None;
     if fresher {
-        if old.is_some_and(|o| o != d.node.transport_addr) {
-            moved = Some((key, d.node.transport_addr));
-            tracing::info_span!(
-                "rdm.mesh.connection.update.via-peer-location-refreshed",
-                node = %d.node.name,
-                incarnation_id = %d.node.incarnation.0,
-                old_socket = %old.map(|o| o.to_string()).unwrap_or_default(),
-                new_socket = %d.node.transport_addr,
-            )
-            .in_scope(|| tracing::info!("a newer birth of this key moved: its old socket is no longer dialled"));
+        if let Some(old) = marked.or(held).filter(|o| *o != d.node.transport_addr) {
+            moved = Some(LocationMove { key, node: d.node.name.to_string(), incarnation: d.node.incarnation.0.clone(), old, new: d.node.transport_addr });
         }
         lookup.set_endpoint_info(addr);
-    } else if old.is_none() {
+    } else if held.is_none() {
         lookup.add_endpoint_info(addr);
     }
     moved
 }
 
-/// A newer birth moved `key` to `new`: the endpoint retires every direct path it holds to any other
-/// socket of the key, open ones included (iroh `Endpoint::replace_direct_addrs`), so a connection
-/// to the old socket, or a dial's first packet to it, can no longer reach whoever took that port.
-fn retire_superseded(endpoint: &Endpoint, moved: Option<(iroh::PublicKey, std::net::SocketAddr)>) {
-    let Some((key, new)) = moved else { return };
+/// A newer birth of `key` (node `node`, birth `incarnation`) moved it from `old` to `new`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocationMove {
+    /// The key that moved.
+    pub key: iroh::PublicKey,
+    /// The node the newer birth names.
+    pub node: String,
+    /// The newer birth.
+    pub incarnation: String,
+    /// The socket the book held for the key before.
+    pub old: std::net::SocketAddr,
+    /// The socket the newer birth names.
+    pub new: std::net::SocketAddr,
+}
+
+/// A newer birth moved a key: the endpoint retires every direct path it holds to any other socket
+/// of the key, open ones included (iroh `Endpoint::replace_direct_addrs`), so a connection to the
+/// old socket, or a dial's first packet to it, can no longer reach whoever took that port. The span
+/// ends when the endpoint has retired them (`retired=true`).
+fn retire_superseded(endpoint: &Endpoint, observer: &str, moved: Option<LocationMove>) {
+    let Some(m) = moved else { return };
+    let span = tracing::info_span!(
+        "rdm.mesh.connection.update.via-peer-location-refreshed",
+        observer = %observer,
+        node = %m.node,
+        incarnation_id = %m.incarnation,
+        peer = %m.key.fmt_short(),
+        old_socket = %m.old,
+        new_socket = %m.new,
+        retired = tracing::field::Empty,
+    );
+    span.in_scope(|| tracing::info!("a newer birth of this key moved: its old socket is no longer dialled"));
     let endpoint = endpoint.clone();
-    tokio::spawn(async move { endpoint.replace_direct_addrs(key, [new]).await });
+    tokio::spawn(tracing::Instrument::instrument(
+        async move {
+            endpoint.replace_direct_addrs(m.key, [m.new]).await;
+            tracing::Span::current().record("retired", true);
+            tracing::info!("every direct path to another socket of the key is retired");
+        },
+        span,
+    ));
 }
 
 /// `RDM_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
@@ -1238,7 +1318,8 @@ struct Channel {
     peers: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
     /// The peers asked while they stayed on the live list.
     joined: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
-    lookup: MemoryLookup,
+    /// The endpoint's peer-location book: shared by every channel and topic of the endpoint.
+    book: LocationBook,
     endpoint: Endpoint,
     /// The active gossip neighbours on this channel (NeighborUp minus NeighborDown).
     neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
@@ -1253,7 +1334,7 @@ struct Channel {
 impl Channel {
     /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
     fn register(&self, d: &MeshDigest) {
-        retire_superseded(&self.endpoint, register_location(&self.lookup, d));
+        self.book.register(d);
     }
 
     async fn join(
@@ -1264,14 +1345,13 @@ impl Channel {
         node: &str,
         channel: &str,
         seeds: Vec<EndpointAddr>,
+        book: LocationBook,
         on_frame: Arc<dyn Fn(Frame) + Send + Sync>,
         targets: Arc<dyn Fn() -> Held + Send + Sync>,
         replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync>,
     ) -> Result<Self> {
-        let lookup = MemoryLookup::new();
-        endpoint.address_lookup().map_err(|e| anyhow::anyhow!("address_lookup: {e}"))?.add(lookup.clone());
         for s in &seeds {
-            lookup.add_endpoint_info(s.clone());
+            book.fill(s);
         }
         let peers: BTreeSet<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
         let sub = gossip.subscribe(topic, peers.iter().copied().collect()).await?;
@@ -1279,7 +1359,7 @@ impl Channel {
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
-        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), parked: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, lookup, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default() };
+        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), parked: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, book, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default() };
         let neighbors = me.neighbors.clone();
         let neighbors_changed = me.neighbors_changed.clone();
         let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
@@ -1424,7 +1504,7 @@ impl Channel {
 
     /// Register `peer`'s address; `true` when it is new to this channel.
     fn learn(&self, peer: &EndpointAddr) -> bool {
-        self.lookup.add_endpoint_info(peer.clone());
+        self.book.fill(peer);
         self.peers.lock().unwrap().insert(peer.id)
     }
 
@@ -1466,7 +1546,7 @@ impl Channel {
                 // typed drain is in flight over them, and they are retired at the proven exit.
                 for key in &held.retired {
                     if retired.insert(*key) {
-                        me.lookup.remove_endpoint_info(*key);
+                        me.book.forget(*key);
                         me.peers.lock().unwrap().remove(key);
                         me.joined.lock().unwrap().remove(key);
                         tracing::info_span!("rdm.mesh.connection.update.via-restart-address-retired", node = %node, channel = %channel, peer = %key.fmt_short())
@@ -1475,7 +1555,7 @@ impl Channel {
                 }
                 retired.retain(|k| held.retired.contains(k));
                 for t in schedule.due(held.targets, Instant::now()) {
-                    me.lookup.add_endpoint_info(t.addr.clone());
+                    me.book.fill(&t.addr);
                     me.peers.lock().unwrap().insert(t.addr.id);
                     let sender = me.sender.read().await.clone();
                     let joined = match sender {
@@ -1683,7 +1763,10 @@ impl View {
                 Vec::new()
             }
             Frame::NodeStopped { op, .. } => {
-                self.book.stopped(op.clone());
+                let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
+                if self.book.stopped(op.clone()) {
+                    self.note_member_parked(op, prior, via);
+                }
                 Vec::new()
             }
             Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeDrained { op, forwarded_by } => {
@@ -1717,7 +1800,8 @@ impl View {
                 Vec::new()
             }
             Frame::MeshLeaving { mesh_id, build_id, attempt, operation, publisher, event_at_rafka_ms, forwarded_by } => {
-                let marked = self.book.mesh_leaving(mesh_id);
+                // Leave intent, never a mark: a peer learns the mesh's members are leaving from each
+                // member's own Draining and Leaving, carried in what it installs (R4).
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-mesh-leaving",
                     node = %self.node,
@@ -1727,10 +1811,9 @@ impl View {
                     operation = %operation,
                     publisher = %publisher,
                     forwarded_by = forwarded_by.as_deref().unwrap_or(""),
-                    members_marked = marked,
                     via,
                 )
-                .in_scope(|| tracing::info!("the mesh is Leaving: its births are held, not selected for new work, their addresses kept"));
+                .in_scope(|| tracing::info!("mesh-leaving heard: leave intent; each member's own Draining and Leaving says it takes no new work"));
                 let _ = event_at_rafka_ms;
                 Vec::new()
             }
@@ -1752,7 +1835,8 @@ impl View {
                 Vec::new()
             }
             Frame::MeshLeft { mesh_id, build_id, attempt, operation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by } => {
-                let applied = self.book.mesh_left(mesh_id, build_id, *attempt, *event_at_rafka_ms);
+                let source = self.source_mesh_of(mesh_id);
+                let applied = self.book.mesh_left(mesh_id, source.as_deref(), build_id, *attempt, *event_at_rafka_ms);
                 // The mesh is no longer part of the topology this node holds: the source projections
                 // of it, held or published, go with it, so no replay or top-up carries it again.
                 if let Some(name) = &applied.name {
@@ -1972,6 +2056,14 @@ impl View {
         true
     }
 
+    /// The name of the mesh `mesh_id` names in a source projection this node holds (received on
+    /// the backbone or the mesh channel, or forwarded): a node-admin's digest in it states the id.
+    fn source_mesh_of(&self, mesh_id: &MeshId) -> Option<String> {
+        let names = |full: &Full| full.digests().into_iter().find(|d| d.mesh_id.as_ref() == Some(mesh_id)).map(|d| d.node.name.mesh.clone());
+        let received = [&self.backbone_rx, &self.mesh_rx].into_iter().find_map(|rx| rx.lock().unwrap().sources().into_iter().find_map(|(_, _, _, full)| names(&full)));
+        received.or_else(|| self.forwarder.lock().unwrap().snapshots().into_iter().find_map(|s| names(&s.full())))
+    }
+
     fn receiver(&self, side: Side) -> &Arc<Mutex<SnapshotReceiver>> {
         match side {
             Side::Backbone => &self.backbone_rx,
@@ -2015,7 +2107,10 @@ impl View {
             if op.is_restart() {
                 self.book.restarting(op);
             } else if op.is_stop() {
-                self.book.stopped(op);
+                let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
+                if self.book.stopped(op.clone()) {
+                    self.note_member_parked(&op, prior, side.name());
+                }
             } else {
                 self.book.deleting(op);
             }
@@ -2031,6 +2126,7 @@ impl View {
             // aggregate copy is never "heard only through forwarded topology", so it earns no
             // forwarded grace (gossip.md §3.2), and the Mesh channel's copy of it adds nothing.
             let own = d.node.name.mesh == self.mesh;
+            let prior = self.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
                 (Side::Backbone, true) => self.book.record(d.clone()),
                 (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
@@ -2045,10 +2141,56 @@ impl View {
             };
             if taken {
                 self.note(&d, side.via());
+                self.note_member_state(&d, prior, side);
                 carried.push(d);
             }
         }
         carried
+    }
+
+    /// A peer mesh's member whose own state this node now holds changed (or was first held saying
+    /// Draining or Leaving): what this node routes to it follows that state alone (R4).
+    fn note_member_state(&self, d: &MeshDigest, prior: Option<rafka_mesh_entity::MemberStatus>, side: Side) {
+        use rafka_mesh_entity::MemberStatus::{Draining, Leaving};
+        if d.node.name.mesh == self.mesh || prior == Some(d.status) || (prior.is_none() && !matches!(d.status, Draining | Leaving)) {
+            return;
+        }
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-member-state",
+            node = %self.node,
+            member = %d.node.name,
+            member_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            status = ?d.status,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+            channel = side.name(),
+            routable = self.book.routable(d.node.node_id.as_str()),
+        )
+        .in_scope(|| tracing::info!("a peer mesh's member state held from what this node installed: routing follows it"));
+    }
+
+    /// A peer mesh's member this node now holds parked, from its mesh primary's `NodeStopped` overlay
+    /// (gossip.md, node-stopped lifecycle overlay): Leaving and parked, not routable. `channel` is
+    /// where the overlay arrived: the frame itself, or the aggregate's `in_flight`.
+    fn note_member_parked(&self, op: &rafka_mesh_entity::LifecycleOp, prior: Option<rafka_mesh_entity::MemberStatus>, channel: &str) {
+        if op.name.mesh == self.mesh {
+            return;
+        }
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-member-state",
+            node = %self.node,
+            member = %op.name,
+            member_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            status = ?rafka_mesh_entity::MemberStatus::Leaving,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+            channel,
+            routable = self.book.routable(op.node_id.as_str()),
+            parked = true,
+            operation = %op.operation,
+            build_id = %op.build_id,
+        )
+        .in_scope(|| tracing::info!("a peer mesh's member is parked by its mesh primary's NodeStopped: Leaving, not routable"));
     }
 
     fn note(&self, d: &MeshDigest, via: &'static str) {
@@ -2128,6 +2270,12 @@ impl Membership {
         self.mesh.endpoint.clone()
     }
 
+    /// The endpoint's peer-location book: every other topic this process joins on the endpoint
+    /// installs its peers' addresses through it.
+    pub fn location_book(&self) -> LocationBook {
+        self.mesh.book.clone()
+    }
+
     /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`. `clock` is the
     /// Rafka-time the process composes: every timestamp this membership and its backbone put on a
     /// frame reads it.
@@ -2147,8 +2295,8 @@ impl Membership {
                 Vec::new()
             }
         });
-        let lookup_slot: Arc<Mutex<Option<(MemoryLookup, Endpoint)>>> = Arc::default();
-        let (v, f, ls, observing) = (view.clone(), fabric.clone(), lookup_slot.clone(), clock.clone());
+        let location = LocationBook::new(endpoint, node)?;
+        let (v, f, ls, observing) = (view.clone(), fabric.clone(), location.clone(), clock.clone());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
             let carried = match &frame {
                 Frame::Members { .. } | Frame::MembersDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel).carried,
@@ -2162,17 +2310,14 @@ impl Membership {
                     carried
                 }
             };
-            if let Some((l, ep)) = ls.lock().unwrap().as_ref() {
-                for d in &carried {
-                    retire_superseded(ep, register_location(l, d));
-                }
+            for d in &carried {
+                ls.register(d);
             }
         });
         let (book, own_mesh, me_name) = (view.book.clone(), mesh.to_string(), node.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
             Arc::new(move || held_view(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
-        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets, replay).await?;
-        *lookup_slot.lock().unwrap() = Some((channel.lookup.clone(), channel.endpoint.clone()));
+        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, location, on_frame, targets, replay).await?;
         let sink_channel = channel.clone();
         let sink: crate::forward_path::Sink = Arc::new(move |f: Frame| {
             let channel = sink_channel.clone();
@@ -2471,15 +2616,10 @@ impl Membership {
         self.view.mesh_rx.lock().unwrap().held_version(mesh)
     }
 
-    /// This node's own Mesh's primary node-admin as this node's view holds it: the Ready
-    /// node-admin of the Mesh with the lowest NodeId, the election the node-admins make
-    /// (rafka-node-admin-core `election::elect`). The node tops up from it and from no other.
-    pub fn mesh_primary(&self) -> Option<MeshDigest> {
-        self.book
-            .current(self.book.staleness_floor())
-            .into_iter()
-            .filter(|d| d.node.name.mesh == self.view.mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic)
-            .min_by(|a, b| a.node.node_id.cmp(&b.node.node_id))
+    /// This node's own Mesh's current primary node-admin: the birth its held seat record names
+    /// ([`DigestBook::mesh_primary`]). The node tops up from it and from no other.
+    pub fn mesh_primary(&self) -> Result<MeshDigest, NoMeshPrimary> {
+        self.book.mesh_primary(&self.view.mesh)
     }
 
     /// Resume desynchronized sources from this Mesh's own primary (gossip.md §3.3): when a delta
@@ -2506,10 +2646,13 @@ impl Membership {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
         let node = self.view.node.clone();
-        let Some(primary) = self.mesh_primary() else {
-            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = "no-mesh-primary-held")
-                .in_scope(|| tracing::info!("no Ready node-admin of this Mesh is held: nothing to top up from"));
-            return;
+        let primary = match self.mesh_primary() {
+            Ok(primary) => primary,
+            Err(no) => {
+                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = no.reason(), seat_holder = %no.holder().map(|h| h.to_string()).unwrap_or_default(), detail = %no)
+                    .in_scope(|| tracing::info!("this Mesh's current primary cannot be addressed: nothing to top up from"));
+                return;
+            }
         };
         let names: Vec<String> = gaps.iter().map(|(m, _)| m.clone()).collect();
         match fetch(self.clone(), primary.clone(), names).await {
@@ -2581,6 +2724,60 @@ impl Membership {
     }
 }
 
+/// Why a node cannot address its Mesh's current primary: each a distinct fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoMeshPrimary {
+    /// The node holds no seat record of the mesh.
+    NoSeatRecord {
+        /// The mesh whose record is not held.
+        mesh: String,
+    },
+    /// The record names a birth whose digest the node does not hold.
+    HolderNotHeld {
+        /// The record held.
+        holder: SeatHolder,
+        /// The birth of the same node the node holds instead, when it holds one.
+        held_incarnation: Option<IncarnationId>,
+        /// Whether the node holds the holder's node as departed.
+        departed: bool,
+    },
+    /// The record's birth is held as proven gone.
+    HolderGone {
+        /// The record held.
+        holder: SeatHolder,
+    },
+}
+
+impl NoMeshPrimary {
+    /// The span reason naming this fact.
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::NoSeatRecord { .. } => "no-seat-record-held",
+            Self::HolderNotHeld { .. } => "seat-holder-not-held",
+            Self::HolderGone { .. } => "seat-holder-gone",
+        }
+    }
+
+    /// The seat record held, when one is.
+    pub fn holder(&self) -> Option<&SeatHolder> {
+        match self {
+            Self::NoSeatRecord { .. } => None,
+            Self::HolderNotHeld { holder, .. } | Self::HolderGone { holder } => Some(holder),
+        }
+    }
+}
+
+impl std::fmt::Display for NoMeshPrimary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSeatRecord { mesh } => write!(f, "no seat record of mesh {mesh} is held"),
+            Self::HolderNotHeld { holder, held_incarnation: Some(other), .. } => write!(f, "the seat record names {holder}; the node holds birth {} of that node instead", other.0),
+            Self::HolderNotHeld { holder, held_incarnation: None, departed } => write!(f, "the seat record names {holder}; no digest of that node is held{}", if *departed { " (held departed)" } else { "" }),
+            Self::HolderGone { holder } => write!(f, "the seat record names {holder}, a birth held as proven gone"),
+        }
+    }
+}
+
 /// What a top-up read installed.
 #[derive(Debug, Clone, Default)]
 pub struct TopUpDone {
@@ -2612,7 +2809,6 @@ pub struct Backbone {
     node: String,
     mesh: String,
     fabric: FabricId,
-    forwarding: Arc<AtomicBool>,
     publishing: Arc<AtomicBool>,
     status_publishing: Arc<AtomicBool>,
     membership: Membership,
@@ -2646,8 +2842,7 @@ impl Backbone {
     /// Join the backbone as `node`, whose current birth is `incarnation`: the exact identity every
     /// aggregate this admin publishes names as its publisher.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, membership: &Membership, mesh: &str, node: &str, incarnation: IncarnationId, seeds: Vec<EndpointAddr>) -> Result<Self> {
-        let forwarding = Arc::new(AtomicBool::new(false));
-        let (m, fw, me, own) = (membership.clone(), forwarding.clone(), node.to_string(), mesh.to_string());
+        let (m, me, own) = (membership.clone(), node.to_string(), mesh.to_string());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
             if matches!(frame, Frame::Members { .. } | Frame::MembersDelta { .. }) {
                 let taken = m.view.take_snapshot(&frame, &m.fabric, Side::Backbone);
@@ -2657,20 +2852,18 @@ impl Backbone {
                     crate::discipline::offer(&m.clock, &m.view.node, "fabric-primary-members", verdict);
                 }
                 for d in &taken.carried {
-                    register_location(&m.mesh.lookup, d);
+                    m.mesh.register(d);
                 }
                 // A complete snapshot of a source Mesh: the forwarding primary says what moved
-                // since it last published that source into its own Mesh.
-                if let (Some((source_mesh, publisher, version, full)), true) = (taken.source, fw.load(Ordering::Relaxed)) {
+                // since it last published that source into its own Mesh. The forward path decides
+                // nothing unless this node holds the forwarder role, read under its lock.
+                if let Some((source_mesh, publisher, version, full)) = taken.source {
                     m.forward_path.source(&me, &source_mesh, &publisher, version, &full, m.clock.now_rafka_ms());
                 }
                 return;
             }
             for d in m.view.take(&frame, &m.fabric, "backbone") {
                 m.mesh.register(&d);
-            }
-            if !fw.load(Ordering::Relaxed) {
-                return;
             }
             if let Some(f) = forward_of(frame, &me, &own) {
                 m.forward_path.carry(&me, f);
@@ -2689,13 +2882,12 @@ impl Backbone {
         let (book, own_mesh) = (membership.book.clone(), mesh.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
             Arc::new(move || held_view(&book, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin));
-        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, on_frame, targets, replay).await?;
+        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, membership.mesh.book.clone(), on_frame, targets, replay).await?;
         let me = Self {
             channel,
             node: node.to_string(),
             mesh: mesh.to_string(),
             fabric: membership.fabric.clone(),
-            forwarding,
             publishing: Arc::default(),
             status_publishing: Arc::default(),
             membership: membership.clone(),
@@ -2793,18 +2985,17 @@ impl Backbone {
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
         self.membership.view.primary.store(primary, Ordering::Relaxed);
-        if self.publishing.load(Ordering::Relaxed) != primary {
-            // A forwarder that takes (or loses) the seat has published nothing into its Mesh: the
-            // first publication of every source after taking it is a full (gossip.md §3.3).
-            self.membership.view.forwarder.lock().unwrap().reset();
-            self.full_due.store(primary, Ordering::Relaxed);
-        }
+        // A forwarder that takes (or loses) the seat has published nothing into its Mesh: the
+        // first publication of every source after taking it is a full (gossip.md §3.3). The role,
+        // its baseline and its term switch together under the forwarder's lock.
+        let forwarder_changed = self.membership.forward_path.set_role(primary);
         self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
             tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.node, mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("mesh aggregate publication"));
         }
-        if let Some(role) = Self::role(&self.forwarding, primary) {
+        if forwarder_changed {
+            let role = if primary { "start" } else { "stop" };
             tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.node, mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("peer meshes forwarded onto this mesh's channel"));
         }
@@ -2825,15 +3016,14 @@ impl Backbone {
     /// republishes the same version as passive anti-entropy. The same projection is this Mesh's
     /// own source: what its members need of it goes into the Mesh as a delta or a full. A status
     /// is not part of a round: [`Backbone::announce_statuses`] sends one when it changes.
-    pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>) {
+    /// Returns whether it published: `false` when this node does not hold the publisher role, and
+    /// nothing was sent.
+    pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>) -> bool {
         let sent = membership.clock.now_rafka_ms();
         if !self.publishing.load(Ordering::Relaxed) {
-            return;
+            return false;
         }
-        // This mesh's own overlays and departures only; a peer mesh's travel in that mesh's
-        // aggregate.
-        let (in_flight, departed) = membership.book.overlays_of(&self.mesh);
-        let full = Full::new(members, in_flight, departed);
+        let full = self.own_full(membership, members);
         let (version, snapshot_id, bumped) = {
             let mut v = self.version.lock().unwrap();
             let before = v.version();
@@ -2871,6 +3061,60 @@ impl Backbone {
         } else {
             self.membership.forward_path.source(&self.node, &self.mesh, &self.publisher, version, &overlays, sent);
         }
+        true
+    }
+
+    /// This Mesh's members as a publication round puts them into its aggregate: every member of
+    /// this Mesh the book heard within the staleness floor.
+    pub fn own_members(&self, membership: &Membership) -> Vec<MeshDigest> {
+        membership.book.current(membership.book.staleness_floor()).into_iter().filter(|d| d.node.name.mesh == self.mesh).collect()
+    }
+
+    /// This Mesh's aggregate as a round publishes it: `members` with this mesh's own overlays and
+    /// departures only (a peer mesh's travel in that mesh's aggregate).
+    fn own_full(&self, membership: &Membership, members: Vec<MeshDigest>) -> Full {
+        let (in_flight, departed) = membership.book.overlays_of(&self.mesh);
+        Full::new(members, in_flight, departed)
+    }
+
+    /// Resolves when the next publication round is due: at `deadline`, the anti-entropy timer, or
+    /// at once while this admin is its Mesh's publisher and the Mesh's normalized projection is no
+    /// longer the one its `topology_version` was last bumped on (gossip.md, `Members`: "at once on a
+    /// material change"). The projection is looked at when the book says something it carries
+    /// moved (a member's birth or status, a member heard again, an overlay or a departure), never
+    /// on a timer.
+    pub async fn round_wake(&self, membership: &Membership, deadline: tokio::time::Instant) {
+        let sleep = tokio::time::sleep_until(deadline);
+        tokio::pin!(sleep);
+        let book = &membership.book;
+        let (mut heard, mut births, mut overlays) = (book.heard_changes(), book.birth_changes(), book.overlay_changes());
+        loop {
+            heard.borrow_and_update();
+            births.borrow_and_update();
+            overlays.borrow_and_update();
+            if self.publishing.load(Ordering::Relaxed) {
+                let full = self.own_full(membership, self.own_members(membership));
+                let (moved, held) = {
+                    let v = self.version.lock().unwrap();
+                    (v.would_bump(&full), v.version())
+                };
+                if moved {
+                    tracing::info_span!("rdm.mesh.backbone.update.via-material-change", node = %self.node, mesh = %self.mesh, held_topology_version = held, members = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
+                        .in_scope(|| tracing::info!("this mesh's normalized projection moved since its last publication: the round publishes at once"));
+                    return;
+                }
+            }
+            let ok = tokio::select! {
+                _ = &mut sleep => return,
+                r = heard.changed() => r.is_ok(),
+                r = births.changed() => r.is_ok(),
+                r = overlays.changed() => r.is_ok(),
+            };
+            if !ok {
+                (&mut sleep).await;
+                return;
+            }
+        }
     }
 
     /// The forwarded full of every source this primary holds (its own Mesh and each peer Mesh),
@@ -2878,9 +3122,6 @@ impl Backbone {
     /// Nothing sends it again on a timer; a held source whose peer Mesh is unheard is not
     /// re-sent, so no member's coverage is renewed by a word its primary did not receive.
     pub async fn forward_fulls(&self) {
-        if !self.forwarding.load(Ordering::Relaxed) {
-            return;
-        }
         let mut held: Vec<(String, PublisherId, u64, Full)> = self.membership.view.backbone_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
         if let Some((version, full)) = self.own.lock().unwrap().clone() {
             held.push((self.mesh.clone(), self.publisher.clone(), version, full));
@@ -3035,6 +3276,10 @@ pub struct DigestBook {
     /// ready" or "that node is reachable again" wakes on. A local observation of the book; nothing
     /// is sent.
     heard: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Ticks when an open lifecycle overlay is added or cleared, or a departure is accepted: the
+    /// overlays and departures a mesh primary's aggregate carries. A local observation; nothing is
+    /// sent.
+    overlays: Arc<tokio::sync::watch::Sender<u64>>,
     /// Proven departures by NodeId, with when this book accepted each: held
     /// for `retention` of local age, then forgotten.
     departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
@@ -3048,9 +3293,6 @@ pub struct DigestBook {
     /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
     ended_overlays: Arc<Mutex<BTreeSet<(String, u32, String)>>>,
-    /// The meshes this book heard `mesh-leaving` for and not yet `mesh-left`, by mesh id: Leaving.
-    /// Nothing is kept of a mesh once its `mesh-left` is applied.
-    leaving: Arc<Mutex<BTreeMap<String, LeavingMesh>>>,
     /// The mesh names the accepted Build holds, once this node holds the Build: the authority on
     /// which meshes the fabric has.
     accepted_meshes: Arc<Mutex<Option<BTreeSet<String>>>>,
@@ -3067,14 +3309,6 @@ impl Default for DigestBook {
     fn default() -> Self {
         Self::with_retention(DEPARTED_RETENTION)
     }
-}
-
-/// A mesh that is Leaving: its name as its members' paths carry it, and the exact births it held
-/// when it was first heard leaving, which `mesh-left` departs.
-#[derive(Debug, Clone)]
-struct LeavingMesh {
-    name: String,
-    births: BTreeMap<String, (IncarnationId, rafka_mesh_entity::PathName)>,
 }
 
 /// What applying `mesh-left` did.
@@ -3144,11 +3378,11 @@ impl DigestBook {
             inner: Arc::default(),
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
             heard: Arc::new(tokio::sync::watch::Sender::new(0)),
+            overlays: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
             in_flight: Arc::default(),
             stopped_marks: Arc::default(),
             ended_overlays: Arc::default(),
-            leaving: Arc::default(),
             accepted_meshes: Arc::default(),
             retention,
             staleness_floor,
@@ -3209,6 +3443,7 @@ impl DigestBook {
         fence_incarnation(&op.node_id, &op.incarnation);
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().remove(&op.key());
+        self.overlays_moved();
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-deleted",
@@ -3241,6 +3476,7 @@ impl DigestBook {
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if new {
+            self.overlays_moved();
             tracing::info_span!(
                 "rdm.mesh.membership.update.via-node-restarting",
                 node = %op.name,
@@ -3270,15 +3506,22 @@ impl DigestBook {
             self.restarting(op.clone());
         }
         let keep: BTreeSet<(String, u32, String)> = open.iter().filter(|o| o.is_restart()).map(|o| o.key()).collect();
-        let mut in_flight = self.in_flight.lock().unwrap();
-        let mut ended = self.ended_overlays.lock().unwrap();
-        in_flight.retain(|k, o| {
-            let gone = o.is_restart() && !keep.contains(k);
-            if gone {
-                ended.insert(k.clone());
-            }
-            !gone
-        });
+        let cleared = {
+            let mut in_flight = self.in_flight.lock().unwrap();
+            let mut ended = self.ended_overlays.lock().unwrap();
+            let before = in_flight.len();
+            in_flight.retain(|k, o| {
+                let gone = o.is_restart() && !keep.contains(k);
+                if gone {
+                    ended.insert(k.clone());
+                }
+                !gone
+            });
+            in_flight.len() != before
+        };
+        if cleared {
+            self.overlays_moved();
+        }
     }
 
     /// The open restart of `node_id`'s birth `incarnation`, if any.
@@ -3304,6 +3547,8 @@ impl DigestBook {
             !gone
         });
         if in_flight.len() != before {
+            drop((in_flight, ended));
+            self.overlays_moved();
             tracing::info_span!("rdm.mesh.membership.update.via-node-restarted", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0)
                 .in_scope(|| tracing::info!("the restarted node is heard again: the restart is over"));
         }
@@ -3329,6 +3574,7 @@ impl DigestBook {
         if !new {
             return false;
         }
+        self.overlays_moved();
         let seq = held.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
         self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), seq, held_digest));
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
@@ -3400,15 +3646,33 @@ impl DigestBook {
     /// The stop of `node_id` is over (it rejoined, or departed): its overlay and mark clear.
     fn end_stop(&self, node_id: &str) {
         self.stopped_marks.lock().unwrap().remove(node_id);
-        let mut in_flight = self.in_flight.lock().unwrap();
-        let mut ended = self.ended_overlays.lock().unwrap();
-        in_flight.retain(|k, o| {
-            let gone = o.is_stop() && o.node_id.as_str() == node_id;
-            if gone {
-                ended.insert(k.clone());
-            }
-            !gone
-        });
+        let cleared = {
+            let mut in_flight = self.in_flight.lock().unwrap();
+            let mut ended = self.ended_overlays.lock().unwrap();
+            let before = in_flight.len();
+            in_flight.retain(|k, o| {
+                let gone = o.is_stop() && o.node_id.as_str() == node_id;
+                if gone {
+                    ended.insert(k.clone());
+                }
+                !gone
+            });
+            in_flight.len() != before
+        };
+        if cleared {
+            self.overlays_moved();
+        }
+    }
+
+    /// An overlay was added or cleared, or a departure accepted: the overlay watch ticks.
+    fn overlays_moved(&self) {
+        self.overlays.send_modify(|v| *v += 1);
+    }
+
+    /// Ticks each time an open lifecycle overlay is added or cleared, or a departure is accepted:
+    /// what a mesh primary's publication round wakes on when its aggregate's overlays moved.
+    pub fn overlay_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.overlays.subscribe()
     }
 
     /// Accept an open lifecycle overlay: the node stays held and stops being
@@ -3420,6 +3684,7 @@ impl DigestBook {
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if new {
+            self.overlays_moved();
             // What this receiver holds of the node as the overlay opens: found, in what status, and
             // not routable (the overlay is what makes it so).
             let held_status = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| format!("{:?}", d.status));
@@ -3440,16 +3705,6 @@ impl DigestBook {
         new
     }
 
-    /// Whether `mesh_id` is Leaving here: its `mesh-leaving` was heard and its `mesh-left` was not.
-    pub fn is_mesh_leaving(&self, mesh_id: &MeshId) -> bool {
-        self.leaving.lock().unwrap().contains_key(mesh_id.as_str())
-    }
-
-    /// The meshes that are Leaving here, by mesh id.
-    pub fn leaving_meshes(&self) -> Vec<String> {
-        self.leaving.lock().unwrap().keys().cloned().collect()
-    }
-
     /// Hold the mesh names the accepted Build names: the authority on which meshes the fabric has.
     pub fn set_accepted_meshes(&self, meshes: BTreeSet<String>) {
         *self.accepted_meshes.lock().unwrap() = Some(meshes);
@@ -3460,14 +3715,16 @@ impl DigestBook {
         self.accepted_meshes.lock().unwrap().as_ref().map(|m| m.contains(mesh))
     }
 
-    /// The names of the mesh `mesh_id` names: a node-admin's digest states the mesh id, an ordinary
+    /// The name of the mesh `mesh_id` names: a node-admin's digest states the mesh id, an ordinary
     /// node's does not; the mesh's births are every held digest of the name the id-carrying digests
-    /// bear.
+    /// bear. A parked birth's last digest counts: a member the leaving mesh stopped is dropped from
+    /// the view, and its digest still names its mesh.
     fn mesh_name_of(&self, mesh_id: &MeshId) -> Option<String> {
-        if let Some(l) = self.leaving.lock().unwrap().get(mesh_id.as_str()) {
-            return Some(l.name.clone());
-        }
-        self.all().into_iter().find(|d| d.mesh_id.as_ref() == Some(mesh_id)).map(|d| d.node.name.mesh.clone())
+        self.all()
+            .into_iter()
+            .chain(self.parked())
+            .find(|d| d.mesh_id.as_ref() == Some(mesh_id))
+            .map(|d| d.node.name.mesh.clone())
     }
 
     /// The held digests of the mesh named `name` and carrying no other mesh's id.
@@ -3475,39 +3732,19 @@ impl DigestBook {
         self.all().into_iter().filter(|d| d.node.name.mesh == name && d.mesh_id.as_ref().is_none_or(|m| m == mesh_id)).collect()
     }
 
-    /// `mesh-leaving` for `mesh_id`: the mesh is Leaving. Every held birth of the mesh is not
-    /// selected for new work and stays held at its address. Idempotent. Returns how many births
-    /// this book newly holds Leaving.
-    pub fn mesh_leaving(&self, mesh_id: &MeshId) -> usize {
-        let Some(name) = self.mesh_name_of(mesh_id) else { return 0 };
-        let members = self.births_named(&name, mesh_id);
-        let mut marked = 0;
-        {
-            let mut leaving = self.leaving.lock().unwrap();
-            let entry = leaving.entry(mesh_id.to_string()).or_insert_with(|| LeavingMesh { name: name.clone(), births: BTreeMap::new() });
-            for d in members {
-                if !self.is_departed(d.node.node_id.as_str()) && entry.births.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.name.clone())).is_none() {
-                    marked += 1;
-                }
-            }
-        }
-        if marked > 0 {
-            self.births.send_modify(|v| *v += 1);
-        }
-        marked
-    }
-
-    /// `mesh-left` for `mesh_id`: every birth the mesh held, as this book knew them when it was
-    /// first heard leaving and as it holds them now, departs through the departure every node's
-    /// stop takes, and its resolution answers Gone for the departed retention. The mesh is no
-    /// longer Leaving, and nothing is kept of it. Idempotent.
-    pub fn mesh_left(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, at_rafka_ms: u64) -> MeshLeftApplied {
-        let name = self.mesh_name_of(mesh_id);
-        let entry = self.leaving.lock().unwrap().remove(mesh_id.as_str());
-        let mut roster: BTreeMap<String, (IncarnationId, rafka_mesh_entity::PathName)> = entry.map(|l| l.births).unwrap_or_default();
+    /// `mesh-left` for `mesh_id`, or for the mesh `name` when the caller knows it from the source
+    /// projection it holds: every birth of the mesh this book holds, in the view or parked by its
+    /// stop, departs through the departure every node's stop takes, and its resolution answers Gone
+    /// for the departed retention. Nothing is kept of the mesh. Idempotent.
+    pub fn mesh_left(&self, mesh_id: &MeshId, name: Option<&str>, build_id: &str, attempt: u32, at_rafka_ms: u64) -> MeshLeftApplied {
+        let name = self.mesh_name_of(mesh_id).or_else(|| name.map(String::from));
+        let mut roster: BTreeMap<String, (IncarnationId, rafka_mesh_entity::PathName)> = BTreeMap::new();
         if let Some(n) = &name {
             for d in self.births_named(n, mesh_id) {
                 roster.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.name.clone()));
+            }
+            for op in self.in_flight().into_iter().filter(|op| op.is_stop() && op.name.mesh == *n) {
+                roster.entry(op.node_id.to_string()).or_insert((op.incarnation.clone(), op.name.clone()));
             }
         }
         let mut departed = 0;
@@ -3534,6 +3771,7 @@ impl DigestBook {
         fence_incarnation(&op.node_id, &op.incarnation);
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
+        self.overlays_moved();
         self.inner.lock().unwrap().remove(&id);
         true
     }
@@ -3560,13 +3798,16 @@ impl DigestBook {
         (mine(self.in_flight()), mine(self.departed()))
     }
 
-    /// May application routing select this node: held, not departed, and
-    /// under no open lifecycle overlay. The resolver never reads this.
+    /// May application routing select this node: held, not departed, under no open lifecycle
+    /// overlay, and its own held state takes new work. A member saying Draining (live and not
+    /// routable, R-SC11) or Leaving takes none, whichever mesh it is in and however this book
+    /// learnt it (R4). The resolver never reads this.
     pub fn routable(&self, node_id: &str) -> bool {
-        !self.is_departed(node_id)
-            && self.inner.lock().unwrap().contains_key(node_id)
-            && !self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id)
-            && !self.leaving.lock().unwrap().values().any(|l| l.births.contains_key(node_id))
+        use rafka_mesh_entity::MemberStatus::{Draining, Leaving};
+        if self.is_departed(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
+            return false;
+        }
+        self.inner.lock().unwrap().get(node_id).is_some_and(|(d, _, _)| !matches!(d.status, Draining | Leaving))
     }
 
     /// Hold `d` as its member's latest word, unless it is older than what is
@@ -3796,6 +4037,22 @@ impl DigestBook {
         self.inner.lock().unwrap().values().filter(|(_, _, heard)| *heard == Heard::Forwarded).map(|(d, _, _)| d.node.name.mesh.clone()).collect()
     }
 
+    /// `mesh`'s current primary node-admin: the exact birth the held seat record names, the
+    /// canonical LeadershipView's answer as its holder announced it (`Frame::Seated`, an entry
+    /// read's seats), with that birth's latest digest. Its status and how long it has gone unheard
+    /// do not move the seat (only a new record or a proven loss does), so neither is read here.
+    pub fn mesh_primary(&self, mesh: &str) -> Result<MeshDigest, NoMeshPrimary> {
+        let holder = self.seats.mesh(mesh).ok_or_else(|| NoMeshPrimary::NoSeatRecord { mesh: mesh.to_string() })?;
+        if self.seats.gone().contains(&holder.incarnation) {
+            return Err(NoMeshPrimary::HolderGone { holder });
+        }
+        match self.get(&holder.node_id.to_string()) {
+            Some((d, _)) if d.node.incarnation == holder.incarnation => Ok(d),
+            Some((d, _)) => Err(NoMeshPrimary::HolderNotHeld { held_incarnation: Some(d.node.incarnation), departed: false, holder }),
+            None => Err(NoMeshPrimary::HolderNotHeld { held_incarnation: None, departed: self.is_departed(&holder.node_id.to_string()), holder }),
+        }
+    }
+
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
     pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
         let extra = self.forwarded_staleness_floor() - self.staleness_floor;
@@ -3862,12 +4119,12 @@ mod tests {
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
         };
-        let lookup = MemoryLookup::new();
+        let (marks, lookup) = (LocationMarks::default(), MemoryLookup::new());
         let addrs = |l: &MemoryLookup| l.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect::<Vec<_>>()).unwrap_or_default();
-        register_location(&lookup, &at(41001, &first, None, 40));
-        register_location(&lookup, &at(41002, &second, Some(first.clone()), 1));
+        register_location(&marks, &lookup, &at(41001, &first, None, 40));
+        register_location(&marks, &lookup, &at(41002, &second, Some(first.clone()), 1));
         assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "the newer birth replaces, never joins, the old socket");
-        register_location(&lookup, &at(41001, &first, None, 41));
+        register_location(&marks, &lookup, &at(41001, &first, None, 41));
         assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "a late digest of the old birth never restores its socket");
     }
 
@@ -3887,15 +4144,15 @@ mod tests {
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
         };
-        let lookup = MemoryLookup::new();
+        let (marks, lookup) = (LocationMarks::default(), MemoryLookup::new());
         let addrs = |l: &MemoryLookup| l.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect::<Vec<_>>()).unwrap_or_default();
         let (port_old, port_new) = (std::net::SocketAddr::from(([127, 0, 0, 1], 41011)), std::net::SocketAddr::from(([127, 0, 0, 1], 41012)));
-        register_location(&lookup, &at(&old_node, 41011, &old, 40));
-        register_location(&lookup, &at(&new_node, 41012, &new, 1));
+        register_location(&marks, &lookup, &at(&old_node, 41011, &old, 40));
+        register_location(&marks, &lookup, &at(&new_node, 41012, &new, 1));
         assert_eq!(addrs(&lookup), vec![port_new], "the new instance's digest replaces the key's address");
         let book = DigestBook::default();
         assert!(book.depart(op(&old_node, &old, "retire-node:mesh1.rpc.1")));
-        assert!(register_location(&lookup, &at(&old_node, 41011, &old, 41)).is_none());
+        assert!(register_location(&marks, &lookup, &at(&old_node, 41011, &old, 41)).is_none());
         assert_eq!(addrs(&lookup), vec![port_new], "a digest of the deleted incarnation is refused: {port_old} is not restored");
     }
 
@@ -4536,30 +4793,9 @@ mod tests {
         d
     }
 
-    /// CONTRACT (gossip.md, external topology when a mesh leaves): `mesh-leaving` holds every birth
-    /// of the mesh Leaving (a node-admin's digest names the mesh id, an ordinary node's does not;
-    /// both are the mesh's), not routable and still held at its address; hearing it again changes
-    /// nothing.
-    #[test]
-    fn mesh_leaving_holds_every_birth_of_the_mesh_not_routable_and_is_idempotent() {
-        let book = DigestBook::default();
-        let m1 = MeshId::mint();
-        let (admin, rpc, other) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1), born("mesh2", "rpc.1", None, 1));
-        for d in [&admin, &rpc, &other] {
-            assert!(book.record_forwarded(d.clone()));
-        }
-        assert_eq!(book.mesh_leaving(&m1), 2);
-        assert!(!book.routable(admin.node.node_id.as_str()) && !book.routable(rpc.node.node_id.as_str()), "the mesh's births are not selected for new work");
-        assert!(book.routable(other.node.node_id.as_str()), "another mesh's birth is untouched");
-        assert!(book.get(rpc.node.node_id.as_str()).is_some(), "its address is kept: the digest is still held");
-        assert!(book.is_mesh_leaving(&m1));
-        assert_eq!(book.mesh_leaving(&m1), 0, "idempotent");
-        assert_eq!(book.leaving_meshes(), vec![m1.to_string()]);
-    }
-
     /// CONTRACT: `mesh-left` departs every birth the mesh held, through the departure a node's own
     /// stop takes: the births leave the active topology and are held departed for the departed
-    /// retention and not a moment longer; the mesh is no longer Leaving and nothing is kept of it;
+    /// retention and not a moment longer; nothing is kept of the mesh;
     /// hearing it again departs nothing a second time.
     #[test]
     fn mesh_left_departs_every_birth_for_the_departed_retention_and_keeps_nothing() {
@@ -4569,11 +4805,10 @@ mod tests {
         for d in [&admin, &rpc] {
             assert!(book.record_forwarded(d.clone()));
         }
-        book.mesh_leaving(&m1);
-        let applied = book.mesh_left(&m1, "bld_1", 1, 9);
+        let applied = book.mesh_left(&m1, None, "bld_1", 1, 9);
         assert_eq!((applied.name.as_deref(), applied.departed), (Some("mesh1"), 2));
-        assert!(book.all().is_empty() && !book.is_mesh_leaving(&m1) && book.leaving_meshes().is_empty(), "the births left the active topology and the mesh is not Leaving");
-        assert_eq!(book.mesh_left(&m1, "bld_1", 1, 9).departed, 0, "idempotent");
+        assert!(book.all().is_empty(), "the births left the active topology");
+        assert_eq!(book.mesh_left(&m1, None, "bld_1", 1, 9).departed, 0, "idempotent");
         assert!(book.is_departed(admin.node.node_id.as_str()) && book.is_departed(rpc.node.node_id.as_str()));
         assert!(book.departed().iter().all(|op| op.operation.starts_with("stop-node:mesh1.") && op.build_id == "bld_1"));
         // Within the retention a late digest of a departed birth is refused.
@@ -4582,6 +4817,149 @@ mod tests {
         assert!(!book.record(late.clone()) && !book.record_forwarded(late.clone()) && !book.record_topology(late));
         std::thread::sleep(Duration::from_millis(80));
         assert!(book.departed().is_empty(), "the departures are held for the normal retention only");
+    }
+
+    /// CONTRACT (R4, Luke 2026-10-11; lifecycles/mesh-leave.md "Every stopping member publishes its
+    /// own Leaving … carries that same Leaving digest in its final `Members` aggregate over the
+    /// node-admin backbone channel"): a peer mesh learns that a leaving mesh's members are leaving
+    /// only from each member's own state. A node that joins a peer mesh after those members said
+    /// Draining and Leaving installs their own states from its mesh primary's topology read (op
+    /// `0x1E`) and forwarder replay, and selects none of them for new work; a member still saying
+    /// ReadyForTraffic is routed by that state alone, with no mesh-level hold.
+    #[test]
+    fn a_node_joining_after_the_leaving_meshs_members_said_draining_and_leaving_installs_their_own_states_and_routes_none_of_them() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let m1 = MeshId::mint();
+        let (admin, draining, leaving) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1), born("mesh1", "rpc.2", None, 1));
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: admin.node.incarnation.clone() };
+        let members = |version: u64, digests: Vec<MeshDigest>| Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: publisher.clone(),
+            forwarded_by: None,
+            topology_version: version,
+            published_at_rafka_ms: version,
+            snapshot_id: version,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests,
+            in_flight: Vec::new(),
+            departed: Vec::new(),
+        };
+        let said = |d: &MeshDigest, status: MemberStatus| {
+            let mut d = d.clone();
+            d.status = status;
+            d.digest_seq += 1;
+            d.emitted_at_rafka_ms += 1;
+            d
+        };
+        // mesh2's primary holds mesh1 and forwards it into mesh2; mesh-leaving is heard; then the
+        // leaving primary's next aggregate carries its members' own Draining and Leaving.
+        let primary = View::new("mesh2", "mesh2.admin.1");
+        primary.primary.store(true, Ordering::Relaxed);
+        for (version, digests) in [(1, vec![admin.clone(), draining.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&draining, MemberStatus::Draining), said(&leaving, MemberStatus::Leaving)])] {
+            let taken = primary.take_snapshot(&members(version, digests), &fabric, Side::Backbone);
+            let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
+            let _ = primary.forwarder.lock().unwrap().source("mesh2.admin.1", &mesh, &from, v, &full, version);
+            if version == 1 {
+                primary.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
+            }
+        }
+        // A new mesh2 node joins: it reads the primary's topology (0x1E), then hears its replay.
+        let joiner = View::new("mesh2", "mesh2.rpc.9");
+        for s in primary.forwarder.lock().unwrap().snapshots() {
+            for f in crate::snapshot::chunks_of(&s.full(), |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+                mesh: s.mesh.clone(),
+                publisher: s.publisher.clone(),
+                forwarded_by: None,
+                topology_version: s.topology_version,
+                published_at_rafka_ms: 0,
+                snapshot_id: 1,
+                chunk_index,
+                chunk_count,
+                digests,
+                in_flight,
+                departed,
+            }) {
+                let Frame::Members { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } = f else { unreachable!() };
+                let chunk = crate::snapshot::Chunk { mesh, publisher, forwarded_by: None, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed };
+                let installed = joiner.mesh_rx.lock().unwrap().take_read_chunk(chunk);
+                if let crate::snapshot::Taken::Installed(i) = installed {
+                    joiner.installed(&i, &fabric, Side::Read, 0);
+                }
+            }
+        }
+        let mut replay = primary.statuses.held_frames(&fabric, "mesh2.admin.1");
+        replay.extend(primary.book.seats.held_frames());
+        replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.admin.1", 3));
+        for f in &replay {
+            match f {
+                Frame::Members { .. } | Frame::MembersDelta { .. } => {
+                    joiner.take_snapshot(f, &fabric, Side::MeshChannel);
+                }
+                _ => {
+                    joiner.take(f, &fabric, "mesh-channel");
+                }
+            }
+        }
+        let status = |d: &MeshDigest| joiner.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
+        assert_eq!(
+            (status(&admin), status(&draining), status(&leaving)),
+            (Some(MemberStatus::ReadyForTraffic), Some(MemberStatus::Draining), Some(MemberStatus::Leaving)),
+            "the joiner installed each member at its address with the member's own state"
+        );
+        assert!(!joiner.book.routable(draining.node.node_id.as_str()), "a member saying Draining takes no new work");
+        assert!(!joiner.book.routable(leaving.node.node_id.as_str()), "a member saying Leaving takes no new work");
+        assert!(joiner.book.routable(admin.node.node_id.as_str()), "a member still saying ReadyForTraffic is routed by its own state: no mesh-level hold");
+    }
+
+    /// CONTRACT (gossip.md, "Snapshot, delta and top-up agreement": after mesh-left the mesh is absent
+    /// from the projection): a node of a peer mesh that joins after `mesh-left` installs nothing of
+    /// the departed mesh from its primary's topology read or neighbour-up replay, so it can route
+    /// nothing to the mesh's births.
+    #[test]
+    fn a_node_joining_after_mesh_left_installs_nothing_of_the_departed_mesh() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let m1 = MeshId::mint();
+        let (admin, rpc) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1));
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let members = Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: publisher.clone(),
+            forwarded_by: None,
+            topology_version: 1,
+            published_at_rafka_ms: 1,
+            snapshot_id: 1,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests: vec![admin.clone(), rpc.clone()],
+            in_flight: Vec::new(),
+            departed: Vec::new(),
+        };
+        let primary = View::new("mesh2", "mesh2.admin.1");
+        primary.primary.store(true, Ordering::Relaxed);
+        let taken = primary.take_snapshot(&members, &fabric, Side::Backbone);
+        let (mesh, from, version, full) = taken.source.expect("a complete source snapshot");
+        let _ = primary.forwarder.lock().unwrap().source("mesh2.admin.1", &mesh, &from, version, &full, 1);
+        let op = format!("shutdown-mesh:{m1}");
+        primary.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: op.clone(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
+        primary.take(&Frame::MeshLeft { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: op, receipt_manifest: "m".into(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None }, &fabric, "backbone");
+        assert!(primary.forwarder.lock().unwrap().snapshots().iter().all(|s| s.mesh != "mesh1"), "the primary serves no topology of the departed mesh");
+        let joiner = View::new("mesh2", "mesh2.rpc.9");
+        let mut replay = primary.statuses.held_frames(&fabric, "mesh2.admin.1");
+        replay.extend(primary.book.seats.held_frames());
+        replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.admin.1", 2));
+        for f in &replay {
+            match f {
+                Frame::Members { .. } | Frame::MembersDelta { .. } => {
+                    joiner.take_snapshot(f, &fabric, Side::MeshChannel);
+                }
+                _ => {
+                    joiner.take(f, &fabric, "mesh-channel");
+                }
+            }
+        }
+        assert!(joiner.book.all().iter().all(|d| d.node.name.mesh != "mesh1"), "the joiner holds no birth of the departed mesh");
+        assert!(!joiner.book.routable(admin.node.node_id.as_str()) && !joiner.book.routable(rpc.node.node_id.as_str()), "the joiner routes nothing to the departed mesh's births");
     }
 
     /// CONTRACT (gossip.md, snapshot, delta and top-up agreement): a Leaving mesh is still updated
@@ -4611,12 +4989,11 @@ mod tests {
         view.book.set_accepted_meshes(["mesh1".to_string(), "mesh2".to_string()].into());
         let taken = view.take_snapshot(&members(1, 1), &fabric, Side::Backbone);
         assert_eq!(taken.carried.len(), 2, "the mesh is held before it leaves");
-        // The Build now names {mesh2}: mesh1 is Leaving, and the source this node holds is updated.
+        // The Build now names {mesh2}: mesh1 is leaving, and the source this node holds is updated.
         view.book.set_accepted_meshes(["mesh2".to_string()].into());
         view.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
         let leaving = view.take_snapshot(&members(2, 2), &fabric, Side::Backbone);
-        assert!(!leaving.carried.is_empty(), "a Leaving mesh's source is still held and still moves");
-        assert!(!view.book.routable(admin.node.node_id.as_str()));
+        assert!(!leaving.carried.is_empty(), "a leaving mesh's source is still held and still moves");
         view.take(&Frame::MeshLeft { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), receipt_manifest: "m".into(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None }, &fabric, "backbone");
         assert!(view.book.all().iter().all(|d| d.node.name.mesh != "mesh1"), "its births left the active topology");
         assert!(view.backbone_rx.lock().unwrap().held_full("mesh1").is_none() && view.mesh_rx.lock().unwrap().held_full("mesh1").is_none(), "no source projection of the mesh is kept");
@@ -4628,5 +5005,87 @@ mod tests {
             assert!(view.backbone_rx.lock().unwrap().held_full("mesh1").is_none(), "version {v}: no source projection of the mesh is installed");
         }
         assert!(view.book.all().iter().all(|d| d.node.name.mesh != "mesh1"));
+    }
+
+    /// Two node-admins of mesh1, both Ready: `(lower NodeId, higher NodeId)`, named admin.2 and
+    /// admin.1 so the seat can sit on either.
+    fn two_admins(book: &DigestBook, at: Instant) -> (MeshDigest, MeshDigest) {
+        let (mut a, mut b) = (NodeId::mint(), NodeId::mint());
+        if b < a {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let mut lower = digest(&a, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 10);
+        lower.node.name = "mesh1.admin.2".parse().unwrap();
+        let mut higher = digest(&b, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 10);
+        higher.node.name = "mesh1.admin.1".parse().unwrap();
+        assert!(book.record_at(lower.clone(), at) && book.record_at(higher.clone(), at));
+        (lower, higher)
+    }
+
+    fn seat_of(d: &MeshDigest, epoch: u64) -> SeatHolder {
+        SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), epoch }
+    }
+
+    /// CONTRACT (gossip.md §3.3, R-A2): a member tops up from its own mesh's current primary, the
+    /// birth its held seat record names, never from an election of its own. With the seat on the
+    /// admin whose NodeId is the higher of two Ready admins, the member's primary is that holder.
+    #[test]
+    fn a_members_mesh_primary_is_the_seat_holder_not_the_lowest_ready_admin() {
+        let book = DigestBook::default();
+        let (_lower, holder) = two_admins(&book, Instant::now());
+        book.seats.take(Seat::MeshPrimary, &seat_of(&holder, 3));
+        assert_eq!(book.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.1".into()));
+    }
+
+    /// CONTRACT (R-EL1): a holder that is Draining keeps its seat, so the member still tops up from it.
+    #[test]
+    fn a_draining_seat_holder_is_still_the_members_mesh_primary() {
+        let book = DigestBook::default();
+        let (lower, holder) = two_admins(&book, Instant::now());
+        book.seats.take(Seat::MeshPrimary, &seat_of(&lower, 3));
+        let mut draining = lower.clone();
+        draining.status = MemberStatus::Draining;
+        draining.digest_seq += 1;
+        draining.emitted_at_rafka_ms += 1;
+        assert!(book.record(draining));
+        let _ = holder;
+        assert_eq!(book.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
+    }
+
+    /// CONTRACT: the seat holder's digest aged past the staleness floor does not move the seat:
+    /// only a new record or a proven loss does, so the member still addresses the holder.
+    #[test]
+    fn a_seat_holder_unheard_past_the_staleness_floor_is_still_the_members_mesh_primary() {
+        let book = DigestBook::default();
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
+        let (lower, _higher) = two_admins(&book, long_ago);
+        book.seats.take(Seat::MeshPrimary, &seat_of(&lower, 3));
+        assert_eq!(book.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.2".into()));
+    }
+
+    /// CONTRACT: a node that cannot address its mesh's primary says which fact stops it, with the
+    /// record it holds: no record of its mesh, a record naming a birth it holds no digest of (or a
+    /// later birth of that node), and a record naming a birth held as proven gone.
+    #[test]
+    fn a_mesh_primary_that_cannot_be_addressed_names_why() {
+        let book = DigestBook::default();
+        assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::NoSeatRecord { mesh: "mesh1".into() });
+        let unheard = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 };
+        book.seats.take(Seat::MeshPrimary, &unheard);
+        assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderNotHeld { holder: unheard, held_incarnation: None, departed: false });
+
+        let book = DigestBook::default();
+        let (lower, _) = two_admins(&book, Instant::now());
+        let mut earlier = seat_of(&lower, 2);
+        earlier.incarnation = IncarnationId::mint();
+        book.seats.take(Seat::MeshPrimary, &earlier);
+        let err = book.mesh_primary("mesh1").unwrap_err();
+        assert_eq!((err.reason(), err.holder()), ("seat-holder-not-held", Some(&earlier)));
+        assert_eq!(err, NoMeshPrimary::HolderNotHeld { holder: earlier, held_incarnation: Some(lower.node.incarnation.clone()), departed: false });
+        let held = seat_of(&lower, 3);
+        book.seats.take(Seat::MeshPrimary, &held);
+        assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.node_id), Ok(lower.node.node_id.clone()));
+        book.seats.mark_gone(held.incarnation.clone());
+        assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderGone { holder: held });
     }
 }

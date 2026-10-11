@@ -58,26 +58,78 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     dir
 }
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on every
-/// thread of the cell's own runtime, so two cells in one test process never share spans.
+/// The cell's span sink: every exported span goes to the in-memory exporter the cell reads, behind
+/// a [`SinkStall`] a cell can arm to hold the next export inside the sink.
+#[derive(Debug, Clone)]
+struct GatedExporter {
+    inner: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    stall: Arc<SinkStall>,
+}
+
+impl opentelemetry_sdk::export::trace::SpanExporter for GatedExporter {
+    fn export(&mut self, batch: Vec<opentelemetry_sdk::export::trace::SpanData>) -> std::pin::Pin<Box<dyn std::future::Future<Output = opentelemetry_sdk::export::trace::ExportResult> + Send + 'static>> {
+        self.stall.hold_if_armed();
+        self.inner.export(batch)
+    }
+}
+
+/// A stall of the span sink: once armed, the next export blocks on the thread that runs it until
+/// the cell releases it (or [`SinkStall::BOUND`] passes, so a cell that fails never hangs the
+/// executable).
+#[derive(Debug, Default)]
+struct SinkStall {
+    armed: std::sync::atomic::AtomicBool,
+    state: std::sync::Mutex<(bool, bool)>,
+    changed: std::sync::Condvar,
+}
+
+impl SinkStall {
+    const BOUND: Duration = Duration::from_secs(12);
+
+    fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    fn hold_if_armed(&self) {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let mut st = self.state.lock().unwrap();
+        st.0 = true;
+        self.changed.notify_all();
+        let _ = self.changed.wait_timeout_while(st, Self::BOUND, |st| !st.1).unwrap();
+    }
+
+    /// Whether an export is (or was) held inside the sink.
+    fn entered(&self) -> bool {
+        self.state.lock().unwrap().0
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap().1 = true;
+        self.changed.notify_all();
+    }
+}
+
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`:
+/// product's span filter and its `BatchSpanProcessor`, so ending a span only queues it and the sink
+/// runs on the export thread) in front of an in-memory exporter, behind a dispatcher installed on
+/// every thread of the cell's own runtime, so two cells in one test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    stall: Arc<SinkStall>,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let stall = Arc::new(SinkStall::default());
     let service = format!("i143-2780-{cell}");
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2780"));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, GatedExporter { inner: exporter.clone(), stall: stall.clone() });
+    Capture { exporter, stall, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
 impl Capture {
@@ -95,7 +147,7 @@ impl Capture {
 
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
         self.exporter
             .get_finished_spans()
             .unwrap()
@@ -219,6 +271,13 @@ fn split(reply: Duration) -> CallOptions {
     CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply }, ..Default::default() }
 }
 
+/// The trace holds only the cell's own story: every span is a product span (`rdm.*`), none of the
+/// transport's internals (iroh, noq).
+fn assert_own_story(spans: &[Value]) {
+    let foreign: std::collections::BTreeSet<&str> = spans.iter().filter_map(|s| s["name"].as_str()).filter(|n| !n.starts_with("rdm.")).collect();
+    assert!(foreign.is_empty(), "spans outside the cell's story were exported: {foreign:?}");
+}
+
 fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()
 }
@@ -330,6 +389,7 @@ fn failpoint_explorer_before_apply_proves_not_sent_or_unapplied() {
         rows
     });
     let spans = cap.spans();
+    assert_own_story(&spans);
     // The control and the held call were dispatched and served; the unfinished one left no serve span.
     let chain = assert_serve_chain(&spans, 2);
     let calls = spans_named(&spans, "rdm.node_rpc.request.update.via-call");
@@ -396,6 +456,7 @@ fn failpoint_explorer_after_apply_lost_reply_proves_indeterminate() {
         rows
     });
     let spans = cap.spans();
+    assert_own_story(&spans);
     // Control, the lost-reply call, the recovery Get and the explicit retry were each dispatched and served.
     let chain = assert_serve_chain(&spans, 4);
     let calls = spans_named(&spans, "rdm.node_rpc.request.update.via-call");
@@ -405,4 +466,51 @@ fn failpoint_explorer_after_apply_lost_reply_proves_indeterminate() {
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let result = json!({"cell": cell, "cuts_explored": AFTER_APPLY_CELL.iter().map(|c| c.name()).collect::<Vec<_>>(), "rows": rows, "serve_chain": chain, "call_outcomes": outcomes});
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+/// Releases the sink stall however the cell ends.
+struct ReleaseOnDrop(Arc<SinkStall>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+/// CONTRACT (#3047): a cell's span sink sits off the transport's threads. With the sink held inside
+/// an export from before the first dial until after the call, the healthy control call between two
+/// fresh endpoints still replies within its 10 s budget, and the held spans reach the exporter once
+/// the sink is released (the serve chain of that call is whole). What must NOT happen: a span end on
+/// a transport or runtime thread waiting on the sink, so the first dial misses its budget (the
+/// `failpoint_explorer_before_apply...` control-call failure shape).
+#[test]
+fn a_stalled_span_sink_never_holds_the_healthy_control_call() {
+    let cell = "a_stalled_span_sink_never_holds_the_healthy_control_call";
+    let dir = acceptance_dir(cell);
+    let cap = capture(cell);
+    let release = ReleaseOnDrop(cap.stall.clone());
+    let row = cap.run(async {
+        let r = rig(&dir).await;
+        // One span ends on a thread of its own and its export is held in the sink before the dial.
+        cap.stall.arm();
+        let d = cap.dispatch.clone();
+        let ender = std::thread::spawn(move || tracing::dispatcher::with_default(&d, || drop(tracing::info_span!("rdm.node_rpc.test.update.via-sink-stall"))));
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !cap.stall.entered() {
+            assert!(std::time::Instant::now() < until, "the sink never began the held export");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let started = std::time::Instant::now();
+        let row = control(&r).await;
+        let took = started.elapsed();
+        cap.stall.release();
+        let _ = ender.join();
+        json!({"control": row, "control_ms": took.as_millis() as u64, "sink_held_during_call": true})
+    });
+    drop(release);
+    let spans = cap.spans();
+    assert_own_story(&spans);
+    let chain = assert_serve_chain(&spans, 1);
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&json!({"cell": cell, "row": row, "serve_chain": chain})).unwrap()).unwrap();
 }

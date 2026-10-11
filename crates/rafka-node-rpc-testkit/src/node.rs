@@ -69,7 +69,6 @@ pub struct RunningNode {
     pub cancel: rafka_node_rpc::Retirement,
     hydration: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>>,
     hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    gossip: iroh_gossip::net::Gossip,
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     node_rpc_feed: tokio::task::JoinHandle<()>,
     declare_loop: tokio::task::JoinHandle<()>,
@@ -117,7 +116,6 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
-        let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -167,6 +165,10 @@ impl RunningNode {
     /// connections were cut and `Leaving` declared when it stopped, so nothing is announced. The
     /// tasks end and the endpoints close once every reply it owes is settled.
     pub async fn stop_commanded(self) {
+        crate::taskdump::watched("stop_commanded", self.stop_commanded_inner()).await
+    }
+
+    async fn stop_commanded_inner(self) {
         self.server.settled().await;
         self.cancel.cancel();
         self.abort_publisher();
@@ -175,7 +177,6 @@ impl RunningNode {
         }
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
-        let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -183,12 +184,18 @@ impl RunningNode {
 
     /// Publish `Leaving` and stop serving.
     /// Phase two: say `Leaving` on the fabric, keep saying it every
-    /// `LEAVE_EVERY` for `linger`, then leave gossip and close every endpoint.
+    /// `LEAVE_EVERY` for `linger`, then shut each router down: `Router::shutdown` shuts every
+    /// protocol it serves down, gossip included, once, and then closes the endpoint. Nothing here
+    /// shuts gossip down beside it: a second `Gossip::shutdown` meets an actor already stopped.
     ///
     /// iroh-gossip queues a broadcast and acknowledges nothing, and closing
     /// the endpoint drops whatever is still unsent; the linger keeps the
     /// node on the fabric long enough for its own `Leaving` to go out.
     pub async fn stop(self, linger: Duration) {
+        crate::taskdump::watched("stop", self.stop_inner(linger)).await
+    }
+
+    async fn stop_inner(self, linger: Duration) {
         self.cancel.cancel();
         *self.status.lock().unwrap() = MemberStatus::Leaving;
         let _ = self.declare_own(rafka_node_rpc_contract::status::NodeState::Leaving).await;
@@ -205,7 +212,6 @@ impl RunningNode {
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
-        let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -223,6 +229,9 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     start_with_client(launch, |b, resolver, _client| register(b, resolver)).await
 }
 
+/// The process's stop signal, latched from its first line (node-admin's own listener: one per process).
+pub use rafka_node_admin_core::entry::{listen_for_stop, stop_requested};
+
 /// Until this process is told to stop: a SIGTERM/ctrl-c, or the mesh transport stopping for
 /// good (a runtime that can neither be heard nor answer ends; its exit is the death proof the
 /// fabric recovers from). `binary` names the process in the exit line.
@@ -235,18 +244,8 @@ pub async fn wait_for_signal(binary: &str) {
         rafka_mesh_telemetry::flush_before_exit();
         rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
     };
-    #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
-        tokio::select! {
-            _ = term.recv() => {}
-            _ = tokio::signal::ctrl_c() => {}
-            () = stopped => {}
-        }
-    }
-    #[cfg(not(unix))]
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
+        () = stop_requested() => {}
         () = stopped => {}
     }
 }
@@ -276,7 +275,7 @@ async fn start_with_rafka_time_hydrating(launch: &Launch, rafka_time: rafka_mesh
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step below is a child that lives exactly as long as the step, and `via-ready` closes it.
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.0, kind = launch.name.kind.name());
-    let started = start_booted(launch, rafka_time, hydration, register, &boot).await;
+    let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, register, &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }
@@ -302,10 +301,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // the birth so any admin can manage it, whoever launched it.
     let dir = launch.data_dir.clone();
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-runtime-record", node = %launch.name);
-    let runtime = tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
-        .await
-        .map_err(|e| anyhow!("reading the runtime record: {e}"))?
-        .map_err(|e| anyhow!("{e}"))?;
+    let runtime = rafka_node_admin_core::node_self::wait_for_own_record(&dir, Duration::from_secs(10)).await.map_err(|e| anyhow!("{e}"))?;
     drop(step);
     // The identity this process records its intentional exit under (a transport that stopped).
     rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
@@ -614,7 +610,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         attempt: 0,
     };
     let driver = hydration.driver(ctx, rafka_node_admin_core::app_hydration::Events::new(membership.book.clone(), addressed), boot.clone());
-    let mut running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: hydration_cell.clone(), hydrating: hydrating_cell.clone(), gossip: g, publisher, node_rpc_feed, declare_loop };
+    let running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: hydration_cell.clone(), hydrating: hydrating_cell.clone(), publisher, node_rpc_feed, declare_loop };
     *hydration_cell.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     use rafka_node_admin_core::app_hydration::{End, Step};
     let Some(driver) = driver else {
