@@ -376,6 +376,19 @@ impl FabricBuildStateAdapter {
         self.authority.enter().await.map(|_| ())
     }
 
+    /// The committed seat transfer fenced this admin's Build log: set the sticky fence, nothing more.
+    /// The yield that follows the seat record (`yield_seat`) hands the committed facts on.
+    pub async fn fence_seat(&self, by: &str) -> bool {
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence-at-handover", node = %self.authority.node, by, fenced = tracing::field::Empty);
+        async {
+            let fenced = self.authority.fence(by).await;
+            tracing::Span::current().record("fenced", fenced);
+            fenced
+        }
+        .instrument(span)
+        .await
+    }
+
     /// The fabric-primary seat was yielded: set the sticky fence under the gate's lock (so a
     /// decision in flight has committed durably), then hand every active committed fact to the
     /// neighbours before the new holder acts. Returns how many facts were sent.

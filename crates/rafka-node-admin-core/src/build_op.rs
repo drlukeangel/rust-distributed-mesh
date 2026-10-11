@@ -303,14 +303,17 @@ async fn started(sink: ReplySink<Build, NotStarted>, frame: BuildReply) -> Resul
     sink.started(frame).await.map_err(gone)
 }
 
-/// Read a drive's frames to the caller until its terminal. A seat that moved ends the stream
-/// without a terminal: the caller sees it end `Indeterminate` and re-submits by build id.
+/// Read a drive's frames to the caller until its terminal. A seat that moved ends the stream with
+/// the typed `SeatMoved` terminal naming the new seat: the caller re-submits the Build id there.
 async fn stream_frames(mut sink: ReplySink<Build, rafka_node_rpc::stream::Streaming>, mut reader: crate::build_drive::DriveReader) -> Result<BuildReply, HandlerFault> {
     while let Some(t) = reader.next().await {
         match t {
             Read::Frame(f) => sink.data(f).await.map_err(gone)?,
             Read::Terminal(t) => return Ok(t),
-            Read::SeatLost(why) => return Err(HandlerFault::invariant_broken(format!("the fabric-primary seat moved off this admin; re-submit the Build by its id at the new seat: {why}"))),
+            Read::SeatLost(loss) => {
+                tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %reader.build_id(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
+                return Ok(BuildReply::SeatMoved { build_id: reader.build_id().0.clone(), fabric_primary: loss.to });
+            }
         }
     }
     Err(HandlerFault::invariant_broken("the drive's frames ended without a terminal"))
