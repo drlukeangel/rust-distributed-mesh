@@ -325,17 +325,13 @@ where
     P: std::future::Future<Output = Option<rafka_node_rpc_contract::status::StatusReply>>,
     V: std::future::Future<Output = Finding>,
 {
-    use futures_util::StreamExt as _;
     if direct.await {
         return Finding::Answered;
     }
-    let mut running: futures_util::stream::FuturesUnordered<_> = peers.into_iter().map(|(carrier, probe)| async move { (carrier, probe.await) }).collect();
-    while let Some((carrier, reply)) = running.next().await {
-        if birth_answered(reply.as_ref(), node_id, incarnation) {
-            return Finding::AnsweredViaPeer { carrier };
-        }
+    match crate::offline::via_peer_verdict(node_id, incarnation, peers).await {
+        crate::offline::ViaPeerVerdict::Answered { via } => Finding::AnsweredViaPeer { carrier: via },
+        _ => provider.await,
     }
-    provider.await
 }
 
 /// What the watch drives.
