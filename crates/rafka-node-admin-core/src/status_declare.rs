@@ -708,6 +708,32 @@ mod tests {
         assert_eq!(both, 2, "the gate opening owes the Mesh declaration");
     }
 
+    /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
+    /// path.name (`admin::project_at` keys it by `PathName`), so after a replace of the fabric-primary
+    /// the row at mesh1.admin.1 can be the retired birth's, live and holding both seats, while the
+    /// reborn admin's own row is absent. The reborn admin decides its seats by the node id it was born
+    /// with: it owes no fabric event and no Mesh report, and withdraws the Mesh key it held, because
+    /// the seat is another birth's. What must NOT happen: the retired birth's seats read as this
+    /// admin's, so it owes the fabric's readiness to every mesh primary as a fabric-primary it is not.
+    #[test]
+    fn a_reborn_admin_whose_view_seats_its_retired_birth_owes_nothing_of_the_seat() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let mut v = view("mesh1.admin.1", "mesh1.admin.1");
+        let retired = v.nodes.iter_mut().find(|n| n.name == me).unwrap();
+        retired.status = NodeStatus::Draining;
+        let retired = retired.clone();
+        let reborn = node("mesh1.admin.1", false, false);
+        assert_ne!(retired.node_id, reborn.node_id, "a replace mints a new node id");
+        assert_eq!(v.fabric_primary().map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds the fabric seat in this view");
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let d = Declarer::new();
+        owed_from_view(&d, &me, "inc", false, true, &v, &ids);
+        assert_eq!(d.owed(), 0, "the retired birth's seats owe this admin nothing: {:?}", d.pending.lock().unwrap().keys().collect::<Vec<_>>());
+        d.owe(mesh_key(), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic });
+        d.withdraw_unowned(&me, &v);
+        assert_eq!(d.owed(), 0, "the mesh seat is the retired birth's, not this admin's: the Mesh key is withdrawn");
+    }
+
     /// CONTRACT: a burst of 5 pokes wakes the declarer once; a poke during a round is kept as the
     /// one stored permit; and with nothing poked the declarer sleeps.
     #[tokio::test]

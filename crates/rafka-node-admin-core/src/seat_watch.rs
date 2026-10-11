@@ -415,4 +415,23 @@ mod tests {
         assert!(plan(&t, &standby.name, &me_of(&standby), &[], &mut said).investigate.is_empty());
         let _ = holder;
     }
+
+    /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
+    /// path.name (`admin::project_at` keys it by `PathName`), so after a replace of mesh2's primary
+    /// the row at mesh2.admin.1 can be the retired birth's, live and still seated, while the reborn
+    /// admin's own row is absent. The reborn admin decides its seat by the node id it was born with:
+    /// it holds no mesh primary seat and says no Concern. What must NOT happen: the retired birth's
+    /// seat read as this admin's, a Concern published as a mesh primary it is not.
+    #[test]
+    fn a_reborn_admin_whose_view_seats_its_retired_birth_says_no_concern() {
+        let (mut t, holder, _, outsider) = world();
+        let mut retired = outsider.clone();
+        retired.status = NodeStatus::Draining;
+        t.nodes.retain(|n| n.node_id != outsider.node_id);
+        t.nodes.push(retired.clone());
+        let reborn = admin("mesh2.admin.1", "600000000000", "r2", NodeStatus::ReadyForTraffic);
+        assert_eq!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh2's seat in this view");
+        let p = plan(&t, &reborn.name, &me_of(&reborn), &[], &mut Said::default());
+        assert!(p.concerns.is_empty(), "the reborn admin holds no seat: it says no Concern about {}, got {:?}", holder.name, p.concerns);
+    }
 }
