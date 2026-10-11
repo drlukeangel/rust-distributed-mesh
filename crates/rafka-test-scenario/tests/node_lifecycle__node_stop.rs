@@ -301,3 +301,52 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
     estate.shutdown().await;
 }
+
+/// CONTRACT (fabric-node-lifecycle.md §6.9, R-GC1; node-stop.md step 6): on a fabric whose
+/// `RDM_STOPPED_NODE_TTL` is 3 s, `mesh1.rpc.1` is stopped and left alone. The fabric-primary's sweep
+/// ages it from its stop receipt and submits one ordinary node.delete Build
+/// (`rdm.node_admin.node.delete.via-stopped-ttl` with the node, the receipt's time, the ttl and the
+/// Build); the delete runs as a delete does: the provider's exit proof of the parked process
+/// (TerminateRuntime complete), NodeDeleted, and `node.get` lists no `mesh1.rpc.1`. The other stopped
+/// period never started: nothing else is deleted. Must NOT happen: a delete before one ttl, a second
+/// delete Build, or a collection the sweep made itself without a Build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
+    let test = "a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep";
+    let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[("RDM_STOPPED_NODE_TTL", "3s")]).await;
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]})).await;
+    assert_eq!(status, 202, "{a}");
+    estate.await_build(&s(&a["build_id"]), SETTLE).await;
+    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
+    let peers = Peers::of(&[]).await;
+    let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
+    let path: PathName = NODE.parse().unwrap();
+    peers.learn(&nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get"));
+    let pid = estate.pid_of(NODE).await;
+
+    let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    let stopped_at = std::time::Instant::now();
+    // The sweep collects it: the delete's exit proof ends the parked process and node.get lists it no more.
+    wait_for("the stopped node is deleted and its process exited", Duration::from_secs(60), || async {
+        let listed = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.ok()?.into_iter().any(|n| n.name == path);
+        (!listed && !alive(pid)).then_some(())
+    })
+    .await;
+    assert!(stopped_at.elapsed() >= Duration::from_secs(3), "collected after one ttl, never before: {:?}", stopped_at.elapsed());
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let collected: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-stopped-ttl").into_iter().filter(|sp| sp["attributes"]["build_id"].is_string()).collect();
+    assert_eq!(collected.len(), 1, "one node.delete Build: {collected:?}");
+    let c = &collected[0]["attributes"];
+    assert_eq!((c["node"].as_str(), c["ttl"].to_string().trim_matches('"')), (Some(NODE), "3000"), "{c}");
+    let build = s(&c["build_id"]);
+    let exit = named(&spans, "rdm.node_admin.deployment.update.via-step")
+        .into_iter()
+        .find(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == NODE && sp["attributes"]["outcome"] == "complete" && s(&sp["attributes"]["build_id"]) == build);
+    assert!(exit.is_some(), "the delete Build proved the parked process exited");
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == NODE).collect();
+    assert!(!deleted.is_empty(), "NodeDeleted is published for the stopped birth");
+    estate.record_trace_url(collected[0]["trace_id"].as_str().unwrap_or(""));
+}

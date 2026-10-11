@@ -564,6 +564,13 @@ impl Estate {
         Self::born(owner, fabric, mesh, None, &[]).await
     }
 
+    /// [`Estate::bootstrap`], the first node-admin also given `extra_env` (a setting the fabric's
+    /// admins read, such as `RDM_STOPPED_NODE_TTL`, handed on to every admin it launches).
+    pub async fn bootstrap_with_env(owner: Owner, fabric: &str, mesh: &str, extra_env: &[(&str, &str)]) -> Self {
+        refuse_built_ins_in_consumer_mode("Estate::bootstrap_with_env");
+        Self::born(owner, fabric, mesh, None, extra_env).await
+    }
+
     /// Start the first node-admin of `fabric` from an explicit executable binding set: every
     /// launch of the estate (this admin, every node, every restart) runs the executable its
     /// launch id is bound to and nothing falls back to a built-in. The set is validated against
