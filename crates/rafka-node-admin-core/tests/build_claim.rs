@@ -154,9 +154,9 @@ async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
     assert_eq!(p_seat.door.claim("mesh1.admin.2", &id, 4).await, BuildClaimReply::Won { context: rest.clone() });
     // The next attempt (a hand-off) has no record of its own.
     p_builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt: 4, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }).await.unwrap();
-    assert_eq!(contexts.get(&id, 5).unwrap(), None);
+    assert_eq!(contexts.get(&id, 5).await.unwrap(), None);
     assert_eq!(p_seat.door.claim("mesh2.admin.1", &id, 5).await, BuildClaimReply::Won { context: rest.clone() }, "the hand-off continues the trace");
-    assert_eq!(contexts.get(&id, 5).unwrap(), Some(rest), "and keeps it under its own attempt");
+    assert_eq!(contexts.get(&id, 5).await.unwrap(), Some(rest), "and keeps it under its own attempt");
     // An unrelated Build the primary has no record for starts a new trace.
     let other = BuildId::mint();
     settled(&p_builds, &other, "mesh1.admin.1", 1).await;

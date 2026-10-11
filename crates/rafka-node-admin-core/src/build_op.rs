@@ -184,10 +184,9 @@ impl BuildDoor {
             return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("Build {id} is {:?} and is not the accepted Build (Fabric.build_id): nothing drives it", p.state) });
         }
         let disposition = if p.state == BuildState::Failed { Disposition::NextAttempt } else { Disposition::Attached };
+        // The drive is the one reader of the receipts: a drive this admin took up after a seat move
+        // reads every earlier attempt's receipts at its first dispatch, in its own task.
         let drive = self.drives.ensure(&self.env, &id);
-        // A drive this admin took up after a seat move holds no frame of the attempts before it: the
-        // steps the receipts say completed are read, from the attempt the caller opened on.
-        drive.replay_receipts(&p.steps, from_attempt, p.attempt + 1);
         let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition }).await?;
         stream_frames(sink, drive.reader(from_attempt)).await
     }

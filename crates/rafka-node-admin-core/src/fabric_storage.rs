@@ -330,35 +330,35 @@ impl FileFabricStorage {
 #[async_trait]
 impl FabricStorage for FileFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        let identity = self.records.read(IDENTITY_KEY, IDENTITY_FORMAT)?;
-        let pointer = newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT)?);
+        let identity = self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?;
+        let pointer = newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT).await?);
         Ok(folded(identity, pointer))
     }
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
         self.records.insert(IDENTITY_KEY, IDENTITY_FORMAT, identity).await?;
-        self.records.read(IDENTITY_KEY, IDENTITY_FORMAT)?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the identity row vanished after its insert".into() })
+        self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the identity row vanished after its insert".into() })
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         self.pointers.write(&pointer.key(), POINTER_FORMAT, pointer).await
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
-        self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT)
+        self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT).await
     }
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
         self.records.insert(SHUTDOWN_KEY, SHUTDOWN_FORMAT, shutdown).await?;
-        self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT)?.ok_or_else(|| FabricStorageError::Io { file: "shutdown.json".into(), reason: "the shutdown row vanished after its insert".into() })
+        self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT).await?.ok_or_else(|| FabricStorageError::Io { file: "shutdown.json".into(), reason: "the shutdown row vanished after its insert".into() })
     }
     async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError> {
         self.seats.write(&row.key(), SEAT_FORMAT, row).await
     }
     async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
-        Ok(standing(self.seats.list::<SeatRow>(SEAT_FORMAT)?))
+        Ok(standing(self.seats.list::<SeatRow>(SEAT_FORMAT).await?))
     }
     async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
         self.handovers.write(&row.key(), HANDOVER_FORMAT, row).await
     }
     async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
-        Ok(furthest(self.handovers.list::<HandoverRow>(HANDOVER_FORMAT)?))
+        Ok(furthest(self.handovers.list::<HandoverRow>(HANDOVER_FORMAT).await?))
     }
 }
 

@@ -95,6 +95,11 @@ fn reply(out: RpcOutcome<ProofReply>) -> ProofReply {
 /// oversized write that touches the store.
 #[test]
 fn proof_holder_applies_cas_reports_exact_executing_birth() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "proof_holder_applies_cas_reports_exact_executing_birth") {
+        return;
+    }
     let cell = "proof_holder_applies_cas_reports_exact_executing_birth";
     let dir = acceptance_dir(cell);
     let cap = capture(cell);

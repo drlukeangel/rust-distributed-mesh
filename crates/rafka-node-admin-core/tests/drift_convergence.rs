@@ -321,15 +321,16 @@ impl Estate {
         for _ in 0..8 {
             // The claim is decided at the fabric-primary's door, as the product decides it.
             let primary: PathName = self.fabric_primary().await.parse().expect("a fabric-primary");
+            let primary_id = own_id(&*self.view.read().await, &primary);
             let door = Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
-                node_id: own_id(&*self.view.read().await, &primary),
+                node_id: primary_id.clone(),
                 me: primary.clone(),
                 topology: self.view.clone(),
                 builds: self.builds.clone(),
                 contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
             });
             let env = Arc::new(DriveEnv {
-                me: primary,
+                me: primary.clone(),
                 topology: self.view.clone(),
                 accepted: self.accepted.clone(),
                 builds: self.builds.clone(),
@@ -338,6 +339,7 @@ impl Estate {
                 gate: Arc::new(OpenGate),
                 departure: Arc::new(crate::loopback::Proofs::default()),
                 verdicts: Arc::new(crate::loopback::NoVerdicts),
+                rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
             });
             if let Some(current) = self.accepted.current(&*self.builds).await {
                 if matches!(current.state, BuildState::Pending | BuildState::Running) {

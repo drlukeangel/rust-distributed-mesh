@@ -4,7 +4,8 @@
 //! predecessor is stopped with the provider's exact terminal proof and its storage handed over, the
 //! successor starts, joins and is ready, and only then is the old identity deleted.
 //!
-//! It asserts spans, so it enables every callsite before installing its dispatcher (`crate::enable_callsites`).
+//! The span-asserting cell runs in its own process (`own_process`), and its capture enables every
+//! callsite before installing its dispatcher (`crate::enable_callsites`).
 
 use crate::common;
 
@@ -53,22 +54,38 @@ impl NodeObserver for Logged<'_> {
     }
 }
 
-/// The lifecycle events a replace publishes, in the order they leave the executor.
-struct Recorder(Log);
+/// The lifecycle events a replace publishes, in the order they leave the executor. With `peer`, each
+/// frame is also taken by that membership's book as the executor's mesh channel delivers it to every
+/// admin (`GossipLifecycle`), so the book holds what a peer admin holds at each step.
+struct Recorder<'a> {
+    log: Log,
+    peer: Option<&'a rafka_mesh_transport::membership::Membership>,
+}
+
+impl Recorder<'_> {
+    async fn hear(&self, f: rafka_mesh_transport::membership::Frame) {
+        if let Some(m) = self.peer {
+            let _ = m.publish_lifecycle(&f).await;
+        }
+    }
+}
 
 #[async_trait::async_trait]
-impl LifecycleEvents for Recorder {
+impl LifecycleEvents for Recorder<'_> {
     async fn deleting(&self, op: &LifecycleOp) {
-        self.0.lock().unwrap().push(format!("NodeDeleting:{}:{}", op.node_id, op.operation));
+        self.log.lock().unwrap().push(format!("NodeDeleting:{}:{}", op.node_id, op.operation));
+        self.hear(rafka_mesh_transport::membership::Frame::NodeDeleting { op: op.clone(), forwarded_by: None }).await;
     }
     async fn deleted(&self, op: &LifecycleOp) {
-        self.0.lock().unwrap().push(format!("NodeDeleted:{}:{}", op.node_id, op.operation));
+        self.log.lock().unwrap().push(format!("NodeDeleted:{}:{}", op.node_id, op.operation));
+        self.hear(rafka_mesh_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await;
     }
     async fn restarting(&self, op: &LifecycleOp) {
-        self.0.lock().unwrap().push(format!("NodeRestarting:{}", op.node_id));
+        self.log.lock().unwrap().push(format!("NodeRestarting:{}", op.node_id));
     }
     async fn stopped(&self, op: &LifecycleOp) {
-        self.0.lock().unwrap().push(format!("NodeStopped:{}:{}", op.node_id, op.operation));
+        self.log.lock().unwrap().push(format!("NodeStopped:{}:{}", op.node_id, op.operation));
+        self.hear(rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None }).await;
     }
     fn now_rafka_ms(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
@@ -80,12 +97,12 @@ const REPLACE_ORDER: [&str; 23] = [
     "NodeDeleting",
     "DrainNode",
     "AwaitNodeDrained",
+    "StopNode",
+    "AwaitNodeLeft",
     "RenamePredecessor",
     "AllocateIdentity",
     "PrepareStorage",
     "PrepareNetwork",
-    "StopNode",
-    "AwaitNodeLeft",
     "TerminateRuntime",
     "HandoffStorage",
     "DeployRuntime",
@@ -117,19 +134,20 @@ struct Rig {
     sink: Published,
     provider: ProcessDeploymentProvider,
     log: Log,
+    /// A cell that fails before its own terminate leaves no node running: held for the cell's life.
+    _reap: common::ReapOnDrop,
 }
 
 async fn rig() -> Rig {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    // A cell that fails before its own terminate leaves no node running.
     let _reap = common::ReapOnDrop(template.data_root.clone());
-    Rig { admin, template, builds: MemoryBuildStateAdapter::new(), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default() }
+    Rig { admin, template, builds: MemoryBuildStateAdapter::new(), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default(), _reap }
 }
 
 impl Rig {
-    fn pipeline<'a>(&'a self, observer: &'a Logged<'a>, lifecycle: &'a Recorder) -> DeploymentPipeline<'a> {
+    fn pipeline<'a>(&'a self, observer: &'a Logged<'a>, lifecycle: &'a Recorder<'a>) -> DeploymentPipeline<'a> {
         DeploymentPipeline {
             provider: &self.provider,
             joins: &self.admin.joins,
@@ -151,20 +169,30 @@ fn receipts(steps: &[rafka_node_admin_core::build_state::BuildStepReceipt], oper
     steps.iter().filter(|r| r.operation == operation && r.outcome == StepOutcome::Complete).map(|r| r.step.clone()).collect()
 }
 
-/// CONTRACT: a replace of a live, persistent-storage birth is one operation `replace-node:<path>`. The
-/// old birth is drained, is renamed `<path>.old` (spanned), is stopped (its mesh primary publishes `NodeStopped`
-/// once, from the matching `stopped` reply) with the provider's exact
-/// terminal proof, and its storage directories move into the successor's empty directory before the
+/// CONTRACT: a replace of a live, persistent-storage birth is one operation `replace-node:<path>`, in
+/// the recipe's order (node-replace.md: "node[1].stop runs the complete stop and leaves the
+/// predecessor parked", then "node[1].update renames name to `<name>.old` while parked", then
+/// "node.create claims the freed name"). The old birth is drained and stopped, and the stop's
+/// departure is published (`NodeStopped`, once, from the matching `stopped` reply, so every book drops it) before it is renamed `<path>.old`
+/// (spanned) and before the successor's identity exists. It is then ended with the provider's exact
+/// terminal proof and its storage directories move into the successor's empty directory before the
 /// successor starts; the successor is ready, and only then is the old identity's `NodeDeleted`
-/// published, once, naming the exact old birth. The predecessor's directory keeps its files.
+/// published, once, naming the exact old birth. The predecessor's directory keeps its files. At the
+/// successor's readiness a peer admin's view (its book, without the executor's records) holds one live
+/// birth at the path, the successor, and the path resolves to the successor.
 #[test]
 fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
+    // It installs a scoped subscriber: tracing's process-wide callsite interest cache is not shared
+    // with the cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "replace_admits_the_successor_before_the_old_identity_is_deleted") {
+        return;
+    }
     let cap = crate::common::capture("replace_admits_the_successor_before_the_old_identity_is_deleted");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let rig = rig().await;
         let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
-        let recorder = Recorder(rig.log.clone());
+        let recorder = Recorder { log: rig.log.clone(), peer: Some(&rig.admin.observer.membership) };
         let pipeline = rig.pipeline(&observer, &recorder);
 
         let birth_build = publish_build(&rig.builds, persistent(true)).await;
@@ -178,10 +206,28 @@ fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
         rig.log.lock().unwrap().clear();
 
         let replace_build = publish_build(&rig.builds, persistent(true)).await;
+        // At the successor's readiness (before the old identity's NodeDeleted): what a peer admin holds.
+        let peer_at_ready: Arc<Mutex<Option<(Vec<Node>, Result<rafka_node_rpc::ResolvedNode, String>, NodeId)>>> = Arc::default();
+        let book = &rig.admin.observer.membership.book;
+        let fabric_id = &rig.template.fabric_id;
+        let at_ready = peer_at_ready.clone();
         let second = pipeline
-            .replace(&ReplaceRequest { build_id: replace_build.clone(), attempt: 1, predecessor: first.node.clone(), handle: first.handle.clone(), spec: &RPC_NODE, held_runtimes: Vec::new() }, None, |_| async { Ok(()) })
+            .replace(&ReplaceRequest { build_id: replace_build.clone(), attempt: 1, predecessor: first.node.clone(), handle: first.handle.clone(), spec: &RPC_NODE, held_runtimes: Vec::new() }, None, move |successor| async move {
+                let view = rafka_node_admin_core::admin::project("fabric1", fabric_id, rafka_node_admin_core::model::ProviderKind::Process, book, &rafka_node_admin_core::admin::Records::default());
+                let at_path: Vec<Node> = view.nodes.into_iter().filter(|n| n.name == path()).collect();
+                let resolver = rafka_node_rpc::LiveNodeResolver::default();
+                rafka_node_admin_core::node_rpc::feed_once(book, &resolver, "peer");
+                let resolved = rafka_node_rpc::NodeResolver::resolve(&resolver, &rafka_node_rpc::NodeTarget::CurrentPath(path())).map_err(|e| format!("{e:?}"));
+                *at_ready.lock().unwrap() = Some((at_path, resolved, successor.node_id.clone()));
+                Ok(())
+            })
             .await
             .unwrap_or_else(|e| panic!("replace: {e}"));
+        let (at_path, resolved, successor_id) = peer_at_ready.lock().unwrap().take().expect("the successor reached readiness");
+        let live: Vec<(String, String, String)> = at_path.iter().filter(|n| n.status.is_live()).map(|n| (n.node_id.to_string(), format!("{:?}", n.status), n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default())).collect();
+        assert_eq!(live.len(), 1, "a peer's view holds one live birth at {}: {live:?}", path());
+        assert_eq!(live[0].0, successor_id.to_string(), "the live birth at {} is the successor: {live:?}", path());
+        assert_eq!(resolved.map(|r| r.node_id), Ok(successor_id.clone()), "a peer resolves {} to the successor once the predecessor is parked and renamed", path());
 
         // One operation, every step once, in the order the lifecycle gives.
         let view = rig.builds.read_build(&replace_build).await.unwrap();
@@ -205,13 +251,11 @@ fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
         let drained = at(&format!("awaited:drain-node:{old}"));
         let stop = at(&format!("stop-node:{old}"));
         let left = at(&format!("awaited:stop-node:{old}"));
-        // The predecessor's stop is the whole node.stop: its mesh primary publishes NodeStopped from the
-        // matching stopped reply (node-replace.md, "Stop publishes its mesh-primary NodeStopped overlay").
-        let parked = at(&format!("NodeStopped:{old}:stop-node:{}", path()));
+        let stopped = at(&format!("NodeStopped:{old}:stop-node:{}", path()));
         let ready = at(&format!("ready:{new}"));
         let deleted = at(&format!("NodeDeleted:{old}:{operation}"));
-        assert!(deleting < drain && drain < drained && drained < stop && stop < left && left < parked && parked < ready && ready < deleted, "drain, node-drained, stop-node, node-left, NodeStopped, then the successor's readiness, then NodeDeleted last: {log:?}");
-        assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 1, "{log:?}");
+        assert!(deleting < drain && drain < drained && drained < stop && stop < left && left < stopped && stopped < ready && ready < deleted, "drain, node-drained, stop-node, node-left, its NodeStopped, then the successor's readiness, then NodeDeleted last: {log:?}");
+        assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 1, "the stop's departure is published once: {log:?}");
         assert_eq!(log.iter().filter(|l| l.starts_with("NodeDeleted")).count(), 1, "{log:?}");
         let deleted_receipt = view.steps.iter().find(|r| r.step == "NodeDeleted").and_then(|r| r.output.clone()).unwrap();
         assert_eq!(deleted_receipt["incarnation"], serde_json::to_value(first.node.incarnation_id.clone().unwrap()).unwrap(), "NodeDeleted names the exact old birth");
@@ -253,7 +297,7 @@ fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephem
     cap.run(crate::common::Threads::Workers(4), async move {
         let rig = rig().await;
         let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
-        let recorder = Recorder(rig.log.clone());
+        let recorder = Recorder { log: rig.log.clone(), peer: None };
         let pipeline = rig.pipeline(&observer, &recorder);
 
         let birth_build = publish_build(&rig.builds, add_node()).await;

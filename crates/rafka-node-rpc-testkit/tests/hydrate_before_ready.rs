@@ -164,6 +164,11 @@ fn drain(d: &MeshDigest) -> StatusRequest {
 /// ReadyForTraffic (`via-ready`). What must NOT happen: the node Ready before its hook passed.
 #[test]
 fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is") {
+        return;
+    }
     let cap = crate::common::capture("a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
@@ -207,6 +212,11 @@ fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
 /// What must NOT happen: the node waits for an event that already went by.
 #[test]
 fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_retry_armed_after_the_authority_was_already_ready_still_completes") {
+        return;
+    }
     let cap = crate::common::capture("a_retry_armed_after_the_authority_was_already_ready_still_completes");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
@@ -240,6 +250,11 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
 /// ReadyForTraffic. What must NOT happen: `NotReady` for a lifecycle command (s15).
 #[test]
 fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_blocked_node_answers_status_and_drain_node_and_its_hook_ends") {
+        return;
+    }
     let cap = crate::common::capture("a_blocked_node_answers_status_and_drain_node_and_its_hook_ends");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
@@ -270,6 +285,11 @@ fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
 /// pull answering into a node that was retired, or the node going Ready afterwards.
 #[test]
 fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_retire_during_the_pull_cancels_it_and_orphans_no_call") {
+        return;
+    }
     let cap = crate::common::capture("a_retire_during_the_pull_cancels_it_and_orphans_no_call");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
@@ -305,6 +325,11 @@ fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
 /// emitted three effects. What must NOT happen: a version applied twice.
 #[test]
 fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "rows_gossiped_during_the_pull_change_the_state_once_per_version") {
+        return;
+    }
     let cap = crate::common::capture("rows_gossiped_during_the_pull_change_the_state_once_per_version");
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::ReadyForTraffic).await;
@@ -334,6 +359,11 @@ fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
 /// node staying up Pending, or going Ready.
 #[test]
 fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_node_whose_hook_fails_ends_by_name_and_is_never_ready") {
+        return;
+    }
     let cap = crate::common::capture("a_node_whose_hook_fails_ends_by_name_and_is_never_ready");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {

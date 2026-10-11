@@ -61,6 +61,8 @@ pub enum MetaField {
     TransportAddr,
     /// `exe`: never copied, never put.
     Exe,
+    /// The runtime handle: never copied, never put.
+    Runtime,
     /// `status`: moves only through the actions and workflows.
     Status,
     /// `path` (`<mesh>.<kind>`): copied on replace, never put.
@@ -82,6 +84,7 @@ impl MetaField {
             Self::Endpoint => "endpoint",
             Self::TransportAddr => "transport_addr",
             Self::Exe => "exe",
+            Self::Runtime => "runtime handle",
             Self::Status => "status",
             Self::Path => "path",
             Self::Name => "name",
@@ -106,6 +109,25 @@ impl std::fmt::Display for MetaFieldIsRdmOwned {
 
 impl std::error::Error for MetaFieldIsRdmOwned {}
 
+/// A create or a rename into a `path.name` another node holds, parked or live: a name is held by
+/// exactly one node until that node is renamed or deleted (ops-naming "Identity";
+/// node-rpc-envelope.md "Meta and config"). The claim is insert-and-fail on the name's key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameHeld {
+    /// The name claimed.
+    pub name: PathName,
+    /// The node that holds it.
+    pub by: NodeId,
+}
+
+impl std::fmt::Display for NameHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is held by node {}: it is released only when that node is renamed or deleted", self.name, self.by)
+    }
+}
+
+impl std::error::Error for NameHeld {}
+
 /// Everything RDM stores about a node: the whole entity `node.update` takes and sends back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeMeta {
@@ -119,6 +141,8 @@ pub struct NodeMeta {
     pub transport_addr: Option<std::net::SocketAddr>,
     /// RDM-owned, never copied and never put: the executable's identity.
     pub exe: Option<String>,
+    /// RDM-owned, never copied and never put: the runtime handle, the deployment that runs the birth.
+    pub runtime: Option<String>,
     /// RDM-owned, never copied and never put.
     pub status: NodeStatus,
     /// RDM-owned, copied on replace: the node's `path.name`.
@@ -132,6 +156,13 @@ pub struct NodeMeta {
 }
 
 impl NodeMeta {
+    /// The successor `self` with the caller-owned group of `predecessor` copied onto it: the copy
+    /// step of recover and replace. Nothing RDM owns is copied, the name least of all: the
+    /// successor's `path.name` and identity come from its own create spec.
+    pub fn with_caller_owned_of(&self, predecessor: &NodeMeta) -> NodeMeta {
+        NodeMeta { otel_debug: predecessor.otel_debug, ..self.clone() }
+    }
+
     /// Whether putting `self` over `held` changes only what a caller may change. `stopped` is
     /// whether the node is stopped: its name may change only then, and only to or from its
     /// `.old` form.
@@ -151,6 +182,9 @@ impl NodeMeta {
         }
         if self.exe != held.exe {
             return refuse(MetaField::Exe);
+        }
+        if self.runtime != held.runtime {
+            return refuse(MetaField::Runtime);
         }
         if self.status != held.status {
             return refuse(MetaField::Status);
@@ -394,6 +428,7 @@ mod tests {
             endpoint: Some("ep-1".into()),
             transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
             exe: Some("rpc-node@abc123".into()),
+            runtime: Some("dep-1".into()),
             status: NodeStatus::ReadyForTraffic,
             name: "mesh1.rpc.1".parse().unwrap(),
             mesh: "mesh1".into(),
@@ -414,6 +449,7 @@ mod tests {
             (NodeMeta { endpoint: Some("ep-2".into()), ..held.clone() }, MetaField::Endpoint),
             (NodeMeta { transport_addr: Some("127.0.0.1:4001".parse().unwrap()), ..held.clone() }, MetaField::TransportAddr),
             (NodeMeta { exe: Some("rpc-node@def456".into()), ..held.clone() }, MetaField::Exe),
+            (NodeMeta { runtime: Some("dep-2".into()), ..held.clone() }, MetaField::Runtime),
             (NodeMeta { status: NodeStatus::Leaving, ..held.clone() }, MetaField::Status),
             (NodeMeta { mesh: "mesh2".into(), ..held.clone() }, MetaField::Mesh),
             (NodeMeta { kind: NodeKind::Broker, ..held.clone() }, MetaField::Kind),
@@ -435,6 +471,17 @@ mod tests {
         assert_eq!(held.check_put(&old, true), Ok(()), "and takes it back");
         let renumbered = NodeMeta { name: PathName { ordinal: 9, ..held.name.clone() }, ..held.clone() };
         assert_eq!(renumbered.check_put(&held, true), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "no rename but .old exists");
+    }
+
+    /// CONTRACT: the copy step of recover and replace copies only the caller-owned group: the
+    /// successor takes the predecessor's `otel_debug` and keeps every field RDM owns as its own,
+    /// its name included (ops-naming "Identity"; node-rpc-envelope.md "Meta and config").
+    #[test]
+    fn the_copy_step_copies_only_caller_owned_fields_never_the_name() {
+        let predecessor = NodeMeta { otel_debug: true, name: PathName { old: true, ..held().name }, ..held() };
+        let successor = NodeMeta { node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()), endpoint: Some("ep-9".into()), runtime: Some("dep-9".into()), status: NodeStatus::Pending, ..held() };
+        let copied = successor.with_caller_owned_of(&predecessor);
+        assert_eq!(copied, NodeMeta { otel_debug: true, ..successor.clone() }, "only otel_debug moves; the name stays the successor's own");
     }
 
     /// CONTRACT: each op has one canonical name, rendered the same way everywhere: the name is

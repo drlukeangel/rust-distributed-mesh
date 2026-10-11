@@ -18,6 +18,7 @@
 
 use async_trait::async_trait;
 use crate::model::{IncarnationId, MeshId, NodeId, PathName, EndpointId};
+pub use rafka_node_admin_client::NameHeld;
 use crate::record_store::{FileRecords, StorageError};
 use rafka_mesh_entity::connections::{ConnectionIndex, NodeConnection};
 use serde::{Deserialize, Serialize};
@@ -81,13 +82,13 @@ impl FileMeshStorage {
 #[async_trait]
 impl MeshStorage for FileMeshStorage {
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
-        self.0.read(name, MESH_FORMAT)
+        self.0.read(name, MESH_FORMAT).await
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
         self.0.write(&record.name, MESH_FORMAT, record).await
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
-        self.0.list(MESH_FORMAT)
+        self.0.list(MESH_FORMAT).await
     }
 }
 
@@ -189,6 +190,35 @@ pub trait NodesStorage: Send + Sync {
     async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError>;
     /// The record at `name`: a point read through the `path.name` key; `None` when none was ever written.
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
+    /// Claim `row.name` for `row.node_id`: insert-and-fail on the `path.name` key, decided by the
+    /// store in one step, never a read then a write by the caller. A row of the same node already
+    /// there satisfies the claim and is left exactly as it is ([`Claimed::HeldByNode`]: a claim
+    /// never overwrites what its node holds). The key is free when no row is there or the row there
+    /// is another node's `Deleted` row: `row` is kept ([`Claimed::Written`]). Any other row holds
+    /// the name and the claim is refused [`NameHeld`] naming its node.
+    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError>;
+    /// `holder` lets go of the key `name`: its row goes when it is `holder`'s, decided by the store
+    /// in one step against every other row write; a row of another node there (the name was
+    /// released before and claimed since) is left as it is. Returns whether `holder`'s row went.
+    async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError>;
+}
+
+/// What a claim that was not refused did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claimed {
+    /// The key was free: the claimed row is kept there.
+    Written,
+    /// The same node already holds the key: nothing was written, its row stands as it was.
+    HeldByNode,
+}
+
+/// What a claim of `row`'s name meets in `held`, the row at that key.
+fn claim_against(held: Option<&NodeRow>, row: &NodeRow) -> Result<Claimed, NameHeld> {
+    match held {
+        Some(h) if h.node_id == row.node_id => Ok(Claimed::HeldByNode),
+        Some(h) if h.status != crate::model::NodeStatus::Deleted => Err(NameHeld { name: row.name.clone(), by: h.node_id.clone() }),
+        _ => Ok(Claimed::Written),
+    }
 }
 
 /// A nodes store held in memory.
@@ -234,6 +264,23 @@ impl NodesStorage for MemoryNodesStorage {
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         Ok(self.rows.lock().unwrap().get(&name.to_string()).cloned())
     }
+    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
+        let mut rows = self.rows.lock().unwrap();
+        let claimed = claim_against(rows.get(&row.name.to_string()), row);
+        if claimed == Ok(Claimed::Written) {
+            rows.insert(row.name.to_string(), row.clone());
+        }
+        Ok(claimed)
+    }
+    async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
+        let mut rows = self.rows.lock().unwrap();
+        let key = name.to_string();
+        let held = rows.get(&key).is_some_and(|r| &r.node_id == holder);
+        if held {
+            rows.remove(&key);
+        }
+        Ok(held)
+    }
 }
 
 const NODE_FORMAT: &str = "node-record/1";
@@ -247,12 +294,15 @@ pub struct FileNodesStorage {
     contacts: FileRecords,
     runtimes: FileRecords,
     rows: FileRecords,
+    /// Every write of a row is one at a time, so a claim's look at the key and its write are one
+    /// step against every other write of this store (the fabric-primary is the rows' one writer).
+    row_writes: tokio::sync::Mutex<()>,
 }
 
 impl FileNodesStorage {
     /// Open the store under the admin's own data directory.
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")?, rows: FileRecords::open(own_data_dir, "nodes/rows")? })
+        Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")?, rows: FileRecords::open(own_data_dir, "nodes/rows")?, row_writes: tokio::sync::Mutex::new(()) })
     }
 }
 
@@ -262,16 +312,16 @@ impl NodesStorage for FileNodesStorage {
         self.runtimes.write(&row.key(), RUNTIME_FORMAT, row).await
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
-        self.runtimes.list(RUNTIME_FORMAT)
+        self.runtimes.list(RUNTIME_FORMAT).await
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
-        self.own.read("self", NODE_FORMAT)
+        self.own.read("self", NODE_FORMAT).await
     }
     async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
         self.own.write("self", NODE_FORMAT, record).await
     }
     async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        self.contacts.list(NODE_FORMAT)
+        self.contacts.list(NODE_FORMAT).await
     }
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
         self.contacts.write(record.node_id.as_str(), NODE_FORMAT, record).await
@@ -280,10 +330,29 @@ impl NodesStorage for FileNodesStorage {
         self.contacts.remove(node_id.as_str()).await
     }
     async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
+        let _one = self.row_writes.lock().await;
         self.rows.write(&row.name.to_string(), ROW_FORMAT, row).await
     }
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        self.rows.read(&name.to_string(), ROW_FORMAT)
+        self.rows.read(&name.to_string(), ROW_FORMAT).await
+    }
+    async fn claim_node_row(&self, row: &NodeRow) -> Result<Result<Claimed, NameHeld>, StorageError> {
+        let _one = self.row_writes.lock().await;
+        let key = row.name.to_string();
+        let claimed = claim_against(self.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.as_ref(), row);
+        if claimed == Ok(Claimed::Written) {
+            self.rows.write(&key, ROW_FORMAT, row).await?;
+        }
+        Ok(claimed)
+    }
+    async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
+        let _one = self.row_writes.lock().await;
+        let key = name.to_string();
+        let held = self.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.is_some_and(|r| &r.node_id == holder);
+        if held {
+            self.rows.remove(&key).await?;
+        }
+        Ok(held)
     }
 }
 
@@ -376,7 +445,7 @@ impl ConnectionsStorage for FileConnectionsStorage {
         self.0.write(&connection_key(&fact.index()), CONNECTION_FORMAT, fact).await
     }
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
-        self.0.list(CONNECTION_FORMAT)
+        self.0.list(CONNECTION_FORMAT).await
     }
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
         self.0.remove(&connection_key(index)).await
@@ -488,5 +557,85 @@ mod tests {
         assert_eq!(held, [a.clone(), b.clone()], "two births, two rows; a repeated put is the same row");
         std::fs::write(d.join("nodes/runtimes").join(format!("{}.json", a.key())), br#"{"format":"node-runtime/9","record":{}}"#).unwrap();
         assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
+    }
+
+    /// A row file at `name` in a fresh file store that is a FIFO: a read of it waits until a writer
+    /// opens it. The writer is a thread that, once a reader has the FIFO open, waits for word from
+    /// the runtime that it still runs (up to 5 s), then writes `row`. Whether that word came, while
+    /// the read was waiting, is what this answers.
+    fn runtime_runs_while_a_row_is_read<T: Send + 'static>(row: NodeRow, op: impl FnOnce(std::sync::Arc<FileNodesStorage>) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static) -> (bool, T) {
+        let bytes = serde_json::to_vec(&serde_json::json!({ "format": ROW_FORMAT, "record": row })).unwrap();
+        runtime_runs_while_a_file_is_read("nodes/rows", &row.name.to_string(), bytes, op)
+    }
+
+    /// The same, for the record file `<key>.json` under the store's `dir`, written `bytes`.
+    fn runtime_runs_while_a_file_is_read<T: Send + 'static>(dir: &str, key: &str, bytes: Vec<u8>, op: impl FnOnce(std::sync::Arc<FileNodesStorage>) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static) -> (bool, T) {
+        let d = crate::record_store::tempdir("rows-offload");
+        let store = std::sync::Arc::new(FileNodesStorage::open(&d).unwrap());
+        let fifo = d.join(dir).join(format!("{key}.json"));
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
+        let (word_tx, word_rx) = std::sync::mpsc::channel::<()>();
+        let writer = std::thread::spawn(move || {
+            use std::io::Write as _;
+            // Blocks until the read has the FIFO open: the read is waiting from here on.
+            let mut f = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+            let heard = word_rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+            f.write_all(&bytes).unwrap();
+            heard
+        });
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let out = rt.block_on(async move {
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+            // The read and its start signal are one poll: this task resumes only once that poll returns.
+            let read = tokio::spawn(async move {
+                let _ = started_tx.send(());
+                op(store).await
+            });
+            started_rx.await.unwrap();
+            let _ = word_tx.send(());
+            read.await.unwrap()
+        });
+        (writer.join().unwrap(), out)
+    }
+
+    /// CONTRACT: a point read of a node row never waits on the disk on a runtime worker (the
+    /// defect class that froze node-admins on 10-08: a worker blocked on the disk): it runs on the
+    /// blocking pool, as the row's write does (`record_store::blocking_io`). The claim runs inline
+    /// on every view install, the join door's among them, and its read of the key is the same read.
+    /// The cell: a row file that is a FIFO holds the read until a writer comes; the runtime's only
+    /// thread keeps running meanwhile, and the read answers the row.
+    #[test]
+    fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() };
+        let name = row.name.clone();
+        let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
+        assert!(ran, "the runtime thread ran while the row read waited on the disk");
+        assert_eq!(read, Ok(Some(row)));
+    }
+
+    /// CONTRACT: a claim's look at the key is that same read off the runtime thread, under the
+    /// store's async row-write lock (no worker blocks on it): a claim of a name another node holds
+    /// answers `NameHeld` while the runtime keeps running.
+    #[test]
+    fn a_claims_read_of_the_key_waits_on_the_disk_off_the_runtime_thread() {
+        let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() };
+        let claim = NodeRow { node_id: NodeId::mint(), ..held.clone() };
+        let (ran, claimed) = runtime_runs_while_a_row_is_read(held.clone(), move |s| Box::pin(async move { s.claim_node_row(&claim).await }));
+        assert!(ran, "the runtime thread ran while the claim's read waited on the disk");
+        assert_eq!(claimed, Ok(Err(NameHeld { name: held.name.clone(), by: held.node_id.clone() })));
+    }
+
+    /// CONTRACT: a list of a store's records (`FileRecords::list`: the directory read and every
+    /// file in it) never waits on the disk on a runtime worker: it runs on the blocking pool, as a
+    /// point read and every write do. The cell lists the runtime rows while one row file holds its
+    /// read: the runtime's only thread keeps running, and the list answers the row.
+    #[test]
+    fn a_list_of_records_waits_on_the_disk_off_the_runtime_thread() {
+        let row = RuntimeRow { node_id: NodeId::mint(), name: "mesh1.admin.2".parse().unwrap(), incarnation_id: IncarnationId("i1".into()), runtime: rafka_mesh_entity::RuntimeFact::of_this_process("dep-1").unwrap(), data_dir: Some("/tmp/x".into()) };
+        let bytes = serde_json::to_vec(&serde_json::json!({ "format": RUNTIME_FORMAT, "record": row })).unwrap();
+        let (ran, listed) = runtime_runs_while_a_file_is_read("nodes/runtimes", &row.key(), bytes, move |s| Box::pin(async move { s.runtimes().await }));
+        assert!(ran, "the runtime thread ran while the list waited on the disk");
+        assert_eq!(listed, Ok(vec![row]));
     }
 }

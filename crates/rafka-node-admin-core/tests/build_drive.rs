@@ -104,11 +104,12 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         topology: topology.clone(),
         accepted,
         builds: builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: fp_id, me, topology, builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: fp_id.clone(), me, topology, builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: dispatch.clone(),
         gate: switch.clone(),
         departure: proofs.clone(),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), fp_id, Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id }
 }

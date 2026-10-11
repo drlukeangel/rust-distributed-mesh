@@ -46,6 +46,11 @@ async fn until_ready(running: &rafka_node_admin_core::admin::Running) {
 /// authority that does not exist, or the root Ready before its hook returned.
 #[test]
 fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state") {
+        return;
+    }
     let cap = crate::common::capture("the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
@@ -81,6 +86,11 @@ fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_st
 /// happen: the joining admin Ready while its hook is blocked.
 #[test]
 fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does") {
+        return;
+    }
     let cap = crate::common::capture("an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {

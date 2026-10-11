@@ -176,19 +176,29 @@ impl Drive {
     /// Make a progress frame readable. A frame whose receipt key is already held is dropped, so a
     /// reattached run's replay adds nothing twice. Returns whether it was new.
     pub fn push(&self, frame: BuildReply) -> bool {
-        let mut s = self.state.lock().unwrap();
-        if s.terminal.is_some() {
+        if !self.take_key(&frame) {
             return false;
         }
-        if let Some(key) = frame_key(&frame) {
-            if !s.seen.insert(key) {
-                return false;
-            }
+        self.publish(frame);
+        true
+    }
+
+    /// Whether `frame` is new to this drive: its receipt key is taken now, so the frame is handled
+    /// once whichever way it reached the drive (the live run, the executor's replay of a reattached
+    /// run, a receipt read). Nothing is new after the terminal.
+    fn take_key(&self, frame: &BuildReply) -> bool {
+        let mut s = self.state.lock().unwrap();
+        s.terminal.is_none() && frame_key(frame).is_none_or(|key| s.seen.insert(key))
+    }
+
+    fn publish(&self, frame: BuildReply) {
+        let mut s = self.state.lock().unwrap();
+        if s.terminal.is_some() {
+            return;
         }
         s.events.push(frame);
         drop(s);
         self.wake.notify_waiters();
-        true
     }
 
     /// The drive ended with `terminal`.
@@ -217,12 +227,18 @@ impl Drive {
         self.first_attempt.load(Ordering::SeqCst)
     }
 
-    /// Make a `Step` frame readable for every `Complete` receipt of `steps` from attempt `from` to
-    /// before attempt `to`: a read of receipts, never a run. A frame whose key is held is dropped.
-    pub fn replay_receipts(&self, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) {
-        for s in steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from && s.attempt < to) {
-            self.push(BuildReply::Step { build_id: self.build_id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() });
-        }
+    /// The `Step` frame of every `Complete` receipt of `steps` from attempt `from` to before attempt
+    /// `to`, with the node the receipt names (the lifecycle op a `NodeDeleting` or `NodeDeleted`
+    /// decided): a read of receipts, never a run.
+    fn receipt_frames(&self, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) -> Vec<(BuildReply, Option<crate::model::NodeId>)> {
+        steps
+            .iter()
+            .filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from && s.attempt < to)
+            .map(|s| {
+                let subject = s.output.clone().and_then(|o| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(o).ok()).map(|op| op.node_id);
+                (BuildReply::Step { build_id: self.build_id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() }, subject)
+            })
+            .collect()
     }
 
     /// Whether the drive ended with the Build complete: its frames are the record a re-submit is
@@ -351,6 +367,8 @@ pub struct DriveEnv {
     pub departure: Arc<dyn DepartureProof>,
     /// Records an executor's verdict on this admin's log.
     pub verdicts: Arc<dyn VerdictSink>,
+    /// The writer of node rows: the live `Step` frames of a delete and a create write them.
+    pub rows: Arc<crate::node_rows::NodeRows>,
 }
 
 /// The drives this admin holds, by Build.
@@ -529,7 +547,7 @@ impl DriveEnv {
                 let Some(holder) = parse_path(&holder) else {
                     return self.stalled(drive, format!("{}: attempt {} of Build {id} is claimed by {holder:?}, which is not a path.name", self.me, p.attempt));
                 };
-                (p.attempt, holder, self.door.contexts.get(&id, p.attempt).ok().flatten().unwrap_or_default())
+                (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
             } else {
                 match self.claim_next(drive, &p, handed_to.take()).await {
                     Ok(c) => c,
@@ -543,8 +561,12 @@ impl DriveEnv {
             // An attempt that takes over from an earlier one of this drive: the frames of the steps
             // the earlier attempts completed are read from the receipts held (a frame the lost
             // executor never sent is not lost), and never run again.
+            // A drive that dispatches for the first time (a fabric-primary that took the seat
+            // mid-Build) holds no frame of any earlier attempt: every receipt before this attempt
+            // is read, as for a Build that ended (`reattach_to_ended`).
+            let fresh = !drive.has_run_log();
             let first = drive.note_first_attempt(attempt);
-            drive.replay_receipts(&p.steps, first, attempt);
+            self.replay(drive, &p.steps, if fresh { 0 } else { first }, attempt).await;
             *dispatches += 1;
             let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %executor, node = %self.me, outcome = tracing::field::Empty);
             if let Some(tp) = &context.traceparent {
@@ -647,7 +669,7 @@ impl DriveEnv {
             BuildClaimReply::Won { context } => Ok((attempt, lead, context)),
             BuildClaimReply::Lost { holder } => match parse_path(&holder) {
                 Some(h) => {
-                    let context = self.door.contexts.get(id, attempt).ok().flatten().unwrap_or_default();
+                    let context = self.door.contexts.get(id, attempt).await.ok().flatten().unwrap_or_default();
                     Ok((attempt, h, context))
                 }
                 None => Err(self.stalled(drive, format!("attempt {attempt} of Build {id} is held by {holder:?}, which is not a path.name"))),
@@ -677,14 +699,14 @@ impl DriveEnv {
     /// its frames. `None` when the attached run ended `Complete`; otherwise the end of the drive.
     async fn reattach_to_ended(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
         let id = &drive.build_id;
-        drive.replay_receipts(&p.steps, 0, p.attempt);
+        self.replay(drive, &p.steps, 0, p.attempt).await;
         let named = p.executor.clone().unwrap_or_default();
         let Some(holder) = parse_path(&named) else {
             drive.finish(BuildReply::NotReady { reason: format!("{}: attempt {} of Build {id} completed on {named:?}, which is not a path.name", self.me, p.attempt) });
             return Some(DriveEnd::Terminal);
         };
         drive.note_first_attempt(p.attempt);
-        let context = self.door.contexts.get(id, p.attempt).ok().flatten().unwrap_or_default();
+        let context = self.door.contexts.get(id, p.attempt).await.ok().flatten().unwrap_or_default();
         let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %self.me, outcome = tracing::field::Empty);
         match self.run_inner(drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
             Inner::Terminal(BuildReply::Complete { .. }) => {
@@ -704,6 +726,27 @@ impl DriveEnv {
         }
     }
 
+    /// A `Step` frame new to `drive`, live from the executor or read from a receipt (a completed
+    /// step's receipt is the same event as its frame): the row writer handles it once, from the
+    /// record this fabric-primary holds, before any reader of the drive sees the frame.
+    async fn step(&self, drive: &Drive, frame: BuildReply, subject: Option<crate::model::NodeId>) {
+        if !drive.take_key(&frame) {
+            return;
+        }
+        if let BuildReply::Step { operation, step, .. } = &frame {
+            self.rows.on_step(&self.me, &self.topology, operation, step, subject.as_ref()).await;
+        }
+        drive.publish(frame);
+    }
+
+    /// The frame of every `Complete` receipt of `steps` from attempt `from` to before attempt `to`,
+    /// each through [`Self::step`]: a read of receipts, never a run.
+    async fn replay(&self, drive: &Drive, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) {
+        for (frame, subject) in drive.receipt_frames(steps, from, to) {
+            self.step(drive, frame, subject).await;
+        }
+    }
+
     async fn run_inner(&self, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
         let intent = self.intent_of(id).await;
         let mut stream = match self.dispatcher.dispatch(executor, id, attempt, context, intent, plan).await {
@@ -714,7 +757,8 @@ impl DriveEnv {
         loop {
             match stream.next().await {
                 InnerItem::Frame(f) => match f {
-                    BuildReply::Step { .. } | BuildReply::Blocked { .. } => {
+                    BuildReply::Step { .. } => self.step(drive, f, None).await,
+                    BuildReply::Blocked { .. } => {
                         drive.push(f);
                     }
                     t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),

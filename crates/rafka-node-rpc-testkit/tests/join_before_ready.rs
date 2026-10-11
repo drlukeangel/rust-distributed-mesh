@@ -14,6 +14,11 @@ use std::time::Duration;
 /// traffic. What must NOT happen: the node comes up on a "view fills from gossip" fallback.
 #[test]
 fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready") {
+        return;
+    }
     let cap = crate::common::capture("node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
