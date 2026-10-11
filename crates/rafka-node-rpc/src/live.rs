@@ -38,7 +38,7 @@ pub enum Applied {
         /// The incarnation the new birth supersedes.
         old: IncarnationId,
     },
-    /// The held birth's address changed.
+    /// The held birth's address or name changed, or a parked birth is held again.
     Updated,
     /// The fact matches what is held.
     Unchanged,
@@ -109,9 +109,9 @@ impl Live {
     }
 
     /// The path's holder after `gone` left it: another live node heard at the
-    /// same path, if any.
+    /// same path, if any. A holder is kept only while it is live and still at `path`.
     fn rehold(&mut self, path: &PathName) {
-        if self.by_path.get(path).and_then(|id| self.nodes.get(id)).is_some_and(|n| !self.is_parked(n)) {
+        if self.by_path.get(path).and_then(|id| self.nodes.get(id)).is_some_and(|n| &n.name == path && !self.is_parked(n)) {
             return;
         }
         self.by_path.remove(path);
@@ -166,7 +166,7 @@ impl LiveNodeResolver {
             None => Applied::Joined,
             Some(held) if held.endpoint_id != birth.endpoint_id => return Applied::Refused(Refusal::TransportChanged { node_id: id }),
             Some(held) if held.incarnation == birth.incarnation => {
-                if held.transport_addr == birth.transport_addr && !unparked {
+                if held.transport_addr == birth.transport_addr && held.name == birth.name && !unparked {
                     return Applied::Unchanged;
                 }
                 Applied::Updated
@@ -181,10 +181,15 @@ impl LiveNodeResolver {
             live.retired.entry(id.clone()).or_default().insert(old.clone());
             live.exited.remove(&(id.clone(), old.clone()));
         }
+        // A birth that took another name (`ApplyNodeName`, R12) gives up the one it held.
+        let gave_up = live.nodes.get(&id).map(|held| held.name.clone()).filter(|held| *held != birth.name);
         let path = birth.name.clone();
         live.nodes.insert(id.clone(), birth);
         live.by_path.entry(path.clone()).or_insert(id);
         live.rehold(&path);
+        if let Some(old) = gave_up {
+            live.rehold(&old);
+        }
         drop(live);
         self.tick();
         applied

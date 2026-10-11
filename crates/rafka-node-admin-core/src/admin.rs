@@ -3872,6 +3872,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("membership: {e}"))?;
+    // The name this admin holds is its membership's (R12): its connections rows name it as their
+    // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
+    {
+        let (held, birth) = (membership.clone(), name.clone());
+        connections.follow_held_name(move || held.held_name(&birth))?;
+    }
     // The row's name and config a launched admin's join handed: held before it publishes anything
     // (R-JN1); at a first start the name is its create spec's, verified by the join.
     let handed: Option<(Option<PathName>, Option<BTreeMap<String, String>>)> = pulled.as_ref().map(|a| (a.control.name.clone(), a.control.config.clone()));
