@@ -2260,20 +2260,19 @@ impl DeploymentPipeline<'_> {
         self.step(run, ReplaceStep::HandoffStorage.name(), async { self.hand_over_storage(replacing, successor_dir).await }).await
     }
 
-    /// The top-level directories of every directory that holds this path's storage (the predecessor's,
-    /// and a successor an earlier attempt of this operation left behind) move into the successor's
-    /// directory. Files (the identity, the transport key, the runtime record) never move. What the
-    /// Build's `StorageMeta` for the path says decides: only persistent storage is handed over, and a
-    /// node-admin's records are seeded from its maker at join, never inherited.
+    /// The top-level directories of every directory that holds this operation's storage (the
+    /// predecessor's, and a successor an earlier attempt of this operation left behind, named by its
+    /// `AllocateIdentity` receipt in this Build) move into the successor's directory. No other
+    /// directory at the path is read: a birth deleted earlier at the path keeps its data dir
+    /// (node-delete.md "Storage") and is not this operation's. Files (the identity, the transport key,
+    /// the runtime record) never move. What the Build's `StorageMeta` for the path says decides: only
+    /// persistent storage is handed over, and a node-admin's records are seeded from its maker at join,
+    /// never inherited.
     async fn hand_over_storage(&self, replacing: &Replacing<'_>, successor_dir: &std::path::Path) -> Result<(), String> {
         let predecessor = replacing.predecessor;
         let name = &predecessor.name;
-        let storage = self
-            .builds
-            .read_build(replacing.build_id)
-            .await
-            .ok()
-            .and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
+        let build = self.builds.read_build(replacing.build_id).await.ok();
+        let storage = build.as_ref().and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
         let withheld = match storage {
             _ if name.kind == NodeKind::NodeAdmin => Some("a node-admin's records are seeded from its maker when it joins, never inherited from its predecessor"),
             Some(StorageMeta::Persistent { .. }) => None,
@@ -2286,9 +2285,15 @@ impl DeploymentPipeline<'_> {
         }
         let current = self.birth_dir(predecessor);
         let mut sources = vec![current.clone()];
-        for entry in std::fs::read_dir(&self.template.data_root).map_err(|e| format!("{}: {e}", self.template.data_root.display()))?.flatten() {
-            let (dir, file) = (entry.path(), entry.file_name().to_string_lossy().to_string());
-            if file.starts_with(&format!("{name}-")) && dir != successor_dir && dir != current && entry.file_type().is_ok_and(|t| t.is_dir()) {
+        let operation = format!("replace-node:{name}");
+        for r in build.iter().flat_map(|b| b.steps.iter()).filter(|r| r.operation == operation && r.step == CreateStep::AllocateIdentity.name() && r.outcome == StepOutcome::Complete) {
+            let id: Identity = r
+                .output
+                .clone()
+                .ok_or_else(|| format!("{name}: the AllocateIdentity receipt of attempt {} of {operation} (Build {}) carries no identity", r.attempt, replacing.build_id))
+                .and_then(|o| serde_json::from_value(o).map_err(|e| format!("{name}: the AllocateIdentity receipt of attempt {} of {operation} (Build {}) is not an identity: {e}", r.attempt, replacing.build_id)))?;
+            let dir = self.template.data_root.join(format!("{name}-{}", id.node_id));
+            if dir != successor_dir && !sources.contains(&dir) {
                 sources.push(dir);
             }
         }
