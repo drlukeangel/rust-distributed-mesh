@@ -536,3 +536,32 @@ fn a_rename_the_seat_holder_never_saw_announced_moves_the_row_from_the_old_name_
     let a = &renames[0]["attributes"];
     assert_eq!((a["node_id"].as_str(), a["outcome"].as_str()), (Some(pred.as_str()), Some("renamed")), "{a:#?}");
 }
+
+/// CONTRACT: the fabric-primary claims a birth's row when its view holds the birth for the first
+/// time in its seat (ops-naming "Node data": the row is written once, from the held record), never
+/// again on a later view install. A birth that left the view (a departure the projection dropped)
+/// and is put back by a forwarded copy of a peer mesh's view (gossip.md §3.2 forwarded grace) is
+/// the same birth, not a new arrival: one `via-node-row` span for it, the row written once.
+#[test]
+fn a_birth_that_leaves_the_view_and_returns_is_claimed_once() {
+    let cap = capture();
+    let (row, born) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let records = Records::default();
+        records.set_rows(Arc::new(NodeRows::new(me, storage.clone())));
+        let topology = RwLock::new(view());
+        let birth = node("mesh1.rpc.2", false, false);
+        let born = birth.node_id.clone();
+        let again = birth.clone();
+        install(&records, &topology, move |v| v.nodes.push(birth)).await;
+        install(&records, &topology, |v| v.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.2")).await;
+        install(&records, &topology, move |v| v.nodes.push(again)).await;
+        (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born)
+    });
+    assert_eq!(row.map(|r| r.node_id), Some(born.clone()), "the birth holds its row");
+    let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    let claims: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
+    assert_eq!(claims.len(), 1, "one claim for one birth in one seat tenure: {claims:#?}");
+    assert_eq!(claims[0]["attributes"]["outcome"], "row-claimed", "{claims:#?}");
+}
