@@ -760,6 +760,7 @@ async fn a_durable_runtime_row_of_a_runtime_that_runs_opens_no_attempt() {
 /// birth watched by nobody (no recovery ever), or a proven-drift Replace from the fabric-primary.
 #[tokio::test]
 async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_its_mesh_primary() {
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3051-durable-row");
     let e = estate().await;
     let before = e.accepted.current(&*e.builds).await.unwrap();
     let fp = e.fabric_primary().await;
@@ -814,6 +815,10 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     assert_eq!(e.born(), vec![lost.clone()], "exactly the lost admin is recovered");
     assert_ne!(e.node_id(&lost).await, old, "a new node.id");
     e.holds_the_shape().await;
+    let admitted: Vec<_> = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().filter(|(_, a)| a.get("node") == Some(&lost) && a.get("node_id") == Some(&old)).collect();
+    assert_eq!(admitted.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["admitted".to_string()], "one recovery of the row's exact birth, admitted: {admitted:?}");
+    assert!(capture.spans("rdm.node_admin.build.reject.via-drift-unprovable").is_empty(), "the fabric-primary's drift names nothing for the birth");
+    eprintln!("span rdm.node_admin.build.update.via-recovery trace_id={} {:?}", admitted[0].0, admitted[0].1);
 }
 
 /// Two openers of one attempt number: the requested attempt (REST) and the proven-drift pass read the
