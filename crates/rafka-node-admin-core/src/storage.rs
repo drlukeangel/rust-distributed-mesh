@@ -731,18 +731,21 @@ mod tests {
         let d = crate::record_store::tempdir("other-meshes-cut-off");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let n = FileNodesStorage::open(&d, &root, "mesh1", &IncarnationId::mint()).await.unwrap();
-        n.put_node_row(&row("mesh2.rpc.1")).await.unwrap();
+        // The same node's rows each time: a put of another node's row at a live key is refused
+        // NameHeld by the adapter's claim before any write, and this cell is about the cut-off.
+        let rows: BTreeMap<&str, NodeRow> = ["mesh2.rpc.1", "mesh3.rpc.1"].into_iter().map(|name| (name, row(name))).collect();
+        n.put_node_row(&rows["mesh2.rpc.1"]).await.unwrap().unwrap();
         n.cut_off_other_meshes("seat transfer drain-node:mesh1.admin.1").await;
         for name in ["mesh2.rpc.1", "mesh3.rpc.1"] {
-            match n.put_node_row(&row(name)).await {
+            match n.put_node_row(&rows[name]).await {
                 Err(StorageError::CutOff { reason, .. }) => assert!(reason.contains("drain-node:mesh1.admin.1"), "{reason}"),
                 other => panic!("{name}: a row write after the fabric seat's cut-off answered {other:?}"),
             }
             assert!(matches!(n.put_contact(&node(name)).await, Err(StorageError::CutOff { .. })), "{name}: a contact write after the cut-off");
         }
-        n.put_node_row(&row("mesh1.rpc.1")).await.expect("its own mesh's rows follow the mesh seat's cut-off, not this one");
+        n.put_node_row(&row("mesh1.rpc.1")).await.expect("its own mesh's rows follow the mesh seat's cut-off, not this one").expect("the key is free");
         n.lift_other_meshes();
-        n.put_node_row(&row("mesh3.rpc.1")).await.expect("a lifted cut-off gives the writes back");
+        n.put_node_row(&rows["mesh3.rpc.1"]).await.expect("a lifted cut-off gives the writes back").expect("the key is free");
     }
 
     #[tokio::test]
