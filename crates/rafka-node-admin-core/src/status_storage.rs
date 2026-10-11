@@ -123,6 +123,40 @@ impl NodeSilenceRow {
     }
 }
 
+/// The provider's proof that one birth of the mesh primary's own mesh exited (node-recovery.md
+/// "Exited is the proof, recorded durably"): the exit code and where it came from, as the mesh
+/// primary inspected it. Keyed by the exact birth; written only by the mesh primary, a blind put
+/// once its tick finds the runtime exited. The recovery it starts reads this row to publish the
+/// exited instance's node.deleted; nothing of it goes on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeExitRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth that exited.
+    pub incarnation_id: IncarnationId,
+    /// The runtime's exit code, when the provider holds one.
+    pub exit_code: Option<i32>,
+    /// Where the proof came from: `provider` (the provider's own terminal status), `exit-record`
+    /// (the runtime's exit record in its data dir) or `none` (exited with no code).
+    pub proof: String,
+    /// When the mesh primary observed it, ms since the Unix epoch.
+    pub observed_at_ms: u64,
+}
+
+impl NodeExitRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        Self::key_of(&self.node_id, &self.incarnation_id)
+    }
+
+    /// The key of the birth `(node_id, incarnation_id)`'s exit row.
+    pub fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId) -> String {
+        format!("{node_id}--{}", incarnation_id.0)
+    }
+}
+
 /// The durable record of the status facts this admin holds.
 #[async_trait]
 pub trait StatusStorage: Send + Sync {
@@ -144,6 +178,10 @@ pub trait StatusStorage: Send + Sync {
     async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError>;
     /// Every birth's silence-status row.
     async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError>;
+    /// A blind put of the birth's exit-proof row.
+    async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError>;
+    /// The exit-proof row of the birth `(node_id, incarnation_id)`, when one was put.
+    async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError>;
 }
 
 fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {
@@ -164,6 +202,7 @@ pub struct MemoryStatusStorage {
     events: Mutex<Vec<FabricEventRow>>,
     declared: Mutex<std::collections::BTreeMap<String, NodeDeclaredRow>>,
     silences: Mutex<std::collections::BTreeMap<String, NodeSilenceRow>>,
+    exits: Mutex<std::collections::BTreeMap<String, NodeExitRow>>,
 }
 
 #[async_trait]
@@ -209,23 +248,33 @@ impl StatusStorage for MemoryStatusStorage {
     async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError> {
         Ok(self.silences.lock().unwrap().values().cloned().collect())
     }
+    async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError> {
+        self.exits.lock().unwrap().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+        Ok(self.exits.lock().unwrap().get(&NodeExitRow::key_of(node_id, incarnation_id)).cloned())
+    }
 }
 
 const MESH_STATUS_FORMAT: &str = "mesh-status/1";
 const FABRIC_EVENT_FORMAT: &str = "fabric-event/1";
 const NODE_DECLARED_FORMAT: &str = "node-declared/2";
 const NODE_SILENCE_FORMAT: &str = "node-silence/1";
+const NODE_EXIT_FORMAT: &str = "node-exit/1";
 
 /// One row per file: `<data dir>/status/meshes/<mesh_id>-<state>.json`,
 /// `<data dir>/status/fabric/<fabric_id>-<hex of the event key>.json`,
 /// `<data dir>/status/declared/<node_id>--<incarnation>--<state>.json` and
-/// `<data dir>/status/silence/<node_id>--<incarnation>.json`.
+/// `<data dir>/status/silence/<node_id>--<incarnation>.json` and
+/// `<data dir>/status/exits/<node_id>--<incarnation>.json`.
 #[derive(Debug)]
 pub struct FileStatusStorage {
     meshes: FileRecords,
     fabric: FileRecords,
     declared: FileRecords,
     silence: FileRecords,
+    exits: FileRecords,
 }
 
 impl FileStatusStorage {
@@ -236,6 +285,7 @@ impl FileStatusStorage {
             fabric: FileRecords::open(own_data_dir, "status/fabric")?,
             declared: FileRecords::open(own_data_dir, "status/declared")?,
             silence: FileRecords::open(own_data_dir, "status/silence")?,
+            exits: FileRecords::open(own_data_dir, "status/exits")?,
         })
     }
 }
@@ -271,6 +321,12 @@ impl StatusStorage for FileStatusStorage {
     }
     async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError> {
         self.silence.list(NODE_SILENCE_FORMAT)
+    }
+    async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError> {
+        self.exits.write(&row.key(), NODE_EXIT_FORMAT, row).await
+    }
+    async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+        self.exits.read(&NodeExitRow::key_of(node_id, incarnation_id), NODE_EXIT_FORMAT)
     }
 }
 

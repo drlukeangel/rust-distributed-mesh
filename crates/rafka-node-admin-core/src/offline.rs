@@ -207,6 +207,19 @@ pub(crate) async fn put_silence_status(store: &dyn crate::status_storage::Status
     Ok(true)
 }
 
+/// Record the provider's proof that a birth of the mesh primary's own mesh exited
+/// (node-recovery.md "Exited is the proof, recorded durably"): the birth's own exit-proof row in
+/// status.storage, a blind put of its `(node_id, incarnation)` key. Nothing is read back. A held
+/// record with no incarnation names no birth: that is named, never a silent skip.
+pub(crate) async fn put_exit_proof(store: &dyn crate::status_storage::StatusStorage, node: &crate::model::Node, exit_code: Option<i32>, proof: &str, observed_at_ms: u64) -> Result<crate::status_storage::NodeExitRow, String> {
+    let Some(incarnation_id) = node.incarnation_id.clone() else {
+        return Err(format!("{} ({}) holds no incarnation: no birth to key its exit-proof row by", node.name, node.node_id));
+    };
+    let row = crate::status_storage::NodeExitRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, exit_code, proof: proof.to_string(), observed_at_ms };
+    store.put_node_exit(&row).await.map_err(|e| format!("status.storage put of {} ({}) exit-proof row: {e}", node.name, node.node_id))?;
+    Ok(row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +386,36 @@ mod tests {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.node_silences().await
         }
+        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_exit(row).await
+        }
+        async fn node_exit(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.node_exit(node_id, incarnation_id).await
+        }
+    }
+
+    /// CONTRACT (#3051, node-recovery.md "Exited is the proof, recorded durably"): the mesh
+    /// primary records a member's exit proof as that birth's own keyed row, a blind put that reads
+    /// nothing; a later birth of the same node is its own row and leaves the first standing.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn mesh_primary_records_an_exit_proof_as_the_births_own_row() {
+        use crate::model::{IncarnationId, Node, PathName};
+        use crate::status_storage::StatusStorage;
+        let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
+        let first = IncarnationId::mint();
+        held.incarnation_id = Some(first.clone());
+        let store = ReadCounting::default();
+        let row = put_exit_proof(&store, &held, Some(4), "exit-record", 7).await.unwrap();
+        assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0, "the exit-proof put reads no row");
+        let next = IncarnationId::mint();
+        held.incarnation_id = Some(next.clone());
+        put_exit_proof(&store, &held, None, "none", 9).await.unwrap();
+        assert_eq!(store.node_exit(&held.node_id, &first).await.unwrap(), Some(row), "the first birth's proof stands");
+        assert_eq!(store.node_exit(&held.node_id, &next).await.unwrap().map(|r| (r.exit_code, r.proof)), Some((None, "none".to_string())));
+        held.incarnation_id = None;
+        assert!(put_exit_proof(&store, &held, Some(4), "provider", 1).await.is_err(), "no birth is named, never skipped");
     }
 
     // @feature: node-lifecycle

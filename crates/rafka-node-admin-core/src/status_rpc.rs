@@ -657,6 +657,12 @@ mod tests {
         async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::record_store::StorageError> {
             self.inner.node_silences().await
         }
+        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_exit(row).await
+        }
+        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+            self.inner.node_exit(node_id, incarnation_id).await
+        }
     }
 
     /// CONTRACT (#3051, CLAUDE.md read-modify-write ban): two declarations of one birth decided
