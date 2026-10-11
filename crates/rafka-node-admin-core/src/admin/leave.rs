@@ -362,37 +362,43 @@ impl AdminRunner {
                 StatusReply::AlreadyApplied
             }
             None => {
-                tokio::spawn(async move { runner.run_leave(key, owner, parent).await });
+                tokio::spawn(async move { runner.run_leave(key, parent).await });
                 StatusReply::Applied
             }
         }
     }
 
-    async fn run_leave(self: Arc<Self>, key: LeaveKey, owner: NodeId, parent: tracing::Span) {
-        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty);
+    /// The one run of the member workflows of the leave `key` admitted, on its natural key
+    /// `(mesh_id, Leaving)` ([`crate::mesh_leave::run_admitted`]): a `leave-mesh` of a later attempt
+    /// admitted meanwhile joins it, and the handoff goes under the key admitted last.
+    async fn run_leave(self: Arc<Self>, key: LeaveKey, parent: tracing::Span) {
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, handoff_attempt = tracing::field::Empty);
         async {
-            match self.leave_members(&key, &owner).await {
-                Ok(manifest) => {
+            let end = crate::mesh_leave::run_admitted(&self.leave_runs, &key.mesh_id, |key, owner| {
+                let runner = self.clone();
+                async move { runner.leave_members(&key, &owner).await }
+            })
+            .await;
+            match end {
+                crate::mesh_leave::LeaveRunEnd::Exited { key, owner, manifest } => {
                     tracing::Span::current().record("outcome", "exited");
+                    tracing::Span::current().record("handoff_attempt", key.attempt);
                     // The handoff goes to the owner that sent leave-mesh last, read now.
-                    match self.leave_runs.exited(&key, &manifest) {
-                        Some(owner) => self.hand_off(&key, &owner, &manifest).await,
-                        None => tracing::info!("this leave's run is no longer held: the handoff waits for a repeated leave-mesh"),
-                    }
+                    self.hand_off(&key, &owner, &manifest).await;
                 }
-                Err(e) => {
+                crate::mesh_leave::LeaveRunEnd::Incomplete { key, owner, reason } => {
                     tracing::Span::current().record("outcome", "incomplete");
+                    tracing::Span::current().record("handoff_attempt", key.attempt);
                     // The run ends; its receipts stand. Every member that exited holds its exact
                     // Exited step receipt, and the roster its LeavingRoster receipt: a repeated
                     // leave-mesh, or the Build's next attempt, runs only the members without one.
-                    tracing::info!(error = %e, "the member workflows are incomplete: the owner is told now");
+                    tracing::info!(error = %reason, "the member workflows are incomplete: the owner is told now");
                     // The owner learns it inside the call: mesh-leave with no recorded manifest,
                     // which it refuses not-ready naming the births without an Exited receipt and
                     // ends its open leave with. No mesh-leave gossip runs: this is no handoff.
-                    if let Some(owner) = self.leave_runs.incomplete(&key) {
-                        self.call_mesh_leave(&key, &owner, "incomplete", 0).await;
-                    }
+                    self.call_mesh_leave(&key, &owner, "incomplete", 0).await;
                 }
+                crate::mesh_leave::LeaveRunEnd::Forgotten => tracing::info!("this leave's run is no longer held: the handoff waits for a repeated leave-mesh"),
             }
         }
         .instrument(span)

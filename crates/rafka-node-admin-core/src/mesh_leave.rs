@@ -870,70 +870,157 @@ impl LeaveBook {
     }
 }
 
-/// One mesh leave at the leaving mesh's primary.
+/// One mesh leave at the leaving mesh's primary, on its natural key `(mesh_id, Leaving)`.
 #[derive(Debug, Clone)]
 enum LeaveRun {
-    /// The member workflows are running for the owner that sent `leave-mesh` last.
-    Running(NodeId),
-    /// Every other member exited and the manifest is recorded: the handoff to the owner is what
-    /// is left.
-    Exited(NodeId, ExitManifest),
+    /// The member workflows are running; `key` is the `leave-mesh` admitted last and `owner` its
+    /// sender, whom the handoff goes to.
+    Running { key: LeaveKey, owner: NodeId },
+    /// Every other member exited and the manifest is recorded under `key`: the handoff to `owner`
+    /// is what is left.
+    Exited { key: LeaveKey, owner: NodeId, manifest: ExitManifest },
 }
 
-/// What a `leave-mesh` admission does for the run of its key.
+/// What a `leave-mesh` admission does for the leave of its mesh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeaveAdmission {
-    /// No run is held: the member workflows start for this sender.
+    /// No run is held, or the one held exited under another key: the member workflows run for this
+    /// sender under its key (a run under a later attempt resumes from the receipts).
     Start,
-    /// The member workflows are running: their handoff goes to this sender.
+    /// The member workflows are running: their handoff goes to this sender, under its key.
     Running,
-    /// The manifest is recorded: the handoff is what repeats, to this sender.
+    /// The manifest is recorded under this key: the handoff is what repeats, to this sender.
     Resend(ExitManifest),
 }
 
-/// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished. The owner
-/// a handoff goes to is the admin that sent `leave-mesh` last for the key (a successor
-/// fabric-primary re-dispatching the same attempt takes the handoff over).
+/// What a run's manifest found the leave holding when it was recorded.
+enum RunExit {
+    /// The leave is still held under the key the run recorded under: the handoff goes to `owner`.
+    Exited(NodeId),
+    /// A later `leave-mesh` was admitted while the run ran: its manifest is recorded under its own key.
+    Moved,
+    /// The leave is no longer held.
+    Forgotten,
+}
+
+/// How a run of the member workflows ended ([`run_admitted`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaveRunEnd {
+    /// Every other member exited and the manifest is recorded under `key`: the handoff goes to
+    /// `owner` under it.
+    Exited {
+        /// The `leave-mesh` admitted last, whose key the manifest is recorded under.
+        key: LeaveKey,
+        /// Its sender.
+        owner: NodeId,
+        /// The manifest.
+        manifest: ExitManifest,
+    },
+    /// The member workflows are incomplete: `owner`, the sender of the `leave-mesh` admitted last
+    /// (`key`), is told so.
+    Incomplete {
+        /// The `leave-mesh` admitted last.
+        key: LeaveKey,
+        /// Its sender.
+        owner: NodeId,
+        /// Why.
+        reason: String,
+    },
+    /// The leave is no longer held: nothing is handed off.
+    Forgotten,
+}
+
+/// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished, one per
+/// mesh: the natural key `(mesh_id, Leaving)` (node-rpc-envelope.md, "Status"), never the attempt.
+/// The owner a handoff goes to is the admin that sent `leave-mesh` last for the mesh (a successor
+/// fabric-primary re-dispatching the attempt, or the owner's next attempt, takes the handoff over),
+/// under the key it sent.
 #[derive(Default)]
-pub struct LeaveRuns(Mutex<HashMap<LeaveKey, LeaveRun>>);
+pub struct LeaveRuns(Mutex<HashMap<MeshId, LeaveRun>>);
 
 impl LeaveRuns {
     /// `leave-mesh` for `key` from `sender`.
     pub fn admit(&self, key: &LeaveKey, sender: &NodeId) -> LeaveAdmission {
         let mut runs = self.0.lock().unwrap();
-        match runs.get(key).cloned() {
-            Some(LeaveRun::Running(_)) => {
-                runs.insert(key.clone(), LeaveRun::Running(sender.clone()));
+        match runs.get(&key.mesh_id).cloned() {
+            Some(LeaveRun::Running { .. }) => {
+                runs.insert(key.mesh_id.clone(), LeaveRun::Running { key: key.clone(), owner: sender.clone() });
                 LeaveAdmission::Running
             }
-            Some(LeaveRun::Exited(_, manifest)) => {
-                runs.insert(key.clone(), LeaveRun::Exited(sender.clone(), manifest.clone()));
+            Some(LeaveRun::Exited { key: held, manifest, .. }) if &held == key => {
+                runs.insert(key.mesh_id.clone(), LeaveRun::Exited { key: held, owner: sender.clone(), manifest: manifest.clone() });
                 LeaveAdmission::Resend(manifest)
             }
-            None => {
-                runs.insert(key.clone(), LeaveRun::Running(sender.clone()));
+            _ => {
+                runs.insert(key.mesh_id.clone(), LeaveRun::Running { key: key.clone(), owner: sender.clone() });
                 LeaveAdmission::Start
             }
         }
     }
 
-    /// The run of `key` recorded its manifest: the owner its handoff goes to now.
-    pub fn exited(&self, key: &LeaveKey, manifest: &ExitManifest) -> Option<NodeId> {
-        let mut runs = self.0.lock().unwrap();
-        let owner = match runs.get(key) {
-            Some(LeaveRun::Running(o) | LeaveRun::Exited(o, _)) => o.clone(),
-            None => return None,
-        };
-        runs.insert(key.clone(), LeaveRun::Exited(owner.clone(), manifest.clone()));
-        Some(owner)
+    /// The `leave-mesh` admitted last for `mesh_id` while its member workflows run, and its sender.
+    fn running(&self, mesh_id: &MeshId) -> Option<(LeaveKey, NodeId)> {
+        match self.0.lock().unwrap().get(mesh_id) {
+            Some(LeaveRun::Running { key, owner }) => Some((key.clone(), owner.clone())),
+            _ => None,
+        }
     }
 
-    /// The run of `key` ended incomplete: it is forgotten (its receipts stand) and the owner it
-    /// ran for is returned.
-    pub fn incomplete(&self, key: &LeaveKey) -> Option<NodeId> {
-        match self.0.lock().unwrap().remove(key) {
-            Some(LeaveRun::Running(o) | LeaveRun::Exited(o, _)) => Some(o),
+    /// A run recorded its manifest under `ran`.
+    fn exited(&self, ran: &LeaveKey, manifest: &ExitManifest) -> RunExit {
+        let mut runs = self.0.lock().unwrap();
+        match runs.get(&ran.mesh_id).cloned() {
+            Some(LeaveRun::Running { key, owner }) if &key == ran => {
+                runs.insert(key.mesh_id.clone(), LeaveRun::Exited { key, owner: owner.clone(), manifest: manifest.clone() });
+                RunExit::Exited(owner)
+            }
+            Some(LeaveRun::Running { .. }) => RunExit::Moved,
+            _ => RunExit::Forgotten,
+        }
+    }
+
+    /// The run of `mesh_id` ended incomplete: it is forgotten (its receipts stand) and the
+    /// `leave-mesh` admitted last, with its sender, is returned.
+    fn incomplete(&self, mesh_id: &MeshId) -> Option<(LeaveKey, NodeId)> {
+        match self.0.lock().unwrap().remove(mesh_id) {
+            Some(LeaveRun::Running { key, owner } | LeaveRun::Exited { key, owner, .. }) => Some((key, owner)),
             None => None,
+        }
+    }
+}
+
+/// The one run of the member workflows of the leave `mesh_id` admitted ([`LeaveAdmission::Start`]):
+/// `run(key, owner)` runs them under the `leave-mesh` admitted last and records its manifest under
+/// that key. A `leave-mesh` of a later attempt admitted while they run joins this run
+/// ([`LeaveAdmission::Running`]): when the run ends, its manifest is recorded again under the later
+/// key by `run` over the receipts every member's exit already holds, so no member is stopped twice
+/// and the handoff names the attempt whose open leave the owner holds (node-rpc-envelope.md, "Mesh
+/// delete command pair": the manifest is scoped to `(mesh_id, build_id, attempt, operation)`; a
+/// later attempt resumes from the recorded receipts, "Caller execution and certainty").
+pub async fn run_admitted<F, Fut>(runs: &LeaveRuns, mesh_id: &MeshId, run: F) -> LeaveRunEnd
+where
+    F: Fn(LeaveKey, NodeId) -> Fut,
+    Fut: std::future::Future<Output = Result<ExitManifest, String>>,
+{
+    let mut ran: Option<LeaveKey> = None;
+    loop {
+        let Some((key, owner)) = runs.running(mesh_id) else { return LeaveRunEnd::Forgotten };
+        if let Some(earlier) = &ran {
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-later-leave-mesh", mesh_id = %mesh_id, build_id = %key.build_id, attempt = key.attempt, ran_build_id = %earlier.build_id, ran_attempt = earlier.attempt, operation = %key.operation, owner = %owner)
+                .in_scope(|| tracing::info!("a later leave-mesh joined the run: its manifest is recorded under its own key from the receipts every member's exit already holds"));
+        }
+        match run(key.clone(), owner).await {
+            Ok(manifest) => match runs.exited(&key, &manifest) {
+                RunExit::Exited(owner) => return LeaveRunEnd::Exited { key, owner, manifest },
+                RunExit::Moved => ran = Some(key),
+                RunExit::Forgotten => return LeaveRunEnd::Forgotten,
+            },
+            Err(reason) => {
+                return match runs.incomplete(mesh_id) {
+                    Some((key, owner)) => LeaveRunEnd::Incomplete { key, owner, reason },
+                    None => LeaveRunEnd::Forgotten,
+                };
+            }
         }
     }
 }
@@ -981,10 +1068,14 @@ mod tests {
         assert_eq!(runs.admit(&key, &successor), LeaveAdmission::Running);
         let last = birth("mesh2.admin.1", "i3");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
-        assert_eq!(runs.exited(&key, &manifest), Some(successor.clone()), "the handoff goes to the owner that sent leave-mesh last");
+        assert!(matches!(runs.exited(&key, &manifest), RunExit::Exited(o) if o == successor), "the handoff goes to the owner that sent leave-mesh last");
         let third = NodeId::mint();
         assert_eq!(runs.admit(&key, &third), LeaveAdmission::Resend(manifest));
-        assert_eq!(runs.incomplete(&key), Some(third), "a resend is owned by its sender");
+        assert_eq!(runs.incomplete(&key.mesh_id), Some((key.clone(), third)), "a resend is owned by its sender");
+        // A later attempt after the manifest is recorded runs again under its own key, from the receipts.
+        let later = LeaveKey { attempt: 2, ..key.clone() };
+        let fourth = NodeId::mint();
+        assert_eq!(runs.admit(&later, &fourth), LeaveAdmission::Start);
     }
 
     /// CONTRACT: `leave-mesh` admission at the leaving primary is keyed on the natural key
@@ -1001,6 +1092,72 @@ mod tests {
         let (owner1, owner2) = (NodeId::mint(), NodeId::mint());
         assert_eq!(runs.admit(&first, &owner1), LeaveAdmission::Start, "the first leave-mesh starts the member workflows");
         assert_eq!(runs.admit(&later, &owner2), LeaveAdmission::Running, "a later attempt's leave-mesh while the member workflows run is the same leave (mesh_id, Leaving)");
+    }
+
+    /// CONTRACT: the leave of a mesh has one run of its member workflows (the natural key
+    /// `(mesh_id, Leaving)`). A `leave-mesh` of a later attempt admitted while the run is under way
+    /// joins it; when the run ends, its manifest is recorded again under the later attempt's key by
+    /// the run over the receipts every member's exit already holds (one more call of the run, after
+    /// the first ended, never beside it), and the run ends naming the later attempt and its sender,
+    /// whom the handoff goes to (node-rpc-envelope.md, "Mesh delete command pair": the manifest is
+    /// scoped to `(mesh_id, build_id, attempt, operation)`). A repeat of that `leave-mesh` resends
+    /// the handoff. What must NOT happen: two runs at once, or a handoff naming the earlier attempt,
+    /// whose open leave the owner no longer holds.
+    #[tokio::test]
+    async fn a_later_leave_mesh_joins_the_one_run_and_the_run_ends_naming_the_later_attempt() {
+        use tracing_subscriber::layer::SubscriberExt;
+        static HELD: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+        HELD.get_or_init(|| tracing::Dispatch::new(tracing_subscriber::registry()));
+        let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+        let (capture, layer) = rafka_mesh_telemetry::span_capture("i143-s48-leave-admission", exporter.clone());
+        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+
+        let runs = Arc::new(LeaveRuns::default());
+        let first = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let later = LeaveKey { attempt: 2, ..first.clone() };
+        let (owner1, owner2) = (NodeId::mint(), NodeId::mint());
+        let last = birth("mesh2.admin.1", "i3");
+        let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
+        assert_eq!(runs.admit(&first, &owner1), LeaveAdmission::Start);
+
+        // The run: the first call holds until the cell opens the gate.
+        let calls: Arc<Mutex<Vec<(u32, NodeId)>>> = Arc::default();
+        let (live, most) = (Arc::new(std::sync::atomic::AtomicUsize::new(0)), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+        let (entered, gate) = (Arc::new(tokio::sync::Notify::new()), Arc::new(watch::Sender::new(false)));
+        let run = {
+            let (calls, live, most, entered, gate, manifest) = (calls.clone(), live.clone(), most.clone(), entered.clone(), gate.clone(), manifest.clone());
+            move |key: LeaveKey, owner: NodeId| {
+                let (calls, live, most, entered, gate, manifest) = (calls.clone(), live.clone(), most.clone(), entered.clone(), gate.clone(), manifest.clone());
+                async move {
+                    let now = live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    most.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                    calls.lock().unwrap().push((key.attempt, owner));
+                    entered.notify_one();
+                    let _ = gate.subscribe().wait_for(|open| *open).await;
+                    live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok::<ExitManifest, String>(manifest)
+                }
+            }
+        };
+        let driver = {
+            let (runs, mesh_id) = (runs.clone(), first.mesh_id.clone());
+            tokio::spawn(async move { run_admitted(&runs, &mesh_id, run).await })
+        };
+        entered.notified().await;
+        assert_eq!(runs.admit(&later, &owner2), LeaveAdmission::Running, "attempt 2's leave-mesh joins the run under way");
+        gate.send_replace(true);
+        let end = driver.await.unwrap();
+        assert_eq!(end, LeaveRunEnd::Exited { key: later.clone(), owner: owner2.clone(), manifest: manifest.clone() }, "the run ends naming attempt 2 and its sender");
+        assert_eq!(*calls.lock().unwrap(), vec![(1, owner1), (2, owner2.clone())], "the run is called once more under attempt 2's key once attempt 1's call ended");
+        assert_eq!(most.load(std::sync::atomic::Ordering::SeqCst), 1, "never two runs at once");
+        assert_eq!(runs.admit(&later, &owner2), LeaveAdmission::Resend(manifest), "a repeat of attempt 2's leave-mesh resends its handoff");
+
+        capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let joined: Vec<_> = exporter.get_finished_spans().unwrap().into_iter().filter(|s| s.name == "rdm.node_admin.mesh.resolve.via-later-leave-mesh").collect();
+        assert_eq!(joined.len(), 1, "one later leave-mesh joined the run");
+        let attrs: std::collections::BTreeMap<String, String> = joined[0].attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect();
+        assert_eq!((attrs.get("attempt").map(String::as_str), attrs.get("ran_attempt").map(String::as_str)), (Some("2"), Some("1")), "{attrs:?}");
+        eprintln!("span rdm.node_admin.mesh.resolve.via-later-leave-mesh trace_id={} {attrs:?}", joined[0].span_context.trace_id());
     }
 
     /// CONTRACT: an open leave the leaving primary reports incomplete ends at once with the named
