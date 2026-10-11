@@ -476,3 +476,112 @@ async fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
     );
     assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the birth when its row was not written");
 }
+
+/// The spans a cell's own run exported, with their trace ids.
+struct Capture {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    provider: opentelemetry_sdk::trace::TracerProvider,
+    dispatch: tracing::Dispatch,
+}
+
+fn capture() -> Capture {
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::layer::SubscriberExt;
+    crate::enable_callsites();
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::TracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("status-declarations"));
+    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+}
+
+impl Capture {
+    fn run<F: std::future::Future>(&self, f: F) -> F::Output {
+        let d = self.dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+            .build()
+            .unwrap();
+        let _g = tracing::dispatcher::set_default(&self.dispatch);
+        rt.block_on(f)
+    }
+
+    /// Every finished span called `name`: its trace id and its attributes.
+    fn spans(&self, name: &str) -> Vec<(String, BTreeMap<String, String>)> {
+        let _ = self.provider.force_flush();
+        self.exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == name)
+            .map(|s| (s.span_context.trace_id().to_string(), s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()))
+            .collect()
+    }
+}
+
+/// mesh2's primary admin as a carrier: the admin composition (`admin::rpc_server`) on its own key,
+/// its live resolver holding `target`, the birth it carries to.
+async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Router) {
+    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionsHeld};
+    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let resolved = ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
+    let live = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
+    live.apply(target.clone(), None);
+    let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
+        ConnectionEnd { name: resolved.name.clone(), node_id: resolved.node_id.clone(), incarnation: Some(resolved.incarnation.clone()) },
+        Arc::new(rafka_node_admin_core::storage::MemoryConnectionsStorage::default()),
+        Arc::new(Mutex::new(ConnectionsHeld::new())),
+    ));
+    connections.held().lock().unwrap().set_membership(live.clone());
+    connections.hydrate().await.unwrap();
+    let node_rpc = rafka_node_admin_core::node_rpc::ProcessNodeRpc::new(live.clone(), ep.clone(), Some(connections.clone()));
+    let server = rafka_node_admin_core::admin::rpc_server(live, connections, node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
+        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().0 })
+        .unwrap();
+    (resolved, Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn())
+}
+
+/// CONTRACT (ops-naming "Node data": caller → fabric-primary, which writes the record → the node's
+/// mesh-primary (Forward `0x1A` when not directly reachable) → the node): a config put for a member
+/// of another mesh reaches it through that mesh's primary. The fabric-primary's client cannot
+/// resolve the member at all, only mesh2's primary, so a direct leg is impossible: the update ends
+/// `ConfigUpdated`, the member was told the config once, and the route span names `via-peer` with
+/// mesh2's primary as the carrier, inside the via-config span's trace.
+#[test]
+fn a_config_update_for_another_meshs_member_reaches_it_through_that_meshs_primary() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let m2admin = &b["m2admin"];
+        let m2rpc = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
+        rig.topology.write().await.nodes.push(m2rpc.node.clone());
+        let node = serve_node(&m2rpc).await;
+        let (carrier, _carrier_router) = carrier_admin(m2admin, &node.resolved).await;
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(carrier);
+        let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let door = rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")));
+        let config: BTreeMap<String, String> = [("tags".to_string(), "far".to_string())].into();
+        let req = StatusRequest::UpdateNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config: config.clone() };
+        let view = rig.topology.read().await.clone();
+        let reply = door.update(&rig.admin.node.name, &view, &*rig.storage, &req).await;
+        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap() });
+        assert_eq!(
+            node.seen.lock().unwrap().clone(),
+            vec![StatusRequest::ApplyNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config }],
+            "the member was told once, through its mesh's primary"
+        );
+    });
+    let config_spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(config_spans.len(), 1, "{config_spans:?}");
+    let (trace_id, attrs) = &config_spans[0];
+    assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-updated"), "{attrs:?}");
+    let routes = cap.spans("rdm.node_rpc.route.resolve.via-connections");
+    let carried: Vec<_> = routes.iter().filter(|(t, a)| t == trace_id && a.get("route").map(String::as_str) == Some("via-peer")).collect();
+    assert_eq!(carried.len(), 1, "one carried leg in the via-config trace: {routes:?}");
+    assert_eq!(carried[0].1.get("carrier").map(String::as_str), Some("mesh2.admin.1"));
+    assert_eq!(carried[0].1.get("protocol").map(String::as_str), Some("status"));
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config outcome=config-updated > rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.admin.1");
+}
