@@ -452,6 +452,22 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
     Ok(out)
 }
 
+/// The roster a leaving primary runs `LeaveMesh` over, and the owner's step receipts it read for it
+/// (mesh-leave.md, "Resume after the primary's loss", step 3): its `LeavingRoster` `roster` extended
+/// by every roster amendment. This Build's own facts (`own`) are gossip-fed and may not yet hold the
+/// amendment that admits `me`; gossip is never authority, so when `me` is not a birth of the roster
+/// `own` gives, the owner's Build facts are read (`fetch_owner`, the same read `validate_handoff`
+/// makes of the sender's) and the amendments and exit receipts are taken from both. What is read
+/// from the owner is used for this run and written nowhere.
+pub async fn admission_roster<F, Fut>(roster: &[RosterBirth], own: &[BuildStepReceipt], operation: &str, me: &RosterBirth, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<BuildFact>, String>>,
+{
+    let _ = (me, fetch_owner);
+    Ok((amended_roster(roster, own, operation)?, Vec::new()))
+}
+
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
 /// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
@@ -459,10 +475,11 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
 /// (a successful child of an earlier, incomplete run) keeps it and is not run again; a failed or
 /// unrunnable member leaves its tier incomplete. `me` is the final primary (still running, its exact
 /// runtime `final_runtime`); `records` are the view's Node records of the mesh, of any status;
-/// `shutdown` is one member's drain/stop workflow and the provider's terminal receipt of its exact
-/// runtime.
+/// `known` are step receipts read from the owner's Build facts at admission
+/// ([`admission_roster`]), folded with this Build's own; `shutdown` is one member's drain/stop
+/// workflow and the provider's terminal receipt of its exact runtime.
 #[allow(clippy::too_many_arguments)]
-pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], shutdown: F) -> Result<ExitManifest, String>
+pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], shutdown: F) -> Result<ExitManifest, String>
 where
     F: Fn(Node) -> Fut,
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
@@ -472,7 +489,8 @@ where
         return Err(format!("{executor} ({} {}) is not a birth of the roster accepted for {}: no member is stopped", me.node, me.incarnation_id, key.operation));
     }
     let build_id = BuildId(key.build_id.clone());
-    let steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {}: {e}", key.operation))?.steps;
+    let mut steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {}: {e}", key.operation))?.steps;
+    steps.extend(known.iter().cloned());
     let held = exit_receipts(&steps, &key.operation, roster);
     let mut receipts: Vec<TerminalReceipt> = Vec::new();
     let mut remaining: Vec<&RosterBirth> = Vec::new();

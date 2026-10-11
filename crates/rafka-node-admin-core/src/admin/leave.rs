@@ -302,16 +302,16 @@ impl AdminRunner {
                 StatusReply::AlreadyApplied
             }
             None => {
-                tokio::spawn(async move { runner.run_leave(key, parent).await });
+                tokio::spawn(async move { runner.run_leave(key, owner, parent).await });
                 StatusReply::Applied
             }
         }
     }
 
-    async fn run_leave(self: Arc<Self>, key: LeaveKey, parent: tracing::Span) {
+    async fn run_leave(self: Arc<Self>, key: LeaveKey, owner: NodeId, parent: tracing::Span) {
         let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty);
         async {
-            match self.leave_members(&key).await {
+            match self.leave_members(&key, &owner).await {
                 Ok(manifest) => {
                     tracing::Span::current().record("outcome", "exited");
                     // The handoff goes to the owner that sent leave-mesh last, read now.
@@ -340,8 +340,9 @@ impl AdminRunner {
     }
 
     /// Both tiers over the accepted roster, then the one manifest receipt
-    /// ([`crate::mesh_leave::members_exited`]).
-    async fn leave_members(&self, key: &LeaveKey) -> Result<ExitManifest, String> {
+    /// ([`crate::mesh_leave::members_exited`]). `owner` is the fabric-primary that sent `LeaveMesh`:
+    /// the Build facts it holds are read when this admin's own do not yet admit it.
+    async fn leave_members(&self, key: &LeaveKey, owner: &NodeId) -> Result<ExitManifest, String> {
         let view = self.topology.read().await.clone();
         let me = view.own(&self.node_id).cloned().ok_or_else(|| format!("{} holds no view of itself", self.me))?;
         let my_fact = self.held_runtime(&me).ok_or_else(|| format!("{} publishes no runtime fact: its own exact runtime cannot be named", me.name))?;
@@ -354,11 +355,17 @@ impl AdminRunner {
         })
         .await?;
         // The roster amendments the fabric-primary recorded (a primary lost mid-leave): their new
-        // final primaries join the roster captured once.
-        let steps = self.builds.read_build(&crate::build::BuildId(key.build_id.clone())).await.map_err(|e| format!("{}: the Build {} could not be read for its roster amendments: {e}", self.me, key.build_id))?.steps;
-        let roster = crate::mesh_leave::amended_roster(&roster, &steps, &key.operation)?;
+        // final primaries join the roster captured once, read from the owner's Build facts when
+        // this admin has not yet heard the amendment that admits it.
+        let build_id = crate::build::BuildId(key.build_id.clone());
+        let steps = self.builds.read_build(&build_id).await.map_err(|e| format!("{}: the Build {} could not be read for its roster amendments: {e}", self.me, key.build_id))?.steps;
+        let fetch_owner = || async {
+            let node_rpc = self.node_rpc.as_ref().ok_or_else(|| format!("{} holds no Node RPC client to read the owner {owner}'s Build facts with", self.me))?;
+            crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(owner.clone()), &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for its roster amendments: {e}", self.me))
+        };
+        let (roster, known) = crate::mesh_leave::admission_roster(&roster, &steps, &key.operation, &me_birth, fetch_owner).await?;
         let records: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
-        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, &records, |n| async move { self.shutdown_one(key, &n).await }).await
+        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, &records, &known, |n| async move { self.shutdown_one(key, &n).await }).await
     }
 
     /// One member's drain and stop and the provider's terminal receipt of its exact runtime.
