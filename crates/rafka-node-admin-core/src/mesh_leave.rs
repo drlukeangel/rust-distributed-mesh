@@ -528,6 +528,26 @@ where
     Ok((amended_roster(roster, &all, operation)?, known))
 }
 
+/// The path of the one node-admin the fabric-primary creates for a leaving mesh no admin of which
+/// survives (mesh-leave.md, "Resume after the primary's loss", step 2).
+pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate::model::PathName]) -> Result<crate::model::PathName, String> {
+    let _ = (roster, held);
+    format!("{mesh}.admin.1").parse::<crate::model::PathName>().map_err(|e| format!("{mesh}: {e}"))
+}
+
+/// The roster a leaving primary runs `LeaveMesh` over and the owner's step receipts it read for it.
+#[allow(clippy::too_many_arguments)]
+pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
+where
+    C: FnOnce() -> Result<Vec<RosterBirth>, String>,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<BuildFact>, String>>,
+{
+    let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, capture).await?;
+    let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for its roster amendments: {e}", key.build_id))?.steps;
+    admission_roster(&roster, &steps, &key.operation, me, fetch_owner).await
+}
+
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
 /// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
