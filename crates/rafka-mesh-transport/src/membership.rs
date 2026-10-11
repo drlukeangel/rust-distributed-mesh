@@ -2352,7 +2352,7 @@ pub struct Membership {
     load: Arc<crate::load::LoadSampler>,
     /// What the forwarder decides and where it goes: this mesh's channel.
     forward_path: ForwardPath,
-    /// The config the fabric-primary last told this birth (`ApplyNodeConfig`; ops-naming "Node data"):
+    /// The config this birth's mesh-primary last told it (`ApplyNodeConfig`; ops-naming "Node data"):
     /// carried in every digest this membership publishes from then on. `None` until it is told.
     config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
 }
