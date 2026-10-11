@@ -337,7 +337,7 @@ impl Rig {
                     data_dir: Some(data_dir.display().to_string()),
                     mesh_id: None,
                     in_flight: None,
-                    extra: Default::default(),
+                    config: Default::default(),
                     load: None,
                     gossip: None,
                 };
