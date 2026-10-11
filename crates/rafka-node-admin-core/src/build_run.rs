@@ -276,6 +276,9 @@ impl BuildStateAdapter for FramedBuilds {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
@@ -559,6 +562,9 @@ mod tests {
         }
         async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
             self.0.facts().await
+        }
+        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+            self.0.recovery_of(path, node_id, incarnation).await
         }
         async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
             self.0.forget(id).await
