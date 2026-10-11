@@ -480,8 +480,9 @@ impl DriveEnv {
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
         if let Err(e) = self.gate.fence().await {
             let why = e.to_string();
-            // A committed transfer named the new holder in the fence itself; a yield without one
-            // (leaving, drain, stop) names the holder this admin's view shows.
+            // A seat move names the new holder in the fence itself (the handover door's commit and
+            // the yield on the moved record both name it); a leaving holder's fence names none, and
+            // the holder this admin's view shows is named.
             let to = match e {
                 BuildStateError::Fenced { to: Some(to), .. } => Some(to),
                 _ => self.seat_elsewhere().await,

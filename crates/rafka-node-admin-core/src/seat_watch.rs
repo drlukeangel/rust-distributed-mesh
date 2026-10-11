@@ -74,10 +74,10 @@ fn birth(n: &Node) -> Option<Birth> {
 
 /// The fence a pass owes this birth's Build log when the fabric seat record it held names another
 /// birth now, the move planned or not (the handover door's commit, or the record heard on the
-/// backbone first): why, and the admin the seat moved to. `held` carries whether this birth held
-/// the record on an earlier pass.
+/// backbone first): why, and the admin the seat moved to, by the node id the record names (a
+/// member of the view whether or not its seat flags have moved yet; the handover door names it the
+/// same way). `held` carries whether this birth held the record on an earlier pass.
 pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view: &Topology) -> Option<(String, Option<String>)> {
-    let _ = view;
     match record {
         Some(h) if h.is_birth(&me.0, &me.1) => {
             *held = true;
@@ -85,7 +85,7 @@ pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view
         }
         Some(h) if *held => {
             *held = false;
-            Some((format!("the seat is now {} {}", h.mesh, h.node_id), None))
+            Some((format!("the seat is now {} {}", h.mesh, h.node_id), view.own(&h.node_id).map(|n| n.name.to_string())))
         }
         _ => None,
     }
@@ -356,8 +356,8 @@ pub async fn run(w: Watch) {
         // not), and its Build log is fenced before the new holder acts.
         let record = w.membership.seats().fabric();
         let owed = seat_yield(record.as_ref(), &me_birth, &mut held_the_fabric_seat, &*w.topology.read().await);
-        if let Some((by, _to)) = owed {
-            w.builds.yield_seat(&by).await;
+        if let Some((by, to)) = owed {
+            w.builds.yield_seat(&by, to).await;
         }
         tokio::select! {
             _ = seats_changed.changed() => {}
