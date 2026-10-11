@@ -54,6 +54,10 @@ pub enum NodeStatus {
     /// on two rounds at least one staleness floor apart. Observer inferred only; never sent, never a
     /// reason to restart or delete the node.
     Dead,
+    /// Deleted: the node's identity and name are released. Only the node's row carries it, written
+    /// by the fabric-primary from the exit proof; the record and its config stay for the next node
+    /// created at the same `path.name`.
+    Deleted,
 }
 
 impl NodeStatus {
@@ -140,6 +144,9 @@ pub struct Node {
     /// Stopped and parked: `Leaving` with a live process, waiting for a start or a delete.
     #[serde(default)]
     pub parked: bool,
+    /// The node's config as its digest carries it: the application's own key/values, opaque to RDM.
+    #[serde(default)]
+    pub config: std::collections::BTreeMap<String, String>,
 }
 
 fn routable_default() -> bool {
@@ -168,6 +175,7 @@ impl Node {
             routable: true,
             declared: None,
             parked: false,
+            config: Default::default(),
         }
     }
 }

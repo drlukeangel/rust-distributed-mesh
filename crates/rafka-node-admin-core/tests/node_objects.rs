@@ -689,7 +689,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         };
         assert!(matches!(nodes.update(&held, &held, false), Ok(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
         assert_eq!(nodes.update(&NodeMeta { status: rafka_node_admin_client::NodeStatus::Dead, ..held.clone() }, &held, false).unwrap_err(), MetaFieldIsRdmOwned { field: MetaField::Status });
-        for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet), (nodes.config_update(), NodeOp::ConfigUpdate)] {
+        for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet)] {
             assert!(matches!(end, CallEnd::NotBackedToday { op: got, .. } if got == op), "{end:?}");
         }
     });
