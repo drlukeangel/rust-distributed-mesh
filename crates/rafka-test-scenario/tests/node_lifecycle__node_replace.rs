@@ -211,9 +211,9 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert!(heard.1["output"].is_null(), "Complete commits no output: {:?}", heard.1);
 
     // Each process exports its own spans: the new node's boot span is read once the new node exported it.
-    let spans = wait_for("the recovery's last operation and the new node's boot span are exported", SETTLE, || async {
+    let spans = wait_for("the recovery's last operation, the exited birth's fence and the new node's boot span are exported", SETTLE, || async {
         let spans = estate.spans();
-        (step_span(&spans, &birth_build, &attempt, node_path, "UpdateNode").is_some() && booted(&spans, &after)).then_some(spans)
+        (step_span(&spans, &birth_build, &attempt, node_path, "UpdateNode").is_some() && !exit_fences(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     // Delete, then create: the exited birth departs once, named by its exact birth, before the new node boots.
@@ -222,6 +222,18 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
     assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (fenced) before the new node joins");
+    // node-recovery.md "Delete fences the old instance before the new join": the fence is the
+    // create's, run by the executor that launches the new node with the retained key, inside the
+    // create's own operation and before that launch. A fence run after the delete's Complete is left
+    // undone when that executor is lost before it, and the next attempt's create launches unfenced.
+    let create = named(&spans, "rdm.node_admin.node.create.via-build")
+        .into_iter()
+        .find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == node_path)
+        .expect("the recovery's create operation span");
+    let fences = exit_fences(&spans, &before);
+    assert_eq!(fences.len(), 1, "the exited birth is fenced once: {fences:?}");
+    assert!(start(create) <= start(fences[0]) && end(fences[0]) <= end(create), "the fence runs inside the create operation: {} vs {create}", fences[0]);
+    assert!(end(fences[0]) <= start(boot), "the fence is done before the new node with the same key boots: {} vs {boot}", fences[0]);
     for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor"] {
         assert!(step_span(&spans, &birth_build, &attempt, node_path, step).is_none(), "no RPC to the exited process and no .old rename: {step} ran");
     }
@@ -285,9 +297,9 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "the recovery's terminal: {recovery}");
 
     // Each process exports its own spans: the successor's boot span is read once the successor exported it.
-    let spans = wait_for("the recovery's last operation, its reconcile span and the successor's boot span are exported", Duration::from_secs(60), || async {
+    let spans = wait_for("the recovery's last operation, its reconcile span, the exited birth's fence and the successor's boot span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        (step_span(&spans, &birth_build, &attempt, NODE, "UpdateNode").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some() && booted(&spans, &after)).then_some(spans)
+        (step_span(&spans, &birth_build, &attempt, NODE, "UpdateNode").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some() && !exit_fences(&spans, &before).is_empty() && booted(&spans, &after)).then_some(spans)
     })
     .await;
     let reconcile = reconcile_span(&spans, &birth_build, &attempt).expect("the attempt's reconcile span");
@@ -306,6 +318,18 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact exited birth");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"]).expect("the new node's boot span");
     assert!(start(deleted[0]) < start(boot), "the exited birth is deleted (fenced) before the new node joins");
+    // node-recovery.md "Delete fences the old instance before the new join": the fence is the
+    // create's, run by the executor that launches the new node with the retained key, inside the
+    // create's own operation and before that launch. A fence run after the delete's Complete is left
+    // undone when that executor is lost before it, and the next attempt's create launches unfenced.
+    let create = named(&spans, "rdm.node_admin.node.create.via-build")
+        .into_iter()
+        .find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE)
+        .expect("the recovery's create operation span");
+    let fences = exit_fences(&spans, &before);
+    assert_eq!(fences.len(), 1, "the exited birth is fenced once: {fences:?}");
+    assert!(start(create) <= start(fences[0]) && end(fences[0]) <= end(create), "the fence runs inside the create operation: {} vs {create}", fences[0]);
+    assert!(end(fences[0]) <= start(boot), "the fence is done before the new node with the same key boots: {} vs {boot}", fences[0]);
     // Each operation is its workflow: its node operation span and its own pipeline, never a recovery
     // pipeline of its own.
     for (op, pipeline) in [("delete", "retire"), ("create", "create"), ("update", "update")] {
@@ -329,6 +353,12 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     }
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     estate.shutdown().await;
+}
+
+/// The fence spans of the exited birth `old` (node-recovery.md "Delete fences the old instance
+/// before the new join"): its resolver entry and the direct paths of its endpoint key retired.
+fn exit_fences<'a>(spans: &'a [Value], old: &Value) -> Vec<&'a Value> {
+    named(spans, "rdm.node_admin.node.update.via-exit-paths-retired").into_iter().filter(|sp| sp["attributes"]["node_id"] == old["node_id"] && sp["attributes"]["kind"] == "recovery").collect()
 }
 
 /// Whether the boot span of `node`'s birth is exported (its own process exports it, on its own cadence).
