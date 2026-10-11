@@ -397,7 +397,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         digest_seq: 0,
         mesh_id: None,
         in_flight: None,
-        extra: Default::default(),
+        config: Default::default(),
         load: None,
         gossip: None,
         data_dir: Some(launch.data_dir.display().to_string()),

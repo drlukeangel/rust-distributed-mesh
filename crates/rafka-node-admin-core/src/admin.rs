@@ -2997,7 +2997,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             digest_seq: 0,
             mesh_id: cfg.mesh_id.clone(),
             in_flight: None,
-            extra: BTreeMap::new(),
+            config: BTreeMap::new(),
             load: None,
             gossip: None,
             data_dir: Some(cfg.data_dir.display().to_string()),
@@ -3502,7 +3502,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         digest_seq: 0,
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
-        extra: BTreeMap::new(),
+        config: BTreeMap::new(),
         load: None,
         gossip: None,
         data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
@@ -4535,7 +4535,7 @@ mod tests {
             digest_seq: 1,
             mesh_id: Some(mesh_id(&name.mesh)),
             in_flight: None,
-            extra: BTreeMap::new(),
+            config: BTreeMap::new(),
             load: None,
             gossip: None,
             data_dir: None,
@@ -4813,7 +4813,7 @@ mod tests {
         let at = |name: &str, id: &str, since: u64| {
             let mut d = with_id(digest(name, MemberStatus::ReadyForTraffic), id);
             // A digest still carrying the retired readiness claim: a fact nothing reads.
-            d.extra.insert("ready_since_ms".into(), since.to_string());
+            d.config.insert("ready_since_ms".into(), since.to_string());
             d
         };
         // rpc.3 has the highest ordinal and the latest ready claim, and the lowest id.
