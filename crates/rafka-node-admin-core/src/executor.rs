@@ -72,26 +72,45 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     }
 }
 
-/// The admin primary of `target`'s mesh once `target` drains; `None` when no other admin of the
-/// mesh can hold the seat.
+/// The admin primary of `target`'s mesh once `target`'s birth is gone; `None` when no other admin
+/// of the mesh can hold the seat.
 fn mesh_successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
-    let mut nodes: Vec<_> = t.members().cloned().collect();
-    for n in nodes.iter_mut().filter(|n| n.name == *target) {
-        n.status = crate::model::NodeStatus::Draining;
-    }
-    crate::election::resolve(&mut nodes);
-    nodes.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == target.mesh && n.is_primary && n.name != *target).map(|n| n.name)
+    seated_once_gone(target, t).into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == target.mesh && n.is_primary && n.name != *target).map(|n| n.name)
 }
 
-/// The fabric primary the election resolves in `t` once `target` drains; `None` when no other
-/// admin can hold the seat.
+/// The fabric primary the election seats once `target`'s birth is gone: the admin its own mesh
+/// seats while any node-admin of that mesh survives, another mesh's primary only when none does
+/// (fabric-node-lifecycle-elections.md sections 4.3 and 5); `None` when no other admin can hold
+/// the seat yet.
 fn successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
+    seated_once_gone(target, t).into_iter().find(|n| n.is_fabric_primary && n.name != *target).map(|n| n.name)
+}
+
+/// The members of `t` as the election seats them once `target`'s exact birth is gone. The seat
+/// records are the holders `t` was decided against (its fabric primary and each mesh's admin
+/// primary: `t` is the projection of this admin's held records), and `target`'s birth is the one
+/// proven gone, so every seat it holds is filled by its own mesh's rule and every other seat
+/// stays with its holder (election.rs `resolve_with`).
+fn seated_once_gone(target: &PathName, t: &Topology) -> Vec<crate::model::Node> {
     let mut nodes: Vec<_> = t.members().cloned().collect();
-    for n in nodes.iter_mut().filter(|n| n.name == *target) {
-        n.status = crate::model::NodeStatus::Draining;
+    let record = |n: &crate::model::Node| n.incarnation_id.clone().map(|incarnation| rafka_mesh_entity::SeatHolder { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation, epoch: 0 });
+    let mut inc = crate::election::Incumbency { fabric: t.fabric_primary().and_then(record), ..Default::default() };
+    for mesh in &t.meshes {
+        if let Some(h) = t.cohort_primary(&mesh.name, NodeKind::NodeAdmin).and_then(record) {
+            inc.meshes.insert(mesh.name.clone(), h);
+        }
     }
-    crate::election::resolve(&mut nodes);
-    nodes.into_iter().find(|n| n.is_fabric_primary && n.name != *target).map(|n| n.name)
+    for n in nodes.iter_mut().filter(|n| n.name == *target) {
+        match n.incarnation_id.clone() {
+            Some(birth) => {
+                inc.lost.insert(birth);
+            }
+            // A birth with no incarnation names no record to yield; it is no candidate either.
+            None => n.status = crate::model::NodeStatus::Leaving,
+        }
+    }
+    crate::election::resolve_with(&mut nodes, &inc);
+    nodes
 }
 
 /// The admin that executes what is left of a plan: the first operation's
@@ -292,6 +311,7 @@ mod tests {
     fn node(name: &str, primary: bool, fabric: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());
         n.status = NodeStatus::ReadyForTraffic;
+        n.incarnation_id = Some(crate::model::IncarnationId::mint());
         n.is_primary = primary;
         n.is_fabric_primary = fabric;
         n
@@ -409,7 +429,6 @@ mod tests {
         let with = |path: &str, id: &str, primary: bool, fabric: bool| {
             let mut n = node(path, primary, fabric);
             n.node_id = rafka_mesh_entity::ids::NodeId::parse(id).unwrap();
-            n.incarnation_id = Some(crate::model::IncarnationId::mint());
             n
         };
         let mut t = mm(true);
