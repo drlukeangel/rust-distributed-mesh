@@ -193,6 +193,20 @@ impl OfflineTickle {
     }
 }
 
+/// Write the status the mesh primary holds for a silent birth (`PendingReconnect`, `Dead`, or
+/// `None` once it is heard again) on that birth's row in nodes.storage. Returns whether a row was
+/// put.
+pub(crate) async fn put_silence_status(store: &dyn crate::storage::NodesStorage, node: &crate::model::Node, status: Option<crate::model::NodeStatus>) -> Result<bool, String> {
+    let contacts = store.contacts().await.map_err(|e| format!("nodes.storage: {e}"))?;
+    let Some(mut row) = contacts.into_iter().find(|c| c.node_id == node.node_id) else { return Ok(false) };
+    if row.status == status {
+        return Ok(false);
+    }
+    row.status = status;
+    store.put_contact(&row).await.map_err(|e| format!("nodes.storage: {e}"))?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +331,66 @@ mod tests {
         let r = tick(&mut t, PROBE_DELAY + FLOOR + 1, true, vec![], false, no_path()).await;
         assert_eq!(r.returned, vec!["a".to_string()]);
         assert!(!t.is_offline("a"));
+    }
+
+    /// A storage whose row reads fail: the status writer must put from the record it holds and
+    /// never read the stored row back (the banned read-modify-write).
+    #[derive(Default)]
+    struct NoReads(crate::storage::MemoryNodesStorage, std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for NoReads {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_runtime(row).await
+        }
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            self.0.runtimes().await
+        }
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.0.own().await
+        }
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_own(record).await
+        }
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.0.contacts().await
+        }
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_contact(record).await
+        }
+        async fn remove_contact(&self, node_id: &crate::model::NodeId) -> Result<(), crate::record_store::StorageError> {
+            self.0.remove_contact(node_id).await
+        }
+    }
+
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn mesh_primary_status_write_puts_the_held_record_without_reading_the_row() {
+        use crate::model::{EndpointId, IncarnationId, Node, NodeStatus, PathName};
+        let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
+        held.incarnation_id = Some(IncarnationId::mint());
+        held.endpoint_id = Some(EndpointId("k".into()));
+        held.transport_addr = Some(std::net::SocketAddr::from(([127, 0, 0, 1], 4100)));
+        held.declared = Some("ReadyForTraffic".into());
+        let store = NoReads::default();
+        // The stored row is stale: an older declared state that the authority has since moved on from.
+        let stale = crate::storage::NodeRecord {
+            node_id: held.node_id.clone(),
+            name: held.name.clone(),
+            incarnation_id: held.incarnation_id.clone().unwrap(),
+            endpoint_id: held.endpoint_id.clone().unwrap(),
+            transport_addr: held.transport_addr.unwrap(),
+            listeners: Vec::new(),
+            declared: Some("Pending".into()),
+            status: None,
+        };
+        crate::storage::NodesStorage::put_contact(&store.0, &stale).await.unwrap();
+
+        assert_eq!(put_silence_status(&store, &held, Some(NodeStatus::Dead)).await, Ok(true), "the status row is put");
+        assert_eq!(store.1.load(std::sync::atomic::Ordering::SeqCst), 0, "the writer read the stored row back: a read-modify-write");
+        let row = crate::storage::NodesStorage::contacts(&store.0).await.unwrap().into_iter().find(|c| c.node_id == held.node_id).unwrap();
+        assert_eq!(row.status, Some(NodeStatus::Dead));
+        assert_eq!(row.declared.as_deref(), Some("ReadyForTraffic"), "the row is the held record, never the stale stored one");
     }
 }
