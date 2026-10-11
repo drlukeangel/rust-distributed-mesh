@@ -1393,6 +1393,7 @@ impl DeploymentPipeline<'_> {
                 endpoint_id: endpoint_id.clone(),
                 runtime,
                 data_dir: data_dir.display().to_string(),
+                last_accepted_name: None,
             })),
             None => None,
         };

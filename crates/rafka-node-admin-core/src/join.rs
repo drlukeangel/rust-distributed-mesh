@@ -44,6 +44,10 @@ pub struct Deployed {
     pub runtime: RuntimeFact,
     /// The birth's data directory.
     pub data_dir: String,
+    /// The name this authority last accepted for this exact birth (its held stopped digest), when it
+    /// holds the birth: the join of a stopped node renamed while stopped presents it. `None` at a
+    /// first start, whose name is the create spec's.
+    pub last_accepted_name: Option<PathName>,
 }
 
 /// The first field of a digest that disagrees with what was deployed.
@@ -389,6 +393,7 @@ mod tests {
             endpoint_id: EndpointId("k".into()),
             runtime: fact(),
             data_dir: "/d".into(),
+            last_accepted_name: None,
         }
     }
 
@@ -455,6 +460,52 @@ mod tests {
         let mut d = digest_of(&dep);
         d.node.node_id = NodeId::mint();
         assert_eq!(joins.standing(&d), Standing::Unknown);
+    }
+
+    /// The deployment of a birth this authority holds, stopped as `mesh1.rpc.1` and renamed in its
+    /// row to `mesh1.rpc.1.old` while stopped (R-JN1).
+    fn renamed_while_stopped() -> Deployed {
+        Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), ..deployed() }
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT: a held birth's join is admitted under the row's name or the name its authority
+    /// last accepted for it; any other name is refused by name naming the reported, the row's and
+    /// the last accepted value. A first start (no held name) keeps the create spec's one name.
+    #[test]
+    fn a_held_births_join_accepts_the_rows_or_the_last_accepted_name_and_refuses_any_other_naming_all_three() {
+        let dep = renamed_while_stopped();
+        let mut held = digest_of(&dep);
+        held.node.name = "mesh1.rpc.1".parse().unwrap();
+        assert_eq!(dep.verify(&held), Ok(()), "the name last accepted for this exact birth is admitted");
+        assert_eq!(dep.verify(&digest_of(&dep)), Ok(()), "the row's name is admitted");
+        let mut other = digest_of(&dep);
+        other.node.name = "mesh1.rpc.7".parse().unwrap();
+        let m = dep.verify(&other).unwrap_err();
+        assert_eq!(m.field, "name");
+        assert!(m.reported.contains("mesh1.rpc.7") && m.deployed.contains("mesh1.rpc.1.old") && m.deployed.contains("last accepted") && m.deployed.contains("\"mesh1.rpc.1\""), "the refusal names all three: {m:?}");
+        let first = deployed();
+        let mut off_spec = digest_of(&first);
+        off_spec.node.name = "mesh1.rpc.1.old".parse().unwrap();
+        assert_eq!(first.verify(&off_spec).unwrap_err().field, "name", "a first start off its create spec is still refused");
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT: a replacement deployed under the stopped node's old name is another birth: the
+    /// stopped node's join is still resolved by its exact birth and admitted, and the replacement's
+    /// deployment is untouched.
+    #[test]
+    fn a_replacement_under_the_old_name_does_not_redirect_the_stopped_nodes_admission() {
+        let joins = Joins::default();
+        let stopped = renamed_while_stopped();
+        joins.expect(stopped.clone());
+        let replacement = Deployed { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), endpoint_id: EndpointId("k2".into()), ..deployed() };
+        let replacement_rx = joins.expect(replacement.clone());
+        let mut d = digest_of(&stopped);
+        d.node.name = "mesh1.rpc.1".parse().unwrap();
+        assert!(matches!(joins.standing(&d), Standing::Deployed { .. }), "the stopped birth is admitted by its node id, whatever name it presents");
+        joins.report(&d);
+        assert!(replacement_rx.borrow().is_none(), "the replacement's deployment heard nothing of the stopped node's join");
     }
 
     // @feature: node-lifecycle

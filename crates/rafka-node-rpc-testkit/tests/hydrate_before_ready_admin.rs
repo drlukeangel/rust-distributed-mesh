@@ -156,6 +156,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
             runtime,
             data_dir: joiner_dir.display().to_string(),
+            last_accepted_name: None,
         });
         let env = launch.to_env();
         let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");

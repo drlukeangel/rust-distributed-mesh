@@ -84,6 +84,7 @@ fn deployed() -> Deployed {
         endpoint_id: EndpointId("node-key".into()),
         runtime: RuntimeFact::of_this_process("dep-rj1").unwrap(),
         data_dir: "/data/mesh1.rpc.1".into(),
+        last_accepted_name: None,
     }
 }
 
