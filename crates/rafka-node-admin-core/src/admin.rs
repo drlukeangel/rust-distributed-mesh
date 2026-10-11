@@ -6239,6 +6239,45 @@ mod tests {
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"));
     }
 
+    /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md §5 "a living holder keeps its seat";
+    /// R-EL1a, node-rpc-envelope.md TakeSeats: the committed seat row is the fence and the
+    /// authority, SeatedTogether only disseminates it): the view's seat readers name the holder the
+    /// seat records give, whatever its status. A holder that is Leaving (drained and stopped by its
+    /// Build) whose yield this observer has not heard yet keeps both seats; once the yield is held
+    /// (SeatedTogether: both records at the next epoch naming the successor), the readers name the
+    /// successor. Must NOT happen: an observer reading a Leaving holder's seats as vacant (the
+    /// sticky_seat hand-over cell's via-fabric-recompute with winner "" while the record names P).
+    #[test]
+    fn a_leaving_holder_keeps_both_seats_in_the_readers_until_its_yield_is_held() {
+        use MemberStatus::*;
+        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        let book = DigestBook::default();
+        let records = Records::default();
+        let holder = with_id(digest("mesh1.admin.1", Leaving), "500000000000");
+        let successor = with_id(digest("mesh1.admin.2", ReadyForTraffic), "800000000000");
+        let other = with_id(digest("mesh2.admin.1", ReadyForTraffic), "300000000000");
+        for d in [&holder, &successor, &other] {
+            book.record((*d).clone());
+        }
+        book.seats.take(MeshPrimary, &holder_of(&holder, 1));
+        book.seats.take(FabricPrimary, &holder_of(&holder, 1));
+        book.seats.take(MeshPrimary, &holder_of(&other, 1));
+        let seat_names = |t: &Topology| (t.fabric_primary().map(|n| n.name.to_string()), t.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        let flags = t.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").map(|n| (n.status, n.is_primary, n.is_fabric_primary));
+        assert_eq!(flags, Some((NodeStatus::Leaving, true, true)), "the election keeps the Leaving holder seated (R-EL1)");
+        assert_eq!(seat_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "the readers name the Leaving holder until its yield is held");
+        assert!(t.holds_fabric_seat(&holder.node.node_id) && t.holds_mesh_seat("mesh1", &holder.node.node_id));
+        assert_eq!(t.mesh_view("mesh1").and_then(|m| m.primary_admin).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"));
+
+        // The yield is held: SeatedTogether's records name the successor at the next epochs.
+        book.seats.take(MeshPrimary, &holder_of(&successor, 2));
+        book.seats.take(FabricPrimary, &holder_of(&successor, 2));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(seat_names(&t), (Some("mesh1.admin.2".into()), Some("mesh1.admin.2".into())), "the readers name the successor once the yield is held");
+        assert!(!t.holds_fabric_seat(&holder.node.node_id) && !t.holds_mesh_seat("mesh1", &holder.node.node_id));
+    }
+
     /// CONTRACT (fabric-node-lifecycle-elections.md §4.4, fabric-primary-handover.md step 3): the
     /// committed next-epoch seat record is the resolver's input and the incumbent yields fabric
     /// authority. A hierarchy-loop decision is announced against the seat record it was decided
