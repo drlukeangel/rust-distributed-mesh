@@ -582,12 +582,13 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
 /// Where this birth's Build log reads its authority: the committed fabric seat record held in
 /// `book`, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
 /// lost set every election takes, [`incumbency_of`]) and named from the digests `book` holds.
-pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId)) -> crate::fabric_builds::SeatSource {
+pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName) -> crate::fabric_builds::SeatSource {
     let changed = Some(book.seats.subscribe());
-    let (book, records) = (book.clone(), records.clone());
+    let (book, records, me_name) = (book.clone(), records.clone(), me_name.to_string());
     let read = Arc::new(move || {
         let incumbency = incumbency_of(&book, &records);
-        crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, |id| book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()))
+        let name_of = |id: &NodeId| if *id == me.0 { Some(me_name.clone()) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
+        crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, name_of)
     });
     crate::fabric_builds::SeatSource { read, changed }
 }
@@ -3697,7 +3698,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
     let records = Arc::new(Records::default());
     let builds = Arc::new(
-        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone())), wiring.catch_up_seam.take())
+        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name), wiring.catch_up_seam.take())
             .await
             .map_err(|e| e.to_string())?,
     );
