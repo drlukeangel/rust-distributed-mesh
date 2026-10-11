@@ -14,7 +14,7 @@ use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, StorageMeta
 use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, ReplaceRequest, Timeouts};
+use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, ReplaceRequest, RetireKind, RetireRequest, Timeouts};
 use rafka_node_admin_core::node_commands::NodeCommand;
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus, TerminationMode};
@@ -415,6 +415,62 @@ fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephem
         assert!(old_dir.join("scratch").is_dir() && old_dir.join("node-key").is_file(), "the old identity's delete keeps the predecessor's directory and its endpoint key: {old_dir:?}");
         assert!(view.steps.iter().all(|r| r.step != "ReleaseStorage"), "no step of a replace releases storage: {:?}", receipts(&view.steps, &operation));
         // The successor is this test's runtime: it is stopped, with the provider's proof, before the test ends.
+        rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+        assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the successor was stopped");
+        let _ = std::fs::remove_dir_all(&rig.template.data_root);
+    })
+}
+
+/// CONTRACT: a replace hands its successor the storage of its own predecessor (and of a successor an
+/// earlier attempt of the same operation left behind), never the storage of another birth at the
+/// path. A birth deleted earlier at `mesh1.rpc.1` keeps its data dir (node-delete.md "Storage":
+/// "Retain data dir and endpoint key"); the path's next birth is then replaced. The successor's WAL
+/// is the replaced birth's, and the deleted birth's WAL stays in its own data dir. Must NOT happen:
+/// the deleted birth's storage moved into the successor's directory, or HandoffStorage refused
+/// because the deleted birth's WAL collides with the predecessor's.
+#[test]
+fn a_replace_never_hands_over_the_storage_of_a_birth_deleted_earlier_at_its_path() {
+    let cap = crate::common::capture("a_replace_never_hands_over_the_storage_of_a_birth_deleted_earlier_at_its_path");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let rig = rig().await;
+        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: false };
+        let recorder = Recorder { log: rig.log.clone(), peer: None };
+        let pipeline = rig.pipeline(&observer, &recorder);
+        let seg = |dir: &std::path::Path| dir.join("wal").join("segments").join("seg-0");
+
+        // The path's first birth, with a WAL, is deleted: its data dir stays.
+        let deleted = pipeline
+            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .await
+            .unwrap_or_else(|e| panic!("create: {e}"));
+        let deleted_dir = std::path::PathBuf::from(deleted.node.data_dir.clone().expect("the birth's directory"));
+        std::fs::create_dir_all(seg(&deleted_dir).parent().unwrap()).unwrap();
+        std::fs::write(seg(&deleted_dir), b"the deleted birth's records").unwrap();
+        pipeline
+            .retire(&RetireRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: deleted.node.clone(), handle: deleted.handle.clone(), kind: RetireKind::Removal })
+            .await
+            .unwrap_or_else(|e| panic!("delete: {e}"));
+        assert_eq!(std::fs::read(seg(&deleted_dir)).unwrap(), b"the deleted birth's records", "the delete keeps the birth's storage");
+
+        // The path's next birth, with its own WAL, is replaced.
+        let current = pipeline
+            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .await
+            .unwrap_or_else(|e| panic!("create: {e}"));
+        let current_dir = std::path::PathBuf::from(current.node.data_dir.clone().expect("the birth's directory"));
+        assert_ne!(current_dir, deleted_dir, "a new node at the path has a directory of its own");
+        std::fs::create_dir_all(seg(&current_dir).parent().unwrap()).unwrap();
+        std::fs::write(seg(&current_dir), b"the replaced birth's records").unwrap();
+        let replace_build = publish_build(&rig.builds, persistent(true)).await;
+        let second = pipeline
+            .replace(&ReplaceRequest { build_id: replace_build.clone(), attempt: 1, predecessor: current.node.clone(), handle: current.handle.clone(), spec: &RPC_NODE, held_runtimes: Vec::new() }, None, |_| async { Ok(()) })
+            .await
+            .unwrap_or_else(|e| panic!("replace: {e}"));
+
+        let new_dir = std::path::PathBuf::from(second.node.data_dir.clone().unwrap());
+        assert_eq!(std::fs::read(seg(&new_dir)).unwrap(), b"the replaced birth's records", "the successor's WAL is its predecessor's");
+        assert_eq!(std::fs::read(seg(&deleted_dir)).unwrap(), b"the deleted birth's records", "the deleted birth's storage stays in its own data dir");
+        assert!(!current_dir.join("wal").exists(), "the predecessor's storage moved, it was not copied");
         rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
         assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the successor was stopped");
         let _ = std::fs::remove_dir_all(&rig.template.data_root);
