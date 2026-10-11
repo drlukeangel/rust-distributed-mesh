@@ -3384,7 +3384,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         client: node_rpc.client.clone(),
         book: book.clone(),
         records: records.clone(),
-        contacts: std::sync::OnceLock::new(),
+        contacts: crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) },
         handovers: Default::default(),
         fence_builds: {
             let builds = builds.clone();
@@ -3397,7 +3397,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         },
     });
     handover.restore().await?;
-    let _ = handover.contacts.set(crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) });
     let _ = handover_slot.set(handover.clone());
     let runner = Arc::new(AdminRunner {
         provider: provider_dyn.clone(),
