@@ -1435,6 +1435,11 @@ impl DeploymentPipeline<'_> {
                     Ok(()) => return Ok(()),
                     Err(e) if Instant::now() >= until => return Err(e),
                     Err(blocker) => {
+                        // A runtime that exited will never be Ready: its own last words, now, not a timeout.
+                        if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
+                            let detail = self.provider.failure_detail(&handle, &data_dir).await;
+                            return Err(format!("runtime exited (code {code:?}) before it was Ready ({blocker}): {detail}"));
+                        }
                         self.builds.note_blocked(run_build, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
                         tokio::time::sleep(Duration::from_millis(100)).await
                     }
