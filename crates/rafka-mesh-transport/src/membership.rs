@@ -2040,6 +2040,7 @@ impl View {
             // aggregate copy is never "heard only through forwarded topology", so it earns no
             // forwarded grace (gossip.md §3.2), and the Mesh channel's copy of it adds nothing.
             let own = d.node.name.mesh == self.mesh;
+            let prior = self.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
                 (Side::Backbone, true) => self.book.record(d.clone()),
                 (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
@@ -2054,10 +2055,32 @@ impl View {
             };
             if taken {
                 self.note(&d, side.via());
+                self.note_member_state(&d, prior, side);
                 carried.push(d);
             }
         }
         carried
+    }
+
+    /// A peer mesh's member whose own state this node now holds changed (or was first held saying
+    /// Draining or Leaving): what this node routes to it follows that state alone (R4).
+    fn note_member_state(&self, d: &MeshDigest, prior: Option<rafka_mesh_entity::MemberStatus>, side: Side) {
+        use rafka_mesh_entity::MemberStatus::{Draining, Leaving};
+        if d.node.name.mesh == self.mesh || prior == Some(d.status) || (prior.is_none() && !matches!(d.status, Draining | Leaving)) {
+            return;
+        }
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-member-state",
+            node = %self.node,
+            member = %d.node.name,
+            member_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            status = ?d.status,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+            channel = side.name(),
+            routable = self.book.routable(d.node.node_id.as_str()),
+        )
+        .in_scope(|| tracing::info!("a peer mesh's member state held from what this node installed: routing follows it"));
     }
 
     fn note(&self, d: &MeshDigest, via: &'static str) {
