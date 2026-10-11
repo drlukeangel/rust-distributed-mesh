@@ -3588,6 +3588,10 @@ pub struct DigestBook {
     /// Proven departures by NodeId, with when this book accepted each: held
     /// for `retention` of local age, then forgotten.
     departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
+    /// The departures the departed fence refused, by the NodeId of the departure held: each operation
+    /// key refused by name once. Its publisher carries it in every aggregate for the retention, and a
+    /// later copy is a copy of a refusal already made. Forgotten with the departure it was refused by.
+    refused_departures: Arc<Mutex<HashMap<String, BTreeSet<(String, u32, String)>>>>,
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
     in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
     /// The parked births (`NodeStopped`) by NodeId: the incarnation and the highest `digest_seq`
@@ -3753,6 +3757,7 @@ impl DigestBook {
             overlays: Arc::new(tokio::sync::watch::Sender::new(0)),
             digests: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
+            refused_departures: Arc::default(),
             in_flight: Arc::default(),
             stopped_marks: Arc::default(),
             ended_overlays: Arc::default(),
@@ -3776,7 +3781,9 @@ impl DigestBook {
     }
 
     fn expire_departed_at(&self, now: Instant) {
-        self.departed.lock().unwrap().retain(|_, (_, at)| now.duration_since(*at) < self.retention);
+        let mut departed = self.departed.lock().unwrap();
+        departed.retain(|_, (_, at)| now.duration_since(*at) < self.retention);
+        self.refused_departures.lock().unwrap().retain(|id, _| departed.contains_key(id));
     }
 
     /// Has this node been accepted as departed, within the retention?
@@ -3805,9 +3812,12 @@ impl DigestBook {
             let mut departed = self.departed.lock().unwrap();
             if let Some((held, _)) = departed.get(&id) {
                 // The same departure again is a copy (every aggregate carries it for the retention); a
-                // different one names a birth that already left: refused by the departed fence.
-                if held.key() != op.key() {
-                    drop(departed);
+                // different one names a birth that already left: refused by the departed fence, by
+                // name once. Its publisher carries it in every aggregate for the retention too, so a
+                // later copy of a departure already refused is refused with nothing more said.
+                let first_refusal = held.key() != op.key() && self.refused_departures.lock().unwrap().entry(id.clone()).or_default().insert(op.key());
+                drop(departed);
+                if first_refusal {
                     reject_departed_overlay(&self.holder.lock().unwrap(), &op, "node-deleted");
                 }
                 return false;
