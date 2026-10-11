@@ -452,3 +452,57 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
     let a = &seeded[0]["attributes"];
     assert_eq!((a["subject"].as_str(), a["seeded_from"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1"), Some(pred.as_str()), Some("row-seeded")), "{a:#?}");
 }
+
+/// CONTRACT: in a replace, the predecessor lets go of the `path.name` before the successor takes it
+/// over (ops-naming "The name is claimed by insert-and-fail": "The new node can take the name over
+/// only after the old node lets go, by being renamed to `<name>.old` or deleted"), and that order is
+/// the code's, never the arrival order of two channels. Here the successor enters the
+/// fabric-primary's view (a peer of the executor: its view takes the successor at the path.name, the
+/// predecessor never renamed in it) BEFORE the executor's `RenamePredecessor` frame is handled. Its
+/// claim at the view install meets the predecessor's row: it waits on the replace that holds the
+/// name (`awaits-rename`), and the `RenamePredecessor` move, the rename's one writer, moves the
+/// predecessor's row to `.old` and then claims the path.name for the successor the view holds,
+/// seeded from the `.old` row. The end rows are the ones the in-order replace leaves.
+#[test]
+fn a_successor_heard_before_the_predecessor_lets_go_takes_the_name_at_the_rename() {
+    let cap = capture();
+    let (old_row, row, pred, succ) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let successor = node("mesh1.rpc.1", false, false);
+        let succ = successor.node_id.clone();
+        let op = "replace-node:mesh1.rpc.1";
+        // Newest birth wins the path.name in a peer's view: the successor takes it.
+        let heard = Act::View(Box::new(move |v: &mut Topology| {
+            v.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
+            v.nodes.push(successor);
+        }));
+        let acts = vec![
+            Act::Frame(op, "NodeDeleting"),
+            Act::Frame(op, "DrainNode"),
+            heard,
+            Act::Frame(op, "RenamePredecessor"),
+            Act::Frame(op, "AllocateIdentity"),
+            Act::Frame(op, "WaitForNodeReady"),
+            Act::Frame(op, "NodeDeleted"),
+            Act::Frame(op, "ReleaseStorage"),
+            Act::Frame(op, "Complete"),
+        ];
+        let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
+        let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
+        (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ)
+    });
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Deleted, config: tier("gold") }), "the predecessor's row moved to .old and says Deleted, its config kept");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }), "the successor holds the path.name with the .old row's config");
+    let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
+    assert_eq!(renames.len(), 1, "{renames:#?}");
+    let a = &renames[0]["attributes"];
+    assert_eq!((a["from"].as_str(), a["to"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1"), Some("mesh1.rpc.1.old"), Some("renamed")), "{a:#?}");
+    let claims: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == succ.as_str()).collect();
+    let outcomes: Vec<&str> = claims.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
+    assert_eq!(outcomes, vec!["awaits-rename", "row-seeded"], "{claims:#?}");
+    let a = &claims[1]["attributes"];
+    assert_eq!((a["subject"].as_str(), a["seeded_from"].as_str()), (Some("mesh1.rpc.1"), Some(pred.as_str())), "{a:#?}");
+    assert!(claims[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains(pred.as_str()) && d.contains("replace-node:mesh1.rpc.1")), "{:#?}", claims[0]);
+}
