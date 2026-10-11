@@ -1083,15 +1083,30 @@ pub async fn reconcile_drift(
         }
         None => (surplus.clone(), format!("surplus: {}", surplus.join(" ")), None),
     };
-    if !started.insert((current.build_id.clone(), attempt, key)) {
+    let opening = (current.build_id.clone(), attempt, key);
+    if started.contains(&opening) {
         return None;
     }
     // A node-admin of a peer mesh opened on the ladder's decision is that mesh's first recovering
     // node-admin: the decision releases no other from here until the mesh is heard again.
-    if let Some((path, _)) = first_exited {
-        if path.kind == NodeKind::NodeAdmin && path.mesh != me.mesh && decided(&path.mesh) {
-            started.insert((current.build_id.clone(), 0u32, vec!["recovery".to_string(), path.mesh.clone()]));
+    let release = first_exited
+        .filter(|(path, _)| path.kind == NodeKind::NodeAdmin && path.mesh != me.mesh && decided(&path.mesh))
+        .map(|(path, _)| (current.build_id.clone(), 0u32, vec!["recovery".to_string(), path.mesh.clone()]));
+    // The same admission a submitted change takes, held to the attempt's durable write: the attempt
+    // opens on the Build that is still the accepted one, still settled, at the same attempt, or
+    // nothing opens, nothing of it is written and nothing is spent.
+    let _admitted = admission.lock().await;
+    match accepted.current(builds).await {
+        Some(now) if now.build_id == current.build_id && now.attempt == current.attempt && !matches!(now.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) => {}
+        other => {
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route = "proven-drift", build_id = %current.build_id, attempt, scope = %scope, accepted_now = %other.map(|b| format!("{} {:?}", b.build_id, b.state)).unwrap_or_default())
+                .in_scope(|| tracing::info!("another Build or attempt was admitted first: no drift attempt"));
+            return None;
         }
+    }
+    started.insert(opening);
+    if let Some(release) = release {
+        started.insert(release);
     }
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-proven-drift",
@@ -1113,18 +1128,6 @@ pub async fn reconcile_drift(
         opened_by: me.to_string(),
         opened_at_ms: time.now_ms(),
     };
-    // The same admission a submitted change takes, held to the attempt's durable write: the attempt
-    // opens on the Build that is still the accepted one, still settled, at the same attempt, or
-    // nothing opens (and nothing of it is written).
-    let _admitted = admission.lock().await;
-    match accepted.current(builds).await {
-        Some(now) if now.build_id == current.build_id && now.attempt == current.attempt && !matches!(now.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) => {}
-        other => {
-            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route = "proven-drift", build_id = %current.build_id, attempt, scope = %scope, accepted_now = %other.map(|b| format!("{} {:?}", b.build_id, b.state)).unwrap_or_default())
-                .in_scope(|| tracing::info!("another Build was admitted first: no drift attempt"));
-            return None;
-        }
-    }
     // The attempt's context is this span, on this fabric-primary, before the attempt is open to be claimed.
     if let Err(e) = contexts.put(&current.build_id, attempt, &span.in_scope(crate::build_claim::current_context)).await {
         span.in_scope(|| tracing::info!(error = %e, "the attempt's context could not be recorded; the attempt is not opened"));
