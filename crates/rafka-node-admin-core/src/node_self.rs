@@ -124,7 +124,7 @@ pub struct NodeSelf {
     pub node_id: NodeId,
     /// This birth's incarnation.
     pub incarnation: IncarnationId,
-    /// This birth's `path.name`.
+    /// This birth's `path.name` at its birth; the name it holds is [`Self::held_name`].
     pub name: PathName,
     /// This birth's Node RPC server: it refuses new calls while draining and counts the work in flight.
     pub server: NodeRpcServer,
@@ -174,6 +174,12 @@ impl NodeSelf {
         Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, retire: None, backbone: None, seen: Mutex::new(HashSet::new()), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
+    /// The name this birth holds and publishes: its row's name once it took one (live through
+    /// `ApplyNodeName`, or from its join answer), else its birth's (R12). Every span, refusal and
+    /// frame of this surface names it.
+    pub fn held_name(&self) -> PathName {
+        self.membership.held_name(&self.name)
+    }
 
     /// This surface, publishing its round hooks on `backbone` as well as its mesh channel.
     pub fn with_backbone(mut self, backbone: rafka_mesh_transport::membership::Backbone) -> Self {
@@ -218,7 +224,7 @@ impl NodeSelf {
         }
         let want = op.kind.operation(op.fabric_id);
         if op.operation != want {
-            return StatusReply::NotReady { reason: format!("{}: {} names operation {}, the round's is {want}", self.name, req.op(), op.operation) };
+            return StatusReply::NotReady { reason: format!("{}: {} names operation {}, the round's is {want}", self.held_name(), req.op(), op.operation) };
         }
         let key = op.key();
         let done = {
@@ -249,12 +255,12 @@ impl NodeSelf {
     /// The round of this birth: its action (once), then the completion call at its commander.
     async fn round(self: Arc<Self>, commander: NodeId, key: crate::fabric_state::RoundKey, act: bool, parent: tracing::Span) {
         use tracing::Instrument;
-        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-round", node = %self.name, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = act, "otel.kind" = "internal");
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-round", node = %self.held_name(), round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = act, "otel.kind" = "internal");
         async {
             if act {
                 let actions = self.round_actions.lock().unwrap().clone();
-                if let Err(e) = crate::fabric_rounds::run_action(&*actions, &self.name, key.kind).await {
-                    tracing::info_span!("rdm.node_admin.fabric.update.via-round-action-failed", node = %self.name, round = key.kind.command(), error = %e, "otel.kind" = "internal")
+                if let Err(e) = crate::fabric_rounds::run_action(&*actions, &self.held_name(), key.kind).await {
+                    tracing::info_span!("rdm.node_admin.fabric.update.via-round-action-failed", node = %self.held_name(), round = key.kind.command(), error = %e, "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("this birth's action failed: it owes no check-in"));
                     self.rounds_seen.lock().unwrap().remove(&(key.clone(), commander.clone()));
                     return;
@@ -263,9 +269,9 @@ impl NodeSelf {
             self.rounds_seen.lock().unwrap().insert((key.clone(), commander.clone()), RoundProgress::Acted);
             let req = key.kind.up(&key, self.node_id.clone(), self.incarnation.clone());
             // The check-in hook runs in the path of the completion call, before it goes out.
-            let frame = crate::fabric_state::hook_frame(&key, true, self.node_id.clone(), self.incarnation.clone(), &self.name.to_string(), self.membership.clock().now_rafka_ms());
+            let frame = crate::fabric_state::hook_frame(&key, true, self.node_id.clone(), self.incarnation.clone(), &self.held_name().to_string(), self.membership.clock().now_rafka_ms());
             let channels = if self.backbone.is_some() { "mesh,backbone" } else { "mesh" };
-            tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.name, round = key.kind.command(), hook = key.kind.completion(), subject_id = %self.node_id, incarnation_id = %self.incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.held_name(), round = key.kind.command(), hook = key.kind.completion(), subject_id = %self.node_id, incarnation_id = %self.incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the check-in hook is published"));
             match &self.backbone {
                 Some(backbone) => backbone.publish_command_hook(&frame).await,
@@ -281,7 +287,7 @@ impl NodeSelf {
             if matches!(&out, rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied)) {
                 self.rounds_seen.lock().unwrap().insert((key.clone(), commander.clone()), RoundProgress::CheckedIn);
             }
-            tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.name, completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, answer = %answer, "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, answer = %answer, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the completion call was made to the commanding primary"));
         }
         .instrument(span)
@@ -313,7 +319,7 @@ impl NodeSelf {
             operation: operation.clone(),
             node_id: self.node_id.clone(),
             incarnation: self.incarnation.clone(),
-            name: self.name.clone(),
+            name: self.held_name(),
             event_at_rafka_ms: self.membership.clock().now_rafka_ms(),
         };
         // The command's serve span carries the caller's propagated trace; the work this command
@@ -345,7 +351,7 @@ impl NodeSelf {
         let span = tracing::info_span!(
             parent: &parent,
             "rdm.node_admin.status.update.via-drain-node",
-            node = %self.name, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
+            node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
             commander = %commander, in_flight_at_zero = tracing::field::Empty, "otel.kind" = "internal"
         );
         async {
@@ -413,13 +419,13 @@ impl NodeSelf {
             Next::Done(r) => r,
             Next::Wait(mut rx) => match rx.wait_for(|r| r.is_some()).await {
                 Ok(r) => r.expect("waited for a receipt"),
-                Err(_) => return StatusReply::NotReady { reason: format!("{}: the stop that was under way ended without a receipt", self.name) },
+                Err(_) => return StatusReply::NotReady { reason: format!("{}: the stop that was under way ended without a receipt", self.held_name()) },
             },
             Next::Run(tx) => {
                 let span = tracing::info_span!(
                     parent: &parent,
                     "rdm.node_admin.status.update.via-stop-node",
-                    node = %self.name, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
+                    node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
                     commander = %commander, state = "Leaving", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
                 let receipt = self.park(&commander, spare, &op).instrument(span.clone()).await;
@@ -441,7 +447,7 @@ impl NodeSelf {
         // 1. The whole drain: Draining is live and not routable; the receipt never turns a deadline into zero.
         let receipt = self
             .drain_for_stop()
-            .instrument(tracing::info_span!("rdm.node_admin.node.drain.via-stop", node = %self.name, operation = %op.operation, receipt = tracing::field::Empty))
+            .instrument(tracing::info_span!("rdm.node_admin.node.drain.via-stop", node = %self.held_name(), operation = %op.operation, receipt = tracing::field::Empty))
             .await;
         // 2. Leaving is declared to the authority while this node can still reach it, then no more is
         // said: the node gossips nothing for its stop.
@@ -451,14 +457,14 @@ impl NodeSelf {
         // 3. The hard cut, sparing the commander's connection the stop call rides.
         let session = self.session.lock().unwrap().clone();
         let report = match session {
-            Some(session) => session.cut(spare).instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.name, operation = %op.operation, commander = %commander)).await,
+            Some(session) => session.cut(spare).instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %op.operation, commander = %commander)).await,
             None => CutReport::default(),
         };
         // Leaving is this node's own status from the moment its tasks are cut; nothing publishes it.
         let _ = (self.set_status)(MemberStatus::Leaving);
         tracing::info_span!(
             "rdm.node_admin.node.connections.delete.via-stop-cut",
-            node = %self.name, operation = %op.operation, neighbours = report.neighbours, pooled = report.pooled, accepted = report.accepted
+            node = %self.held_name(), operation = %op.operation, neighbours = report.neighbours, pooled = report.pooled, accepted = report.accepted
         )
         .in_scope(|| tracing::info!("the mesh connections were cut; the endpoint stays bound and the commander's connection stays open"));
         receipt
@@ -497,13 +503,13 @@ impl NodeSelf {
         let span = tracing::info_span!(
             parent: &parent,
             "rdm.node_admin.status.update.via-start-node",
-            node = %self.name, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
+            node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
             commander = %commander, outcome = tracing::field::Empty, failed_step = tracing::field::Empty, "otel.kind" = "internal"
         );
         let reply = async {
             let receipt = match &*self.cycle.lock().unwrap() {
                 Cycle::Parked(r) => *r,
-                Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.name) },
+                Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
                 Cycle::Live => {
                     let current = match (self.status)() {
                         MemberStatus::Pending => NodeState::Pending,
@@ -515,7 +521,7 @@ impl NodeSelf {
                 }
             };
             let Some(session) = self.session.lock().unwrap().clone() else {
-                return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.name) };
+                return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.held_name()) };
             };
             let retire = match &self.retire {
                 Some(r) => r.renew(),
@@ -560,7 +566,7 @@ impl NodeSelf {
         };
         tracing::info_span!(
             "rdm.node_admin.status.update.via-completion-call",
-            node = %self.name, completion = kind, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
+            node = %self.held_name(), completion = kind, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
             commander = %commander, answer = %answer, "otel.kind" = "internal"
         )
         .in_scope(|| tracing::info!("the completion call was made to the commanding admin"));
