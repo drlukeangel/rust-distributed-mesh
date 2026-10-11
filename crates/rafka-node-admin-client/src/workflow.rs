@@ -142,6 +142,8 @@ macro_rules! retire_rows {
         [
             row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false),
             row("retire-node", "NodeRestarting", $first_step, $first, false),
+            // A node-admin target's seats move to the executor by TakeSeats before it drains.
+            row("retire-node", "SeatTransfer", NodeStep::Drain, &[], false),
             row("retire-node", "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
             row("retire-node", "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
             row("retire-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
@@ -169,6 +171,8 @@ impl WorkflowKind {
             // The stop's one call drains, cuts the mesh connections and answers `stopped`: its receipts
             // announce all four events, and no runtime exits.
             Self::Stop(_) => vec![
+                // A node-admin target's seats move to the executor by TakeSeats before it stops.
+                row("stop-node", "SeatTransfer", NodeStep::Stop, &[], false),
                 row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
                 row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
                 row("stop-node", "Complete", NodeStep::Stop, &[], true),
