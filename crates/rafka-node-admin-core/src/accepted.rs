@@ -391,19 +391,18 @@ pub(crate) struct ReplaceProgress {
 impl ReplaceProgress {
     /// The progress of `build`'s Replace action, `default` for any other.
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
-        // A standalone drain or stop: its operation's `Complete` receipt names the exact birth it
-        // completed for; its first step's receipt says the operation began.
-        if let Some(AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation }) = &build.action {
-            let (operation, first) = match &build.action {
-                Some(AttemptAction::Drain { .. }) => (format!("drain-node:{path}"), "DrainNode"),
-                Some(AttemptAction::Start { .. }) => (format!("start-node:{path}"), "StartNode"),
+        // A standalone drain, stop or start: the receipts of its operation in an attempt that
+        // carried this exact action (its `Opened` fact fenced the attempt to the birth) are this
+        // birth's. Its first step's receipt says the operation began; its `Complete`, that it
+        // completed for the birth.
+        if let Some(action @ (AttemptAction::Drain { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. })) = &build.action {
+            let (operation, first) = match action {
+                AttemptAction::Drain { .. } => (format!("drain-node:{path}"), "DrainNode"),
+                AttemptAction::Start { .. } => (format!("start-node:{path}"), "StartNode"),
                 _ => (format!("stop-node:{path}"), "StopNode"),
             };
-            let birth = serde_json::to_value(from_incarnation).unwrap_or_default();
-            let done = |step: &str| build.steps.iter().filter(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete).collect::<Vec<_>>();
-            let started = !done(first).is_empty();
-            let finished = done("Complete").iter().any(|s| s.output.as_ref().and_then(|o| o.get("incarnation")) == Some(&birth));
-            return Self { started, finished };
+            let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action));
+            return Self { started: done(first), finished: done("Complete") };
         }
         // A recovery: finished once its operation's `Complete` names the exited birth.
         if let Some(AttemptAction::Recover { path, node_id, from_incarnation }) = &build.action {
@@ -428,17 +427,24 @@ impl ReplaceProgress {
 }
 
 /// The attempt whose `recover-node:<path>` operation completed for the exited birth
-/// `(node_id, incarnation)`, read from `build`'s receipts: the operation's `Complete` receipt names
-/// the exited birth it recovered in its output, `{"node_id": .., "incarnation": ..}` (the shape
-/// `complete_for_birth` writes). `None` while no attempt recovered that birth.
+/// `(node_id, incarnation)`, read from `build`'s receipts: the operation's `NodeDeleted` receipt
+/// names the exited birth (its output is the node.delete's lifecycle operation), and a `Complete`
+/// of the same operation at that attempt or later (a rerun reuses the `NodeDeleted`) ends it.
+/// `None` while no attempt recovered that birth: a recovery that deleted the exited instance and
+/// failed before its `Complete` is not one.
 pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Option<u32> {
     let operation = format!("recover-node:{path}");
-    let (node_id, incarnation) = (serde_json::to_value(node_id).ok()?, serde_json::to_value(incarnation).ok()?);
+    let deleted = build
+        .steps
+        .iter()
+        .filter(|s| s.operation == operation)
+        .filter(|s| crate::build_state::recovery_deleted(s).is_some_and(|(p, n, i)| p == *path && n == *node_id && i == *incarnation))
+        .map(|s| s.attempt)
+        .min()?;
     build
         .steps
         .iter()
-        .filter(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete)
-        .filter(|s| s.output.as_ref().is_some_and(|o| o.get("node_id") == Some(&node_id) && o.get("incarnation") == Some(&incarnation)))
+        .filter(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= deleted)
         .map(|s| s.attempt)
         .min()
 }
@@ -947,22 +953,24 @@ mod tests {
 
     /// CONTRACT: a standalone stop is planned until its `Complete` receipt names the exact birth; after it,
     /// whatever the view holds (nothing, once the Leaving birth is pruned) nothing is planned, and a
-    /// `Complete` receipt of another birth is not this stop's progress.
+    /// `Complete` receipt of an attempt that carried a stop of another birth is not this stop's progress.
     #[test]
     fn a_stop_is_planned_until_its_complete_receipt_names_its_birth() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.3".parse().unwrap();
         let from = IncarnationId::mint();
-        let step = |step: &str, birth: Option<&IncarnationId>| BuildStepReceipt {
+        // The Complete commits no output: the attempt's fenced action names the birth.
+        let step = |attempt: u32, step: &str| BuildStepReceipt {
             build_id: crate::build::BuildId("b1".into()),
-            attempt: 7,
+            attempt,
             operation: format!("stop-node:{path}"),
             step: step.into(),
             outcome: StepOutcome::Complete,
-            output: birth.map(|b| serde_json::json!({ "incarnation": b })),
+            output: None,
             executor: None,
         };
+        let other = IncarnationId::mint();
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
             build_id: crate::build::BuildId("b1".into()),
             topology: cur.clone(),
@@ -975,14 +983,17 @@ mod tests {
             last_failure: None,
             reason: AttemptReason::Stop,
             action: Some(AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() }),
+            // Attempt 6 stopped an earlier birth of the path; attempt 7 is this stop.
+            attempt_actions: [(6, AttemptAction::Stop { path: path.clone(), from_incarnation: other.clone() }), (7, AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() })].into(),
         };
         let mut gone = mn();
         gone.nodes.retain(|x| x.name != path);
         let stop = vec![BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }];
         assert_eq!(plan_for_build(&build(vec![]), &gone).operations, vec![], "the view never held the birth and nothing began");
-        assert_eq!(plan_for_build(&build(vec![step("StopNode", None)]), &gone).operations, stop, "begun, the birth pruned from the view: still owed");
-        assert_eq!(plan_for_build(&build(vec![step("StopNode", None), step("Complete", Some(&from))]), &gone).operations, vec![], "completed for this birth");
-        assert_eq!(plan_for_build(&build(vec![step("StopNode", None), step("Complete", Some(&IncarnationId::mint()))]), &gone).operations, stop, "another birth's Complete is not this stop's");
+        assert_eq!(plan_for_build(&build(vec![step(7, "StopNode")]), &gone).operations, stop, "begun, the birth pruned from the view: still owed");
+        assert_eq!(plan_for_build(&build(vec![step(7, "StopNode"), step(7, "Complete")]), &gone).operations, vec![], "completed for this birth");
+        assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete")]), &gone).operations, vec![], "another birth's stop neither began nor completed this one");
+        assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete"), step(7, "StopNode")]), &gone).operations, stop, "another birth's Complete is not this stop's");
     }
 
     /// CONTRACT: the replace operation is planned until the old birth's `NodeDeleted` and the
@@ -1016,6 +1027,7 @@ mod tests {
             last_failure: None,
             reason: AttemptReason::ProvenDrift,
             action: Some(AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() }),
+            attempt_actions: Default::default(),
         };
         let replace = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
         // The view holds the successor (another birth) at the path.
@@ -1039,22 +1051,28 @@ mod tests {
     /// `recover-node:<path>` operation for its exited birth, never a generic create of that path, and
     /// never sweeps another member the view lacks or holds unheard. It is planned whatever the view
     /// holds at the path (the exited birth unheard, nothing, or the new node mid-attempt) until the
-    /// operation's `Complete` receipt names the exited birth; another birth's `Complete` is not it.
+    /// operation's `NodeDeleted` names the exited birth and its `Complete` follows; another birth's
+    /// `NodeDeleted` is not it, and a `NodeDeleted` with no `Complete` (the create failed) is not done.
     #[test]
     fn an_admitted_recovery_plans_exactly_its_recover_operation_and_sweeps_no_other_path() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
         let (node_id, from) = (NodeId::mint(), IncarnationId::mint());
-        let complete = |id: &NodeId, inc: &IncarnationId| BuildStepReceipt {
+        let receipt = |attempt: u32, step: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             build_id: crate::build::BuildId("b1".into()),
-            attempt: 4,
+            attempt,
             operation: format!("recover-node:{path}"),
-            step: "Complete".into(),
+            step: step.into(),
             outcome: StepOutcome::Complete,
-            output: Some(serde_json::json!({ "node_id": id, "incarnation": inc })),
+            output,
             executor: None,
         };
+        let deleted = |attempt: u32, id: &NodeId, inc: &IncarnationId| {
+            let op = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt, operation: format!("recover-node:{path}"), node_id: id.clone(), incarnation: inc.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+            receipt(attempt, "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
+        };
+        let complete = |attempt: u32| receipt(attempt, "Complete", None);
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
             build_id: crate::build::BuildId("b1".into()),
             topology: cur.clone(),
@@ -1067,6 +1085,7 @@ mod tests {
             last_failure: None,
             reason: AttemptReason::Recovery,
             action: Some(AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }),
+            attempt_actions: Default::default(),
         };
         let recover = vec![BuildOperation::RecoverNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
         // The exited birth unheard, another member unheard and a third missing: only the recovery.
@@ -1082,11 +1101,15 @@ mod tests {
         gone.nodes.retain(|x| x.name != path);
         assert_eq!(plan_for_build(&build(vec![]), &gone).operations, recover, "absent from the view");
         assert_eq!(plan_for_build(&build(vec![]), &mn()).operations, recover, "another birth live at the path, no Complete for the exited one");
-        // Another birth's Complete is not this recovery's; the exited birth's Complete ends it.
-        assert_eq!(plan_for_build(&build(vec![complete(&NodeId::mint(), &from)]), &gone).operations, recover, "another node_id");
-        assert_eq!(plan_for_build(&build(vec![complete(&node_id, &IncarnationId::mint())]), &gone).operations, recover, "another incarnation");
-        assert_eq!(plan_for_build(&build(vec![complete(&node_id, &from)]), &gone).operations, vec![], "recovered");
-        assert_eq!(plan_for_build(&build(vec![complete(&node_id, &from)]), &mn()).operations, vec![], "recovered, the new node live");
+        // Another birth's NodeDeleted is not this recovery's; the exited birth's NodeDeleted and the
+        // operation's Complete at that attempt or later end it.
+        assert_eq!(plan_for_build(&build(vec![deleted(4, &NodeId::mint(), &from), complete(4)]), &gone).operations, recover, "another node_id");
+        assert_eq!(plan_for_build(&build(vec![deleted(4, &node_id, &IncarnationId::mint()), complete(4)]), &gone).operations, recover, "another incarnation");
+        assert_eq!(plan_for_build(&build(vec![deleted(4, &node_id, &from)]), &gone).operations, recover, "deleted, the create not complete: still owed");
+        assert_eq!(plan_for_build(&build(vec![complete(3), deleted(4, &node_id, &from)]), &gone).operations, recover, "an earlier attempt's Complete is not this deletion's");
+        assert_eq!(plan_for_build(&build(vec![deleted(4, &node_id, &from), complete(4)]), &gone).operations, vec![], "recovered");
+        assert_eq!(plan_for_build(&build(vec![deleted(4, &node_id, &from), complete(5)]), &gone).operations, vec![], "recovered on a rerun that reused the NodeDeleted");
+        assert_eq!(plan_for_build(&build(vec![deleted(4, &node_id, &from), complete(4)]), &mn()).operations, vec![], "recovered, the new node live");
     }
 
     /// CONTRACT (lock D): a mesh from its counts carries explicit meta for every path, the kind's

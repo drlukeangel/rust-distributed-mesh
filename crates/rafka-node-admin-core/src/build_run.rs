@@ -620,18 +620,13 @@ mod tests {
     async fn a_recovery_lookup_through_the_framed_builds_is_a_point_read_by_the_exited_birth() {
         let memory = Arc::new(MemoryBuildStateAdapter::new());
         let (path, node_id, incarnation): (crate::model::PathName, _, _) = ("mesh1.rpc.1".parse().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        memory
-            .append_step_receipt(&BuildStepReceipt {
-                build_id: id(),
-                attempt: 2,
-                operation: format!("recover-node:{path}"),
-                step: "Complete".into(),
-                outcome: StepOutcome::Complete,
-                output: Some(serde_json::json!({ "node_id": node_id, "incarnation": incarnation })),
-                executor: Some("mesh1.admin.1".into()),
-            })
-            .await
-            .unwrap();
+        let deleted = rafka_mesh_entity::LifecycleOp { build_id: id().to_string(), attempt: 2, operation: format!("recover-node:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        for (step, output) in [("NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("Complete", None)] {
+            memory
+                .append_step_receipt(&BuildStepReceipt { build_id: id(), attempt: 2, operation: format!("recover-node:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .await
+                .unwrap();
+        }
         let framed = FramedBuilds::new(Arc::new(NoScan(memory)), Arc::new(AttemptRuns::default()));
         assert_eq!(framed.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((id(), 2)), "the exited birth's recovery, by its key");
         assert_eq!(framed.recovery_of(&path, &node_id, &crate::model::IncarnationId::mint()).await.unwrap(), None, "another birth of the node was not recovered");

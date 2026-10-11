@@ -120,18 +120,9 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
 
     // The executor completes `recover-node:mesh1.rpc.2` for the exited birth.
     builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
-    builds
-        .append_step_receipt(&BuildStepReceipt {
-            build_id: b0.clone(),
-            attempt: 2,
-            operation: "recover-node:mesh1.rpc.2".into(),
-            step: "Complete".into(),
-            outcome: StepOutcome::Complete,
-            output: Some(serde_json::json!({ "node_id": node_id, "incarnation": birth })),
-            executor: Some("mesh1.admin.1".into()),
-        })
-        .await
-        .unwrap();
+    for r in recovery_receipts(&b0, 2, &path, &node_id, &birth, "mesh1.admin.1") {
+        builds.append_step_receipt(&r).await.unwrap();
+    }
     builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Converged }).await.unwrap();
 
     // A repeat once the birth was recovered.
@@ -211,8 +202,9 @@ async fn until(what: &str, builds: &dyn BuildStateAdapter, id: &rafka_node_admin
 
 /// The step receipts a recovery attempt writes for `recover-node:<path>` of the exited birth, as
 /// the recovery pipeline writes them (`DeploymentPipeline::recover`): `NodeDeleting` and
-/// `NodeDeleted` carry the lifecycle operation naming the exited birth; the create's steps
-/// between them and `Complete` are elided (they name the new node, not the exited one).
+/// `NodeDeleted` carry the lifecycle operation naming the exited birth, and `Complete` commits no
+/// output; the create's steps between them and `Complete` are elided (they name the new node, not
+/// the exited one).
 fn recovery_receipts(build: &rafka_node_admin_core::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
     let operation = format!("recover-node:{path}");
     let op = rafka_mesh_entity::LifecycleOp { build_id: build.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
@@ -220,7 +212,7 @@ fn recovery_receipts(build: &rafka_node_admin_core::build::BuildId, attempt: u32
     vec![
         receipt("NodeDeleting", Some(serde_json::to_value(&op).unwrap())),
         receipt("NodeDeleted", Some(serde_json::to_value(&op).unwrap())),
-        receipt("Complete", Some(serde_json::json!({ "node_id": node_id, "incarnation": birth }))),
+        receipt("Complete", None),
     ]
 }
 

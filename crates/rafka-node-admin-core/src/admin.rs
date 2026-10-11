@@ -1200,9 +1200,10 @@ pub async fn reconcile_drift(
         // A birth the Build stopped on request is not drift: its `stop-node:<path>` operation completed
         // for this exact birth (node-stop.md: no bind, no JoinNode, no replacement), and the exit it
         // proves is the one that was asked for.
+        // The stop's `Complete` is that birth's when its attempt carried the stop fenced to it.
         let operation = format!("stop-node:{}", n.name);
-        let birth = serde_json::to_value(&n.incarnation_id).unwrap_or_default();
-        if current.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.output.as_ref().and_then(|o| o.get("incarnation")) == Some(&birth)) {
+        let stop = n.incarnation_id.clone().map(|from_incarnation| crate::accepted::AttemptAction::Stop { path: n.name.clone(), from_incarnation });
+        if stop.as_ref().is_some_and(|stop| current.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && current.carried(s.attempt, stop))) {
             let key = (current.build_id.clone(), 0u32, vec![n.name.to_string(), n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(), "stopped-on-request".to_string()]);
             if started.insert(key) {
                 tracing::info_span!("rdm.node_admin.build.reject.via-stopped-on-request", node = %me, birth = %n.name, node_id = %n.node_id, operation = %operation)

@@ -661,18 +661,15 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
             Ok(rafka_node_admin_core::http::Recovery::Opened(o)) => o,
             other => panic!("the first recovery is admitted: {other:?}"),
         };
-        rig.builds
-            .append_step_receipt(&BuildStepReceipt {
-                build_id: b0.clone(),
-                attempt: recovering.attempt,
-                operation: format!("recover-node:{path}"),
-                step: "Complete".into(),
-                outcome: StepOutcome::Complete,
-                output: Some(json!({ "node_id": node_id, "incarnation": birth })),
-                executor: Some("mesh1.admin.1".into()),
-            })
-            .await
-            .unwrap();
+        // The recovery's receipts as the pipeline writes them: NodeDeleted names the exited birth,
+        // Complete commits no output.
+        let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("recover-node:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        for (step, output) in [("NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("Complete", None)] {
+            rig.builds
+                .append_step_receipt(&BuildStepReceipt { build_id: b0.clone(), attempt: recovering.attempt, operation: format!("recover-node:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .await
+                .unwrap();
+        }
         settle(recovering.attempt).await;
         let opened = |facts: Vec<BuildFact>| facts.iter().filter(|f| matches!(f, BuildFact::Opened(_))).count();
         let opened_before = opened(rig.builds.facts().await.unwrap());

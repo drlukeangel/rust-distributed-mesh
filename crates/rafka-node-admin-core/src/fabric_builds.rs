@@ -99,6 +99,20 @@ pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStat
     (runs.into_iter().map(|(_, b)| b).collect(), refused)
 }
 
+/// Every fact [`encode_chunks`] left out, named under its own span: a fact with no wire shape, or
+/// one that fits no gossip message. `sent_by` says which send left it out (the fabric's
+/// neighbour-up catch-up, or a node-admin's seat hand-over).
+fn span_refused(sent_by: &str, refused: &[BuildStateError]) {
+    for e in refused {
+        match e {
+            BuildStateError::Unencodable(_) => tracing::info_span!("rdm.node_admin.build.reject.via-unencodable-fact", sent_by = %sent_by, detail = %e)
+                .in_scope(|| tracing::info!("a Build fact has no wire shape")),
+            _ => tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", sent_by = %sent_by, detail = %e)
+                .in_scope(|| tracing::info!("a Build fact does not fit one gossip message")),
+        }
+    }
+}
+
 /// The facts of every active Build `local` holds, and of `also` (the Build the pointer names),
 /// in append order.
 async fn active_facts(local: &dyn LocalBuildLog, also: Option<BuildId>) -> Vec<BuildFact> {
@@ -301,14 +315,7 @@ impl FabricBuildStateAdapter {
                                     facts = facts.len(),
                                 );
                                 let (messages, refused) = encode_chunks(facts);
-                                for e in refused {
-                                    match &e {
-                                        BuildStateError::Unencodable(_) => tracing::info_span!("rdm.node_admin.build.reject.via-unencodable-fact", fabric = %fabric_name, detail = %e)
-                                            .in_scope(|| tracing::info!("a Build fact has no wire shape")),
-                                        _ => tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", fabric = %fabric_name, detail = %e)
-                                            .in_scope(|| tracing::info!("a Build fact does not fit one gossip message")),
-                                    }
-                                }
+                                span_refused(&format!("neighbour-up catch-up of fabric {fabric_name}"), &refused);
                                 let sender = shared.read().await.clone();
                                 for bytes in messages {
                                     let _ = sender.broadcast_neighbors(bytes).await;
@@ -386,7 +393,8 @@ impl FabricBuildStateAdapter {
             tracing::Span::current().record("fenced", fenced);
             let facts = active_facts(&*self.local, None).await;
             let n = facts.len();
-            let (messages, _refused) = encode_chunks(facts);
+            let (messages, refused) = encode_chunks(facts);
+            span_refused(&format!("seat hand-over by {}", self.authority.node), &refused);
             let sender = self.sender.read().await.clone();
             for bytes in messages {
                 sender.broadcast_neighbors(bytes).await.map_err(|e| BuildStateError::Io(format!("handing the committed Build facts to the neighbours: {e}")))?;
@@ -405,8 +413,12 @@ impl FabricBuildStateAdapter {
     }
 
     async fn broadcast(&self, fact: BuildFact) -> Result<(), BuildStateError> {
+        self.send(encode(vec![fact])?).await
+    }
+
+    async fn send(&self, bytes: bytes::Bytes) -> Result<(), BuildStateError> {
         let sender = self.sender.read().await.clone();
-        sender.broadcast(encode(vec![fact])?).await.map_err(|e| BuildStateError::Io(format!("broadcasting Build fact: {e}")))
+        sender.broadcast(bytes).await.map_err(|e| BuildStateError::Io(format!("broadcasting Build fact: {e}")))
     }
 }
 
@@ -447,8 +459,11 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        // Encoded before it commits: a receipt with no wire shape is refused by name and lands in
+        // no log, never in this admin's own log alone where no other admin can read it.
+        let bytes = encode(vec![BuildFact::Step(receipt.clone())])?;
         self.local.append_step_receipt(receipt).await?;
-        self.broadcast(BuildFact::Step(receipt.clone())).await
+        self.send(bytes).await
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
