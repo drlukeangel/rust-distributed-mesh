@@ -111,28 +111,25 @@ impl SinkStall {
     }
 }
 
-/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on every
-/// thread of the cell's own runtime, so two cells in one test process never share spans.
+/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`:
+/// product's span filter and its `BatchSpanProcessor`, so ending a span only queues it and the sink
+/// runs on the export thread) in front of an in-memory exporter, behind a dispatcher installed on
+/// every thread of the cell's own runtime, so two cells in one test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
     stall: Arc<SinkStall>,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
-    use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let stall = Arc::new(SinkStall::default());
     let service = format!("i143-2780-{cell}");
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(GatedExporter { inner: exporter.clone(), stall: stall.clone() })
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2780"));
-    Capture { exporter, stall, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, GatedExporter { inner: exporter.clone(), stall: stall.clone() });
+    Capture { exporter, stall, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
 impl Capture {
@@ -150,7 +147,7 @@ impl Capture {
 
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
         self.exporter
             .get_finished_spans()
             .unwrap()
