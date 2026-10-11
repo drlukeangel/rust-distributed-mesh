@@ -329,6 +329,20 @@ pub enum StatusRequest {
         /// The whole config.
         config: BTreeMap<String, String>,
     },
+    /// Downward: the node's mesh-primary, having written the renamed row, tells the exact birth
+    /// its name (node-rpc-envelope.md "Meta and config"; R12: the node owns its name and publishes
+    /// only the row's name). The birth holds the name and publishes its digest carrying it, then
+    /// answers [`StatusReply::Applied`]; [`StatusReply::AlreadyApplied`] for the name it already
+    /// holds; [`StatusReply::Busy`] naming its in-flight count while it still routes traffic, with
+    /// nothing held. A stopped birth is sent nothing: its join answer hands it the name.
+    ApplyNodeName {
+        /// The birth told.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The `path.name` the row now holds.
+        name: String,
+    },
 }
 
 /// The longest `receipt_manifest` reference a `MeshLeave` carries.
@@ -371,6 +385,7 @@ impl StatusRequest {
             Self::StartNode { .. } => "start-node",
             Self::UpdateNodeConfig { .. } => "update-node-config",
             Self::ApplyNodeConfig { .. } => "apply-node-config",
+            Self::ApplyNodeName { .. } => "apply-node-name",
         }
     }
 }
@@ -712,7 +727,7 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 19;
+    const REQUEST_VARIANTS: u32 = 20;
     const REPLY_VARIANTS: u32 = 26;
 
     type Request = StatusRequest;
@@ -862,6 +877,7 @@ mod tests {
             StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
+            StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
