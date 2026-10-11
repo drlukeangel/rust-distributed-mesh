@@ -2582,6 +2582,11 @@ impl Membership {
         *self.name.lock().unwrap() = Some(name);
     }
 
+    /// The name this birth publishes: the one it was told ([`Self::set_name`]), else `birth`'s.
+    pub fn held_name(&self, birth: &rafka_mesh_entity::PathName) -> rafka_mesh_entity::PathName {
+        self.name.lock().unwrap().clone().unwrap_or_else(|| birth.clone())
+    }
+
     /// `d` as this birth reports it: with the config and the name it was told, when it was told them.
     pub fn with_config(&self, d: &MeshDigest) -> MeshDigest {
         let mut d = d.clone();
