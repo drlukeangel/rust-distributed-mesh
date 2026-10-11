@@ -14,7 +14,7 @@
 //! (`0x1F`) from the sender, never from a reference alone.
 
 use crate::build::BuildId;
-use crate::build_state::{BuildFact, BuildStateAdapter, BuildStepReceipt, StepOutcome};
+use crate::build_state::{BuildFact, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
@@ -549,8 +549,15 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
 /// roster is the owner's accepted roster plus every amendment, used for this run and written
 /// nowhere, so the accepted roster is never recaptured. Any other final primary refuses the run by
 /// name, both births named.
+///
+/// When this admin's own log (`local`, the log `builds` reads) holds no fact of the Build at all
+/// (`LeaveMesh` outran the gossip that carries the Build's facts), the owner's Build facts are read
+/// once and absorbed into `local` before anything else is decided (node-build-hydration.md: "Facts
+/// are absorbed into the existing Build log"), as an executor absorbs the intent its claim names;
+/// no Build gossip is authored for them, and that one read is what the rest of the admission uses.
+/// A Build log that could not be read refuses the run by name.
 #[allow(clippy::too_many_arguments)]
-pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
+pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, local: &dyn LocalBuildLog, key: &LeaveKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
 where
     C: FnOnce() -> Result<Vec<RosterBirth>, String>,
     F: FnOnce() -> Fut,
@@ -559,7 +566,30 @@ where
     let operation = key.operation.as_str();
     let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
     let build_id = BuildId(key.build_id.clone());
-    let own = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}"))?.steps;
+    let unread = |e: BuildStateError| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}");
+    // The owner's Build facts: read once when this admin's own log holds none, else not yet read.
+    enum Owner<F> {
+        Read(Vec<BuildFact>),
+        Unread(F),
+    }
+    let (own, owner) = match builds.read_build(&build_id).await {
+        Ok(p) => (p.steps, Owner::Unread(fetch_owner)),
+        Err(BuildStateError::UnknownBuild(_)) => {
+            let facts = fetch_owner().await?;
+            local.absorb_facts(&facts).await;
+            let own = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the owner's {} Build facts of {build_id} were absorbed for {operation}, but its own log still cannot read the Build: {e}", facts.len()))?.steps;
+            tracing::info_span!("rdm.node_admin.build.update.via-owner-facts-absorbed", build_id = %build_id, operation = %operation, executor = %executor, facts = facts.len(), steps = own.len())
+                .in_scope(|| tracing::info!("this admin's own log held no fact of the Build: the owner's Build facts are absorbed into it before the leave is admitted"));
+            (own, Owner::Read(facts))
+        }
+        Err(e) => return Err(unread(e)),
+    };
+    let fetch_owner = || async move {
+        match owner {
+            Owner::Read(facts) => Ok(facts),
+            Owner::Unread(fetch) => fetch().await,
+        }
+    };
     if accepted_row(&own, operation, STEP_LEAVING_ROSTER).is_some() {
         let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, capture).await?;
         return admission_roster(&roster, &own, operation, me, fetch_owner).await;

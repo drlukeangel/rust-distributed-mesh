@@ -415,7 +415,7 @@ impl AdminRunner {
             roster.push(me_birth.clone());
             Ok(roster)
         };
-        let (roster, known) = crate::mesh_leave::leaving_roster(&*self.builds, key, &self.me.to_string(), &me_birth, &my_runtime, capture, fetch_owner).await?;
+        let (roster, known) = crate::mesh_leave::leaving_roster(&*self.builds, &*self.local, key, &self.me.to_string(), &me_birth, &my_runtime, capture, fetch_owner).await?;
         let records: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
         members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, &records, &known, |n| async move { self.shutdown_one(key, &n).await }).await
     }

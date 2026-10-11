@@ -2129,6 +2129,9 @@ pub struct AdminRunner {
     pub records: Arc<Records>,
     /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
+    /// This admin's own Build log, the one `builds` reads: facts read from another admin are
+    /// absorbed into it without authoring Build gossip.
+    pub local: Arc<dyn crate::build_state::LocalBuildLog>,
     /// The facts every launch carries.
     pub template: LaunchTemplate,
     /// The environment passed to every node-admin launch.
@@ -4159,6 +4162,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone(), handover: handover_slot.clone() }),
         records: records.clone(),
         builds: builds_dyn.clone(),
+        local: journal.clone(),
         template,
         admin_env,
         bin_dir: cfg.bin_dir.clone(),

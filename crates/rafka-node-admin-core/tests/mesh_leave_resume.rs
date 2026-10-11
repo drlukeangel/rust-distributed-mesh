@@ -937,7 +937,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
         // mesh2.admin.3 admits LeaveMesh; its capture would be the live members it sees now.
         let owner_facts = owner.facts().await.unwrap();
         let live_now: Vec<Node> = records.iter().filter(|n| [FAILING, NEW_ADMIN].contains(&n.name.to_string().as_str())).cloned().collect();
-        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &key(2), NEW_ADMIN, &created, &runtime(NEW_ADMIN), || live_roster(&live_now), || async { Ok(owner_facts) }).await;
+        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &own.0, &key(2), NEW_ADMIN, &created, &runtime(NEW_ADMIN), || live_roster(&live_now), || async { Ok(owner_facts) }).await;
         let out = match roster {
             Ok((roster, known)) => members_exited(&own, &key(2), NEW_ADMIN, &roster, &created, runtime(NEW_ADMIN), &records, &known, |n: Node| {
                 let (ran, t) = (&ran, exited(&RosterBirth::of(&n).unwrap(), &runtime(&n.name.to_string())));
@@ -1004,12 +1004,12 @@ fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row
 /// log"), and the leave runs over the roster the owner accepted. Its own log then holds the Build.
 #[test]
 fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners_facts() {
+    let cap = capture();
     let records: Vec<Node> = [FINAL, EXITING].iter().map(|n| node(n)).collect();
     let handles: BTreeMap<String, DeploymentHandle> = records.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 49_000 + i as u32))).collect();
     let me = RosterBirth::of(&records[0]).unwrap();
     let my_runtime = RuntimeProof::of(&handles[FINAL].fact().unwrap());
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let (roster, held) = rt.block_on(async {
+    let (roster, held, trace_id) = cap.run(async {
         let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
         let build_id = BuildId::mint();
         let mesh_id = MeshId::mint();
@@ -1017,10 +1017,27 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
         owner.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         accepted_roster(&owner, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &my_runtime, || live_roster(&records)).await.unwrap();
         let owner_facts = owner.facts().await.unwrap();
-        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &key, FINAL, &me, &my_runtime, || live_roster(&records), || async { Ok(owner_facts) }).await;
-        (roster, own.read_build(&build_id).await.map(|p| p.steps.len()))
+        let root = tracing::info_span!("cell.mesh-leave-unheard-build", build_id = %build_id);
+        let trace_id = trace_id(&root);
+        let _in_root = root.enter();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let roster = rafka_node_admin_core::mesh_leave::leaving_roster(&own, &own.0, &key, FINAL, &me, &my_runtime, || live_roster(&records), || async {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(owner_facts)
+        })
+        .await;
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1, "the owner's Build facts are read once");
+        (roster, own.read_build(&build_id).await.map(|p| p.steps.iter().map(|r| r.step.clone()).collect::<Vec<_>>()), trace_id)
     });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("unheard_build");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     let (roster, _) = roster.unwrap_or_else(|e| panic!("a leaving primary that has not heard the Build runs the leave over the owner's facts: {e}"));
     assert_eq!(sorted(roster), sorted(live_roster(&records).unwrap()), "the roster is the one the owner accepted");
-    assert!(held.is_ok(), "the owner's facts are absorbed: this admin's own log holds the Build: {held:?}");
+    let held = held.unwrap_or_else(|e| panic!("the owner's facts are absorbed: this admin's own log holds the Build: {e}"));
+    assert!(held.iter().any(|s| s == STEP_ACCEPTED_ROSTER) && held.iter().any(|s| s == STEP_LEAVING_ROSTER), "its own log holds the owner's AcceptedRoster and the LeavingRoster it captured: {held:?}");
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    assert!(named("rdm.node_admin.build.update.via-owner-facts-absorbed").iter().any(|s| s["attributes"]["executor"] == FINAL && s["attributes"]["facts"] == "2" && s["attributes"]["steps"] == "1"), "the owner's Build facts were absorbed into this admin's own log: {:?}", spans.iter().map(|s| s["name"].clone()).collect::<Vec<_>>());
 }
