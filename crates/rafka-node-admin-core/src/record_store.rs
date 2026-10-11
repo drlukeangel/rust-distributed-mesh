@@ -85,26 +85,31 @@ impl FileRecords {
         }
     }
 
-    /// Every record in the store, in key order.
-    pub fn list<T: DeserializeOwned>(&self, format: &str) -> Result<Vec<T>, StorageError> {
-        let io = |e: std::io::Error| StorageError::Io { file: self.dir.display().to_string(), reason: e.to_string() };
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.dir)
-            .map_err(io)?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .collect();
-        paths.sort();
-        // A file listed and then removed before it is read is a record that is gone: the list
-        // answers the records that remain.
-        let mut records = Vec::with_capacity(paths.len());
-        for p in paths {
-            match std::fs::read(&p) {
-                Ok(b) => records.push(Self::decode(&p, &b, format)?),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(StorageError::Io { file: p.display().to_string(), reason: e.to_string() }),
+    /// Every record in the store, in key order: the directory and its files read on the blocking
+    /// pool, as a point read is, so no worker thread waits on the disk.
+    pub async fn list<T: DeserializeOwned + Send + 'static>(&self, format: &str) -> Result<Vec<T>, StorageError> {
+        let (dir, format) = (self.dir.clone(), format.to_string());
+        blocking_io(move || {
+            let io = |e: std::io::Error| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() };
+            let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+                .map_err(io)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                .collect();
+            paths.sort();
+            // A file listed and then removed before it is read is a record that is gone: the list
+            // answers the records that remain.
+            let mut records = Vec::with_capacity(paths.len());
+            for p in paths {
+                match std::fs::read(&p) {
+                    Ok(b) => records.push(Self::decode(&p, &b, &format)?),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(StorageError::Io { file: p.display().to_string(), reason: e.to_string() }),
+                }
             }
-        }
-        Ok(records)
+            Ok(records)
+        })
+        .await
     }
 
     /// Store `record` under `key`, replacing what was there: temp file, fsync, rename, directory
@@ -222,13 +227,13 @@ mod tests {
         r.write("b", "thing/1", &"two".to_string()).await.unwrap();
         let again = FileRecords::open(&d, "things").unwrap();
         assert_eq!(again.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"));
-        assert_eq!(again.list::<String>("thing/1").unwrap(), ["one", "two"]);
+        assert_eq!(again.list::<String>("thing/1").await.unwrap(), ["one", "two"]);
         assert!(matches!(again.read::<String>("a", "thing/2").await, Err(StorageError::Unrecognised { .. })));
         std::fs::write(d.join("things").join("c.json"), b"not json").unwrap();
-        assert!(matches!(again.list::<String>("thing/1"), Err(StorageError::Unrecognised { file, .. }) if file.ends_with("c.json")));
+        assert!(matches!(again.list::<String>("thing/1").await, Err(StorageError::Unrecognised { file, .. }) if file.ends_with("c.json")));
         again.remove("c").await.unwrap();
         again.remove("a").await.unwrap();
-        assert_eq!(again.list::<String>("thing/1").unwrap(), ["two"]);
+        assert_eq!(again.list::<String>("thing/1").await.unwrap(), ["two"]);
     }
 
     /// CONTRACT: a record removed while another caller lists the store is a record that is gone;
@@ -250,8 +255,7 @@ mod tests {
                 })
             };
             while !remover.is_finished() {
-                let r = r.clone();
-                let listed = tokio::task::spawn_blocking(move || r.list::<u32>("thing/1")).await.unwrap();
+                let listed = r.list::<u32>("thing/1").await;
                 assert!(listed.is_ok(), "round {round}: a list racing a removal failed: {:?}", listed.err());
             }
             remover.await.unwrap();

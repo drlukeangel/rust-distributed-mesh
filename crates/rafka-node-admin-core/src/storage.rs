@@ -88,7 +88,7 @@ impl MeshStorage for FileMeshStorage {
         self.0.write(&record.name, MESH_FORMAT, record).await
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
-        self.0.list(MESH_FORMAT)
+        self.0.list(MESH_FORMAT).await
     }
 }
 
@@ -312,7 +312,7 @@ impl NodesStorage for FileNodesStorage {
         self.runtimes.write(&row.key(), RUNTIME_FORMAT, row).await
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
-        self.runtimes.list(RUNTIME_FORMAT)
+        self.runtimes.list(RUNTIME_FORMAT).await
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         self.own.read("self", NODE_FORMAT).await
@@ -321,7 +321,7 @@ impl NodesStorage for FileNodesStorage {
         self.own.write("self", NODE_FORMAT, record).await
     }
     async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
-        self.contacts.list(NODE_FORMAT)
+        self.contacts.list(NODE_FORMAT).await
     }
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
         self.contacts.write(record.node_id.as_str(), NODE_FORMAT, record).await
@@ -445,7 +445,7 @@ impl ConnectionsStorage for FileConnectionsStorage {
         self.0.write(&connection_key(&fact.index()), CONNECTION_FORMAT, fact).await
     }
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
-        self.0.list(CONNECTION_FORMAT)
+        self.0.list(CONNECTION_FORMAT).await
     }
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
         self.0.remove(&connection_key(index)).await
