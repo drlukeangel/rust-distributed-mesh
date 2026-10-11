@@ -1274,6 +1274,35 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     }
 }
 
+/// What a drift opening decides on, as one comparable string: for a repair, the exited birth and
+/// the completed receipts under its `replace-node:<path>`; for surplus, each live birth by
+/// incarnation and, per removed mesh's `shutdown-mesh:<mesh id>`, the mesh's seated node-admin, its
+/// live node-admins by birth and status, and the completed receipts under the workflow and its
+/// member operations (an exit, an amendment, a roster recorded since moves it).
+fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], repair: Option<(&PathName, &IncarnationId)>, surplus: &[String]) -> String {
+    let complete = |op: &str| {
+        let member = format!("{op}/");
+        steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && (s.operation == op || s.operation.starts_with(&member))).count()
+    };
+    let birth = |n: &Node| format!("{}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("-"));
+    if let Some((path, incarnation)) = repair {
+        return format!("repair {path}:{} receipts={}", incarnation.0, complete(&format!("replace-node:{path}")));
+    }
+    surplus
+        .iter()
+        .map(|item| match t.meshes.iter().find(|m| m.id.as_ref().is_some_and(|id| crate::mesh_leave::operation(id) == *item)) {
+            Some(m) => {
+                let primary = t.cohort_primary(&m.name, NodeKind::NodeAdmin).map(birth).unwrap_or_else(|| "none".into());
+                let mut admins: Vec<String> = t.cohort(&m.name, NodeKind::NodeAdmin).filter(|n| n.status.is_live()).map(|n| format!("{}:{:?}", birth(n), n.status)).collect();
+                admins.sort();
+                format!("{item} primary={primary} admins=[{}] receipts={}", admins.join(","), complete(item))
+            }
+            None => t.members().find(|n| n.name.to_string() == *item).map(birth).unwrap_or_else(|| item.clone()),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// The fabric authority's drift check (`crate::drift`): when this admin is the fabric primary,
 /// the accepted Build is settled, and a cohort the Build's topology names has fewer births than
 /// it should, at least one of its node-admins with its exact runtime inspected and found exited, it
@@ -1281,9 +1310,9 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 /// change). Only a mesh that lost its mesh-primary is repaired here (mesh recovery), and surplus is
 /// retired. A member of a mesh with a live mesh-primary, a node-admin included, is not repaired here:
 /// its mesh-primary proves its exit and submits its recovery (node-recovery.md, mesh-recovery.md:8-9).
-/// `started` holds the (build, attempt, exited births) it already opened, so a repair that fails
-/// is not opened again and again; the adapter's insert-and-fail on the attempt keeps two
-/// authorities from opening it twice.
+/// `started` holds, per opening, the inputs it was opened on (`drift_inputs`), so an attempt that
+/// fails is opened again only once one of them moves, never once per pass; the adapter's
+/// insert-and-fail on the attempt keeps two authorities from opening it twice.
 pub async fn reconcile_drift(
     time: &rafka_mesh_transport::clock::RafkaTime,
     me: &PathName,
@@ -1493,10 +1522,24 @@ pub async fn reconcile_drift(
         }
         None => (surplus.clone(), format!("surplus: {}", surplus.join(" ")), None),
     };
-    let opening = (current.build_id.clone(), attempt, key);
-    if started.contains(&opening) {
+    // An opening is keyed on what the attempt decides on, never on its number: a failed attempt
+    // whose inputs are all as they were when it opened gets no next attempt from here, and one
+    // input moving opens exactly one (node-status-change.md: "a failed Build ... gets its next
+    // attempt", once per failure; R-S2: event-driven, never per pass). A key carrying the attempt
+    // number never matches the next pass (every failed attempt raises it), which reopened a resume
+    // that failed fast on every pass.
+    let inputs = drift_inputs(t, &current.steps, first_exited.map(|(p, b)| (p, &b.incarnation)), &surplus);
+    let ident = key.join(" ");
+    let opened_at = (current.build_id.clone(), 0u32, vec!["opened".to_string(), ident.clone(), inputs.clone()]);
+    if started.contains(&opened_at) {
+        let unchanged = (current.build_id.clone(), 0u32, vec!["unchanged".to_string(), ident.clone(), inputs.clone(), current.attempt.to_string()]);
+        if started.insert(unchanged) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-drift-unchanged", node = %me, build_id = %current.build_id, failed_attempt = current.attempt, scope = %scope, inputs = %inputs)
+                .in_scope(|| tracing::info!("the last attempt opened for these inputs ended and none of them moved since: no next attempt until one does"));
+        }
         return None;
     }
+    let opening = (current.build_id.clone(), attempt, key);
     // A node-admin of a peer mesh opened on the ladder's decision is that mesh's first recovering
     // node-admin: the decision releases no other from here until the mesh is heard again.
     let release = first_exited
@@ -1514,6 +1557,8 @@ pub async fn reconcile_drift(
             return None;
         }
     }
+    started.retain(|k| !(k.0 == current.build_id && k.1 == 0 && k.2.len() == 3 && k.2[0] == "opened" && k.2[1] == ident));
+    started.insert(opened_at);
     started.insert(opening);
     if let Some(release) = release {
         started.insert(release);
