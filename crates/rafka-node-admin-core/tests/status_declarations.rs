@@ -308,3 +308,79 @@ async fn a_draining_authority_accepts_upward_status_but_still_refuses_an_imposto
     assert!(matches!(reply(&call(&rig, &b["rpc2"], &forged).await),
         StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
 }
+
+/// A birth of the fixture serving Status on its own key, recording every request it decodes and
+/// answering `Applied`: the node end of a config apply.
+struct ServedNode {
+    resolved: ResolvedNode,
+    seen: Arc<Mutex<Vec<StatusRequest>>>,
+    _router: Router,
+}
+
+async fn serve_node(b: &Birth) -> ServedNode {
+    use rafka_node_rpc_contract::catalog::OpOwner;
+    let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
+    let s = seen.clone();
+    let server = ServerBuilder::new()
+        .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
+            let s = s.clone();
+            async move {
+                s.lock().unwrap().push(req);
+                Ok(StatusReply::Applied)
+            }
+        })
+        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().0 })
+        .unwrap();
+    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let resolved = ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
+    ServedNode { resolved, seen, _router: router }
+}
+
+fn exact(b: &Birth) -> rafka_node_admin_client::ExactBirth {
+    rafka_node_admin_client::ExactBirth { target: NodeTarget::ExactNode(b.node.node_id.clone()), node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap() }
+}
+
+/// CONTRACT (ops-naming "Node data": a config update is a single call, not a Build): a caller's
+/// `node.config.update` to the fabric-primary ends `node.config.updated` (`ConfigUpdated` naming the
+/// exact birth), and the birth was told the whole map exactly once (`ApplyNodeConfig`), before the
+/// fabric-primary answered. The birth holds what it was told: the node carries the config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_config_update_at_the_fabric_primary_ends_updated_and_the_node_carries_it() {
+    let (rig, b) = rig().await;
+    let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+    let node = serve_node(rpc1).await;
+    let _ = &node.resolved;
+    let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
+    let client = client_of(&rig, admin2).await;
+    let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+    let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+    assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
+    assert_eq!(
+        node.seen.lock().unwrap().clone(),
+        vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
+        "the birth was told the whole config once, before the update was answered"
+    );
+}
+
+/// CONTRACT (ops-naming "Node data": config is capped in key count and bytes, refused by name past
+/// the cap): a config of more keys than the cap is refused `RejectedConfig` naming the keys, the bytes
+/// and both bounds; nothing is told to the node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_config_over_its_cap_is_refused_by_name_and_nothing_is_applied() {
+    let (rig, b) = rig().await;
+    let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+    let node = serve_node(rpc1).await;
+    let keys = rafka_mesh_entity::MAX_CONFIG_KEYS + 1;
+    let config: BTreeMap<String, String> = (0..keys).map(|i| (format!("k{i:02}"), "v".to_string())).collect();
+    let bytes: usize = config.iter().map(|(k, v)| k.len() + v.len()).sum();
+    let client = client_of(&rig, admin2).await;
+    let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+    let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config, &CallOptions::default()).await.expect("a typed refusal is a reply");
+    assert_eq!(
+        reply,
+        StatusReply::RejectedConfig { over: rafka_mesh_entity::ConfigOverCap { keys: keys as u32, bytes: bytes as u32, max_keys: rafka_mesh_entity::MAX_CONFIG_KEYS as u32, max_bytes: rafka_mesh_entity::MAX_CONFIG_BYTES as u32 } }
+    );
+    assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the node");
+}
