@@ -35,7 +35,7 @@ fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {
         in_flight: None,
         load: None,
         gossip: None,
-        extra: Default::default(),
+        config: Default::default(),
     }
 }
 

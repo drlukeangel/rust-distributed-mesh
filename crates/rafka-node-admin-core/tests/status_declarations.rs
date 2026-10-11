@@ -100,6 +100,8 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         rounds: Default::default(),
+        configs: Default::default(),
+        configure: Default::default(),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
@@ -125,6 +127,7 @@ async fn client_of(rig: &Rig, b: &Birth) -> NodeRpcClient {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(rig.resolved.clone());
     let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    tracing::info!(step = "client-bound", node = %b.node.name, peer = %b.key.public().fmt_short(), local = ?ep.bound_sockets(), "a client endpoint is bound on the birth's key");
     NodeRpcClient::new(ep, resolver).with_caller_system("rdm")
 }
 
@@ -307,4 +310,416 @@ async fn a_draining_authority_accepts_upward_status_but_still_refuses_an_imposto
     let forged = declare(&b["rpc1"], NodeState::Leaving);
     assert!(matches!(reply(&call(&rig, &b["rpc2"], &forged).await),
         StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
+}
+
+/// A birth of the fixture serving Status on its own key, recording every request it decodes and
+/// answering `Applied`: the node end of a config apply.
+struct ServedNode {
+    resolved: ResolvedNode,
+    seen: Arc<Mutex<Vec<StatusRequest>>>,
+    _router: Router,
+}
+
+async fn serve_node(b: &Birth) -> ServedNode {
+    serve_node_answering(b, StatusReply::Applied).await
+}
+
+/// A birth serving Status that records every request and answers each with `reply`.
+async fn serve_node_answering(b: &Birth, reply: StatusReply) -> ServedNode {
+    use rafka_node_rpc_contract::catalog::OpOwner;
+    let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
+    let s = seen.clone();
+    let server = ServerBuilder::new()
+        .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
+            let (s, reply) = (s.clone(), reply.clone());
+            async move {
+                s.lock().unwrap().push(req);
+                Ok(reply)
+            }
+        })
+        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().0 })
+        .unwrap();
+    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let resolved = ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
+    ServedNode { resolved, seen, _router: router }
+}
+
+/// The fabric-primary's config door, telling births through a client that resolves `node`.
+async fn configs_door(rig: &Rig, node: &ServedNode) {
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(node.resolved.clone());
+    let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))));
+}
+
+fn exact(b: &Birth) -> rafka_node_admin_client::ExactBirth {
+    rafka_node_admin_client::ExactBirth { target: NodeTarget::ExactNode(b.node.node_id.clone()), node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap() }
+}
+
+/// CONTRACT (ops-naming "Node data": a config update is a single call, not a Build; the fabric-primary
+/// is the only writer and writes the whole row): a caller's `node.config.update` to the fabric-primary
+/// ends `node.config.updated` (`ConfigUpdated` naming the exact birth); the node's record at its
+/// path.name holds the config; the birth was told the whole map exactly once (`ApplyNodeConfig`) before
+/// the fabric-primary answered; and one `rdm.node_admin.node.update.via-config` span says
+/// `config-updated` over a direct route (the fabric-primary is mesh1's primary).
+#[test]
+fn a_config_update_at_the_fabric_primary_ends_updated_and_the_node_carries_it() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
+        let client = client_of(&rig, admin2).await;
+        let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
+        let row = rig.storage.node_row_at(&rpc1.node.name).await.unwrap().expect("the fabric-primary wrote the node's row");
+        assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.rpc.1 is this node with the whole config");
+        assert_eq!(
+            node.seen.lock().unwrap().clone(),
+            vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
+            "the birth was told the whole config once, before the update was answered"
+        );
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let (trace_id, attrs) = &spans[0];
+    assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-updated"), "{attrs:?}");
+    assert_eq!(attrs.get("subject").map(String::as_str), Some("mesh1.rpc.1"), "{attrs:?}");
+    assert_eq!(attrs.get("route").map(String::as_str), Some("direct"), "{attrs:?}");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config subject=mesh1.rpc.1 route=direct outcome=config-updated");
+}
+
+/// CONTRACT (ops-naming "Node data": config is capped in key count and bytes, refused by name past
+/// the cap): a config of more keys than the cap is refused `RejectedConfig` naming the keys, the bytes
+/// and both bounds; nothing is told to the node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_config_over_its_cap_is_refused_by_name_and_nothing_is_applied() {
+    let (rig, b) = rig().await;
+    let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+    let node = serve_node(rpc1).await;
+    configs_door(&rig, &node).await;
+    let keys = rafka_mesh_entity::MAX_CONFIG_KEYS + 1;
+    let config: BTreeMap<String, String> = (0..keys).map(|i| (format!("k{i:02}"), "v".to_string())).collect();
+    let bytes: usize = config.iter().map(|(k, v)| k.len() + v.len()).sum();
+    let client = client_of(&rig, admin2).await;
+    let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+    let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config, &CallOptions::default()).await.expect("a typed refusal is a reply");
+    assert_eq!(
+        reply,
+        StatusReply::RejectedConfig { over: rafka_mesh_entity::ConfigOverCap { keys: keys as u32, bytes: bytes as u32, max_keys: rafka_mesh_entity::MAX_CONFIG_KEYS as u32, max_bytes: rafka_mesh_entity::MAX_CONFIG_BYTES as u32 } }
+    );
+    assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the node");
+}
+
+/// A nodes store that refuses every node-row put, by name; every other row is the memory store's.
+#[derive(Default)]
+struct RefusingRows(MemoryNodesStorage);
+
+#[async_trait::async_trait]
+impl NodesStorage for RefusingRows {
+    async fn put_runtime(&self, row: &rafka_node_admin_core::storage::RuntimeRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.put_runtime(row).await
+    }
+    async fn runtimes(&self) -> Result<Vec<rafka_node_admin_core::storage::RuntimeRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.runtimes().await
+    }
+    async fn own(&self) -> Result<Option<rafka_node_admin_core::storage::NodeRecord>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.own().await
+    }
+    async fn put_own(&self, record: &rafka_node_admin_core::storage::NodeRecord) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.put_own(record).await
+    }
+    async fn contacts(&self) -> Result<Vec<rafka_node_admin_core::storage::NodeRecord>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.contacts().await
+    }
+    async fn put_contact(&self, record: &rafka_node_admin_core::storage::NodeRecord) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.put_contact(record).await
+    }
+    async fn remove_contact(&self, node_id: &NodeId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.remove_contact(node_id).await
+    }
+    async fn put_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the write".into() })
+    }
+    async fn node_row_at(&self, name: &rafka_node_admin_core::model::PathName) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.node_row_at(name).await
+    }
+}
+
+/// CONTRACT (ops-naming "Node data": the fabric-primary writes the record, then the node applies it):
+/// when the birth does not apply the config, the update ends `ConfigNotApplied`, naming the node and
+/// the birth's answer by name; the row was written first, so the node's record at its path.name holds
+/// the new config. The fabric-primary is ready; the birth refused. The birth's answer here is longer than
+/// the reply's reason budget, so the reply carries it cut (ending `…`) and the via-config span carries
+/// it whole: nothing of the refusal is lost.
+#[test]
+fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
+    let cap = capture();
+    let cut = cap.run(async {
+        let (rig, b) = rig().await;
+        let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+        let refusal = format!("hydration has not passed: {}", "the store of mesh1.rpc.1 is still behind; ".repeat(20));
+        let node = serve_node_answering(rpc1, StatusReply::NotReady { reason: refusal.clone() }).await;
+        configs_door(&rig, &node).await;
+        let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
+        let client = client_of(&rig, admin2).await;
+        let fp = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&fp, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let StatusReply::ConfigNotApplied { node: named, answered, reason } = &reply else { panic!("the row is written and the birth refused: {reply:?}") };
+        assert_eq!((named.as_str(), answered.as_str()), ("mesh1.rpc.1", "not-ready"), "{reply:?}");
+        assert!(reason.ends_with('…'), "the birth's long answer is cut to the reply's budget: {reason}");
+        assert_eq!(node.seen.lock().unwrap().len(), 1, "the birth was told once");
+        let row = rig.storage.node_row_at(&rpc1.node.name).await.unwrap().expect("the fabric-primary wrote the row before telling the birth");
+        assert_eq!(row.config, config);
+        (reason.clone(), refusal)
+    });
+    let (cut, refusal) = cut;
+    let spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let (trace_id, attrs) = &spans[0];
+    assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-not-applied"), "{spans:?}");
+    assert_eq!(attrs.get("answered").map(String::as_str), Some("not-ready"), "{attrs:?}");
+    let detail = attrs.get("detail").expect("the via-config span carries the refusal's detail");
+    assert!(detail.len() > rafka_node_rpc_contract::status::MAX_REFUSAL_REASON_BYTES && !detail.ends_with('…'), "the span's detail is whole: {detail}");
+    assert!(detail.starts_with(cut.trim_end_matches('…')) && detail.contains(&refusal), "the reply's cut detail is the head of the span's whole one: {detail}");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config outcome=config-not-applied answered=not-ready detail={} bytes (reply reason {} bytes, cut)", detail.len(), cut.len());
+}
+
+/// CONTRACT (ops-naming "Node data": the fabric-primary writes the record, then tells the node): when
+/// the nodes store refuses the row, the update ends `ConfigRowRefused` naming the node and the store's
+/// refusal, and nothing is told to the birth.
+#[test]
+fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let rpc1 = &b["rpc1"];
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        let view = rig.topology.read().await.clone();
+        let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
+        let reply = rig.authority.configs.get().unwrap().update(&rig.admin.node.name, &view, &RefusingRows::default(), &req).await;
+        assert!(
+            matches!(&reply, StatusReply::ConfigRowRefused { node, reason } if node == "mesh1.rpc.1" && reason.contains("disk refused the write")),
+            "the store refused the row: {reply:?}"
+        );
+        assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the birth when its row was not written");
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    assert_eq!(spans[0].1.get("outcome").map(String::as_str), Some("config-row-refused"), "{spans:?}");
+    assert!(spans[0].1.get("detail").is_some_and(|d| d.contains("disk refused the write") && !d.ends_with('…')), "the via-config span carries the store's whole refusal: {spans:?}");
+    eprintln!("trace {}: rdm.node_admin.node.update.via-config outcome=config-row-refused", spans[0].0);
+}
+
+/// The spans a cell's own run exported, with their trace ids.
+struct Capture {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    provider: opentelemetry_sdk::trace::TracerProvider,
+    dispatch: tracing::Dispatch,
+}
+
+fn capture() -> Capture {
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::layer::SubscriberExt;
+    crate::enable_callsites();
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::TracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("status-declarations"));
+    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+}
+
+impl Capture {
+    fn run<F: std::future::Future>(&self, f: F) -> F::Output {
+        let d = self.dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+            .build()
+            .unwrap();
+        let _g = tracing::dispatcher::set_default(&self.dispatch);
+        rt.block_on(f)
+    }
+
+    /// Every finished span called `name`: its trace id, its attributes and its events (each event's
+    /// message and fields), in the order they happened.
+    fn spans_with_events(&self, name: &str) -> Vec<(String, BTreeMap<String, String>, Vec<String>)> {
+        let _ = self.provider.force_flush();
+        self.exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == name)
+            .map(|s| {
+                let events = s.events.iter().map(|e| format!("{} {:?}", e.name, e.attributes.iter().map(|kv| format!("{}={}", kv.key, kv.value)).collect::<Vec<_>>())).collect();
+                (s.span_context.trace_id().to_string(), s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect(), events)
+            })
+            .collect()
+    }
+
+    /// Every finished span called `name`: its trace id and its attributes.
+    fn spans(&self, name: &str) -> Vec<(String, BTreeMap<String, String>)> {
+        let _ = self.provider.force_flush();
+        self.exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == name)
+            .map(|s| (s.span_context.trace_id().to_string(), s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()))
+            .collect()
+    }
+}
+
+/// mesh2's primary admin as a carrier: the admin composition (`admin::rpc_server`) on its own key,
+/// its live resolver holding `target`, the birth it carries to.
+async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Router) {
+    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionsHeld};
+    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let resolved = ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
+    let live = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
+    live.apply(target.clone(), None);
+    let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
+        ConnectionEnd { name: resolved.name.clone(), node_id: resolved.node_id.clone(), incarnation: Some(resolved.incarnation.clone()) },
+        Arc::new(rafka_node_admin_core::storage::MemoryConnectionsStorage::default()),
+        Arc::new(Mutex::new(ConnectionsHeld::new())),
+    ));
+    connections.held().lock().unwrap().set_membership(live.clone());
+    connections.hydrate().await.unwrap();
+    let node_rpc = rafka_node_admin_core::node_rpc::ProcessNodeRpc::new(live.clone(), ep.clone(), Some(connections.clone()));
+    let server = rafka_node_admin_core::admin::rpc_server(live, connections, node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
+        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().0 })
+        .unwrap();
+    (resolved, Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn())
+}
+
+/// CONTRACT (ops-naming "Node data": caller → fabric-primary, which writes the record → the node's
+/// mesh-primary (Forward `0x1A` when not directly reachable) → the node): a config put for a member
+/// of another mesh reaches it through that mesh's primary. The fabric-primary's client cannot
+/// resolve the member at all, only mesh2's primary, so a direct leg is impossible: the update ends
+/// `ConfigUpdated`, the member was told the config once, and the route span names `via-peer` with
+/// mesh2's primary as the carrier, inside the via-config span's trace.
+#[test]
+fn a_config_update_for_another_meshs_member_reaches_it_through_that_meshs_primary() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let m2admin = &b["m2admin"];
+        let m2rpc = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
+        rig.topology.write().await.nodes.push(m2rpc.node.clone());
+        let node = serve_node(&m2rpc).await;
+        let (carrier, _carrier_router) = carrier_admin(m2admin, &node.resolved).await;
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(carrier);
+        let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let door = rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")));
+        let config: BTreeMap<String, String> = [("tags".to_string(), "far".to_string())].into();
+        let req = StatusRequest::UpdateNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config: config.clone() };
+        let view = rig.topology.read().await.clone();
+        let reply = door.update(&rig.admin.node.name, &view, &*rig.storage, &req).await;
+        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap() });
+        assert_eq!(
+            node.seen.lock().unwrap().clone(),
+            vec![StatusRequest::ApplyNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config }],
+            "the member was told once, through its mesh's primary"
+        );
+    });
+    let config_spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(config_spans.len(), 1, "{config_spans:?}");
+    let (trace_id, attrs) = &config_spans[0];
+    assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-updated"), "{attrs:?}");
+    let routes = cap.spans("rdm.node_rpc.route.resolve.via-connections");
+    let carried: Vec<_> = routes.iter().filter(|(t, a)| t == trace_id && a.get("route").map(String::as_str) == Some("via-peer")).collect();
+    assert_eq!(carried.len(), 1, "one carried leg in the via-config trace: {routes:?}");
+    assert_eq!(carried[0].1.get("carrier").map(String::as_str), Some("mesh2.admin.1"));
+    assert_eq!(carried[0].1.get("protocol").map(String::as_str), Some("status"));
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config outcome=config-updated > rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.admin.1");
+}
+
+/// CONTRACT (ops-naming "Node data": the node applies the config and carries it in its next digest; a
+/// node-admin is a node like any other): `ApplyNodeConfig` naming this admin, from another node-admin,
+/// is answered by the admin itself: `Applied`, after it handed the whole map to what holds it and
+/// publishes its digest. One naming another incarnation of it is `RejectedStaleIncarnation` with the
+/// one held; one from a member that is not a node-admin is `RejectedNotAuthority`. Neither holds anything.
+#[test]
+fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+        let held: Arc<Mutex<Vec<BTreeMap<String, String>>>> = Arc::default();
+        let h = held.clone();
+        let _ = rig.authority.configure.set(Arc::new(move |config: BTreeMap<String, String>| {
+            let h = h.clone();
+            Box::pin(async move { h.lock().unwrap().push(config) })
+        }));
+        let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
+        let me = &rig.admin.node;
+        let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation, config };
+        assert_eq!(reply(&call(&rig, admin2, &told(me.incarnation_id.clone().unwrap(), config.clone())).await), StatusReply::Applied);
+        assert_eq!(held.lock().unwrap().clone(), vec![config.clone()], "the admin holds the whole config it was told");
+        assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), config.clone())).await), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
+        assert!(matches!(reply(&call(&rig, rpc1, &told(me.incarnation_id.clone().unwrap(), config)).await), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its config");
+        assert_eq!(held.lock().unwrap().len(), 1, "neither refusal held anything");
+    });
+    for name in ["rdm.node_rpc.request.update.via-call", "rdm.node_rpc.connection.create.via-dial"] {
+        for (trace, attrs, events) in cap.spans_with_events(name) {
+            eprintln!("trace {trace} {name} {attrs:?}");
+            for e in events {
+                eprintln!("    {e}");
+            }
+        }
+    }
+}
+
+/// CONTRACT (a restart is the same key in a new process: node-lifecycle restart vocabulary, same
+/// key and path.name, new socket): a sender whose endpoint ended without a close, so the authority
+/// still holds its old connection, reaches the authority from a new endpoint bound on the same key:
+/// its first call dials and is answered, a second call on that pooled connection is answered after
+/// the authority took the new connection in, and the same holds for a second re-bind while two old
+/// connections are held. Every call is a reply within the default budget; none ends `NotSent`.
+#[test]
+fn a_sender_rebound_on_its_key_while_its_old_connection_is_held_reaches_the_authority() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let admin2 = &b["admin2"];
+        let me = &rig.admin.node;
+        let fp = NodeTarget::ExactNode(me.node_id.clone());
+        // A told config naming another birth of the authority: answered by name, nothing held.
+        let stale = StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), config: BTreeMap::new() };
+        let first = client_of(&rig, admin2).await;
+        assert!(matches!(first.call::<Status>(&fp, &stale, &CallOptions::default()).await.0, RpcOutcome::Reply(_)), "the first endpoint is answered");
+        // The process ends without a close: the authority keeps the old connection until it idles out.
+        drop(first);
+        for rebind in 1..=2 {
+            let next = client_of(&rig, admin2).await;
+            for call in ["dialed", "pooled"] {
+                let out = next.call::<Status>(&fp, &stale, &CallOptions::default()).await.0;
+                assert!(matches!(out, RpcOutcome::Reply(_)), "re-bind {rebind}, {call} call: {out:?}");
+            }
+            drop(next);
+        }
+    });
+    let calls = cap.spans("rdm.node_rpc.request.update.via-call");
+    assert_eq!(calls.len(), 5, "{calls:?}");
+    assert!(calls.iter().all(|(_, a)| a.get("outcome").map(String::as_str) == Some("Reply")), "{calls:?}");
+    let dials = cap.spans("rdm.node_rpc.connection.create.via-dial");
+    let locals: std::collections::BTreeSet<_> = dials.iter().filter_map(|(_, a)| a.get("local").cloned()).collect();
+    assert_eq!((dials.len(), locals.len()), (3, 3), "one dial per endpoint, each from its own socket: {dials:?}");
+    assert!(dials.iter().all(|(_, a)| a.get("outcome").map(String::as_str) == Some("connected")), "{dials:?}");
+    for name in ["rdm.node_rpc.request.update.via-call", "rdm.node_rpc.connection.create.via-dial"] {
+        for (trace, attrs, events) in cap.spans_with_events(name) {
+            eprintln!("trace {trace} {name} outcome={:?} reason={:?} elapsed_ms={:?} local={:?}", attrs.get("outcome"), attrs.get("reason"), attrs.get("elapsed_ms"), attrs.get("local"));
+            for e in events.iter().filter(|e| e.contains("step=")) {
+                eprintln!("    {e}");
+            }
+        }
+    }
 }

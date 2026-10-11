@@ -60,7 +60,7 @@ fn a_membership_digest_carries_its_product_ids_exactly() {
         digest_seq: 1,
         mesh_id: None,
         in_flight: None,
-        extra: Default::default(),
+        config: Default::default(),
         load: None,
         gossip: None,
         data_dir: None,

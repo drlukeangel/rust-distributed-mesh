@@ -152,6 +152,21 @@ impl RuntimeRow {
     }
 }
 
+/// The record of the node at one `path.name`: which node holds the name now, its status and its
+/// config. The fabric-primary is its only writer and writes it whole, a blind put of the record it
+/// holds. A `Deleted` row keeps the config for the next node created at the same `path.name`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeRow {
+    /// The node's `path.name`: the row's key.
+    pub name: PathName,
+    /// The node that held the name when the row was written.
+    pub node_id: NodeId,
+    /// The node's status: `Deleted` once its runtime exit is proven.
+    pub status: crate::model::NodeStatus,
+    /// The application's own key/values on the node (capped: [`rafka_mesh_entity::check_config`]).
+    pub config: BTreeMap<String, String>,
+}
+
 /// The durable record of the births this admin knows: its own row, its contacts and the runtimes it
 /// started.
 #[async_trait]
@@ -170,6 +185,10 @@ pub trait NodesStorage: Send + Sync {
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
     /// Forget the contact `node_id`.
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError>;
+    /// Keep `row` as the record at its `path.name` (a blind put of its own key).
+    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError>;
+    /// The record at `name`: a point read through the `path.name` key; `None` when none was ever written.
+    async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
 }
 
 /// A nodes store held in memory.
@@ -178,6 +197,7 @@ pub struct MemoryNodesStorage {
     runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
     own: Mutex<Option<NodeRecord>>,
     contacts: Mutex<BTreeMap<NodeId, NodeRecord>>,
+    rows: Mutex<BTreeMap<String, NodeRow>>,
 }
 
 #[async_trait]
@@ -207,10 +227,18 @@ impl NodesStorage for MemoryNodesStorage {
         self.contacts.lock().unwrap().remove(node_id);
         Ok(())
     }
+    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
+        self.rows.lock().unwrap().insert(row.name.to_string(), row.clone());
+        Ok(())
+    }
+    async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
+        Ok(self.rows.lock().unwrap().get(&name.to_string()).cloned())
+    }
 }
 
 const NODE_FORMAT: &str = "node-record/1";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
+const ROW_FORMAT: &str = "node-row/1";
 
 /// `<data dir>/nodes/self.json` and `<data dir>/nodes/contacts/<node id>.json`.
 #[derive(Debug)]
@@ -218,12 +246,13 @@ pub struct FileNodesStorage {
     own: FileRecords,
     contacts: FileRecords,
     runtimes: FileRecords,
+    rows: FileRecords,
 }
 
 impl FileNodesStorage {
     /// Open the store under the admin's own data directory.
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")? })
+        Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")?, rows: FileRecords::open(own_data_dir, "nodes/rows")? })
     }
 }
 
@@ -249,6 +278,12 @@ impl NodesStorage for FileNodesStorage {
     }
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError> {
         self.contacts.remove(node_id.as_str()).await
+    }
+    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
+        self.rows.write(&row.name.to_string(), ROW_FORMAT, row).await
+    }
+    async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
+        self.rows.read(&name.to_string(), ROW_FORMAT)
     }
 }
 

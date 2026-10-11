@@ -17,7 +17,7 @@ use std::fmt;
 pub const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
 /// Width of a canonical product id.
-pub(crate) const CROCKFORD60_LEN: usize = 12;
+pub const CROCKFORD60_LEN: usize = 12;
 
 /// The `id_format` evidence names for a canonical product id.
 pub const ID_FORMAT: &str = "crockford60";
@@ -165,6 +165,10 @@ product_id!(
     FabricId, "fabric id"
 );
 
+/// Width of a minted opaque id ([`IncarnationId`], [`EndpointId`] when minted): 128 random bits in
+/// lower-case hex.
+pub const OPAQUE_ID_LEN: usize = 32;
+
 macro_rules! opaque_id {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
@@ -175,7 +179,7 @@ macro_rules! opaque_id {
         impl $name {
             /// Mint a fresh id: 128 random bits, lower-case hex.
             pub fn mint() -> Self {
-                Self(hex::encode(rand::random::<[u8; 16]>()))
+                Self(hex::encode(rand::random::<[u8; OPAQUE_ID_LEN / 2]>()))
             }
         }
 

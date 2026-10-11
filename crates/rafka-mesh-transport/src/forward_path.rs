@@ -218,7 +218,7 @@ mod tests {
             digest_seq: seq,
             mesh_id: None,
             in_flight: None,
-            extra: Default::default(),
+            config: Default::default(),
             load: None,
             gossip: None,
             data_dir: None,

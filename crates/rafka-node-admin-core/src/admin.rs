@@ -640,6 +640,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         n.routable = n.status.is_live() && book.routable(d.node.node_id.as_str());
         n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
+        n.config = d.config.clone();
         // A node-admin's control API is its one listener: the view carries it, so whichever admin
         // restarts it keeps the address its launch was assigned.
         if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
@@ -682,6 +683,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         n.routable = false;
         n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
+        n.config = d.config.clone();
         if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
             n.listeners = vec![("control".to_string(), addr)];
         }
@@ -3013,7 +3015,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             digest_seq: 0,
             mesh_id: cfg.mesh_id.clone(),
             in_flight: None,
-            extra: BTreeMap::new(),
+            config: BTreeMap::new(),
             load: None,
             gossip: None,
             data_dir: Some(cfg.data_dir.display().to_string()),
@@ -3307,6 +3309,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
     let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
+    // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
+    let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
     // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
     // event rows it put, and the lifecycle state on each node row it wrote, folded into what it
     // holds as applied. A reader folds; nothing here writes a row.
@@ -3314,6 +3318,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
     let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
     let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
+    let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
+    let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone())));
     let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
     *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage, &*nodes_storage).await?;
     {
@@ -3333,6 +3339,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
             rounds: rounds_slot.clone(),
+            configs: configs_slot.clone(),
+            configure: configure.clone(),
         }));
     }
     // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -3526,7 +3534,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         digest_seq: 0,
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
-        extra: BTreeMap::new(),
+        config: BTreeMap::new(),
         load: None,
         gossip: None,
         data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
@@ -3950,6 +3958,23 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let peers: Vec<EndpointAddr> = membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
                 let _ = membership.join_peers(peers).await;
                 let d = digest.lock().unwrap().clone();
+                let _ = membership.publish(&d).await;
+            })
+        }));
+    }
+    {
+        // The config is held on this admin's own digest and by its membership, so every publish and
+        // every read of its own digest carries it.
+        let (membership, digest) = (membership.clone(), digest.clone());
+        let _ = configure.set(Arc::new(move |config: BTreeMap<String, String>| {
+            let (membership, digest) = (membership.clone(), digest.clone());
+            Box::pin(async move {
+                membership.set_config(config.clone());
+                let d = {
+                    let mut d = digest.lock().unwrap();
+                    d.config = config;
+                    d.clone()
+                };
                 let _ = membership.publish(&d).await;
             })
         }));
@@ -4560,7 +4585,7 @@ mod tests {
             digest_seq: 1,
             mesh_id: Some(mesh_id(&name.mesh)),
             in_flight: None,
-            extra: BTreeMap::new(),
+            config: BTreeMap::new(),
             load: None,
             gossip: None,
             data_dir: None,
@@ -4838,7 +4863,7 @@ mod tests {
         let at = |name: &str, id: &str, since: u64| {
             let mut d = with_id(digest(name, MemberStatus::ReadyForTraffic), id);
             // A digest still carrying the retired readiness claim: a fact nothing reads.
-            d.extra.insert("ready_since_ms".into(), since.to_string());
+            d.config.insert("ready_since_ms".into(), since.to_string());
             d
         };
         // rpc.3 has the highest ordinal and the latest ready claim, and the lowest id.
@@ -4979,6 +5004,8 @@ mod tests {
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
             rounds: Default::default(),
+            configs: Default::default(),
+            configure: Default::default(),
         };
         let _ = Declared::default();
 

@@ -403,7 +403,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         digest_seq: 0,
         mesh_id: None,
         in_flight: None,
-        extra: Default::default(),
+        config: Default::default(),
         load: None,
         gossip: None,
         data_dir: Some(launch.data_dir.display().to_string()),
@@ -443,13 +443,14 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // This node serves the topology it holds from here on (until now a read is `NotReady`).
     let status = Arc::new(Mutex::new(MemberStatus::Pending));
     {
-        let (own, st) = (digest.clone(), status.clone());
+        let (own, st, m) = (digest.clone(), status.clone(), membership.clone());
         let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(
             membership.clone(),
             Arc::new(move || {
                 let mut d = own.clone();
                 d.status = *st.lock().unwrap();
-                d
+                // The config this birth was told rides its own digest here as in every publish.
+                m.with_config(&d)
             }),
             rafka_time.clone(),
         )));
@@ -984,7 +985,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(reply);
             }
             let (node_id, incarnation) = match &req {
-                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } => (node_id, incarnation),
+                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } => (node_id, incarnation),
                 _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             };
             if *node_id != me.digest.node.node_id || !from_admin {
@@ -1020,6 +1021,25 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.digest.node.name, sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(StatusReply::RejectedInvalidNodeTransition { current })
+                }
+                StatusRequest::ApplyNodeConfig { config, .. } => {
+                    // ops-naming "Node data": the node applies the config and carries it in its next
+                    // digest. It is held first, so every later publish carries it; a live node
+                    // publishes now, a parked one presents nothing until it starts.
+                    me.membership.set_config(config.clone());
+                    let published = if me.own.is_parked() {
+                        "parked"
+                    } else {
+                        let mut d = me.digest.clone();
+                        d.status = *me.status.lock().unwrap();
+                        match me.membership.publish(&d).await {
+                            Ok(()) => "published",
+                            Err(_) => "publish-failed",
+                        }
+                    };
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.name, sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the fabric-primary's config is held and rides this birth's digest"));
+                    Ok(StatusReply::Applied)
                 }
                 _ => Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             }

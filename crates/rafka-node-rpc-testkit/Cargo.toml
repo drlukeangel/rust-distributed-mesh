@@ -38,6 +38,8 @@ testkit-skew = ["rafka-mesh-transport/testkit-skew"]
 
 [dev-dependencies]
 rafka-node-rpc-testkit = { path = ".", features = ["rig"] }
+# status_probe_apply: the node's own topology answer, read as a typed held view.
+rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 libc = "0.2"
 tracing-subscriber = { workspace = true }
 # i143_acceptance_2775: the UNIT cell captures its own spans in an in-memory OTel exporter.

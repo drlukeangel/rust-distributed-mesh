@@ -2116,6 +2116,9 @@ pub struct Membership {
     load: Arc<crate::load::LoadSampler>,
     /// What the forwarder decides and where it goes: this mesh's channel.
     forward_path: ForwardPath,
+    /// The config the fabric-primary last told this birth (`ApplyNodeConfig`; ops-naming "Node data"):
+    /// carried in every digest this membership publishes from then on. `None` until it is told.
+    config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
 }
 
 impl Membership {
@@ -2176,7 +2179,7 @@ impl Membership {
             Box::pin(async move { channel.broadcast(&f).await })
         });
         let forward_path = ForwardPath::new(view.forwarder.clone(), Arc::default(), sink);
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path };
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default() };
         me.watch_meshes(node.to_string());
         Ok(me)
     }
@@ -2311,7 +2314,7 @@ impl Membership {
     /// sequence (from 1), and `emitted_at_rafka_ms` is the composed clock's reading. The order a
     /// receiver acts on is the sequence, whatever the clock reads.
     pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
-        let mut d = d.clone();
+        let mut d = self.with_config(d);
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
         d.load = Some(self.load.sample());
@@ -2323,6 +2326,21 @@ impl Membership {
         });
         self.book.record(d.clone());
         self.mesh.broadcast(&Frame::Digest { digest: d }).await
+    }
+
+    /// Hold `config` as this birth's config: every digest this membership publishes from now on carries
+    /// it (ops-naming "Node data": the node applies it and carries it in its next digest).
+    pub fn set_config(&self, config: std::collections::BTreeMap<String, String>) {
+        *self.config.lock().unwrap() = Some(config);
+    }
+
+    /// `d` as this birth reports it: with the config it was told, when it was told one.
+    pub fn with_config(&self, d: &MeshDigest) -> MeshDigest {
+        let mut d = d.clone();
+        if let Some(c) = self.config.lock().unwrap().as_ref() {
+            d.config = c.clone();
+        }
+        d
     }
 
     /// Install what this node-admin does with a node's own `node-drained` / `node-left` heard on
@@ -3835,7 +3853,7 @@ mod tests {
             digest_seq: at,
             mesh_id: None,
             in_flight: None,
-            extra: Default::default(),
+            config: Default::default(),
             load: None,
             gossip: None,
             data_dir: None,
