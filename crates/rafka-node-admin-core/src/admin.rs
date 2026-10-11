@@ -1046,7 +1046,6 @@ impl RecoverySubmitter {
     /// holds the birth as submitted until then. A repeat answers AlreadyApplied or BuildInProgress.
     pub(crate) async fn submit(&self, node: &Node, code: Option<i32>, source: &'static str) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
-        crate::offline::put_exit_proof(&*self.status_storage, node, code, source, local_now_ms()).await?;
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-node-recovery",
             node = %node.name,
@@ -1061,7 +1060,12 @@ impl RecoverySubmitter {
             disposition = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
-        let (outcome, r) = settle(self.submit_in(&span, node, &incarnation).instrument(span.clone()).await);
+        // The exit-proof row first: a refused put ends the submit here, named on its own span.
+        let end = match crate::offline::put_exit_proof(&*self.status_storage, node, code, source, local_now_ms()).await {
+            Ok(_) => self.submit_in(&span, node, &incarnation).instrument(span.clone()).await,
+            Err(e) => Err(e),
+        };
+        let (outcome, r) = settle(end);
         span.record("outcome", outcome.as_str());
         span.in_scope(|| tracing::info!("the mesh primary submits the recovery of its proven-exited member to the fabric-primary"));
         r
