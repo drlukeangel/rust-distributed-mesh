@@ -326,6 +326,13 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
         let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
         assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "the member cannot reach its own node-admin: {p:#?}");
         assert!(attr(p, "member").split(',').all(|m| survivors.contains(&m.to_string())) && survivors.contains(&attr(p, "carrier")), "members of {} were asked and one carried it: {p:#?}", f.lost);
+        // iroh's local view of each node-admin asked is a diagnostic on the probe span (R-CK1:
+        // observation stays, separate from recovery authority); nothing decides on it.
+        for asked in attr(p, "target").split(',').filter_map(|t| t.split('=').next()) {
+            for field in ["iroh_known_addrs", "iroh_active_addrs"] {
+                assert!(attr(p, field).split(';').any(|v| v.starts_with(&format!("{asked}="))), "the probe span carries iroh's view of {asked} in {field}: {p:#?}");
+            }
+        }
     }
     assert!(unheard(probes[0]) >= rungs().probe1, "probe 1 fires at {:?} unheard, not before: {:?}", rungs().probe1, unheard(probes[0]));
     assert!(unheard(probes[1]) >= rungs().probe2, "probe 2 fires at {:?} unheard, not before: {:?}", rungs().probe2, unheard(probes[1]));
@@ -365,6 +372,9 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     let marks: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == f.lost && attr(sp, "mark") == "true").collect();
     assert_eq!(marks.len(), 1, "the silent mark is made once: {marks:#?}");
     assert!(unheard(marks[0]) >= rungs().mark, "the mark is at {:?} unheard, not before: {:?}", rungs().mark, unheard(marks[0]));
+    // A probe in flight never holds the ladder (R-CK1: a delayed tick never moves a threshold):
+    // the mark is stepped at its rung, before probe 2's, however long probe 1 runs.
+    assert!(unheard(marks[0]) < rungs().probe2, "the mark is stepped at its rung, before probe 2's at {:?}, not when probe 1 ends: {:?}", rungs().probe2, unheard(marks[0]));
     let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
     let authored_for_peer: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope") == format!("mesh:{}", f.lost)).collect();
     assert!(authored_for_peer.is_empty(), "the fabric primary never authors {}'s MeshStatus: {authored_for_peer:#?}", f.lost);
