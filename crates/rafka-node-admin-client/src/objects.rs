@@ -160,8 +160,7 @@ impl NodeMeta {
     /// step of recover and replace. Nothing RDM owns is copied, the name least of all: the
     /// successor's `path.name` and identity come from its own create spec.
     pub fn with_caller_owned_of(&self, predecessor: &NodeMeta) -> NodeMeta {
-        let _ = predecessor;
-        self.clone()
+        NodeMeta { otel_debug: predecessor.otel_debug, ..self.clone() }
     }
 
     /// Whether putting `self` over `held` changes only what a caller may change. `stopped` is
@@ -183,6 +182,9 @@ impl NodeMeta {
         }
         if self.exe != held.exe {
             return refuse(MetaField::Exe);
+        }
+        if self.runtime != held.runtime {
+            return refuse(MetaField::Runtime);
         }
         if self.status != held.status {
             return refuse(MetaField::Status);
