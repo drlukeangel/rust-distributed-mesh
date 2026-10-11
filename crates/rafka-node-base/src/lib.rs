@@ -134,6 +134,8 @@ pub async fn run(role: Role) -> Result<()> {
 /// after the node came up Pending ends the process by name.
 pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydration::Hydration, serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Result<()> {
     let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&format!("rafka-{}", role.name()));
+    // A stop that arrives while the node boots is heard from here on.
+    rafka_node_rpc_testkit::node::listen_for_stop();
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
@@ -148,13 +150,23 @@ pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydrati
     let oracles = Oracles::open(&launch)?;
     let running = {
         use tracing::Instrument;
-        rafka_node_rpc_testkit::node::start_hydrating(&launch, hydration, |b, seams| serve_app(oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver)))
-            .instrument(tracing::Span::none())
-            .await
-            .map_err(|e| {
-                boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
-                e
-            })?
+        let started = rafka_node_rpc_testkit::node::start_hydrating(&launch, hydration, |b, seams| serve_app(oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver)))
+            .instrument(tracing::Span::none());
+        let started = tokio::select! {
+            r = started => r,
+            () = rafka_node_rpc_testkit::node::stop_requested() => {
+                // Stopped before it booted: the boot ends by name and the process exits through its
+                // telemetry drain.
+                boot.in_scope(|| tracing::info!("stopped by signal before the node booted"));
+                drop(boot);
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = false).in_scope(|| tracing::info!("stopping"));
+                return Ok(());
+            }
+        };
+        started.map_err(|e| {
+            boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
+            e
+        })?
     };
     let _ = oracles.declare_client.set(running.node_rpc.clone());
     let served = running.server.catalog().entries().count();
@@ -182,7 +194,7 @@ pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydrati
         drain.record("in_flight_at_deadline", left);
         drop(drain);
     }
-    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     if rafka_node_rpc_testkit::node::stop_commanded() {
         running.stop_commanded().await;
     } else {
