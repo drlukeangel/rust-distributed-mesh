@@ -1311,6 +1311,8 @@ impl crate::build_drive::Gate for SeatGate {
 /// Proof that an executor's birth departed: the provider inspects the exact runtime the digest book
 /// or the durable runtime rows name for it, and only an exited runtime counts.
 struct ProviderDeparture {
+    /// The admin proving the departure: the reader its refusals name.
+    me: PathName,
     topology: Arc<RwLock<Topology>>,
     /// Projects this admin's view now and installs it, so a birth just proven exited holds no seat
     /// in the view the next attempt is planned from.
@@ -4174,6 +4176,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
             gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone() }),
             departure: Arc::new(ProviderDeparture {
+                me: name.clone(),
                 topology: control.topology.clone(),
                 refresh: {
                     let (topology, records, book, fabric, fabric_id, provider) = (control.topology.clone(), records.clone(), book.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
@@ -5497,6 +5500,121 @@ mod tests {
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
         }
+    }
+
+    /// A nodes.storage over memory that counts every list of the runtime rows and answers the point
+    /// read of one birth's row as `point` says: the row held (`None`), or the store's refusal.
+    #[derive(Default)]
+    struct CountsRuntimeLists {
+        inner: crate::storage::MemoryNodesStorage,
+        lists: std::sync::atomic::AtomicUsize,
+        point_refused: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for CountsRuntimeLists {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_runtime(row).await
+        }
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.runtimes().await
+        }
+        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            if self.point_refused {
+                return Err(crate::record_store::StorageError::Io { file: format!("runtimes/{node_id}--{}.json", incarnation.0), reason: "Input/output error (os error 5)".into() });
+            }
+            self.inner.runtime(node_id, incarnation).await
+        }
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.inner.own().await
+        }
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_own(record).await
+        }
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.inner.contacts().await
+        }
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_contact(record).await
+        }
+        async fn remove_contact(&self, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_contact(node_id).await
+        }
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_row(row).await
+        }
+        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.inner.node_row_at(name).await
+        }
+        async fn claim_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<crate::storage::Claimed, crate::storage::NameHeld>, crate::record_store::StorageError> {
+            self.inner.claim_node_row(row).await
+        }
+        async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.release_node_row(name, holder).await
+        }
+    }
+
+    /// CONTRACT (CLAUDE.md read rule: "Every lookup is a point read through a declared index"; error
+    /// rule: "never written" and "could not be read" are different errors, distinct arms and spans):
+    /// the fabric-primary proves a lost executor `mesh2.admin.1` departed whose digest carries no
+    /// runtime, so the proof reads that exact birth's durable runtime row by its key. Held and
+    /// exited: the departure is proven. Never written: refused on
+    /// `rdm.node_admin.node.reject.via-no-runtime-row`. Unreadable: refused on
+    /// `rdm.node_admin.node.reject.via-runtime-row-unreadable` naming the store's cause. Must NOT
+    /// happen: a list of every runtime row searched for the one birth, or the two refusals as one.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_executor_exit_proof_point_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable() {
+        use crate::build_drive::DepartureProof as _;
+        use crate::storage::NodesStorage as _;
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-executor").unwrap();
+        let executor = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
+        let book = DigestBook::default();
+        for d in [executor.clone(), digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic)] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let row = crate::storage::RuntimeRow { node_id: executor.node.node_id.clone(), name: executor.node.name.clone(), incarnation_id: executor.node.incarnation.clone(), runtime: fact.clone(), data_dir: None };
+        let departure = |nodes: Arc<CountsRuntimeLists>| ProviderDeparture {
+            me: "mesh1.admin.1".parse().unwrap(),
+            topology: Arc::new(RwLock::new(view.clone())),
+            refresh: Arc::new(|| Box::pin(async {})),
+            book: book.clone(),
+            provider: Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() }),
+            nodes,
+            records: Arc::new(Records::default()),
+        };
+        let executor_name: PathName = "mesh2.admin.1".parse().unwrap();
+        let birth = (executor.node.node_id.to_string(), executor.node.incarnation.0.clone());
+        let capture = crate::span_capture::Capture::new("i143-3051-executor-exit-proof-point-read");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+
+        let held = Arc::new(CountsRuntimeLists::default());
+        held.put_runtime(&row).await.unwrap();
+        departure(held.clone()).proven(&executor_name).await.expect("the held row's runtime is proven exited");
+        let unwritten = Arc::new(CountsRuntimeLists::default());
+        let never = departure(unwritten.clone()).proven(&executor_name).await.unwrap_err();
+        let refused = Arc::new(CountsRuntimeLists { point_refused: true, ..Default::default() });
+        let unread = departure(refused.clone()).proven(&executor_name).await.unwrap_err();
+
+        let lists = |s: &CountsRuntimeLists| s.lists.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!((lists(&held), lists(&unwritten), lists(&refused)), (0, 0, 0), "the proof reads one row by its key, never the list of every row");
+        assert_eq!(capture.named("rdm.node_admin.build.update.via-executor-exit-proof").len(), 1, "the held row proves the exit once");
+        assert!(never.contains("no durable runtime row") && !never.contains("could not be read"), "never written is its own refusal: {never}");
+        assert!(unread.contains("could not be read") && unread.contains("Input/output error (os error 5)"), "unreadable names the store's cause: {unread}");
+        let attrs = |name: &str| {
+            let spans = capture.named(name);
+            assert_eq!(spans.len(), 1, "{name} once: {spans:?}");
+            eprintln!("span {name} trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
+            spans[0].attributes.clone()
+        };
+        let attr = |a: &std::collections::BTreeMap<String, String>, k: &str| a.get(k).cloned().unwrap_or_default();
+        let no_row = attrs("rdm.node_admin.node.reject.via-no-runtime-row");
+        assert_eq!((attr(&no_row, "reader"), attr(&no_row, "node"), attr(&no_row, "node_id"), attr(&no_row, "incarnation_id"), attr(&no_row, "store")), ("mesh1.admin.1".to_string(), "mesh2.admin.1".to_string(), birth.0.clone(), birth.1.clone(), "nodes.storage".to_string()), "{no_row:?}");
+        let unreadable = attrs("rdm.node_admin.node.reject.via-runtime-row-unreadable");
+        assert_eq!((attr(&unreadable, "reader"), attr(&unreadable, "node"), attr(&unreadable, "node_id"), attr(&unreadable, "incarnation_id"), attr(&unreadable, "store")), ("mesh1.admin.1".to_string(), "mesh2.admin.1".to_string(), birth.0, birth.1, "nodes.storage".to_string()), "{unreadable:?}");
+        assert!(attr(&unreadable, "error").contains("Input/output error (os error 5)"), "{unreadable:?}");
     }
 
     /// The mesh primary `mesh2.admin.1`'s recovery of its own mesh's births, over `book`, `provider`
