@@ -40,14 +40,12 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         BuildOperation::CreateNode { node } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::RecoverNode { node, .. }
             if node.kind != NodeKind::NodeAdmin =>
         {
-            t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
+            mesh_executor(&node.mesh, None, t)
         }
         // A mesh's missing node-admin is created by that mesh's primary node-admin, its claim
         // fenced at the fabric primary (node-admin-lifecycle.md §4.3); the fabric primary creates
         // only the first admin of a mesh that has none.
-        BuildOperation::CreateNode { node } if node.kind == NodeKind::NodeAdmin => {
-            t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
-        }
+        BuildOperation::CreateNode { node } if node.kind == NodeKind::NodeAdmin => mesh_executor(&node.mesh, None, t),
         // The fabric primary is never the executor of its own retire, restart or replace: the
         // operation's terminate step would stop the executor mid-step. It is a hand-off: the admin
         // the election seats once the target drains (a Draining birth is no candidate,
@@ -64,9 +62,9 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // primary, which owns what happens to a mesh that has none.
         BuildOperation::RetireNode { node } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } => {
             if t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == *node) {
-                mesh_successor_of(node, t).or_else(fabric)
+                mesh_successor_of(node, t).or_else(|| held_admins(&node.mesh, Some(node), t).is_empty().then(fabric).flatten())
             } else {
-                t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
+                mesh_executor(&node.mesh, Some(node), t)
             }
         }
         // A lost node-admin of a mesh with a live mesh-primary is node recovery, driven by that
@@ -78,9 +76,46 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     }
 }
 
-/// Why no admin executes `op` in view `t` (RED scaffold: names nothing yet).
-pub fn why_no_executor(op: &BuildOperation, _t: &Topology) -> String {
-    format!("{}: no admin can execute it in this view", op.key())
+/// The executor of an operation on a node of `mesh` (not `target` itself): the mesh's primary
+/// admin; the fabric primary only when the mesh has no node-admin left that is not proven gone
+/// (R-A2: cross-mesh only when the whole cohort is proven lost; node-rpc-envelope.md TakeSeats: the
+/// executor is the same-mesh successor the election seats). An admin held but not seated (silent,
+/// or ready and waiting on its seat) gives `None`: the drive waits for that admin, named by
+/// [`held_admins`], and never acts on the mesh from outside it. A `Pending` admin is a birth, not
+/// a held seat: the fabric primary carries the mesh until it stands.
+fn mesh_executor(mesh: &str, target: Option<&PathName>, t: &Topology) -> Option<PathName> {
+    if let Some(p) = t.cohort_primary(mesh, NodeKind::NodeAdmin) {
+        return Some(p.name.clone());
+    }
+    if held_admins(mesh, target, t).is_empty() {
+        t.fabric_primary().map(|n| n.name.clone())
+    } else {
+        None
+    }
+}
+
+/// The node-admins of `mesh` (other than `target`) that hold no seat and are not proven gone: the
+/// same-mesh successors an operation on the mesh waits for. Proven gone in this view is `Dead` (an
+/// exit proven for the exact birth; the offline mark is only for an admin's own mesh, which is
+/// never the fallback case), `Leaving` and `Deleted`; a departed birth has left the view.
+pub fn held_admins<'a>(mesh: &str, target: Option<&PathName>, t: &'a Topology) -> Vec<&'a crate::model::Node> {
+    use crate::model::NodeStatus;
+    t.cohort(mesh, NodeKind::NodeAdmin).filter(|n| Some(&n.name) != target && matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::Draining | NodeStatus::PendingReconnect | NodeStatus::Restarting)).collect()
+}
+
+/// Why no admin executes `op` in view `t`: the mesh's held node-admins by name and status, or
+/// that the view seats no admin at all.
+pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
+    let node = match op {
+        BuildOperation::CreateNode { node } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::RecoverNode { node, .. } => node,
+        _ => return format!("{}: no admin holds the seat that executes it in this view", op.key()),
+    };
+    let held: Vec<String> = held_admins(&node.mesh, Some(node), t).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();
+    if held.is_empty() {
+        format!("{}: mesh {} seats no node-admin and no fabric primary is seated in this view", op.key(), node.mesh)
+    } else {
+        format!("{}: mesh {} seats no node-admin, and its node-admin(s) {} are not proven gone: the fabric primary does not act on the mesh; the attempt waits for the mesh's own seat", op.key(), node.mesh, held.join(", "))
+    }
 }
 
 /// The mesh-primary that recovers node-admin `node` (node-recovery.md, mesh-recovery.md:8-9): its
