@@ -515,6 +515,11 @@ where
     let first = accepted_row(own, operation, STEP_LEAVING_ROSTER).ok_or_else(|| format!("{operation}: no {STEP_LEAVING_ROSTER} receipt is recorded: the leave has no roster to run over"))??.final_primary;
     let last = |steps: &[BuildStepReceipt]| amendment_chain(&first, steps, operation).map(|c| c.last().map(|a| a.final_primary.clone()).unwrap_or_else(|| first.clone()));
     if &last(own)? == me {
+        let amendments = amendment_chain(&first, own, operation)?.len();
+        if amendments > 0 {
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-own-build-facts", operation = %operation, me = %named(me), first_primary = %named(&first), amendments)
+                .in_scope(|| tracing::info!("this admin's own Build facts hold the amendment that names it final primary: it runs the roster captured once plus every amendment, reading the owner for nothing"));
+        }
         return Ok((amended_roster(roster, own, operation)?, Vec::new()));
     }
     let known: Vec<BuildStepReceipt> = fetch_owner().await?.into_iter().filter_map(|f| if let BuildFact::Step(r) = f { Some(r) } else { None }).filter(|r| r.operation == operation || r.operation.starts_with(&format!("{operation}/"))).collect();

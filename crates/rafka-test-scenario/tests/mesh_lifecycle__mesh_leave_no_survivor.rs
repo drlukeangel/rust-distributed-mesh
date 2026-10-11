@@ -29,11 +29,12 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     let outer = format!("shutdown-mesh:{}", run.mesh2_id);
     // The created admin admits over the roster captured once plus the amendment that names it, and
     // captures none of its own: it reads the leaving roster recorded in the Build (gossiped Build
-    // facts) with the owner's amendment (`via-owner-build-facts`), or, holding no roster, the
-    // owner's accepted roster plus the amendment (`via-owner-admitted-roster`). Either way its
-    // member workflows run over the four births and only the one with no terminal receipt.
+    // facts) with the amendment, from its own facts once they hold it (`via-own-build-facts`) or
+    // from the owner's (`via-owner-build-facts`), or, holding no roster, the owner's accepted roster
+    // plus the amendment (`via-owner-admitted-roster`). Either way its member workflows run over
+    // the four births and only the one with no terminal receipt.
     let me = |sp: &&Value| s(&sp["attributes"]["me"]).starts_with("mesh2.admin.2 ") && sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "amendments") == 1;
-    let admitted: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-owner-admitted-roster").into_iter().chain(named(&run.spans, "rdm.node_admin.mesh.resolve.via-owner-build-facts")).filter(me).collect();
+    let admitted: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-owner-admitted-roster").into_iter().chain(named(&run.spans, "rdm.node_admin.mesh.resolve.via-owner-build-facts")).chain(named(&run.spans, "rdm.node_admin.mesh.resolve.via-own-build-facts")).filter(me).collect();
     assert!(!admitted.is_empty(), "the created admin admits over the accepted roster plus the amendment naming it");
     let captured: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-accepted-roster").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2 && sp["attributes"]["source"] == "captured").collect();
     assert!(captured.is_empty(), "the resumed attempt captures no roster: {captured:?}");
