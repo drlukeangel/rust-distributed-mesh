@@ -63,7 +63,9 @@ use std::time::{Duration, Instant};
 /// One step of creating a node, in the order of [`CreateStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateStep {
-    /// Mint the birth's incarnation and deployment id, and the node id unless the birth restarts a node.
+    /// Mint the birth's incarnation and deployment id, and the node id unless the birth restarts a
+    /// node; a create (never a restart) then claims its name at the writer of its mesh's rows
+    /// before anything is launched (`crate::node_rows::NodeRows::claim`).
     AllocateIdentity,
     /// Ensure the node's transport key in its data directory and hand a node-admin its held runtime rows.
     PrepareStorage,
