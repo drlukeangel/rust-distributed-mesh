@@ -7,7 +7,6 @@
 //!   (`rafka_test_scenario::process_faults`) on a real estate.
 //! The cell does not touch the fabric-primary node-admin, and no mesh loses every node-admin.
 
-use opentelemetry::trace::TracerProvider as _;
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use rafka_test_scenario::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault, Refusal as FaultRefusal};
@@ -16,8 +15,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Layer as _;
 
 const KILL_CELL: &str = "process_fault_backend_kills_exact_runtime_recovers_current_birth";
 
@@ -49,32 +46,28 @@ fn num(v: &Value) -> u64 {
     v.as_u64().or_else(|| v.as_str().and_then(|a| a.parse().ok())).unwrap_or(0)
 }
 
-/// This process's own spans: an in-memory OTel exporter behind the global subscriber, so the
+/// This process's own spans: the product span pipeline (`install_span_capture`: its span filter and
+/// `BatchSpanProcessor`) in front of an in-memory exporter behind the global subscriber, so the
 /// fault backend's and the detector's spans are exactly what this cell emitted.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    provider: opentelemetry_sdk::trace::TracerProvider,
+    capture: rafka_mesh_telemetry::SpanCapture,
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2783-{cell}");
-    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(exporter.clone())
-        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
-        .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2783")).with_filter(tracing_subscriber::filter::filter_fn(|m| m.name().starts_with("rdm.")));
-    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer)).expect("one global subscriber per cell process");
-    Capture { exporter, provider, service }
+    let capture = rafka_mesh_telemetry::install_span_capture(&service, exporter.clone()).expect("one global subscriber per cell process");
+    Capture { exporter, capture, service }
 }
 
 impl Capture {
     fn spans(&self) -> Vec<Value> {
-        let _ = self.provider.force_flush();
-        self.exporter
-            .get_finished_spans()
-            .unwrap()
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let finished = self.exporter.get_finished_spans().unwrap();
+        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
+        finished
             .into_iter()
             .map(|sp| {
                 let attributes: serde_json::Map<String, Value> = sp.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
