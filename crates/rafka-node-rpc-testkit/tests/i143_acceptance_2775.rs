@@ -102,7 +102,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
     let cell = "proof_holder_applies_cas_reports_exact_executing_birth";
     let dir = acceptance_dir(cell);
     let cap = capture(cell);
-    let data_dir = dir.join("data");
+    let data_dir = std::env::temp_dir().join(format!("rdm-2775-proof-data-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);
     std::fs::create_dir_all(&data_dir).unwrap();
     let observations = cap.run(async {
@@ -219,6 +219,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         assert!(calls.iter().any(|c| c["trace_id"] == s["trace_id"]), "served under its caller's trace: {s}");
         assert_ne!(s["parent_span_id"], "0000000000000000", "a served span has a parent: {s}");
     }
+    let _ = std::fs::remove_dir_all(&data_dir);
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let result = json!({"cell": cell, "observations": observations, "served": served.len(), "calls": calls.len()});
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
