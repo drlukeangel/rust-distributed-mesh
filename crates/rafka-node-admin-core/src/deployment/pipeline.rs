@@ -750,6 +750,9 @@ pub trait TopologySink: Send + Sync {
     fn publish(&self, node: Node);
     /// Remove the node named `name`.
     fn remove(&self, name: &PathName);
+    /// Remove exactly the birth `incarnation` of `node_id` at `name`: a record of another birth held
+    /// at the path (a recovery's new node) stays.
+    fn remove_birth(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId);
     /// The birth `incarnation` of `node_id` is renamed `<name>.old` in the executor's view: its
     /// successor takes the path. Only that birth is renamed; whatever else is recorded at the path stays.
     fn rename_predecessor(&self, _name: &PathName, _node_id: &NodeId, _incarnation: &IncarnationId) {}

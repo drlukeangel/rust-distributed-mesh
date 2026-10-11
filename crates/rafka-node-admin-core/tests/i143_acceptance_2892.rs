@@ -247,6 +247,7 @@ struct Discard;
 impl TopologySink for Discard {
     fn publish(&self, _: Node) {}
     fn remove(&self, _: &PathName) {}
+    fn remove_birth(&self, _: &PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
 }
 
 /// An executor: one admin birth, named by its own endpoint (the seed every launch it makes carries).
