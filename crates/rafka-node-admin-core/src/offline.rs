@@ -24,6 +24,21 @@ pub(crate) struct SilentNode {
 /// How many live peers the via-peer step asks.
 pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
+/// The longest one offline-tickle round takes when each call waits `per_call`: the direct connect
+/// (a ping that fails, or a ping that answers and the status kick after it), then one via-peer rung
+/// with every carrier probed at once (node-recovery.md step 2). The fan-out adds no wait.
+pub fn tickle_round(per_call: std::time::Duration) -> std::time::Duration {
+    per_call * 2
+}
+
+/// [`tickle_round`] at the default call budget, the one every call of the tickle spends.
+pub fn tickle_round_at_default_budget() -> std::time::Duration {
+    match rafka_node_rpc::CallOptions::default().budget {
+        rafka_node_rpc::Budget::Overall(d) => tickle_round(d),
+        other => panic!("the default call budget is not one overall deadline: {other:?}"),
+    }
+}
+
 /// Verdict of asking live peer nodes to tickle a target node.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ViaPeerVerdict {
@@ -33,6 +48,27 @@ pub(crate) enum ViaPeerVerdict {
     NoPath { asked: Vec<String> },
     /// The candidates could not be read: no status change.
     CandidatesUnreadable(String),
+}
+
+/// The via-peer rung over one exact birth (node-recovery.md step 2, ruling R-SW1), run by the
+/// mesh-primary's tickle and by the seat watch's ladder alike: the kick through every carrier in
+/// `peers` at once, each probe naming the same `(node_id, incarnation)`. The first answer from the
+/// exact birth (`seat_watch::birth_answered`) is `Answered` by its carrier and drops the probes still
+/// running; a failed probe cancels none of the others; with every probe ended unanswered it is
+/// `NoPath`, naming every carrier asked. A failure, a deadline included, proves nothing.
+pub(crate) async fn via_peer_verdict<P>(node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId, peers: Vec<(String, P)>) -> ViaPeerVerdict
+where
+    P: std::future::Future<Output = Option<rafka_node_rpc_contract::status::StatusReply>>,
+{
+    use futures_util::StreamExt as _;
+    let asked = peers.iter().map(|(carrier, _)| carrier.clone()).collect();
+    let mut running: futures_util::stream::FuturesUnordered<_> = peers.into_iter().map(|(carrier, probe)| async move { (carrier, probe.await) }).collect();
+    while let Some((carrier, reply)) = running.next().await {
+        if crate::seat_watch::birth_answered(reply.as_ref(), node_id, incarnation) {
+            return ViaPeerVerdict::Answered { via: carrier };
+        }
+    }
+    ViaPeerVerdict::NoPath { asked }
 }
 
 /// What one [`OfflineTickle::tick`] did.
@@ -182,7 +218,17 @@ impl OfflineTickle {
                         .in_scope(|| tracing::info!(node_id = %id, "offline tickle answered — reachable-silent, recorded, no action"));
                     report.reachable_silent.push(id);
                 }
-                Err(e) => match via_peer(id.clone()).await {
+                Err(e) => match {
+                    // The via-peer rung's probes run under one span of this round.
+                    let step = tracing::info_span!("rdm.node_admin.node.resolve.via-peer-tickle", node_id = %id, path = %path, observer = %self.observer, verdict = tracing::field::Empty, "otel.kind" = "internal");
+                    let verdict = tracing::Instrument::instrument(via_peer(id.clone()), step.clone()).await;
+                    step.record("verdict", match &verdict {
+                        ViaPeerVerdict::Answered { .. } => "answered",
+                        ViaPeerVerdict::NoPath { .. } => "no-path",
+                        ViaPeerVerdict::CandidatesUnreadable(_) => "candidates-unreadable",
+                    });
+                    verdict
+                } {
                     ViaPeerVerdict::Answered { via } => {
                         self.hold_down.remove(&id);
                         self.settled.insert(id.clone());
@@ -318,6 +364,131 @@ mod tests {
         let r2 = tick_observed(&mut t, PROBE_DELAY + FLOOR, true, silent("b"), false, no_path(), &reads).await;
         assert_eq!(r2.offline, vec!["b".to_string()], "round 2 is TRUE OFFLINE, as without the read");
         assert_eq!(reads.load(Ordering::SeqCst), 1, "one read for the failed event");
+    }
+
+    mod via_peer {
+        //! The tickle's via-peer step runs the seat watch's ladder (node-recovery.md step 2, ruling
+        //! R-SW1), under paused time: a probe's wait is its budget, and the clock moves only when
+        //! every probe waits.
+        use super::*;
+        use crate::model::{IncarnationId, NodeId};
+        use rafka_node_rpc_contract::status::{NodeState, StatusReply};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::time::{sleep, Instant};
+
+        /// The default call budget each probe spends against a process that never answers.
+        const BUDGET: Duration = Duration::from_secs(10);
+
+        fn birth() -> (NodeId, IncarnationId) {
+            (NodeId::mint(), IncarnationId("inc-of-the-silent-node".into()))
+        }
+
+        fn current(b: &(NodeId, IncarnationId)) -> StatusReply {
+            StatusReply::Current { node_id: b.0.clone(), incarnation: b.1.clone(), state: NodeState::ReadyForTraffic }
+        }
+
+        /// A probe that spends `after`, records that it ended in `ended`, and ends with `reply`
+        /// (`None`: no answer from the birth, a deadline or a carrier's refusal).
+        fn probe(after: Duration, reply: Option<StatusReply>, ended: Arc<AtomicUsize>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<StatusReply>> + Send>> {
+            Box::pin(async move {
+                sleep(after).await;
+                ended.fetch_add(1, Ordering::SeqCst);
+                reply
+            })
+        }
+
+        /// CONTRACT (R-SW1 acceptance 1, on the mesh-primary's tickle): after the direct connect
+        /// failed, both peer probes run at once, so two peers each spending a whole budget cost one
+        /// budget, not two; with no answer the step is `NoPath`, naming both carriers.
+        #[tokio::test(start_paused = true)]
+        async fn the_tickle_spends_one_budget_on_both_peer_probes() {
+            let b = birth();
+            let ended = Arc::new(AtomicUsize::new(0));
+            let start = Instant::now();
+            let peers = vec![("mesh1.rpc.2".to_string(), probe(BUDGET, None, ended.clone())), ("mesh1.rpc.3".to_string(), probe(BUDGET, None, ended.clone()))];
+            let verdict = via_peer_verdict(&b.0, &b.1, peers).await;
+            assert_eq!(start.elapsed(), BUDGET, "the two peer probes overlap: one budget, not two");
+            assert_eq!(verdict, ViaPeerVerdict::NoPath { asked: vec!["mesh1.rpc.2".into(), "mesh1.rpc.3".into()] });
+            assert_eq!(ended.load(Ordering::SeqCst), 2, "no answer: both probes ran to their end");
+        }
+
+        /// CONTRACT (R-SW1 completion rule, on the tickle): one failed peer probe does not cancel
+        /// the other. The first peer fails at 1 s; the second answers for the exact birth at 3 s and
+        /// ends the step there, naming that carrier.
+        #[tokio::test(start_paused = true)]
+        async fn the_tickle_takes_the_second_peers_answer_after_the_first_fails() {
+            let b = birth();
+            let ended = Arc::new(AtomicUsize::new(0));
+            let start = Instant::now();
+            let peers = vec![("mesh1.rpc.2".to_string(), probe(Duration::from_secs(1), None, ended.clone())), ("mesh1.rpc.3".to_string(), probe(Duration::from_secs(3), Some(current(&b)), ended.clone()))];
+            let verdict = via_peer_verdict(&b.0, &b.1, peers).await;
+            assert_eq!(verdict, ViaPeerVerdict::Answered { via: "mesh1.rpc.3".into() });
+            assert_eq!(start.elapsed(), Duration::from_secs(3), "the second peer's answer, not the first's failure, ends the step");
+        }
+
+        /// CONTRACT (R-SW1 completion rule, on the tickle): the first answer from the exact birth
+        /// ends the step and drops the probe still running, which never completes.
+        #[tokio::test(start_paused = true)]
+        async fn the_tickle_drops_the_peer_probe_still_running_at_an_answer() {
+            let b = birth();
+            let ended = Arc::new(AtomicUsize::new(0));
+            let start = Instant::now();
+            let peers = vec![("mesh1.rpc.2".to_string(), probe(BUDGET, None, ended.clone())), ("mesh1.rpc.3".to_string(), probe(Duration::from_secs(1), Some(current(&b)), ended.clone()))];
+            let verdict = via_peer_verdict(&b.0, &b.1, peers).await;
+            assert_eq!(verdict, ViaPeerVerdict::Answered { via: "mesh1.rpc.3".into() });
+            assert_eq!(start.elapsed(), Duration::from_secs(1));
+            sleep(BUDGET * 2).await;
+            assert_eq!(ended.load(Ordering::SeqCst), 1, "the probe still running was dropped with the step");
+        }
+
+        /// CONTRACT (R-SW1 acceptance: the provider check stays mandatory and comes last): TRUE
+        /// OFFLINE, the only tickle outcome that sends the mesh-primary to the provider
+        /// (`recovery_due`), is reached on round 2 only after both peer probes of each round ended
+        /// unanswered, each round costing the direct connect's budget plus one peer budget.
+        #[tokio::test(start_paused = true)]
+        async fn the_provider_is_owed_only_after_both_peer_probes_of_round_two_ended() {
+            let b = birth();
+            let ended = Arc::new(AtomicUsize::new(0));
+            let mut t = OfflineTickle::new();
+            let id = b.0.to_string();
+            let set = || vec![SilentNode { node_id: b.0.to_string(), path: "mesh1.rpc.1".into() }];
+            let direct_failed = AtomicBool::new(false);
+            let round = async |t: &mut OfflineTickle, now: u64| {
+                t.tick(
+                    now,
+                    true,
+                    set(),
+                    |_| true,
+                    PROBE_DELAY,
+                    FLOOR,
+                    |_| async {
+                        sleep(BUDGET).await;
+                        direct_failed.store(true, Ordering::SeqCst);
+                        Err::<(), String>("the direct connect spent its budget".into())
+                    },
+                    |_| {
+                        let peers = vec![("mesh1.rpc.2".to_string(), probe(BUDGET, None, ended.clone())), ("mesh1.rpc.3".to_string(), probe(BUDGET, None, ended.clone()))];
+                        let b = b.clone();
+                        async move { via_peer_verdict(&b.0, &b.1, peers).await }
+                    },
+                    |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                )
+                .await
+            };
+            round(&mut t, 0).await;
+            let start = Instant::now();
+            let r1 = round(&mut t, PROBE_DELAY).await;
+            assert!(r1.offline.is_empty() && t.is_in_hold_down(&id), "round 1 no path opens the hold-down: nothing is owed to the provider");
+            assert_eq!(start.elapsed(), tickle_round(BUDGET), "round 1: the direct budget, then one budget for both peers");
+            let start = Instant::now();
+            let r2 = round(&mut t, PROBE_DELAY + FLOOR).await;
+            assert!(direct_failed.load(Ordering::SeqCst));
+            assert_eq!(r2.offline, vec![id.clone()], "round 2 no path is TRUE OFFLINE: the provider is owed");
+            assert_eq!(ended.load(Ordering::SeqCst), 4, "TRUE OFFLINE only once both peer probes of both rounds ended");
+            assert_eq!(start.elapsed(), tickle_round(BUDGET), "round 2: the direct budget, then one budget for both peers");
+        }
     }
 
     fn no_path() -> ViaPeerVerdict {

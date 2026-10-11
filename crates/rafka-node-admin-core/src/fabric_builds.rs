@@ -191,57 +191,82 @@ pub struct FabricBuildStateAdapter {
     authority: Authority,
 }
 
-/// The gate of the fabric-primary's mutations: one lock, held from the decision through its
-/// durable commit and its broadcast. A fabric-primary that yields takes the same lock to set a
-/// sticky fence, so a decision is either wholly committed before the fence or refused by it; no
-/// decision of a yielded holder is made after the new holder acts.
-pub struct Authority {
-    node: String,
-    fenced: tokio::sync::Mutex<Option<SeatFence>>,
-    /// Set with the fence: a drive waiting on an executor's run ends at the fence.
-    set: tokio::sync::watch::Sender<bool>,
+/// What the committed fabric seat record says of this birth's Build authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeatRecord {
+    /// The record names this birth, names none, or names a birth proven gone: it ends nothing.
+    Open,
+    /// The record names another live birth: this birth's authority ended at that record's epoch.
+    Moved {
+        /// The record, in words.
+        by: String,
+        /// The path.name of the birth the record names, when a digest of it is held.
+        to: Option<String>,
+    },
 }
 
-/// The sticky fence of a Build log: why it was set, and the admin a committed seat transfer named as
-/// the holder now (none when the seat was yielded without a named successor: leaving, drain, stop).
-#[derive(Debug, Clone)]
-pub struct SeatFence {
-    /// Why the fence was set.
-    pub by: String,
-    /// The admin (path.name) the committed transfer moved the seat to.
-    pub to: Option<String>,
+/// Where a Build log reads its authority: the committed seat record, and a receiver that wakes each
+/// time a seat record is held.
+#[derive(Clone)]
+pub struct SeatSource {
+    /// The record's answer for this birth, read now.
+    pub read: Arc<dyn Fn() -> SeatRecord + Send + Sync>,
+    /// Ticks whenever a seat record is held (`SeatBook::subscribe`); none for a log with no seat.
+    pub changed: Option<tokio::sync::watch::Receiver<u64>>,
+}
+
+impl SeatSource {
+    /// A Build log no seat record governs (a fixture with no membership).
+    pub fn unrecorded() -> Self {
+        Self { read: Arc::new(|| SeatRecord::Open), changed: None }
+    }
+}
+
+/// The gate of the fabric-primary's mutations: one lock, held from the decision through its
+/// durable commit and its broadcast, and the committed fabric seat record read under it. A seat
+/// commit on this admin (the handover door's, TakeSeats') holds the same lock across the record's
+/// move, so a decision is either wholly committed before the record moves or refused by it. The
+/// record is the fence (node-rpc-envelope.md TakeSeats): nothing else is written to fence the log.
+pub struct Authority {
+    node: String,
+    decisions: Arc<tokio::sync::Mutex<()>>,
+    /// The committed seat record this birth's authority is read from.
+    seat: SeatSource,
 }
 
 impl Authority {
-    /// A gate for `node`'s Build log, open.
-    pub fn new(node: String) -> Self {
-        Self { node, fenced: tokio::sync::Mutex::new(None), set: tokio::sync::watch::channel(false).0 }
+    /// A gate for `node`'s Build log, its authority read from `seat`.
+    pub fn new(node: String, seat: SeatSource) -> Self {
+        Self { node, decisions: Arc::default(), seat }
     }
 
-    /// Resolves once the fence is set (at once when it is already set).
+    /// Resolves once the seat record ends this birth's authority (at once when it already has;
+    /// never for a log no seat record governs).
     pub async fn fence_set(&self) {
-        let _ = self.set.subscribe().wait_for(|f| *f).await;
-    }
-
-    /// Enter the gate for one mutation: refused by name once the fence is set.
-    pub async fn enter(&self) -> Result<tokio::sync::MutexGuard<'_, Option<SeatFence>>, BuildStateError> {
-        let held = self.fenced.lock().await;
-        match &*held {
-            Some(f) => Err(BuildStateError::Fenced { node: self.node.clone(), by: f.by.clone(), to: f.to.clone() }),
-            None => Ok(held),
+        let Some(mut changed) = self.seat.changed.clone() else { return std::future::pending().await };
+        loop {
+            if matches!((self.seat.read)(), SeatRecord::Moved { .. }) {
+                return;
+            }
+            if changed.changed().await.is_err() {
+                return std::future::pending().await;
+            }
         }
     }
 
-    /// Set the fence, after the mutation in flight (if any) committed, naming the admin the seat moved
-    /// to when a committed transfer names one. Returns whether it was set by this call.
-    pub async fn fence(&self, by: &str, to: Option<String>) -> bool {
-        let mut held = self.fenced.lock().await;
-        if held.is_some() {
-            return false;
+    /// Enter the gate for one mutation: refused by name once the seat record names another live
+    /// birth.
+    pub async fn enter(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, BuildStateError> {
+        let held = self.decisions.lock().await;
+        match (self.seat.read)() {
+            SeatRecord::Open => Ok(held),
+            SeatRecord::Moved { by, to } => Err(BuildStateError::Fenced { node: self.node.clone(), by, to }),
         }
-        *held = Some(SeatFence { by: by.to_string(), to });
-        self.set.send_replace(true);
-        true
+    }
+
+    /// The lock a seat commit on this admin holds across the record's move.
+    pub fn decisions(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.decisions.clone()
     }
 }
 
@@ -261,6 +286,7 @@ impl FabricBuildStateAdapter {
         accepted: Arc<AcceptedStore>,
         shutdown: Arc<crate::shutdown::ShutdownControl>,
         node: String,
+        seat: SeatSource,
         catch_up_seam: Option<Arc<dyn crate::wiring::CatchUpSeam>>,
     ) -> Result<Self, BuildStateError> {
         let io = |e: String| BuildStateError::Io(format!("fabric Build topic {fabric}: {e}"));
@@ -387,7 +413,7 @@ impl FabricBuildStateAdapter {
                 receiver = r;
             }
         });
-        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name) })
+        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name, seat) })
     }
 
     /// Join the Build topic to every live node-admin `admins` names, as the
@@ -423,30 +449,21 @@ impl FabricBuildStateAdapter {
         self.authority.fence_set().await
     }
 
-    /// The committed seat transfer fenced this admin's Build log: set the sticky fence naming the
-    /// admin the seat moved to, nothing more. The yield that follows the seat record (`yield_seat`)
-    /// hands the committed facts on.
-    pub async fn fence_seat(&self, by: &str, to: Option<String>) -> bool {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence-at-handover", node = %self.authority.node, by, to = to.as_deref().unwrap_or("none"), fenced = tracing::field::Empty);
-        async {
-            let fenced = self.authority.fence(by, to).await;
-            tracing::Span::current().record("fenced", fenced);
-            fenced
-        }
-        .instrument(span)
-        .await
+    /// The lock a seat commit on this admin holds across the record's move: a decision in flight
+    /// commits wholly before the record moves, and every decision after it is refused by the record.
+    pub fn decisions(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.authority.decisions()
     }
 
-    /// The fabric-primary seat was yielded: set the sticky fence under the gate's lock (so a
-    /// decision in flight has committed durably), then hand every active committed fact to the
-    /// neighbours before the new holder acts. Returns how many facts were handed on. A send that
-    /// fails is named (`via-broadcast-refused`, fact `hand-over`) and fails nothing: the fence is
-    /// local and committed, and the new holder's catch-up and `FetchBuildFacts` carry the facts.
-    pub async fn yield_seat(&self, by: &str) -> usize {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence", node = %self.authority.node, by, facts = tracing::field::Empty, fenced = tracing::field::Empty);
+    /// The fabric-primary seat record moved off this birth, or this holder leaves: hand every active
+    /// committed fact to the neighbours before the new holder acts. `to` is the admin the record
+    /// names now (none for a leaving holder). Returns how many facts were handed on. Nothing is
+    /// fenced here: the record is the fence. A send that fails is named (`via-broadcast-refused`,
+    /// fact `hand-over`) and fails nothing: the new holder's catch-up and `FetchBuildFacts` carry the
+    /// facts.
+    pub async fn hand_over_facts(&self, by: &str, to: Option<String>) -> usize {
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-hand-over", node = %self.authority.node, by, to = to.as_deref().unwrap_or("none"), facts = tracing::field::Empty);
         async {
-            let fenced = self.authority.fence(by, None).await;
-            tracing::Span::current().record("fenced", fenced);
             let facts = active_facts(&*self.local, None).await;
             let n = facts.len();
             let (messages, refused) = encode_chunks(facts);
@@ -565,7 +582,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.local.facts().await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.local.recovery_of(path, node_id, incarnation).await
     }
 
@@ -649,27 +666,84 @@ mod tests {
         assert_eq!((named.node_id, named.incarnation), (op.node_id, op.incarnation), "the receipt names the exact old birth");
     }
 
-    /// CONTRACT (R-A2 item 2): the fence waits for the decision in flight (it commits wholly
-    /// before the fence returns), and every decision after it is refused by name.
+    /// CONTRACT (node-rpc-envelope.md TakeSeats: "The row is the fence: P's execution authority ends
+    /// at the row's epoch, Build dispatch from the old seat is refused with Fenced, and no separate
+    /// fence write precedes or follows it"): the Build log reads its authority from the committed
+    /// fabric seat record. Once the record names another live birth, every decision is refused by
+    /// name, naming that birth's path.name from the digest book even when the projected view does not
+    /// hold it yet, and a wait on the fence resolves; no fence write is made. A record naming a birth
+    /// proven gone (a vacancy the election fills before this birth's own record lands) ends nothing.
+    /// What must NOT happen: a moved record that still lets the old seat decide, or a refusal naming
+    /// no admin while a digest of the holder is held.
     #[tokio::test]
-    async fn a_fence_waits_for_the_decision_in_flight_and_refuses_every_later_one() {
-        let authority = std::sync::Arc::new(Authority::new("mesh1.admin.1".into()));
+    async fn a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write() {
+        use futures_util::FutureExt as _;
+        use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
+        let seats = rafka_mesh_transport::membership::SeatBook::default();
+        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId("p1".into()));
+        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId("n1".into()), epoch: 2 };
+        let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
+        let source = {
+            let changed = Some(seats.subscribe());
+            let (seats, me, lost) = (seats.clone(), me.clone(), lost.clone());
+            // The digest book holds mesh2.admin.1; nothing here consults a projected view.
+            let read = std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &lost.lock().unwrap(), |id| (id.as_str() == "100000000000").then(|| "mesh2.admin.1".to_string())));
+            SeatSource { read, changed }
+        };
+        let authority = Authority::new("mesh2.admin.2".into(), source);
+        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), epoch: 1 });
+        assert!(authority.enter().await.is_ok(), "the record names this birth: it decides");
+        assert!(authority.fence_set().now_or_never().is_none(), "no fence while the record names this birth");
+        seats.take(Seat::FabricPrimary, &next);
+        lost.lock().unwrap().insert(next.incarnation.clone());
+        assert!(authority.enter().await.is_ok(), "a record naming a birth proven gone ends nothing");
+        lost.lock().unwrap().clear();
+        match authority.enter().await {
+            Err(BuildStateError::Fenced { to, by, .. }) => {
+                assert_eq!(to.as_deref(), Some("mesh2.admin.1"), "the refusal names the holder the record names");
+                assert!(by.contains("100000000000") && by.contains("epoch 2"), "the reason names the record: {by}");
+            }
+            other => panic!("the moved record must refuse the old seat's decision by name, got {:?}", other.map(|_| ())),
+        }
+        assert!(authority.fence_set().now_or_never().is_some(), "a wait on the fence resolves once the record moved");
+    }
+
+    /// CONTRACT (R-A2 item 2): a seat commit on this admin waits for the decision in flight (it
+    /// commits wholly before the record moves), and every decision after the move is refused by
+    /// name.
+    #[tokio::test]
+    async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
+        use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
+        let seats = rafka_mesh_transport::membership::SeatBook::default();
+        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId("p1".into()));
+        let source = {
+            let changed = Some(seats.subscribe());
+            let (seats, me) = (seats.clone(), me.clone());
+            SeatSource { read: std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &Default::default(), |_| None)), changed }
+        };
+        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), epoch: 1 });
+        let authority = std::sync::Arc::new(Authority::new("mesh1.admin.1".into(), source));
         let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gate = authority.enter().await.unwrap();
-        let (a, c) = (authority.clone(), committed.clone());
-        let fencing = tokio::spawn(async move {
-            let set = a.fence("leaving", None).await;
-            (set, c.load(std::sync::atomic::Ordering::SeqCst))
+        let (decisions, c, book) = (authority.decisions(), committed.clone(), seats.clone());
+        let moving = tokio::spawn(async move {
+            let _held = decisions.lock_owned().await;
+            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId("n1".into()), epoch: 2 });
+            c.load(std::sync::atomic::Ordering::SeqCst)
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(!fencing.is_finished(), "the fence waits for the decision holding the gate");
+        assert!(!moving.is_finished(), "the seat commit waits for the decision holding the gate");
         committed.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(gate);
-        assert_eq!(fencing.await.unwrap(), (true, true), "the fence was set after the decision committed");
-        match authority.enter().await {
-            Err(BuildStateError::Fenced { node, by, .. }) => assert_eq!((node.as_str(), by.as_str()), ("mesh1.admin.1", "leaving")),
-            other => panic!("a decision after the fence must be refused by name, got {:?}", other.map(|_| ())),
+        assert!(moving.await.unwrap(), "the record moved after the decision committed");
+        let later = authority.enter().await.map(|_| ());
+        match later {
+            Err(BuildStateError::Fenced { node, by, to }) => {
+                assert_eq!(node, "mesh1.admin.1");
+                assert!(by.contains("400000000000") && by.contains("no digest of that birth is held"), "the reason names the record and why no path.name is named: {by}");
+                assert_eq!(to, None);
+            }
+            other => panic!("a decision after the record moved must be refused by name, got {other:?}"),
         }
-        assert!(!authority.fence("again", None).await, "the fence is set once and sticky");
     }
 }

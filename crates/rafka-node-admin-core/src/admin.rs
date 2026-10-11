@@ -17,7 +17,7 @@
 //! retire) and the lifecycle pipeline (a node's `Pending -> ReadyForTraffic`).
 
 use crate::build::BuildOperation;
-use crate::build_state::BuildStateAdapter;
+use crate::build_state::{BuildStateAdapter, LocalBuildLog as _};
 use crate::deployment::endpoint::spec_for;
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
@@ -592,6 +592,19 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
     lost.extend(book.seats.gone());
     crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), lost }
+}
+
+/// Where this birth's Build log reads its authority: the committed fabric seat record held in
+/// `book`, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
+/// lost set every election takes, [`incumbency_of`]) and named from the digests `book` holds.
+pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId)) -> crate::fabric_builds::SeatSource {
+    let changed = Some(book.seats.subscribe());
+    let (book, records) = (book.clone(), records.clone());
+    let read = Arc::new(move || {
+        let incumbency = incumbency_of(&book, &records);
+        crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, |id| book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()))
+    });
+    crate::fabric_builds::SeatSource { read, changed }
 }
 
 /// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
@@ -1232,7 +1245,7 @@ fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), String>) {
 }
 
 /// The gates of the fabric-primary's drive: the membership's cut-off rule and the Build log's
-/// sticky seat fence.
+/// authority, read from the committed fabric seat record.
 struct SeatGate {
     membership: Membership,
     builds: Arc<FabricBuildStateAdapter>,
@@ -1289,6 +1302,35 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     }
 }
 
+/// What a drift opening decides on, as one comparable string: for a repair, the exited birth and
+/// the completed receipts under its `replace-node:<path>`; for surplus, each live birth by
+/// incarnation and, per removed mesh's `shutdown-mesh:<mesh id>`, the mesh's seated node-admin, its
+/// live node-admins by birth and status, and the completed receipts under the workflow and its
+/// member operations (an exit, an amendment, a roster recorded since moves it).
+fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], repair: Option<(&PathName, &IncarnationId)>, surplus: &[String]) -> String {
+    let complete = |op: &str| {
+        let member = format!("{op}/");
+        steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && (s.operation == op || s.operation.starts_with(&member))).count()
+    };
+    let birth = |n: &Node| format!("{}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("-"));
+    if let Some((path, incarnation)) = repair {
+        return format!("repair {path}:{} receipts={}", incarnation.0, complete(&format!("replace-node:{path}")));
+    }
+    surplus
+        .iter()
+        .map(|item| match t.meshes.iter().find(|m| m.id.as_ref().is_some_and(|id| crate::mesh_leave::operation(id) == *item)) {
+            Some(m) => {
+                let primary = t.cohort_primary(&m.name, NodeKind::NodeAdmin).map(birth).unwrap_or_else(|| "none".into());
+                let mut admins: Vec<String> = t.cohort(&m.name, NodeKind::NodeAdmin).filter(|n| n.status.is_live()).map(|n| format!("{}:{:?}", birth(n), n.status)).collect();
+                admins.sort();
+                format!("{item} primary={primary} admins=[{}] receipts={}", admins.join(","), complete(item))
+            }
+            None => t.members().find(|n| n.name.to_string() == *item).map(birth).unwrap_or_else(|| item.clone()),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// The fabric authority's drift check (`crate::drift`): when this admin is the fabric primary,
 /// the accepted Build is settled, and a cohort the Build's topology names has fewer births than
 /// it should, at least one of its node-admins with its exact runtime inspected and found exited, it
@@ -1296,9 +1338,9 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 /// change). Only a mesh that lost its mesh-primary is repaired here (mesh recovery), and surplus is
 /// retired. A member of a mesh with a live mesh-primary, a node-admin included, is not repaired here:
 /// its mesh-primary proves its exit and submits its recovery (node-recovery.md, mesh-recovery.md:8-9).
-/// `started` holds the (build, attempt, exited births) it already opened, so a repair that fails
-/// is not opened again and again; the adapter's insert-and-fail on the attempt keeps two
-/// authorities from opening it twice.
+/// `started` holds, per opening, the inputs it was opened on (`drift_inputs`), so an attempt that
+/// fails is opened again only once one of them moves, never once per pass; the adapter's
+/// insert-and-fail on the attempt keeps two authorities from opening it twice.
 pub async fn reconcile_drift(
     time: &rafka_mesh_transport::clock::RafkaTime,
     me: &PathName,
@@ -1470,14 +1512,26 @@ pub async fn reconcile_drift(
     // no MeshLeft receipt, and either the view still holds a birth of it live (an incomplete leave
     // leaves at least its final primary running) or the final primary's exact exit is recorded
     // (the attempt failed after the owner's stop, before MeshLeft). Its attempt carries no action;
-    // the planner plans the mesh's shutdown again, which resumes from the receipts.
+    // the planner plans the mesh's shutdown again, which resumes from the receipts. The ladder's
+    // unheard hold does not fence it: a leaving mesh whose every node-admin was lost is unheard by
+    // construction, and its resume carries its own proof (mesh-leave.md, "Resume after the
+    // primary's loss", step 1: the lost final primary's exact Exited is recorded before anything is
+    // created for the mesh, and an unproven one refuses the resume by name).
     surplus.extend(
         t.meshes
             .iter()
-            .filter(|m| !current.topology.meshes.contains_key(&m.name) && hold(&m.name).is_none())
+            .filter(|m| !current.topology.meshes.contains_key(&m.name))
             .filter_map(|m| m.id.as_ref().map(|id| (m, crate::mesh_leave::operation(id))))
             .filter(|(_, op)| !current.steps.iter().any(|st| &st.operation == op && st.step == crate::mesh_leave::STEP_MESH_LEFT && st.outcome == crate::build_state::StepOutcome::Complete))
-            .filter(|(m, op)| t.members().any(|n| n.mesh == m.name && n.status.is_live()) || matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::FinalExited(_))))
+            .filter(|(m, op)| {
+                t.members().any(|n| n.mesh == m.name && n.status.is_live())
+                    || matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::FinalExited(_)))
+                    // An admitted leave is resumed until its MeshLeft, whatever this view hears of the
+                    // mesh: with every admin lost its births are silent here, and the resume proves the
+                    // lost final primary's exit before it creates the mesh's one admin (R11). An
+                    // unreadable roster receipt is planned too: the resume refuses it by name.
+                    || crate::mesh_leave::admitted_of(&current.steps, op).is_some()
+            })
             .map(|(_, op)| op),
     );
     surplus.sort();
@@ -1496,10 +1550,24 @@ pub async fn reconcile_drift(
         }
         None => (surplus.clone(), format!("surplus: {}", surplus.join(" ")), None),
     };
-    let opening = (current.build_id.clone(), attempt, key);
-    if started.contains(&opening) {
+    // An opening is keyed on what the attempt decides on, never on its number: a failed attempt
+    // whose inputs are all as they were when it opened gets no next attempt from here, and one
+    // input moving opens exactly one (node-status-change.md: "a failed Build ... gets its next
+    // attempt", once per failure; R-S2: event-driven, never per pass). A key carrying the attempt
+    // number never matches the next pass (every failed attempt raises it), which reopened a resume
+    // that failed fast on every pass.
+    let inputs = drift_inputs(t, &current.steps, first_exited.map(|(p, b)| (p, &b.incarnation)), &surplus);
+    let ident = key.join(" ");
+    let opened_at = (current.build_id.clone(), 0u32, vec!["opened".to_string(), ident.clone(), inputs.clone()]);
+    if started.contains(&opened_at) {
+        let unchanged = (current.build_id.clone(), 0u32, vec!["unchanged".to_string(), ident.clone(), inputs.clone(), current.attempt.to_string()]);
+        if started.insert(unchanged) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-drift-unchanged", node = %me, build_id = %current.build_id, failed_attempt = current.attempt, scope = %scope, inputs = %inputs)
+                .in_scope(|| tracing::info!("the last attempt opened for these inputs ended and none of them moved since: no next attempt until one does"));
+        }
         return None;
     }
+    let opening = (current.build_id.clone(), attempt, key);
     // A node-admin of a peer mesh opened on the ladder's decision is that mesh's first recovering
     // node-admin: the decision releases no other from here until the mesh is heard again.
     let release = first_exited
@@ -1517,6 +1585,8 @@ pub async fn reconcile_drift(
             return None;
         }
     }
+    started.retain(|k| !(k.0 == current.build_id && k.1 == 0 && k.2.len() == 3 && k.2[0] == "opened" && k.2[1] == ident));
+    started.insert(opened_at);
     started.insert(opening);
     if let Some(release) = release {
         started.insert(release);
@@ -2372,14 +2442,16 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// The fabric-primary -> mesh bootstrap Pending operation (e4.s11), as the create pipeline's
-    /// `ApplyMeshPending` step at the exact birth just joined at `admin`: a bounded reachability
-    /// wait (Ping, at most 20 s, no Status), then ONE `ApplyMeshState(Pending)` call. `Applied` or
+    /// The fabric-primary -> mesh state hand-off at a mesh's first admin, as the create pipeline's
+    /// `ApplyMeshPending` step at the exact birth just joined at `admin`: `Pending` for a new mesh's
+    /// bootstrap admin (e4.s11), the mesh's current state for the admin created for an existing
+    /// mesh. A bounded reachability wait (Ping, at most 20 s, no Status), then ONE
+    /// `ApplyMeshState(state)` call. `Applied` or
     /// `AlreadyApplied` succeed; any other outcome fails the step typed (a stale-birth answer, a
     /// backward move, an unreachable target, a lost reply), and the rectifier is the retry, so
     /// `Build(shape)` never starts under an assumed state.
-    fn pending_handoff_hook(&self, admin: &PathName) -> Result<crate::deployment::pipeline::BeforeReady, String> {
-        let Some(node_rpc) = &self.node_rpc else { return Err(format!("{admin}: this admin has no Node RPC client for the Pending hand-off")) };
+    fn mesh_state_hook(&self, admin: &PathName, state: rafka_node_rpc_contract::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
+        let Some(node_rpc) = &self.node_rpc else { return Err(format!("{admin}: this admin has no Node RPC client for the {state:?} hand-off")) };
         let (client, resolver, me, me_id, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
         Ok(Arc::new(move |target: Node| {
             let (client, resolver, me, me_id, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone());
@@ -2388,9 +2460,9 @@ impl AdminRunner {
                 // what its view holds from the mesh's members (a recovery never mints one).
                 let known = topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
                 let Some(mesh_id) = records.meshes.lock().unwrap().get(&mesh).cloned().or(known).map(|m| m.to_string()) else {
-                    return Err(format!("{}: neither this admin's records nor its view hold a mesh id for {mesh}, so no Pending can be applied", target.name));
+                    return Err(format!("{}: neither this admin's records nor its view hold a mesh id for {mesh}, so no {state:?} can be applied", target.name));
                 };
-                apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, &target).await
+                apply_mesh_state(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, state, &target).await.map(|()| state)
             })
         }))
     }
@@ -2403,7 +2475,7 @@ impl AdminRunner {
         // A mesh's only admin replaced leaves the mesh without a live admin: its successor is that
         // mesh's first admin and receives the fabric primary's Pending hand-off (e4.s11).
         let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live());
-        let before_ready = if first_admin { Some(self.pending_handoff_hook(node)?) } else { None };
+        let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
         let mut template = self.template_for(node.kind, &node.mesh).await?;
         if node.kind == NodeKind::NodeAdmin && first_admin {
             template = self.with_mesh_issuer(template, &node.mesh)?;
@@ -2893,7 +2965,7 @@ impl AdminRunner {
                     // birth, before it is asked to be Ready; only with that certainty does the shape
                     // proceed (e4.s11).
                     let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).all(|n| !n.status.is_live());
-                    let before_ready = if first_admin { Some(self.pending_handoff_hook(node)?) } else { None };
+                    let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
                     self.create(build_id, attempt, node, None, before_ready).await
                 }
                 .instrument(span)
@@ -2943,7 +3015,8 @@ impl AdminRunner {
 /// `ApplyMeshState(Pending)` at `target` (a mesh's first admin, just joined), from `me` (born as `me_id`).
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, target: &Node) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_mesh_state(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, state: rafka_node_rpc_contract::status::MeshState, target: &Node) -> Result<(), String> {
     use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
     use rafka_node_rpc_contract::status::{MeshState, Status, StatusReply, StatusRequest};
     // The target is not heard yet (a peer mesh's admin reaches the backbone only as its mesh's
@@ -2954,7 +3027,7 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
     };
     let endpoint_id = endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| format!("{}: its endpoint id is not an iroh key: {e}", target.name))?;
     let fed = resolver.apply(rafka_node_rpc::ResolvedNode { node_id: target.node_id.clone(), name: target.name.clone(), endpoint_id, transport_addr, incarnation }, None);
-    tracing::info!(target = %target.name, applied = ?fed, "the resolver holds the launched birth for the Pending hand-off");
+    tracing::info!(target = %target.name, applied = ?fed, "the resolver holds the launched birth for the mesh-state hand-off");
     let (me_id, me_inc) = {
         let v = topology.read().await;
         (me_id.to_string(), v.own(me_id).and_then(|n| n.incarnation_id.clone()).map(|i| i.0).unwrap_or_default())
@@ -2962,9 +3035,9 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
     let request = StatusRequest::ApplyMeshState {
         mesh_id: crate::model::MeshId::parse(mesh_id).map_err(|e| format!("{mesh}: its mesh id {mesh_id:?} is not a MeshId: {e}"))?,
         mesh_name: mesh.to_string(),
-        state: MeshState::Pending,
+        state,
     };
-    let key = format!("mesh:{mesh_id}:Pending");
+    let key = format!("mesh:{mesh_id}:{state:?}");
     // A bounded reachability wait on the exact launched birth, a Ping and no Status: the target
     // answers `Pong` once its router serves with its authority filled (until then every op,
     // ping included, is a typed NotReady). Then exactly one Status call.
@@ -3000,9 +3073,9 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
         reachable = reach.is_ok(),
         last = %match &reach { Ok(s) | Err(s) => s.as_str() },
     )
-    .in_scope(|| tracing::info!("the launched birth was waited for before the Pending hand-off"));
+    .in_scope(|| tracing::info!("the launched birth was waited for before the mesh-state hand-off"));
     if let Err(last) = reach {
-        return Err(format!("{}: unreachable for 20 s before the Pending hand-off ({pings} pings, last: {last}); nothing was sent, and Build(shape) does not start under an assumed state", target.name));
+        return Err(format!("{}: unreachable for 20 s before the {state:?} hand-off ({pings} pings, last: {last}); nothing was sent, and Build(shape) does not start under an assumed state", target.name));
     }
     // The one call. Applied and AlreadyApplied succeed; every other outcome fails the step typed,
     // and the rectifier is the retry.
@@ -3011,28 +3084,35 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
         rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => ("applied".to_string(), Ok(())),
             StatusReply::AlreadyApplied => ("already-applied".to_string(), Ok(())),
-            StatusReply::RejectedStaleMesh { held } => (format!("rejected-stale-mesh: the target holds mesh id {held}"), Err(format!("{} holds mesh id {held}, not {mesh_id}: no replacement id is minted; the Pending hand-off is refused", target.name))),
-            StatusReply::RejectedInvalidMeshTransition { current } => (format!("rejected-invalid-mesh-transition: {current:?}"), Err(format!("{} already holds its Mesh at {current:?}: Pending is a backward move", target.name))),
-            other => (format!("{other:?}"), Err(format!("{}: the Pending hand-off was answered {other:?}; Pending is not certain and Build(shape) does not start under an assumed state", target.name))),
+            StatusReply::RejectedStaleMesh { held } => (format!("rejected-stale-mesh: the target holds mesh id {held}"), Err(format!("{} holds mesh id {held}, not {mesh_id}: no replacement id is minted; the {state:?} hand-off is refused", target.name))),
+            StatusReply::RejectedInvalidMeshTransition { current } => (format!("rejected-invalid-mesh-transition: {current:?}"), Err(format!("{} already holds its Mesh at {current:?}: {state:?} is a backward move", target.name))),
+            other => (format!("{other:?}"), Err(format!("{}: the {state:?} hand-off was answered {other:?}; {state:?} is not certain and Build(shape) does not start under an assumed state", target.name))),
         },
-        other => (format!("{}: {other:?}", other.name()), Err(format!("{}: the Pending hand-off call ended {}: Pending is not certain and Build(shape) does not start under an assumed state ({other:?})", target.name, other.name()))),
+        other => (format!("{}: {other:?}", other.name()), Err(format!("{}: the {state:?} hand-off call ended {}: {state:?} is not certain and Build(shape) does not start under an assumed state ({other:?})", target.name, other.name()))),
     };
-    tracing::info_span!(
-        "rdm.node_admin.mesh.update.via-pending-handoff",
-        node = %me,
-        node_id = %me_id,
-        incarnation = %me_inc,
-        target = %target.name,
-        target_node_id = %target.node_id,
-        target_incarnation = %target.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(),
-        mesh = %mesh,
-        mesh_id = %mesh_id,
-        key = %key,
-        state = "Pending",
-        attempt = 1u32,
-        outcome = %outcome,
-    )
-    .in_scope(|| tracing::info!("the fabric primary applies Pending at the mesh's bootstrap admin"));
+    // A new mesh's bootstrap admin is handed Pending; the admin created for an existing mesh is
+    // handed the mesh's current state (states.md: a mesh's state only moves forward).
+    macro_rules! handoff_span {
+        ($name:literal) => {
+            tracing::info_span!(
+                $name,
+                node = %me,
+                node_id = %me_id,
+                incarnation = %me_inc,
+                target = %target.name,
+                target_node_id = %target.node_id,
+                target_incarnation = %target.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(),
+                mesh = %mesh,
+                mesh_id = %mesh_id,
+                key = %key,
+                state = ?state,
+                attempt = 1u32,
+                outcome = %outcome,
+            )
+        };
+    }
+    let span = if state == MeshState::Pending { handoff_span!("rdm.node_admin.mesh.update.via-pending-handoff") } else { handoff_span!("rdm.node_admin.mesh.update.via-state-handoff") };
+    span.in_scope(|| tracing::info!("the fabric primary applies its mesh's state at the mesh's first admin"));
     verdict
 }
 
@@ -3136,20 +3216,23 @@ impl Running {
     /// continued by the Build's next attempt.
     pub async fn leave(self) {
         self.hydrate_cancel.cancel();
-        self.leave_with(true).await
-    }
-
-    /// Leave after a `stop-node` was admitted: `Leaving` with no `Draining` say (stop has no
-    /// implicit drain), then the same linger and close.
-    pub async fn leave_after_stop(self) {
-        self.hydrate_cancel.cancel();
         self.leave_with(false).await
     }
 
-    async fn leave_with(self, say_draining: bool) {
-        // A leaving holder yields before it says anything: its Build log decides nothing after
-        // this, and the committed facts are with the neighbours before the new holder acts.
-        self.builds.yield_seat("leaving").await;
+    /// End a parked birth (a `stop-node` completed): it says nothing and closes. Its stop already
+    /// cut its gossip neighbours and left its topics, and a stopped node gossips nothing
+    /// (node-stop.md step 4): every node holds it Leaving and parked from the `NodeStopped` its
+    /// stopped reply produced.
+    pub async fn leave_after_stop(self) {
+        self.hydrate_cancel.cancel();
+        self.leave_with(true).await
+    }
+
+    async fn leave_with(self, parked: bool) {
+        // A leaving admin hands its committed Build facts to the neighbours before it says
+        // anything. Its Build authority is what its fabric seat record says: a seat moved by
+        // TakeSeats or TakeFabricPrimary ended it at that record; a fabric shutdown freezes the drive.
+        self.builds.hand_over_facts("leaving", None).await;
         self.executor.abort();
         self.hierarchy.abort();
         self.publisher.abort();
@@ -3163,7 +3246,7 @@ impl Running {
         // (rafka-v2 #2942): the Draining say, each Leaving announcement on each channel, the
         // transport shutdown.
         let me = self.digest.lock().unwrap().node.name.to_string();
-        if say_draining {
+        if !parked {
             let started = std::time::Instant::now();
             let span = tracing::info_span!("rdm.mesh.node.update.via-leave-draining", node = %me, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
             let r = self.membership.publish(&say(MemberStatus::Draining)).instrument(span.clone()).await;
@@ -3176,54 +3259,56 @@ impl Running {
         // backbone through the linger, its own `Leaving` among them, so its self-authored departure
         // leaves the mesh by the path every member's does (Luke 2026-10-05). No other admin is a
         // publisher of this admin's membership.
-        let announcement = std::sync::atomic::AtomicU32::new(0);
-        let (linger_started, waited) = (std::time::Instant::now(), rafka_mesh_transport::membership::runqueue_wait());
-        let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
-            let d = say(MemberStatus::Leaving);
-            let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            let (m, bb, me, seam) = (self.membership.clone(), self.backbone.clone(), me.clone(), self.leave_seam.clone());
-            async move {
-                let withheld = |channel: &'static str| seam.as_ref().is_some_and(|s| s.withholds(&me, n, channel));
-                let started = std::time::Instant::now();
-                let mesh_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                let outcome = if withheld("mesh") {
-                    "withheld"
-                } else if m.publish(&d).instrument(mesh_span.clone()).await.is_ok() {
-                    "sent"
-                } else {
-                    "refused"
-                };
-                mesh_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                mesh_span.record("outcome", outcome);
-                mesh_span.in_scope(|| tracing::info!("said Leaving on the mesh channel"));
-                let mesh = d.node.name.mesh.clone();
-                let started = std::time::Instant::now();
-                let view_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "view", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                let mine: Vec<MeshDigest> = view_span.in_scope(|| m.book.current(m.book.staleness_floor()).into_iter().filter(|x| x.node.name.mesh == mesh).collect());
-                view_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                view_span.record("outcome", "read");
-                view_span.in_scope(|| tracing::info!(members = mine.len(), "read this mesh's members for the backbone frame"));
-                let started = std::time::Instant::now();
-                let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                let outcome = if withheld("backbone") {
-                    "withheld"
-                } else if bb.publish(&m, mine).instrument(bb_span.clone()).await {
-                    "sent"
-                } else {
-                    "not-mesh-primary"
-                };
-                bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                bb_span.record("outcome", outcome);
-                bb_span.in_scope(|| tracing::info!("said Leaving among this mesh's members on the backbone"));
-            }
-        })
-        .await;
-        tracing::info!(
-            announcements = said,
-            linger_ms = linger_started.elapsed().as_millis() as u64,
-            runqueue_wait_ms = rafka_mesh_transport::membership::runqueue_wait_since_ms(waited),
-            "said Leaving for the linger"
-        );
+        if !parked {
+            let announcement = std::sync::atomic::AtomicU32::new(0);
+            let (linger_started, waited) = (std::time::Instant::now(), rafka_mesh_transport::membership::runqueue_wait());
+            let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
+                let d = say(MemberStatus::Leaving);
+                let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let (m, bb, me, seam) = (self.membership.clone(), self.backbone.clone(), me.clone(), self.leave_seam.clone());
+                async move {
+                    let withheld = |channel: &'static str| seam.as_ref().is_some_and(|s| s.withholds(&me, n, channel));
+                    let started = std::time::Instant::now();
+                    let mesh_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                    let outcome = if withheld("mesh") {
+                        "withheld"
+                    } else if m.publish(&d).instrument(mesh_span.clone()).await.is_ok() {
+                        "sent"
+                    } else {
+                        "refused"
+                    };
+                    mesh_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                    mesh_span.record("outcome", outcome);
+                    mesh_span.in_scope(|| tracing::info!("said Leaving on the mesh channel"));
+                    let mesh = d.node.name.mesh.clone();
+                    let started = std::time::Instant::now();
+                    let view_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "view", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                    let mine: Vec<MeshDigest> = view_span.in_scope(|| m.book.current(m.book.staleness_floor()).into_iter().filter(|x| x.node.name.mesh == mesh).collect());
+                    view_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                    view_span.record("outcome", "read");
+                    view_span.in_scope(|| tracing::info!(members = mine.len(), "read this mesh's members for the backbone frame"));
+                    let started = std::time::Instant::now();
+                    let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                    let outcome = if withheld("backbone") {
+                        "withheld"
+                    } else if bb.publish(&m, mine).instrument(bb_span.clone()).await {
+                        "sent"
+                    } else {
+                        "not-mesh-primary"
+                    };
+                    bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                    bb_span.record("outcome", outcome);
+                    bb_span.in_scope(|| tracing::info!("said Leaving among this mesh's members on the backbone"));
+                }
+            })
+            .await;
+            tracing::info!(
+                announcements = said,
+                linger_ms = linger_started.elapsed().as_millis() as u64,
+                runqueue_wait_ms = rafka_mesh_transport::membership::runqueue_wait_since_ms(waited),
+                "said Leaving for the linger"
+            );
+        }
         let started = std::time::Instant::now();
         let aborted = self.tasks.len();
         for t in self.tasks {
@@ -3263,6 +3348,45 @@ pub fn rpc_server(
     let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(resolver, connections.clone()).serve_core(client, Some(connections));
     // Status is forwardable: a peer may carry an authority's status call through this admin.
     crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join).carry::<rafka_node_rpc_contract::status::Status>()
+}
+
+/// The unreadable pre-event steps already named: each is named once, not on every fact.
+type NamedSteps = HashSet<(String, u32, String, String)>;
+
+/// Apply the lifecycle overlays the facts of `log` name open to `book`: the restarts as the facts'
+/// truth (`DigestBook::restarts_from_facts`: open while named open, closed only by its own `Complete`
+/// receipt or its Build's forgetting), every other open operation as a hold, and every
+/// pre-event step this build cannot read refused by name, once.
+async fn overlays_from_facts(log: &dyn crate::build_state::LocalBuildLog, book: &DigestBook, named: &mut NamedSteps) {
+    let facts = match log.facts().await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.build.reject.via-facts-unread", error = %e)
+                .in_scope(|| tracing::warn!("this admin's Build log could not be read: its lifecycle overlays wait on its next fact"));
+            return;
+        }
+    };
+    let builds = crate::build_state::fold(&facts);
+    let in_flight = crate::build_state::in_flight_ops(&builds);
+    book.restarts_from_facts(&in_flight.ops, &in_flight.restarts_completed, &crate::build_state::forgotten_builds(&facts, &builds));
+    for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
+        book.deleting(op);
+    }
+    for u in in_flight.unrecognised {
+        if named.insert((u.build_id.0.clone(), u.attempt, u.operation.clone(), u.step.clone())) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
+                .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
+        }
+    }
+}
+
+/// [`overlays_from_facts`] each time a fact enters `log` (`facts_moved`, the log's fact watch):
+/// one coalesced recomputation per wake, no timer.
+async fn follow_overlays_from_facts(log: Arc<crate::build_state::FileJournal>, book: DigestBook, mut facts_moved: tokio::sync::watch::Receiver<u64>, mut named: NamedSteps) {
+    while facts_moved.changed().await.is_ok() {
+        facts_moved.borrow_and_update();
+        overlays_from_facts(&*log, &book, &mut named).await;
+    }
 }
 
 /// Bring a node-admin up: identity, policy, membership, Build state, the
@@ -3684,8 +3808,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
     // its entry pull or the fabric control topic.
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
+    let records = Arc::new(Records::default());
     let builds = Arc::new(
-        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), wiring.catch_up_seam.take())
+        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone())), wiring.catch_up_seam.take())
             .await
             .map_err(|e| e.to_string())?,
     );
@@ -3804,7 +3929,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         b.check_image(provider_image(policy.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
     }
 
-    let records = Arc::new(Records::default());
     // A restart that enters its mesh from its durable map elects nobody until its entry read has
     // told it who holds the seats.
     records.set_entering(entering_existing_mesh && cfg.launch.is_none());
@@ -3974,15 +4098,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         records: records.clone(),
         contacts: crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) },
         handovers: Default::default(),
-        fence_builds: {
-            let builds = builds.clone();
-            Arc::new(move |by: String, to: Option<String>| {
-                let builds = builds.clone();
-                Box::pin(async move {
-                    builds.fence_seat(&by, to).await;
-                })
-            })
-        },
+        decisions: builds.decisions(),
         claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
         project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
     });
@@ -4560,20 +4676,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             d.clone()
         });
         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
-        // A planned hand-over: the admin holding the fabric-primary seat fences its Build log before
-        // it publishes Draining or Leaving, which is what lets the election seat its heir.
-        let yield_seat: crate::node_self::YieldSeat = {
-            let (builds, membership, node_id, incarnation) = (builds.clone(), membership.clone(), node_id.clone(), incarnation.clone());
-            Arc::new(move |by: &'static str| {
-                let (builds, membership, node_id, incarnation) = (builds.clone(), membership.clone(), node_id.clone(), incarnation.clone());
-                Box::pin(async move {
-                    if membership.seats().fabric().is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
-                        builds.yield_seat(by).await;
-                    }
-                })
-            })
-        };
-        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
+        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
         own.set_session(Arc::new(AdminSession {
             gate: park_gate.clone(),
             name: name.clone(),
@@ -4753,19 +4856,22 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 .collect();
                             async move {
                                 let (Some(node), Some(client)) = (node, client) else { return crate::offline::ViaPeerVerdict::CandidatesUnreadable(format!("{id} is not in the topology, or this admin has no Node RPC client")) };
-                                let mut asked = Vec::new();
-                                for c in carriers {
-                                    asked.push(c.name.to_string());
-                                    let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
-                                    let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, &kick_of(&node), &rafka_node_rpc::CallOptions::default()).await;
-                                    // The exact birth answered (node-recovery.md step 2): its state, parked or not, or
-                                    // its hook's blocker while that hook is Blocked.
-                                    let incarnation = node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new()));
-                                    if crate::seat_watch::birth_answered(out.reply().map(|r| r.value()), &node.node_id, &incarnation) {
-                                        return crate::offline::ViaPeerVerdict::Answered { via: c.name.to_string() };
-                                    }
-                                }
-                                crate::offline::ViaPeerVerdict::NoPath { asked }
+                                let incarnation = node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new()));
+                                // Every probe names the same exact birth: one kick, by node id and incarnation.
+                                let kick = kick_of(&node);
+                                let (node, client, kick) = (&node, &client, &kick);
+                                let peers: Vec<_> = carriers
+                                    .iter()
+                                    .map(|c| {
+                                        let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
+                                        let probe = async move {
+                                            let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, kick, &rafka_node_rpc::CallOptions::default()).await;
+                                            out.reply().map(|r| r.value().clone())
+                                        };
+                                        (c.name.to_string(), probe)
+                                    })
+                                    .collect();
+                                crate::offline::via_peer_verdict(&node.node_id, &incarnation, peers).await
                             }
                         },
                         |id| {
@@ -4861,11 +4967,23 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             backbone: backbone.clone(),
             topology: control.topology.clone(),
             records: records.clone(),
-            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone() },
+            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()) },
             republish: republish.clone(),
             builds: builds.clone(),
         };
         tasks.push(park_gate.spawn(crate::seat_watch::run(watch)));
+    }
+
+    // The open lifecycle overlays, derived from the Build facts as each fact enters this admin's
+    // log (its own appends and the facts it absorbs from the fabric alike): a hold opens with its
+    // pre-event's receipt and closes with its operation's `Complete`, never at the next round. A
+    // successor primary publishes the same overlays from the same facts. Derived once before the
+    // hierarchy's first round, then on every fact.
+    {
+        let facts_moved = journal.fact_changes();
+        let mut named = HashSet::new();
+        overlays_from_facts(&*journal, &membership.book, &mut named).await;
+        tasks.push(park_gate.spawn(follow_overlays_from_facts(journal.clone(), membership.book.clone(), facts_moved, named)));
     }
 
     let hierarchy;
@@ -4885,24 +5003,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             // The round a new primary runs before it republishes the status it adopted (`crate::round`).
             let mut rounds = crate::round::RoundDriver::new(me.clone(), seat_node_id.clone());
             let mut was_fabric_primary = false;
-            // Each unreadable pre-event step is named once, not every round.
-            let mut named: std::collections::HashSet<(String, u32, String, String)> = std::collections::HashSet::new();
             loop {
-                // The open lifecycle overlays, derived from the Build facts each round: a
-                // successor primary publishes the same ones from the same facts.
-                if let Ok(facts) = adapter.facts().await {
-                    let in_flight = crate::build_state::in_flight_ops(&crate::build_state::fold(&facts));
-                    membership.book.restarts_from_facts(&in_flight.ops);
-                    for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
-                        membership.book.deleting(op);
-                    }
-                    for u in in_flight.unrecognised {
-                        if named.insert((u.build_id.0.clone(), u.attempt, u.operation.clone(), u.step.clone())) {
-                            tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
-                                .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
-                        }
-                    }
-                }
                 // The accepted Build's planned births are what a mesh's readiness is counted over.
                 if let Some(b) = accepted.current(&*adapter).await {
                     records.set_planned(&b.topology);

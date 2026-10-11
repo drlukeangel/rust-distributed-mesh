@@ -246,9 +246,10 @@ pub struct HandoverDoor {
     pub contacts: OwnContacts,
     /// The handovers this node took part in.
     pub handovers: HandoverBook,
-    /// Fences this admin's Build log, naming why and the new holder, when a committed transfer takes
-    /// the seat from it.
-    pub fence_builds: FenceBuilds,
+    /// The lock of this admin's Build-log decisions (`FabricBuildStateAdapter::decisions`): a seat
+    /// commit here holds it across the record's move, so a decision in flight commits wholly before
+    /// the record moves. The moved record is the fence; nothing else is written.
+    pub decisions: Arc<tokio::sync::Mutex<()>>,
     /// The executors the fabric-primary's claims name: what a TakeSeats caller is checked against.
     pub claims: Arc<dyn WonClaims>,
     /// Projects this admin's view from the records it holds now. Run once a committed seat record is
@@ -260,9 +261,6 @@ pub struct HandoverDoor {
 
 /// What projects an admin's view from its held records now (`crate::admin::view_projector`).
 pub type ProjectView = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
-
-/// Sets the sticky fence of this admin's Build log: why, and the admin (path.name) the seat moved to.
-pub type FenceBuilds = Arc<dyn Fn(String, Option<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
     Some(HandoverBirth { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone()? })
@@ -656,16 +654,15 @@ impl HandoverDoor {
                 return refuse("not-authority", format!("this admin's fabric seat record is {}", held.map(|h| h.to_string()).unwrap_or_else(|| "absent".into())), Reply::RejectedNotAuthority);
             }
         }
-        // The committed transfer fences this admin's fabric writes: its seat record moves.
-        if let SeatTaken::Refused { held } = self.membership.seats().take(Seat::FabricPrimary, &holder) {
+        // The committed transfer fences this admin's fabric writes: its seat record moves, under the
+        // Build log's decision lock, and the moved record is the fence.
+        let taken = {
+            let _decisions = self.decisions.clone().lock_owned().await;
+            self.membership.seats().take(Seat::FabricPrimary, &holder)
+        };
+        if let SeatTaken::Refused { held } = taken {
             return refuse("stale-epoch", format!("a later seat record is held: {held}"), Reply::RejectedStaleEpoch { expected: committed, current: held.epoch });
         }
-        // The seat record moved: the Build log is fenced by that move itself, before anything else
-        // this admin does is answered, so no dispatch of the old seat follows the transfer. The fence
-        // names the committed successor's path.name, resolved by its node id (it is a member of this
-        // view whether or not the view's seat flags have moved yet).
-        let successor = self.topology.read().await.members().find(|n| n.node_id == payload.successor.node_id).map(|n| n.name.to_string());
-        (self.fence_builds)(format!("the seat is now {} {}", payload.successor.mesh, payload.successor.node_id), successor).await;
         (self.project_view)().await;
         if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
             return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
@@ -762,6 +759,9 @@ impl HandoverDoor {
         }
         // The one row: the fence and the commit. Before it nothing has moved; after it the row is the answer.
         let row = SeatTransferRow { operation: t.operation.clone(), fabric: t.fabric.clone(), build_id: t.build_id.clone(), attempt: t.attempt, holder: t.holder.clone(), successor: t.successor.clone(), expected: t.seats.clone(), seats: committed.clone() };
+        // Build dispatch from the old seat ends at the row: the row and the records it moves are
+        // written under the Build log's decision lock, and the moved fabric record is the fence.
+        let decisions = self.decisions.clone().lock_owned().await;
         if let Err(e) = self.storage.put_seat_transfer(&row).await {
             return refuse("not-ready", e.to_string(), Reply::NotReady { reason: format!("{}: the seat transfer {} could not be made durable: {e}", self.me, t.operation) });
         }
@@ -769,10 +769,7 @@ impl HandoverDoor {
         let op = LifecycleOp { build_id: t.build_id.clone(), attempt: t.attempt, operation: t.operation.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.me.clone(), event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
         let successor = committed[0].record();
         book.take_together(&op, &successor, &committed, true);
-        // Build dispatch from the old seat ends at the row: the fence names the executor, the seat's new holder.
-        if committed.iter().any(|c| c.seat.kind() == Seat::FabricPrimary) {
-            (self.fence_builds)(format!("the seats moved to {} {} by {}", t.successor.mesh, t.successor.node_id, t.operation), Some(sender.name.to_string())).await;
-        }
+        drop(decisions);
         (self.project_view)().await;
         self.committed_span(&t, &committed, false);
         self.backbone.announce_seats_together(op, successor, committed.clone()).await;

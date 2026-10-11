@@ -6481,11 +6481,7 @@ fn soak_seconds() -> u64 {
 
 /// One offline-tickle round at its longest (the driver derives its unheard windows from it).
 fn tickle_round() -> Duration {
-    let budget = match rafka_node_rpc::CallOptions::default().budget {
-        rafka_node_rpc::Budget::Overall(d) => d,
-        other => panic!("the default call budget is not one overall deadline: {other:?}"),
-    };
-    budget * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32)
+    rafka_node_admin_core::offline::tickle_round_at_default_budget()
 }
 
 /// Whether this host can drop UDP between loopback ports; `Err` names why it cannot.

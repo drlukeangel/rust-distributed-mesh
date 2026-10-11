@@ -83,6 +83,9 @@ impl rafka_node_admin_core::build_state::LocalBuildLog for Refuses {
     async fn absorb_facts(&self, facts: &[BuildFact]) {
         self.inner.absorb_facts(facts).await
     }
+    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.fact_changes()
+    }
 }
 
 #[async_trait::async_trait]
@@ -120,7 +123,7 @@ impl BuildStateAdapter for Refuses {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
@@ -277,6 +280,7 @@ async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rafka_node_admin_co
         std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), name)),
         rafka_node_admin_core::shutdown::ShutdownControl::memory(name).await,
         name.into(),
+        rafka_node_admin_core::fabric_builds::SeatSource::unrecorded(),
         None,
     )
     .await
@@ -386,13 +390,12 @@ async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
 
 /// CONTRACT (node-rpc-envelope.md "Build carrier": "Progress waits on no gossip; Build-topic facts
 /// remain durability and recovery evidence through the existing publication path"): a fabric-primary
-/// that yields its seat while its gossip is shut down sets the sticky fence (its Build log decides
-/// nothing after it) and hands on what it can: each send that fails is named under
-/// `rdm.node_admin.build.reject.via-broadcast-refused` (fact `hand-over`, sent by the yielding admin,
-/// the send error), and the yield reports the facts it held. Must NOT happen: the yield answered as
-/// failed because a broadcast failed after the local fence committed.
+/// whose seat record moved hands its committed facts on while its gossip is shut down: each send
+/// that fails is named under `rdm.node_admin.build.reject.via-broadcast-refused` (fact `hand-over`,
+/// sent by the handing admin, the send error), and the hand-over reports the facts it held. Must NOT
+/// happen: the hand-over answered as failed because a broadcast failed.
 #[tokio::test]
-async fn a_seat_yield_whose_broadcast_fails_is_fenced_and_names_each_refused_send() {
+async fn a_seat_hand_over_whose_broadcast_fails_names_each_refused_send() {
     let (capture, _guard) = Capture::new("i143-3051-yield-broadcast-refused");
     let local = std::sync::Arc::new(MemoryBuildStateAdapter::new());
     let (_endpoint, gossip, _router, builds) = fabric_builds("mesh1.admin.1", local).await;
@@ -400,9 +403,8 @@ async fn a_seat_yield_whose_broadcast_fails_is_fenced_and_names_each_refused_sen
     accepted_and_claimed(&builds, &build_id).await;
     gossip.shutdown().await.unwrap();
 
-    let handed = builds.yield_seat("the seat is now mesh2 test").await;
+    let handed = builds.hand_over_facts("the seat is now mesh2 test", Some("mesh2.admin.1".into())).await;
     assert!(handed >= 2, "the accepted Build and its claim were held and handed on: {handed}");
-    assert!(builds.fence_check().await.is_err(), "the fence holds: the yielded log decides nothing");
     let refused = capture.spans("rdm.node_admin.build.reject.via-broadcast-refused");
     let hand = refused.iter().find(|(_, a)| a.get("fact").map(String::as_str) == Some("hand-over")).unwrap_or_else(|| panic!("the hand-over's failed send is named: {refused:?}"));
     assert_eq!(hand.1.get("sent_by").map(String::as_str), Some("mesh1.admin.1"), "{hand:?}");

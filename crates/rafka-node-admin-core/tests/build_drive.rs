@@ -179,20 +179,16 @@ async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_holding_the
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh1.admin.1")));
 }
 
-/// CONTRACT: the Build log's fence decides before the view does. A fabric-primary whose seat record
-/// moved is fenced by that move while its view may still show the old holder or already show the new
-/// one: either way its dispatch is refused `Fenced`, and the callers' streams end naming the admin
-/// its view shows as the holder now.
+/// CONTRACT (node-rpc-envelope.md TakeSeats: "The row is the fence ... Build dispatch from the old
+/// seat is refused with Fenced"): the seat record decides before the view does. A fabric-primary
+/// whose seat record moved is refused `Fenced` while its view still shows it as the holder and
+/// holds no row of the new one yet, and the callers' streams end naming the holder the record names,
+/// never the view's. No executor is called.
 #[tokio::test]
 async fn a_fenced_fabric_primary_is_refused_fenced_whatever_its_view_shows_and_names_the_new_seat() {
-    let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
-    t.nodes.push(node("mesh2.admin.1", true, false));
-    let r = rig_for(t, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
-    for n in r.env.topology.write().await.nodes.iter_mut() {
-        n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
-    }
-    r.switch.fenced.store(true, Ordering::SeqCst);
+    let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
+    assert!(r.env.topology.read().await.node(&"mesh2.admin.1".parse().unwrap()).is_none(), "the view holds no row of the new holder");
+    r.switch.fence_to(Some("mesh2.admin.1"));
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match r.env.run(&drive).await {

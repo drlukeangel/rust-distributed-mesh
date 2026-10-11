@@ -27,11 +27,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     let estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
     let floor = rafka_mesh_transport::membership::staleness_floor();
     let backbone = rafka_mesh_transport::membership::backbone_gossip_interval();
-    let budget = match rafka_node_rpc::CallOptions::default().budget {
-        rafka_node_rpc::Budget::Overall(d) => d,
-        other => panic!("the default call budget is not one overall deadline: {other:?}"),
-    };
-    let tickle_round = budget * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32);
+    let tickle_round = rafka_node_admin_core::offline::tickle_round_at_default_budget();
     let driver = Driver::new(estate, Config::mm(seed, secs, floor, backbone, tickle_round)).await;
     let (report, mut estate) = driver.run().await;
     eprintln!("{}", soak::summary(&report));

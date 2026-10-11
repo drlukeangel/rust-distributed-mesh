@@ -67,6 +67,14 @@ impl LifecycleEvents for Recorder {
     async fn restarting(&self, op: &LifecycleOp) {
         self.0.lock().unwrap().push(format!("NodeRestarting:{}", op.node_id));
     }
+    // A recovery publishes no stop, drain, leaving or mesh-leave event; this cell records the removal
+    // and restart events it asserts, and states the rest as not recorded.
+    async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn leaving(&self, _op: &LifecycleOp) {}
+    async fn mesh_leaving(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
+    async fn mesh_leave(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
+    async fn mesh_left(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
     fn now_rafka_ms(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
     }
@@ -192,7 +200,7 @@ async fn recovery_deletes_the_exited_instance_then_creates_a_new_node_over_its_d
     assert_eq!(output("NodeDeleted")["node_id"], serde_json::to_value(&first.node.node_id).unwrap(), "NodeDeleted names the exited node");
     assert_eq!(output("NodeDeleted")["incarnation"], serde_json::to_value(&old_inc).unwrap(), "NodeDeleted names the exact exited birth");
     // The recovery is keyed on that NodeDeleted and the operation's Complete.
-    assert_eq!(rig.builds.recovery_of(&path(), &first.node.node_id, &old_inc).await.unwrap(), Some((recover_build.clone(), 2)), "the exited birth is recovered by this attempt");
+    assert_eq!(rig.builds.recovery_of(&path(), &first.node.node_id, &old_inc).await.unwrap(), Some((recover_build.clone(), 2, format!("recover-node:{}", path()))), "the exited birth is recovered by this attempt");
     assert!(output("AllocateIdentity")["supersedes"].is_null(), "no lineage across node.ids: {}", output("AllocateIdentity"));
 
     // Retained: path.name, data dir and its storage, endpoint key. New: node.id, incarnation, runtime.

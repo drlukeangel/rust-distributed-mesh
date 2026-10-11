@@ -393,7 +393,7 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
-    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32)>, BuildStateError> {
+    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -510,6 +510,26 @@ impl LifecycleEvents for FaultedEvents {
     async fn restarting(&self, op: &LifecycleOp) {
         self.faults.hold(Probe::Event { event: "restarting", op: op.clone() }).await;
         self.inner.restarting(op).await
+    }
+    // Every other event the admin publishes passes through unchanged: a decorator that leaves one
+    // to the trait's empty default withholds that event's gossip from every faulted estate.
+    async fn stopped(&self, op: &LifecycleOp) {
+        self.inner.stopped(op).await
+    }
+    async fn draining(&self, op: &LifecycleOp) {
+        self.inner.draining(op).await
+    }
+    async fn leaving(&self, op: &LifecycleOp) {
+        self.inner.leaving(op).await
+    }
+    async fn mesh_leaving(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
+        self.inner.mesh_leaving(event).await
+    }
+    async fn mesh_leave(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
+        self.inner.mesh_leave(event).await
+    }
+    async fn mesh_left(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
+        self.inner.mesh_left(event).await
     }
     fn now_rafka_ms(&self) -> u64 {
         self.inner.now_rafka_ms()

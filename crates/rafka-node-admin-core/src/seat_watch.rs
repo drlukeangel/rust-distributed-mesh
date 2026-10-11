@@ -21,7 +21,7 @@
 use crate::admin::Records;
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rafka_mesh_entity::Seat;
+use rafka_mesh_entity::{Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Backbone, ConcernHeard, Membership};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::HashSet;
@@ -70,6 +70,43 @@ pub struct Said {
 
 fn birth(n: &Node) -> Option<Birth> {
     n.incarnation_id.clone().map(|i| (n.node_id.clone(), i))
+}
+
+/// The hand-over of committed Build facts a pass owes when the fabric seat record this birth held names another
+/// birth now, the move planned or not (the handover door's commit, or the record heard on the
+/// backbone first): why, and the admin the seat moved to, by the node id the record names (a
+/// member of the view whether or not its seat flags have moved yet; the handover door names it the
+/// same way). `held` carries whether this birth held the record on an earlier pass.
+pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view: &Topology) -> Option<(String, Option<String>)> {
+    match record {
+        Some(h) if h.is_birth(&me.0, &me.1) => {
+            *held = true;
+            None
+        }
+        Some(h) if *held => {
+            *held = false;
+            Some((format!("the seat is now {} {}", h.mesh, h.node_id), view.own(&h.node_id).map(|n| n.name.to_string())))
+        }
+        _ => None,
+    }
+}
+
+/// What the committed fabric seat record says of `me`'s Build authority (node-rpc-envelope.md
+/// TakeSeats: "The row is the fence: P's execution authority ends at the row's epoch ... and no
+/// separate fence write precedes or follows it"). A record naming this birth, naming none, or naming
+/// a birth proven gone (`lost`: a vacancy the election fills before this birth's own record lands)
+/// ends nothing; a record naming another live birth ended this birth's authority at its epoch, and
+/// names that birth's path.name from `name_of` (the digest book, which holds a birth before the
+/// projected view does). Read from the record alone: no history, no write.
+pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
+    match record {
+        Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
+            let to = name_of(&h.node_id);
+            let by = format!("the fabric seat record names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.0, h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
+            crate::fabric_builds::SeatRecord::Moved { by, to }
+        }
+        _ => crate::fabric_builds::SeatRecord::Open,
+    }
 }
 
 /// The pass: `me` is this admin's exact birth, `heard` the Concerns drained since the last pass.
@@ -179,6 +216,8 @@ pub struct Looker {
     pub client: Arc<NodeRpcClient>,
     /// Its deployment provider.
     pub provider: Arc<dyn crate::deployment::provider::DeploymentProvider>,
+    /// Its nodes.storage: the runtime row of each birth recorded at launch or handed at its create.
+    pub nodes: Option<Arc<dyn crate::storage::NodesStorage>>,
 }
 
 impl Looker {
@@ -222,21 +261,47 @@ impl Looker {
 
     /// The provider's inspection of `n`'s exact runtime.
     async fn inspect(&self, n: &Node) -> Finding {
-        let Some(inc) = n.incarnation_id.clone() else { return Finding::Unproven { reason: "the view holds no incarnation for it".into() } };
-        let held = self.membership.book.get(n.node_id.as_str()).filter(|(d, _)| d.node.incarnation == inc);
-        let Some((digest, _)) = held else { return Finding::Unproven { reason: "this admin holds no digest of this exact birth, so no runtime fact".into() } };
-        let Some(fact) = digest.node.runtime.clone() else { return Finding::Unproven { reason: "its digest carries no runtime fact".into() } };
-        let handle = match crate::deployment::provider::adopt(&*self.provider, &fact) {
-            Ok(h) => h,
-            Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
-        };
-        let inspected = self.provider.inspect(&handle).await;
-        match crate::deployment::provider::exit_proof(inspected, &fact, digest.data_dir.as_deref().map(std::path::Path::new), &inc.0).await {
-            Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Finding::Exited { code },
-            Ok(crate::deployment::provider::DeploymentStatus::Running) => Finding::Running,
-            Ok(other) => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
-            Err(e) => Finding::Unproven { reason: format!("its exit record cannot be read: {e}") },
+        inspect_birth(&*self.provider, &self.membership.book, self.nodes.as_deref(), n).await
+    }
+}
+
+/// The provider's inspection of the exact runtime of `n`'s birth (node-recovery.md step 3: "the
+/// exact runtime recorded at launch"): the runtime fact its digest carries in `book`, or else the
+/// runtime row `nodes` holds for the exact birth (recorded at its launch, or handed into this
+/// admin's nodes.storage at its own create). A birth lost before this admin heard it has no digest
+/// here; its row is still the runtime recorded at launch. Neither held: unproven, naming both.
+pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rafka_mesh_transport::membership::DigestBook, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
+    let Some(inc) = n.incarnation_id.clone() else { return Finding::Unproven { reason: "the view holds no incarnation for it".into() } };
+    let held = book.get(n.node_id.as_str()).filter(|(d, _)| d.node.incarnation == inc);
+    let (fact, data_dir) = match held {
+        Some((digest, _)) => match digest.node.runtime.clone() {
+            Some(fact) => (fact, digest.data_dir.clone()),
+            None => return Finding::Unproven { reason: "its digest carries no runtime fact".into() },
+        },
+        None => {
+            let row = match nodes {
+                Some(nodes) => match nodes.runtime(&n.node_id, &inc).await {
+                    Ok(row) => row,
+                    Err(e) => return Finding::Unproven { reason: format!("this admin holds no digest of this exact birth, and its nodes.storage runtime row could not be read: {e}") },
+                },
+                None => None,
+            };
+            match row {
+                Some(r) => (r.runtime, r.data_dir),
+                None => return Finding::Unproven { reason: "this admin holds no digest of this exact birth and no runtime row of it, so no runtime fact".into() },
+            }
         }
+    };
+    let handle = match crate::deployment::provider::adopt(provider, &fact) {
+        Ok(h) => h,
+        Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
+    };
+    let inspected = provider.inspect(&handle).await;
+    match crate::deployment::provider::exit_proof(inspected, &fact, data_dir.as_deref().map(std::path::Path::new), &inc.0).await {
+        Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Finding::Exited { code },
+        Ok(crate::deployment::provider::DeploymentStatus::Running) => Finding::Running,
+        Ok(other) => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
+        Err(e) => Finding::Unproven { reason: format!("its exit record cannot be read: {e}") },
     }
 }
 
@@ -261,17 +326,13 @@ where
     P: std::future::Future<Output = Option<rafka_node_rpc_contract::status::StatusReply>>,
     V: std::future::Future<Output = Finding>,
 {
-    use futures_util::StreamExt as _;
     if direct.await {
         return Finding::Answered;
     }
-    let mut running: futures_util::stream::FuturesUnordered<_> = peers.into_iter().map(|(carrier, probe)| async move { (carrier, probe.await) }).collect();
-    while let Some((carrier, reply)) = running.next().await {
-        if birth_answered(reply.as_ref(), node_id, incarnation) {
-            return Finding::AnsweredViaPeer { carrier };
-        }
+    match crate::offline::via_peer_verdict(node_id, incarnation, peers).await {
+        crate::offline::ViaPeerVerdict::Answered { via } => Finding::AnsweredViaPeer { carrier: via },
+        _ => provider.await,
     }
-    provider.await
 }
 
 /// What the watch drives.
@@ -294,7 +355,7 @@ pub struct Watch {
     pub looker: Looker,
     /// Re-publishes this admin's presence and re-joins its mesh's members (`status_rpc::Republish`).
     pub republish: crate::status_rpc::Republish,
-    /// This admin's Build log: fenced when the fabric seat's record names another birth.
+    /// This admin's Build log: its committed facts are handed on when the fabric seat's record names another birth.
     pub builds: Arc<crate::fabric_builds::FabricBuildStateAdapter>,
 }
 
@@ -306,16 +367,12 @@ pub async fn run(w: Watch) {
     let mut seats_changed = w.membership.seats().subscribe();
     let mut held_the_fabric_seat = false;
     loop {
-        // A fabric seat this birth held, now recorded to another birth: it yielded (planned or
-        // not), and its Build log is fenced before the new holder acts.
-        match w.membership.seats().fabric() {
-            Some(h) if h.is_birth(&me_birth.0, &me_birth.1) => held_the_fabric_seat = true,
-            Some(h) if held_the_fabric_seat => {
-                let by = format!("the seat is now {} {}", h.mesh, h.node_id);
-                w.builds.yield_seat(&by).await;
-                held_the_fabric_seat = false;
-            }
-            _ => {}
+        // A fabric seat this birth held, now recorded to another birth: the record already fences
+        // its Build log; the committed facts are handed to the neighbours before the new holder acts.
+        let record = w.membership.seats().fabric();
+        let owed = seat_yield(record.as_ref(), &me_birth, &mut held_the_fabric_seat, &*w.topology.read().await);
+        if let Some((by, to)) = owed {
+            w.builds.hand_over_facts(&by, to).await;
         }
         tokio::select! {
             _ = seats_changed.changed() => {}
@@ -419,6 +476,23 @@ mod tests {
         let mut outsider = admin("mesh2.admin.1", "100000000000", "o1", NodeStatus::ReadyForTraffic);
         outsider.is_primary = true;
         (view(vec![holder.clone(), standby.clone(), outsider.clone()]), holder, standby, outsider)
+    }
+
+    /// CONTRACT: a birth that held the fabric seat record and finds it naming another birth owes one
+    /// hand-over of its committed Build facts, naming that birth's path.name (resolved by the node id
+    /// the record names), whether the record moved by the handover door's commit or was heard on the
+    /// backbone first. Once per move; a birth that never held the record owes nothing. The moved
+    /// record itself is the fence (`fabric_seat_record`); this pass writes none.
+    #[test]
+    fn a_held_fabric_seat_record_that_moves_owes_one_hand_over_naming_the_new_holder() {
+        let (t, holder, standby, outsider) = world();
+        let record = |n: &Node, epoch: u64| SeatHolder { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), epoch };
+        let (me, mut held) = (me_of(&holder), false);
+        assert_eq!(seat_yield(Some(&record(&holder, 1)), &me, &mut held, &t), None, "the record names this birth: nothing yields");
+        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), Some(("the seat is now mesh2 100000000000".to_string(), Some("mesh2.admin.1".to_string()))), "the fence names the holder the record names");
+        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), None, "once per move");
+        let mut never = false;
+        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me_of(&standby), &mut never, &t), None, "a birth that never held the record owes nothing");
     }
 
     /// CONTRACT (R-A2 item 3): a mesh primary says the fabric primary's exact birth is silent once

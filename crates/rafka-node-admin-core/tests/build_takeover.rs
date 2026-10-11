@@ -164,7 +164,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     rafka_node_admin_core::fabric_storage::FabricStorage::put_identity(&*storage, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     let local = Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new());
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rafka_mesh_transport::membership::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin").await, "test-admin".into(), None).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rafka_mesh_transport::membership::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin").await, "test-admin".into(), rafka_node_admin_core::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());
     Admin { endpoint, router, builds, local, accepted }
 }
 
@@ -309,6 +309,9 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .collect();
     let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some("mesh1.admin.2")).unwrap_or_else(|| panic!("B's reconcile span among {reconciles:?}"));
     assert_eq!(takeover.get("attempt").map(String::as_str), Some("2"));
+    // The span names the executor the takeover follows: the admin that held attempt 1, not the
+    // claim of attempt 2 the executor absorbed before it runs.
+    assert_eq!(takeover.get("previous_executor").map(String::as_str), Some("mesh1.admin.1"), "the takeover names the executor it follows: {takeover:?}");
     assert_eq!(takeover.get("operations").map(String::as_str), Some("create-node:mesh1.admin.1,create-node:mesh1.rpc.3"));
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
     let proven = all

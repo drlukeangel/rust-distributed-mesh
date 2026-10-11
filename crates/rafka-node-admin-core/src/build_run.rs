@@ -276,7 +276,7 @@ impl BuildStateAdapter for FramedBuilds {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -563,7 +563,7 @@ mod tests {
         async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
             self.0.facts().await
         }
-        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32)>, BuildStateError> {
+        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
             self.0.recovery_of(path, node_id, incarnation).await
         }
         async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
@@ -603,7 +603,7 @@ mod tests {
         async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
             panic!("the whole fact log was read for a lookup")
         }
-        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
             self.0.recovery_of(path, node_id, incarnation).await
         }
         async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
@@ -628,7 +628,7 @@ mod tests {
                 .unwrap();
         }
         let framed = FramedBuilds::new(Arc::new(NoScan(memory)), Arc::new(AttemptRuns::default()));
-        assert_eq!(framed.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((id(), 2)), "the exited birth's recovery, by its key");
+        assert_eq!(framed.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((id(), 2, format!("recover-node:{path}"))), "the exited birth's recovery, by its key");
         assert_eq!(framed.recovery_of(&path, &node_id, &crate::model::IncarnationId::mint()).await.unwrap(), None, "another birth of the node was not recovered");
     }
 

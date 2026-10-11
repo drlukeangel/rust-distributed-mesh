@@ -14,7 +14,7 @@
 use super::*;
 use crate::build_state::{BuildStepReceipt, StepOutcome};
 use crate::deployment::pipeline::{MeshLeaveEvent, RuntimeProof, TerminalReceipt};
-use crate::mesh_leave::{accepted_roster, first_mismatch, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
+use crate::mesh_leave::{accepted_roster, first_mismatch, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_LEFT};
 use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
@@ -84,29 +84,45 @@ impl AdminRunner {
         // was handed over first (fabric-primary-handover.md): the leave opens only on the confirmed
         // transfer, and an unconfirmed one is reconciled here before anything is dismantled.
         self.handover.confirmed(mesh_id).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric-primary handover is not confirmed: {e}"))?;
-        let primary = view.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to"))?;
-        // A resumed attempt hands the workflow only to the final primary accepted at admission.
-        let recorded = crate::mesh_leave::accepted_row(&steps, outer, STEP_ACCEPTED_ROSTER).transpose().map_err(|e| format!("{outer}: {e}"))?;
-        if let Some(row) = &recorded {
+        let primary = match view.cohort_primary(mesh, NodeKind::NodeAdmin).cloned() {
+            Some(p) => p,
+            None => self.admin_for_leaving_mesh(build_id, attempt, mesh, &key, &steps, &view).await?,
+        };
+        // A resumed attempt hands the workflow only to the final primary admitted, or to the one the
+        // last roster amendment names. A different primary is the leaving mesh's primary lost
+        // mid-leave: the lost one's exact exit is proven and recorded first, then the amendment
+        // admits the new one (mesh-leave.md, "Resume after the primary's loss").
+        let mut recorded = crate::mesh_leave::admitted_of(&steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))?;
+        if let Some(adm) = &recorded {
             let held = RosterBirth::of(&primary)?;
-            if held != row.final_primary {
-                return Err(format!(
-                    "{outer} is refused: {mesh}'s primary is {} {}, not the final primary {} {} accepted at admission; a resumed leave hands its workflow to no other birth",
-                    held.node, held.incarnation_id, row.final_primary.node, row.final_primary.incarnation_id
-                ));
+            if held != adm.final_primary {
+                self.amend_after_loss(&key, adm, &primary, &held).await?;
+                let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
+                recorded = crate::mesh_leave::admitted_of(&steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))?;
             }
         }
         // The final primary's authoritative provider domain: access before anything is dismantled.
         let (final_record, final_handle) = self.handle_for(&primary).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: no provider proof path for its final primary: {e}"))?;
         let final_fact = final_handle.fact().ok_or_else(|| format!("{outer} is refused before {mesh} is dismantled: the final primary {} has no exact runtime handle", primary.name))?;
         let (final_primary, final_runtime) = (RosterBirth::of(&primary)?, RuntimeProof::of(&final_fact));
-        if let Some(accepted) = recorded.as_ref().and_then(|row| row.final_runtime.as_ref()) {
-            if accepted != &final_runtime {
-                return Err(format!("{outer} is refused before {mesh} is dismantled further: the final primary {}'s runtime is {final_runtime:?}, not the one accepted at admission {accepted:?}", primary.name));
+        let admitted = match recorded {
+            Some(adm) => {
+                if adm.final_primary != final_primary {
+                    return Err(format!(
+                        "{outer} is refused: {mesh}'s primary is {} {}, not the final primary {} {} admitted or amended; a resumed leave hands its workflow to no other birth",
+                        final_primary.node, final_primary.incarnation_id, adm.final_primary.node, adm.final_primary.incarnation_id
+                    ));
+                }
+                if adm.final_runtime != final_runtime {
+                    return Err(format!("{outer} is refused before {mesh} is dismantled further: the final primary {}'s runtime is {final_runtime:?}, not the one admitted or amended for it {:?}", primary.name, adm.final_runtime));
+                }
+                adm
             }
-        }
-        let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.me.to_string(), &final_primary, &final_runtime, || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
-        let admitted = Admitted { roster, final_primary, final_runtime };
+            None => {
+                let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.me.to_string(), &final_primary, &final_runtime, || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
+                Admitted { roster, final_primary, final_runtime, amendments: Vec::new() }
+            }
+        };
         if !admitted.roster.contains(&admitted.final_primary) {
             return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id));
         }
@@ -117,6 +133,86 @@ impl AdminRunner {
             self.leaves.close(&key);
         }
         result
+    }
+
+    /// The leaving mesh holds no node-admin primary. Before admission that refuses the leave; after
+    /// it, with no admin of the mesh left live, the fabric-primary resumes the leave through the one
+    /// node-admin it creates for the mesh (mesh-leave.md, "Resume after the primary's loss", steps
+    /// 1-2): the lost final primary's exact Exited is proven and recorded first, so nothing is born
+    /// for the mesh on an unproven exit (R-D1); then the admin is created at a path no birth held,
+    /// into the existing mesh under its existing MeshId. A live admin not yet seated is no loss:
+    /// the attempt ends and the next one hands that admin the workflow.
+    async fn admin_for_leaving_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &LeaveKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<Node, String> {
+        let outer = key.operation.as_str();
+        let no_primary = format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to");
+        let Some(adm) = crate::mesh_leave::admitted_of(steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))? else {
+            return Err(no_primary);
+        };
+        if let Some(live) = view.cohort(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
+            return Err(format!("{no_primary}: its admin {} is live and holds no seat yet, so it is not lost; the next attempt hands the workflow to the admin seated", live.name));
+        }
+        let lost = adm.final_primary.clone();
+        if !crate::mesh_leave::exit_receipts(steps, outer, std::slice::from_ref(&lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
+            let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {} holds no durable runtime rows to prove the lost final primary {} {}'s exit from", self.me, lost.node, lost.incarnation_id))?;
+            let rows = store.runtimes().await.map_err(|e| format!("{outer} is refused: {}'s durable runtime rows could not be read to prove the lost final primary {} {}'s exit: {e}", self.me, lost.node, lost.incarnation_id))?;
+            let terminal = crate::mesh_leave::prove_predecessor_exit(&*self.provider, &rows, &lost, &adm.final_runtime).await.map_err(|reason| {
+                crate::mesh_leave::span_unproven(key, &lost, &reason);
+                format!("{outer} is refused: {mesh} has no live admin and its final primary {} {} is silent but not proven exited, so no admin is created for it: {reason}", lost.node, lost.incarnation_id)
+            })?;
+            crate::mesh_leave::record_predecessor_exit(&*self.builds, key, &self.me.to_string(), &terminal).await?;
+        }
+        let held: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
+        let path = crate::mesh_leave::leaving_mesh_admin_path(mesh, &adm.roster, &held)?;
+        let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node = %path, build_id = %build_id, attempt, operation = %outer, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), outcome = tracing::field::Empty);
+        let created = self.create_leaving_mesh_admin(build_id, attempt, &path, &key.mesh_id).instrument(span.clone()).await;
+        span.record("outcome", if created.is_ok() { "created" } else { "failed" });
+        created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
+        self.refresh_view().await;
+        let now = self.topology.read().await.clone();
+        now.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| format!("{outer}: {path} was created for {mesh} and holds no mesh-primary seat yet; the next attempt amends the roster for it"))
+    }
+
+    /// node.create of `path`, the one node-admin of a leaving mesh no admin of which survives, into
+    /// the EXISTING mesh (mesh-recovery.md: "it joins under the EXISTING MeshId and never mints
+    /// another"): the mesh's issuing material, as any mesh's only admin carries, and the mesh's
+    /// CURRENT state as this fabric-primary holds it, handed before its Ready like any mesh's first
+    /// admin is handed its mesh's state. Never Pending for a mesh past it: the state only moves
+    /// forward (states.md, "pending -> ready-for-traffic -> leaving -> dead"), and a mesh that is
+    /// leaving is never told it is pending. A fabric-primary that holds no state for the mesh
+    /// creates nothing: no state is assumed.
+    async fn create_leaving_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName, mesh_id: &MeshId) -> Result<(), String> {
+        let state = self.records.declared.lock().unwrap().meshes.get(mesh_id).copied().ok_or_else(|| {
+            format!("{}: this fabric-primary holds no declared state for {} ({mesh_id}), so the admin created for it could be handed none; nothing is created under an assumed state", self.me, path.mesh)
+        })?;
+        match self.fence_predecessor(path).await {
+            crate::fence::FenceOutcome::Clear { gone: None } => {}
+            other => return Err(format!("{path} is not a path no birth held: the create door fenced {other:?}")),
+        }
+        let hand_off = self.mesh_state_hook(path, state)?;
+        let template = self.with_mesh_issuer(self.template_for(NodeKind::NodeAdmin, &path.mesh).await?, &path.mesh)?;
+        let held_runtimes = self.held_runtimes().await;
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: path.clone(), spec: spec_for(NodeKind::NodeAdmin), restart_of: None, held_runtimes };
+        let created = self.pipeline(&template).create_with(&req, Some(hand_off)).await.map_err(|e| e.to_string())?;
+        self.bring_into_traffic(&created.node).await?;
+        self.handles.lock().unwrap().insert(path.clone(), (created.node, created.handle));
+        Ok(())
+    }
+
+    /// The resume after the leaving mesh's final primary `adm.final_primary` was lost and `held`
+    /// (`primary`, the surviving admin the election seated or the one node-admin this fabric-primary
+    /// created for the mesh) is its primary now (mesh-leave.md, "Resume after the primary's loss",
+    /// steps 1-2; [`crate::mesh_leave::resume_after_loss`]): the lost birth's exit is proven from
+    /// this admin's durable runtime row of it, never from the view, which drops a departed birth.
+    async fn amend_after_loss(&self, key: &LeaveKey, adm: &Admitted, primary: &Node, held: &RosterBirth) -> Result<(), String> {
+        let outer = key.operation.as_str();
+        if primary.kind != NodeKind::NodeAdmin {
+            return Err(format!("{outer} is refused: {} {} is not a node-admin and cannot be the final primary", held.node, held.incarnation_id));
+        }
+        let (_, handle) = self.handle_for(primary).await.map_err(|e| format!("{outer} is refused: no provider proof path for the new final primary {}: {e}", primary.name))?;
+        let fact = handle.fact().ok_or_else(|| format!("{outer} is refused: the new final primary {} has no exact runtime handle", primary.name))?;
+        let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {} holds no durable runtime rows to prove the lost final primary {} {}'s exit from", self.me, adm.final_primary.node, adm.final_primary.incarnation_id))?;
+        let rows = store.runtimes().await.map_err(|e| format!("{outer} is refused: {}'s durable runtime rows could not be read to prove the lost final primary {} {}'s exit: {e}", self.me, adm.final_primary.node, adm.final_primary.incarnation_id))?;
+        crate::mesh_leave::resume_after_loss(&*self.builds, &*self.provider, &rows, key, &self.me.to_string(), adm, held, &RuntimeProof::of(&fact)).await.map(|_| ())
     }
 
     /// Steps 2-7 of the owner's workflow, for the leave `key` opened with `admitted`.
@@ -223,6 +319,18 @@ impl AdminRunner {
         let Some(owner) = sender.map(|n| n.node_id.clone()) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } };
         };
+        // states.md: the mesh's `leaving` is entered by this down op, and "one commit stores the row,
+        // applies it, gossips it and answers the op" (the command hook's mesh-leaving is the owner's);
+        // fabric-node-lifecycle.md 2.7: the mesh's primary writes every status of its own mesh row.
+        // The row is put and applied before the leave is admitted: a refused put admits nothing and
+        // answers NotReady naming the store, so the owner's repeated leave-mesh is decided afresh.
+        let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, mesh_id, rafka_node_rpc_contract::status::MeshState::Leaving).await;
+        tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
+            .in_scope(|| tracing::info!("leave-mesh admitted at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
+        match committed {
+            StatusReply::Applied | StatusReply::AlreadyApplied => {}
+            refused => return refused,
+        }
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
         let resend = match self.leave_runs.admit(&key, &owner) {
             crate::mesh_leave::LeaveAdmission::Running => return StatusReply::AlreadyApplied,
@@ -240,16 +348,16 @@ impl AdminRunner {
                 StatusReply::AlreadyApplied
             }
             None => {
-                tokio::spawn(async move { runner.run_leave(key, parent).await });
+                tokio::spawn(async move { runner.run_leave(key, owner, parent).await });
                 StatusReply::Applied
             }
         }
     }
 
-    async fn run_leave(self: Arc<Self>, key: LeaveKey, parent: tracing::Span) {
+    async fn run_leave(self: Arc<Self>, key: LeaveKey, owner: NodeId, parent: tracing::Span) {
         let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty);
         async {
-            match self.leave_members(&key).await {
+            match self.leave_members(&key, &owner).await {
                 Ok(manifest) => {
                     tracing::Span::current().record("outcome", "exited");
                     // The handoff goes to the owner that sent leave-mesh last, read now.
@@ -278,21 +386,30 @@ impl AdminRunner {
     }
 
     /// Both tiers over the accepted roster, then the one manifest receipt
-    /// ([`crate::mesh_leave::members_exited`]).
-    async fn leave_members(&self, key: &LeaveKey) -> Result<ExitManifest, String> {
+    /// ([`crate::mesh_leave::members_exited`]). `owner` is the fabric-primary that sent `LeaveMesh`:
+    /// the Build facts it holds are read when this admin's own do not yet admit it.
+    async fn leave_members(&self, key: &LeaveKey, owner: &NodeId) -> Result<ExitManifest, String> {
         let view = self.topology.read().await.clone();
         let me = view.own(&self.node_id).cloned().ok_or_else(|| format!("{} holds no view of itself", self.me))?;
         let my_fact = self.held_runtime(&me).ok_or_else(|| format!("{} publishes no runtime fact: its own exact runtime cannot be named", me.name))?;
         let me_birth = RosterBirth::of(&me)?;
         let my_runtime = RuntimeProof::of(&my_fact);
-        let roster = accepted_roster(&*self.builds, key, STEP_LEAVING_ROSTER, &self.me.to_string(), &me_birth, &my_runtime, || {
+        // The roster captured once, or, when this admin holds none, what the owner admitted: the
+        // roster amendments the fabric-primary recorded (a primary lost mid-leave) are read from the
+        // owner's Build facts when this admin has not yet heard them ([`crate::mesh_leave::leaving_roster`]).
+        let build_id = crate::build::BuildId(key.build_id.clone());
+        let fetch_owner = || async {
+            let node_rpc = self.node_rpc.as_ref().ok_or_else(|| format!("{} holds no Node RPC client to read the owner {owner}'s Build facts with", self.me))?;
+            crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(owner.clone()), &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}", self.me))
+        };
+        let capture = || {
             let mut roster = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.node_id != me.node_id).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
             roster.push(me_birth.clone());
             Ok(roster)
-        })
-        .await?;
+        };
+        let (roster, known) = crate::mesh_leave::leaving_roster(&*self.builds, key, &self.me.to_string(), &me_birth, &my_runtime, capture, fetch_owner).await?;
         let records: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
-        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, &records, |n| async move { self.shutdown_one(key, &n).await }).await
+        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, &records, &known, |n| async move { self.shutdown_one(key, &n).await }).await
     }
 
     /// One member's drain and stop and the provider's terminal receipt of its exact runtime.

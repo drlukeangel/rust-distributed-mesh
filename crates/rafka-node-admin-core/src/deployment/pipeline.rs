@@ -738,6 +738,9 @@ pub struct MeshLeaveEvent {
 }
 
 /// Publishes the lifecycle events of a removal or a restart.
+///
+/// Every method is required: an implementation states what it does with each event, so a wrapper
+/// cannot drop one silently by leaving it to a default.
 #[async_trait::async_trait]
 pub trait LifecycleEvents: Send + Sync {
     /// The removal is under way.
@@ -748,22 +751,22 @@ pub trait LifecycleEvents: Send + Sync {
     async fn restarting(&self, op: &LifecycleOp);
     /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
     /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
-    async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn stopped(&self, op: &LifecycleOp);
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
     /// channel and the backbone.
-    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn draining(&self, op: &LifecycleOp);
     /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
     /// and the backbone.
-    async fn leaving(&self, _op: &LifecycleOp) {}
+    async fn leaving(&self, op: &LifecycleOp);
     /// The accepted `leave-mesh` command's hook: `mesh-leaving`, authored by the fabric-primary on
     /// the backbone and its own mesh channel.
-    async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_leaving(&self, event: &MeshLeaveEvent);
     /// The `mesh-leave` handoff call's hook: authored by the still-running mesh-primary on the
     /// backbone and its own mesh channel.
-    async fn mesh_leave(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_leave(&self, event: &MeshLeaveEvent);
     /// The completed workflow's hook: `mesh-left`, authored by the fabric-primary after every exact
     /// exit is proven.
-    async fn mesh_left(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_left(&self, event: &MeshLeaveEvent);
     /// The Rafka-time the events are stamped with (`event_at_rafka_ms`): the clock the process
     /// composed for its membership, never a clock of the pipeline's own.
     fn now_rafka_ms(&self) -> u64;
@@ -777,6 +780,12 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleting(&self, _op: &LifecycleOp) {}
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
+    async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn leaving(&self, _op: &LifecycleOp) {}
+    async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_leave(&self, _event: &MeshLeaveEvent) {}
+    async fn mesh_left(&self, _event: &MeshLeaveEvent) {}
     /// A pipeline with no membership holds no rafka-time: its events carry zero, and no OS clock
     /// stands in for one.
     fn now_rafka_ms(&self) -> u64 {
@@ -855,9 +864,11 @@ pub struct CreateRequest {
 }
 
 /// Work the executor does at the birth between its mesh join and its Ready: the fabric primary's
-/// Pending hand-off at a mesh's first admin. Runs as its own receipted step (`ApplyMeshPending`);
-/// a failure fails the create, so nothing downstream starts under an assumed state.
-pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+/// hand-off of its mesh's state at a mesh's first admin (Pending for a new mesh; the mesh's current
+/// state for the admin created for an existing one). Runs as its own receipted step
+/// (`ApplyMeshPending`), which records the state applied; a failure fails the create, so nothing
+/// downstream starts under an assumed state.
+pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rafka_node_rpc_contract::status::MeshState, String>> + Send>> + Send + Sync>;
 
 /// A request to retire one node.
 #[derive(Debug, Clone)]
@@ -1525,13 +1536,14 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         // Every create records this step: a mesh's first admin receives the fabric primary's
-        // Pending here; any other birth records that none was owed, so the Build facts say so.
+        // Pending here; any other birth (the admin created for an existing mesh included) records
+        // that none was owed, so the Build facts say so.
         let target = node.clone();
         let _: serde_json::Value = self
             .step(run, CreateStep::ApplyMeshPending.name(), async {
                 match &before_ready {
-                    Some(hand_off) => hand_off(target).await.map(|()| serde_json::json!({"applied": "Pending"})),
-                    None => Ok(serde_json::json!({"applied": null, "reason": "not a mesh's first admin"})),
+                    Some(hand_off) => hand_off(target).await.map(|state| serde_json::json!({"applied": format!("{state:?}")})),
+                    None => Ok(serde_json::json!({"applied": null, "reason": "no Pending owed: not a new mesh's first admin"})),
                 }
             })
             .await?;

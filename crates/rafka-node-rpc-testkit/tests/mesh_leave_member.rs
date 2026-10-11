@@ -42,6 +42,17 @@ impl LifecycleEvents for Recorder {
     async fn leaving(&self, op: &LifecycleOp) {
         self.1.lock().unwrap().push(format!("NodeLeaving:{}", op.operation));
     }
+    // A member's shutdown publishes no mesh-level event: those are the owner's and the leaving
+    // primary's (mesh-leave.md), recorded here so a stray one shows in the order.
+    async fn mesh_leaving(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
+        self.1.lock().unwrap().push(format!("MeshLeaving:{}", event.operation));
+    }
+    async fn mesh_leave(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
+        self.1.lock().unwrap().push(format!("MeshLeave:{}", event.operation));
+    }
+    async fn mesh_left(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
+        self.1.lock().unwrap().push(format!("MeshLeft:{}", event.operation));
+    }
     fn now_rafka_ms(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
     }

@@ -925,7 +925,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
                 let ep = rafka_node_rpc::endpoint::bind(ep_key, "127.0.0.1:0".parse().unwrap()).await.unwrap();
                 let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
                 let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
-                rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), &target).await
+                rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rafka_node_rpc_contract::status::MeshState::Pending, &target).await
             }
         };
         let target_of = |rig: &Rig| {
@@ -1025,7 +1025,7 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
             gate.store(true, Ordering::SeqCst);
         });
         let started = std::time::Instant::now();
-        rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), &target).await.expect("Pending applies once the authority is filled");
+        rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rafka_node_rpc_contract::status::MeshState::Pending, &target).await.expect("Pending applies once the authority is filled");
         let waited = started.elapsed();
         opener.await.unwrap();
         assert!(waited >= Duration::from_millis(1000), "the hand-off did not pass while the gate was closed: {waited:?}");
