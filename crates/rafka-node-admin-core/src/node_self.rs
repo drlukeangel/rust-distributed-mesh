@@ -3,9 +3,11 @@
 //! over its own surface: an rpc node, a role node and a node-admin differ only in how they refuse
 //! new work, how they publish and how they leave and rejoin the mesh (their [`Session`]).
 //!
-//! - `DrainNode`: answer `Applied`, refuse new work, and when the eligible in-flight work reaches
-//!   zero publish `node-drained` on the node's own mesh channel and call `NodeDrained` at the
-//!   commanding admin. The process keeps running. Admission is keyed on the natural key
+//! - `DrainNode`: answer `Applied`, refuse new work, and observe the eligible in-flight work under
+//!   the drain bound: when it reaches zero (`Established`) publish `node-drained` on the node's own
+//!   mesh channel and call `NodeDrained` at the commanding admin; at the bound (`Deadline`, naming
+//!   the count last observed) the drain ends not drained and owes no `node-drained`. The process
+//!   keeps running and the birth stays Draining either way. Admission is keyed on the natural key
 //!   `(node_id, incarnation, Draining)`, never the attempt (node-rpc-envelope.md, "Status"): a
 //!   `DrainNode` of any attempt or commander for a birth already draining, or drained, in this cycle
 //!   answers `AlreadyApplied` and runs no drain of its own; its commander is owed `node-drained`
@@ -56,8 +58,8 @@ impl Parking {
     }
 }
 
-/// The drain bound of a stop: `RDM_DRAIN_DEADLINE_MS`, 5000 ms when unset. Strictly shorter than
-/// the stop ladder's grace.
+/// The drain bound of a drain and of a stop's drain: `RDM_DRAIN_DEADLINE_MS`, 5000 ms when unset.
+/// Strictly shorter than the stop ladder's grace.
 pub fn drain_deadline_from_env() -> Duration {
     Duration::from_millis(std::env::var("RDM_DRAIN_DEADLINE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(5000))
 }
@@ -143,8 +145,10 @@ enum Drain {
     /// Under way (a `DrainNode`'s drain, or a stop's): every commander that asked, with its own
     /// operation, is owed `node-drained` when the eligible in-flight work reaches zero.
     Running(Vec<Owed>),
-    /// The eligible in-flight work reached zero: a commander that asks now is owed `node-drained` at once.
-    Drained,
+    /// The drain ended with its receipt: `Established` when the eligible in-flight work reached
+    /// zero (a commander that asks now is owed `node-drained` at once), `Deadline` at the drain
+    /// bound (not drained: a commander that asks now is owed none).
+    Ended(DrainReceipt),
 }
 
 /// A commander owed `node-drained` by this cycle's drain.
@@ -174,6 +178,8 @@ enum DrainAdmission {
     Joined,
     /// The birth is drained: this commander is owed its completion now.
     Drained,
+    /// The drain ended at its bound, not drained: this commander is owed no completion.
+    EndedAtBound,
 }
 
 /// The surface a node kind gives the commands.
@@ -435,10 +441,13 @@ impl NodeSelf {
                 let (me, commander) = (self.clone(), commander.clone());
                 match self.admit_drain(&commander, &op, &parent) {
                     DrainAdmission::Start => {
-                        tokio::spawn(async move { me.drain(commander, op, parent).await });
+                        // The eligible work in flight when the drain is admitted: every dispatched
+                        // handler but this command's own, which is in flight while it is served.
+                        let began = rafka_node_rpc::ServerStats::get(&self.server.stats().in_flight).saturating_sub(1);
+                        tokio::spawn(async move { me.drain(commander, op, parent, began).await });
                         Some(StatusReply::Applied)
                     }
-                    DrainAdmission::Joined => Some(StatusReply::AlreadyApplied),
+                    DrainAdmission::Joined | DrainAdmission::EndedAtBound => Some(StatusReply::AlreadyApplied),
                     DrainAdmission::Drained => {
                         tokio::spawn(async move { me.complete(&commander, &op).await }.instrument(parent));
                         Some(StatusReply::AlreadyApplied)
@@ -465,26 +474,30 @@ impl NodeSelf {
                 }
                 DrainAdmission::Joined
             }
-            Some(Drain::Drained) => DrainAdmission::Drained,
+            Some(Drain::Ended(DrainReceipt::Established { .. })) => DrainAdmission::Drained,
+            Some(Drain::Ended(DrainReceipt::Deadline { .. })) => DrainAdmission::EndedAtBound,
         }
     }
 
-    /// The drain of this cycle reached zero: it is drained, and the commanders it owes
-    /// `node-drained` are returned, each once (empty when another drain of the birth took them).
-    fn drained(&self) -> Vec<Owed> {
-        match self.drain.lock().unwrap().replace(Drain::Drained) {
-            Some(Drain::Running(owed)) => owed,
+    /// The drain of this cycle ended with `receipt`: the commanders it owes `node-drained` are
+    /// returned, each once, when the receipt is `Established` (empty when another drain of the
+    /// birth took them); a `Deadline` is not drained and owes none.
+    fn ended(&self, receipt: DrainReceipt) -> Vec<Owed> {
+        match self.drain.lock().unwrap().replace(Drain::Ended(receipt)) {
+            Some(Drain::Running(owed)) if matches!(receipt, DrainReceipt::Established { .. }) => owed,
             _ => Vec::new(),
         }
     }
 
-    async fn drain(self: Arc<Self>, commander: NodeId, op: LifecycleOp, parent: tracing::Span) {
+    /// The drain `commander`'s `DrainNode` admitted, `began` the eligible work in flight then: refuse
+    /// new work and observe the in-flight work under the drain bound (node-drain.md step 3).
+    async fn drain(self: Arc<Self>, commander: NodeId, op: LifecycleOp, parent: tracing::Span, began: u64) {
         use tracing::Instrument;
         let span = tracing::info_span!(
             parent: &parent,
             "rdm.node_admin.status.update.via-drain-node",
             node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-            commander = %commander, in_flight_at_zero = tracing::field::Empty, "otel.kind" = "internal"
+            commander = %commander, receipt = tracing::field::Empty, in_flight = tracing::field::Empty, in_flight_at_zero = tracing::field::Empty, "otel.kind" = "internal"
         );
         async {
             if let Some(retire) = &self.retire {
@@ -501,24 +514,35 @@ impl NodeSelf {
                 }
             };
             let completion = async {
-                // The work still in flight besides the calls answering the command itself.
                 let stats = self.server.stats();
-                loop {
+                let until = tokio::time::Instant::now() + drain_deadline_from_env();
+                let receipt = loop {
                     let in_flight = rafka_node_rpc::ServerStats::get(&stats.in_flight);
-                    if in_flight == 0 {
-                        break;
-                    }
                     let mut d = draining.clone();
                     d.in_flight = Some(in_flight);
                     let _ = self.membership.publish(&d).await;
+                    if in_flight == 0 {
+                        break DrainReceipt::Established { in_flight: began };
+                    }
+                    if tokio::time::Instant::now() >= until {
+                        break DrainReceipt::Deadline { last_in_flight: in_flight };
+                    }
                     tokio::time::sleep(Duration::from_millis(50)).await;
+                };
+                let current = tracing::Span::current();
+                current.record("receipt", receipt.name());
+                match receipt {
+                    DrainReceipt::Established { in_flight } => {
+                        current.record("in_flight", in_flight);
+                        current.record("in_flight_at_zero", true);
+                    }
+                    DrainReceipt::Deadline { last_in_flight } => {
+                        current.record("in_flight", last_in_flight);
+                        tracing::info!(last_in_flight, "the drain bound passed with work in flight: the birth stays Draining, not drained, and owes no node-drained");
+                    }
                 }
-                let mut d = draining.clone();
-                d.in_flight = Some(0);
-                let _ = self.membership.publish(&d).await;
-                tracing::Span::current().record("in_flight_at_zero", true);
                 // Each commander owed is called on its own: one that cannot be reached holds up no other.
-                futures_util::future::join_all(self.drained().into_iter().map(|owed| owed.complete(&self))).await;
+                futures_util::future::join_all(self.ended(receipt).into_iter().map(|owed| owed.complete(&self))).await;
             };
             tokio::join!(declared, completion);
         }
@@ -591,7 +615,7 @@ impl NodeSelf {
         // An established drain is this cycle's drain reaching zero: every commander whose
         // DrainNode joined it gets node-drained now, while the connections are whole. A deadline is
         // not drained, and owes none.
-        let owed = if matches!(receipt, DrainReceipt::Established { .. }) { self.drained() } else { Vec::new() };
+        let owed = self.ended(receipt);
         let completions = futures_util::future::join_all(owed.into_iter().map(|owed| owed.complete(self)));
         // 2. Leaving is declared to the authority while this node can still reach it, then no more is
         // said: the node gossips nothing for its stop. The owed completions are called beside the
