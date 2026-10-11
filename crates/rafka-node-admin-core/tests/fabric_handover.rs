@@ -927,7 +927,14 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_
     if crate::own_process::delegated(module_path!(), "an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_seat_row") {
         return;
     }
-    let spans = capture();
+    // The cell's spans: the in-memory names the waits read, and the product span pipeline
+    // (`rafka_mesh_telemetry::span_capture`) stamping the trace ids the proof names.
+    let spans = Spans::default();
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("mesh1.admin.2", exporter.clone());
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(spans.clone()).with(layer)).expect("this cell owns its process");
+    let story = tracing::info_span!("rdm.test.seat.update.via-lost-holder-row");
+    let trace_id = story.in_scope(rafka_mesh_telemetry::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
     let root = DataDir::new("seat-transfer-root");
     let f = seats_fabric_with(|| {
         Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&root.0), &rafka_node_admin_core::model::IncarnationId::mint()).unwrap()) as Arc<dyn FabricStorage>
@@ -937,7 +944,7 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_
     let p_inc = f.p.resolved.incarnation.clone();
     let op_key = "drain-node:mesh1.admin.1";
     // The transfer committed at P (its reply is lost to N's step), then P's process is gone.
-    let Reply::SeatsCommitted { seats } = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op_key)).await else { panic!("committed") };
+    let Reply::SeatsCommitted { seats } = tracing::Instrument::instrument(send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op_key)), story.clone()).await else { panic!("committed") };
     assert_eq!(seats, committed_to(&f.n, 4, 8));
     let row_file = root.0.join("meshes").join("mesh1").join("seat-transfers").join("drain-node_mesh1_admin_1.json");
     assert!(row_file.exists(), "P's seat-transfer row is not under its own mesh's directory on the root: {}", row_file.display());
@@ -948,14 +955,14 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_
     let step = tokio::spawn({
         let door = n.door.clone();
         let p_node = p_node.clone();
-        async move { door.take_seats(&p_node, "b1", 1, op_key).await }
+        tracing::Instrument::instrument(async move { door.take_seats(&p_node, "b1", 1, op_key).await }, story.clone())
     });
     until("N's call to the gone holder is uncertain", || spans.named(SEATS_REJECTED).iter().any(|f| f["side"] == "executor" && f["reason"] == "uncertain")).await;
     assert!(!step.is_finished(), "an uncertain call is never the end of the step");
     // No SeatedTogether reaches N; P's birth is proven gone.
     n.door.membership.seats().mark_gone(p_inc.clone());
     let out = tokio::time::timeout(std::time::Duration::from_secs(30), step).await.expect("a proven-lost holder ends the wait").unwrap();
-    assert_eq!(out, Ok(SeatTransferOutcome::HeldRecords { seats: committed_to(&n, 4, 8) }));
+    assert_eq!(out, Ok(SeatTransferOutcome::CommittedRow { seats: committed_to(&n, 4, 8) }));
     let book = n.door.membership.seats();
     assert!(book.mesh("mesh1").is_some_and(|h| h.is_birth(&n.resolved.node_id, &n.resolved.incarnation) && h.epoch == 4), "N did not install the mesh seat the row names");
     assert!(book.fabric().is_some_and(|h| h.is_birth(&n.resolved.node_id, &n.resolved.incarnation) && h.epoch == 8), "N did not install the fabric seat the row names");
@@ -969,6 +976,19 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_
     let e = out.expect_err("M took seats P's committed row gives N");
     assert!(e.contains(op_key) && e.contains(&n.resolved.node_id.to_string()), "{e}");
     let _ = x;
+    // The proof: N's read of P's committed row is the cell's own story.
+    drop(story);
+    pipeline.flush(std::time::Duration::from_secs(10)).expect("the cell's spans reach its exporter");
+    let finished = exporter.get_finished_spans().unwrap();
+    let attr = |s: &opentelemetry_sdk::export::trace::SpanData, k: &str| s.attributes.iter().find(|kv| kv.key.as_str() == k).map(|kv| kv.value.to_string());
+    let read = finished.iter().find(|s| s.name == "rdm.node_admin.seat.update.via-committed-row").expect("N's committed-row read left no span");
+    println!("trace_id={trace_id}");
+    for s in finished.iter().filter(|s| s.span_context.trace_id().to_string() == trace_id) {
+        println!("span {} {:?}", s.name, attr(s, "outcome").or_else(|| attr(s, "reason")));
+    }
+    assert_eq!(read.span_context.trace_id().to_string(), trace_id, "the committed-row read is the cell's own story");
+    assert_eq!(attr(read, "outcome").as_deref(), Some("held"));
+    assert_eq!(attr(read, "successor").as_deref(), Some(format!("mesh1:{}:{}", n.resolved.node_id, n.resolved.incarnation.0).as_str()));
 }
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary): TakeSeats moves

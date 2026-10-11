@@ -57,6 +57,9 @@ impl FabricStorage for HoldsFirstWrite {
     async fn put_seat_transfer(&self, row: &rafka_node_admin_core::fabric_storage::SeatTransferRow) -> Result<(), FabricStorageError> {
         self.inner.put_seat_transfer(row).await
     }
+    async fn seat_transfer(&self, holder_mesh: &str, operation: &str) -> Result<Option<rafka_node_admin_core::fabric_storage::SeatTransferRow>, FabricStorageError> {
+        self.inner.seat_transfer(holder_mesh, operation).await
+    }
     async fn seat_transfers(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::SeatTransferRow>, FabricStorageError> {
         self.inner.seat_transfers().await
     }
