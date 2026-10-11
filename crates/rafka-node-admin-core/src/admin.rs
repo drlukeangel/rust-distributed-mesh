@@ -6311,6 +6311,9 @@ mod tests {
         let mut tickle = OfflineTickle::observed_by(me.to_string());
         let mut offline: HashSet<(NodeId, IncarnationId)> = HashSet::new();
         let pass = async |now: u64, tickle: &mut OfflineTickle, offline: &mut HashSet<(NodeId, IncarnationId)>| {
+            // The rounds the last pass started run beside the loop until this one (each probe here
+            // answers at once).
+            tokio::task::yield_now().await;
             let view = view_now();
             let holds_seat = view.holds_mesh_seat("mesh2", &successor.node.node_id);
             let watched = watched_births(&view, &successor.node.node_id, "mesh2", &[]);
@@ -6353,7 +6356,10 @@ mod tests {
         assert_eq!(report.tickled, vec![holder.node.node_id.to_string()], "round 1 at once, on the window kept since the silence began");
         assert!(report.offline.is_empty() && due.is_empty(), "round 1 opens the hold-down only: {report:?} {due:?}");
         let (_, report, due) = pass(t1 + floor, &mut tickle, &mut offline).await;
-        assert_eq!(report.offline, vec![holder.node.node_id.to_string()], "round 2, one floor later: TRUE OFFLINE");
+        assert_eq!(report.tickled, vec![holder.node.node_id.to_string()], "round 2, one floor later");
+        assert!(report.offline.is_empty() && due.is_empty(), "round 2 runs beside the loop: nothing is decided before a tick folds it: {report:?} {due:?}");
+        let (_, report, due) = pass(t1 + floor + 500, &mut tickle, &mut offline).await;
+        assert_eq!(report.offline, vec![holder.node.node_id.to_string()], "the next tick folds round 2: TRUE OFFLINE");
         assert_eq!(due, vec!["mesh2.admin.1".to_string()], "the old primary is due for recovery at the successor, after the seat moved");
     }
 
