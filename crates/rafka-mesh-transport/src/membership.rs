@@ -3511,13 +3511,16 @@ impl DigestBook {
         (mine(self.in_flight()), mine(self.departed()))
     }
 
-    /// May application routing select this node: held, not departed, and
-    /// under no open lifecycle overlay. The resolver never reads this.
+    /// May application routing select this node: held, not departed, under no open lifecycle
+    /// overlay, and its own held state takes new work. A member saying Draining (live and not
+    /// routable, R-SC11) or Leaving takes none, whichever mesh it is in and however this book
+    /// learnt it (R4). The resolver never reads this.
     pub fn routable(&self, node_id: &str) -> bool {
+        use rafka_mesh_entity::MemberStatus::{Draining, Leaving};
         if self.is_departed(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
             return false;
         }
-        self.inner.lock().unwrap().contains_key(node_id)
+        self.inner.lock().unwrap().get(node_id).is_some_and(|(d, _, _)| !matches!(d.status, Draining | Leaving))
     }
 
     /// Hold `d` as its member's latest word, unless it is older than what is
