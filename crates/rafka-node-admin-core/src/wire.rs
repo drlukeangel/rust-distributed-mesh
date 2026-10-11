@@ -288,7 +288,7 @@ pub(crate) enum WireOutput {
 pub(crate) enum WireSeatTransfer {
     NotAHolder,
     Committed { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
-    HeldRecords { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
+    CommittedRow { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
     NoTransfer,
     OtherMesh { holder_mesh: String },
 }
@@ -299,7 +299,7 @@ impl From<&crate::fabric_handover::SeatTransferOutcome> for WireSeatTransfer {
         match o {
             O::NotAHolder => Self::NotAHolder,
             O::Committed { seats } => Self::Committed { seats: seats.clone() },
-            O::HeldRecords { seats } => Self::HeldRecords { seats: seats.clone() },
+            O::CommittedRow { seats } => Self::CommittedRow { seats: seats.clone() },
             O::NoTransfer => Self::NoTransfer,
             O::OtherMesh { holder_mesh } => Self::OtherMesh { holder_mesh: holder_mesh.clone() },
         }
@@ -311,7 +311,7 @@ impl From<WireSeatTransfer> for crate::fabric_handover::SeatTransferOutcome {
         match o {
             WireSeatTransfer::NotAHolder => Self::NotAHolder,
             WireSeatTransfer::Committed { seats } => Self::Committed { seats },
-            WireSeatTransfer::HeldRecords { seats } => Self::HeldRecords { seats },
+            WireSeatTransfer::CommittedRow { seats } => Self::CommittedRow { seats },
             WireSeatTransfer::NoTransfer => Self::NoTransfer,
             WireSeatTransfer::OtherMesh { holder_mesh } => Self::OtherMesh { holder_mesh },
         }
@@ -450,8 +450,14 @@ enum Produces {
     RosterAmended,
 }
 
-fn produces(step: &str) -> Option<Produces> {
+fn produces(operation: &str, step: &str) -> Option<Produces> {
     let is = |c: CreateStep| c.name() == step;
+    // A standalone stop's `Complete` commits the stop's lifecycle op: the exact birth and its
+    // rafka-time, the age of its stopped period (fabric-node-lifecycle.md §6.9 Age). Every other
+    // operation's `Complete` commits none.
+    if ret_complete(step) && operation.starts_with("stop-node:") {
+        return Some(Produces::LifecycleOp);
+    }
     let ret = |r: RetireStep| r.name() == step;
     Some(if is(CreateStep::AllocateIdentity) {
         Produces::Identity
@@ -499,8 +505,12 @@ fn json<T: Serialize>(v: &T) -> Result<serde_json::Value, String> {
     serde_json::to_value(v).map_err(|e| e.to_string())
 }
 
-fn output_to_wire(step: &str, v: &serde_json::Value) -> Result<WireOutput, String> {
-    let Some(kind) = produces(step) else {
+fn ret_complete(step: &str) -> bool {
+    RetireStep::Complete.name() == step
+}
+
+fn output_to_wire(operation: &str, step: &str, v: &serde_json::Value) -> Result<WireOutput, String> {
+    let Some(kind) = produces(operation, step) else {
         return Err("this step commits no output".into());
     };
     Ok(match kind {
@@ -613,7 +623,7 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
             let refuse = |reason: String| WireRefusal { build_id: s.build_id.clone(), attempt: s.attempt, step: s.step.clone(), reason };
             let output = match &s.output {
                 None => None,
-                Some(v) => Some(output_to_wire(&s.step, v).map_err(refuse)?),
+                Some(v) => Some(output_to_wire(&s.operation, &s.step, v).map_err(refuse)?),
             };
             WireFact::Step(WireStep {
                 build_id: s.build_id.clone(),

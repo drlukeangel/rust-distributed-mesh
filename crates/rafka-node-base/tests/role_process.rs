@@ -46,6 +46,7 @@ async fn born(role: Role, name: &str) -> RoleProcess {
         seeds: vec![launcher.seed.clone()],
         launcher: Some(launcher.launcher.clone()),
         data_dir: dir.path().to_path_buf(),
+        store_dir: dir.path().to_path_buf(),
         mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
     };

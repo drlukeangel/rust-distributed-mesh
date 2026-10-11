@@ -484,3 +484,44 @@ async fn a_fence_set_while_the_executor_runs_ends_the_drive_at_the_fence_naming_
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "no later attempt was claimed: the successor resumes attempt 1");
     assert_eq!(r.dispatch.dispatched.lock().unwrap().len(), 1, "nothing more was dispatched");
 }
+
+/// The terminal `drive` ends with, read from its first frame on.
+async fn terminal_of(drive: &Arc<Drive>) -> BuildReply {
+    let mut reader = drive.reader(0);
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), reader.next()).await.expect("the drive ends") {
+            Some(Read::Terminal(t)) => return t,
+            Some(Read::Frame(_)) => {}
+            other => panic!("the drive ended without a terminal: {other:?}"),
+        }
+    }
+}
+
+/// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": "a completed Build answers
+/// AlreadyApplied with its terminal frame; a running Build with a live holder returns that holder's
+/// stream"): the drive that completed attempt N is the record of that run. A caller whose read of
+/// the Build predates the verdict of N (it showed attempt N running) is handed that drive, and
+/// nothing runs again; once attempt N+1 is opened on the complete Build (a restart reopens it), the
+/// caller is handed a new drive, which claims and dispatches N+1.
+/// Must NOT happen: the completed drive replaced for a stale read (a second `build.attempt.run` of
+/// attempt N), or kept for the reopened Build (attempt N+1 never claimed).
+#[tokio::test]
+async fn a_completed_drive_is_kept_for_its_own_attempt_and_replaced_once_the_build_is_reopened() {
+    use rafka_node_admin_core::build_drive::Drives;
+    use rafka_node_admin_core::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptReceipt};
+    let r = rig().await;
+    let drives = Arc::new(Drives::default());
+    let first = drives.ensure(&r.env, &r.build, 1);
+    let BuildReply::Complete { attempt: done, .. } = terminal_of(&first).await else { panic!("the first run completes the Build") };
+    r.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: r.build.clone(), attempt: done, outcome: AttemptOutcome::Converged }).await.unwrap();
+    let stale = drives.ensure(&r.env, &r.build, done);
+    assert!(Arc::ptr_eq(&stale, &first), "a read that showed attempt {done} running is handed the drive that completed it");
+    r.builds
+        .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 })
+        .await
+        .unwrap();
+    let reopened = drives.ensure(&r.env, &r.build, done + 1);
+    assert!(!Arc::ptr_eq(&reopened, &first), "the reopened Build is driven by a new drive");
+    assert!(matches!(terminal_of(&reopened).await, BuildReply::Complete { attempt, .. } if attempt == done + 1), "the new drive claims and ends attempt {}", done + 1);
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), done), ("mesh1.admin.2".to_string(), done + 1)], "one build.attempt.run per attempt");
+}

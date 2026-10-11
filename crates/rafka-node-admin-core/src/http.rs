@@ -154,6 +154,12 @@ impl ControlPlane {
 
     /// [`ControlPlane::submit`] under `span`, which names the surface the change came through.
     pub async fn submit_in(&self, span: tracing::Span, route: &'static str, change: TopologyChange) -> Result<Opened, Refusal> {
+        self.submit_checked(span, route, change, None).await
+    }
+
+    /// [`ControlPlane::submit_in`], the stopped-node collector's candidate (when one) rechecked under
+    /// the admission before anything is compiled or written (fabric-node-lifecycle.md §6.9 Recheck).
+    pub(crate) async fn submit_checked(&self, span: tracing::Span, route: &'static str, change: TopologyChange, collect: Option<&crate::stopped_gc::Candidate>) -> Result<Opened, Refusal> {
         // The span is entered by the future on each poll, never by a guard held across an await
         // (a guard stays entered on the worker while the task is parked). A refusal is reported
         // beside the request span, in the caller's span.
@@ -161,6 +167,12 @@ impl ControlPlane {
         async {
             self.authority(route).await?;
             let (_admitted, current) = self.current_settled().await?;
+            if let Some(candidate) = collect {
+                if let Err(reject) = self.recheck_stopped(candidate).await {
+                    outer.in_scope(|| reject_span(route, &reject));
+                    return Err(Refusal::Reject(reject));
+                }
+            }
             let observed = self.topology.read().await.clone();
             let topology = match compile(&current.topology, &change, &observed) {
                 Ok(t) => t,
@@ -479,7 +491,7 @@ fn not_live(outer: &tracing::Span, route: &'static str, path: &PathName, status:
     Refusal::Reject(reject)
 }
 
-fn reject_span(route: &'static str, reject: &BuildReject) {
+pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
     // One honest name per reason (PRD §16): rdm.node_admin.build.reject.via-<reason>.
     macro_rules! emit {
         ($($reason:literal),*) => {
@@ -505,7 +517,9 @@ fn reject_span(route: &'static str, reject: &BuildReject) {
         "provider-mismatch",
         "unheard-mesh",
         "node-admin-not-node-recovered",
-        "last-admin"
+        "last-admin",
+        "node-not-stopped",
+        "referenced-by-open-build"
     );
 }
 

@@ -30,6 +30,7 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarn
         seeds: vec![admin.seed.clone()],
         launcher: Some(admin.launcher.clone()),
         data_dir: dir.to_path_buf(),
+        store_dir: dir.to_path_buf(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
     }

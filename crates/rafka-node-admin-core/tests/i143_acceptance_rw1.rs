@@ -253,7 +253,7 @@ fn facts() -> Vec<BuildFact> {
             .into_iter()
             .map(|seat| rafka_mesh_entity::seat::transfer::CommittedSeat::of(seat, &rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 }))
             .collect();
-        for o in [SeatTransferOutcome::NotAHolder, SeatTransferOutcome::Committed { seats: seats.clone() }, SeatTransferOutcome::HeldRecords { seats }, SeatTransferOutcome::NoTransfer, SeatTransferOutcome::OtherMesh { holder_mesh: "mesh1".into() }] {
+        for o in [SeatTransferOutcome::NotAHolder, SeatTransferOutcome::Committed { seats: seats.clone() }, SeatTransferOutcome::CommittedRow { seats }, SeatTransferOutcome::NoTransfer, SeatTransferOutcome::OtherMesh { holder_mesh: "mesh1".into() }] {
             out.push(step(rafka_node_admin_core::deployment::pipeline::RetireStep::SeatTransfer.name(), Some(to_json(&o))));
         }
     }

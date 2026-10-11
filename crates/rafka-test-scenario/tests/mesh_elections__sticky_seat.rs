@@ -296,6 +296,11 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     assert_eq!(committed.len(), 1, "P committed both seats to N once: {committed:#?}");
     let fenced_at = at_ns(committed[0]);
     assert_eq!((num(committed[0], "mesh_epoch").is_some(), num(committed[0], "fabric_epoch").is_some()), (true, true), "both seats moved together: {committed:#?}");
+    // P announced SeatedTogether from its row once, and each send's outcome is on that span: the
+    // backbone and its mesh channel each took the frame.
+    let announced: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announce-seated-together").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
+    assert_eq!(announced.len(), 1, "P announced SeatedTogether once: {announced:#?}");
+    assert_eq!((attr(announced[0], "backbone").as_str(), attr(announced[0], "mesh_channel").as_str()), ("sent", "sent"), "{:#?}", announced[0]);
     let installed = named(&spans, "rdm.node_admin.seat.update.via-seats-installed").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "successor").contains(&n_id)).map(at_ns).min().expect("N installed the committed seats");
     let p_drain = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && attr(sp, "step") == "DrainNode").map(at_ns).min().expect("P was drained");
     assert!(installed < p_drain, "N installed the seats ({installed}) before P's drain ({p_drain})");

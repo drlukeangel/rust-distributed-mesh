@@ -83,8 +83,8 @@ impl rafka_node_admin_core::build_state::LocalBuildLog for Refuses {
     async fn absorb_facts(&self, facts: &[BuildFact]) {
         self.inner.absorb_facts(facts).await
     }
-    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.inner.fact_changes()
+    fn derive_on_every_fact(&self, derive: rafka_node_admin_core::build_state::FactDerivation) {
+        self.inner.derive_on_every_fact(derive)
     }
 }
 
@@ -162,6 +162,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
+        store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         mesh_issuer: None,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
@@ -307,6 +308,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
+        store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         mesh_issuer: None,
     };
     let joins = rafka_node_admin_core::join::Joins::default();

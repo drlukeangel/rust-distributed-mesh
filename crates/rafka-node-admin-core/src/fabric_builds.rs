@@ -619,6 +619,39 @@ mod tests {
     use super::*;
     use crate::build_state::BuildAttemptClaim;
 
+    /// CONTRACT (fabric-node-lifecycle.md §6.9 Age and Wire: "the age lives in the receipt", "No frame
+    /// gains a field"): a standalone stop's `Complete` receipt commits the stop's lifecycle op (the
+    /// exact birth and its rafka-time), and it travels the Build topic in the shape that already
+    /// carries a lifecycle op: it is encoded, decoded to the same receipt, and refused for no other
+    /// operation's `Complete`, which still commits no output.
+    #[test]
+    fn a_stop_receipt_carries_its_birth_and_time_on_the_build_topic() {
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 2,
+            operation: "stop-node:mesh1.rpc.1".into(),
+            node_id: crate::model::NodeId::mint(),
+            incarnation: crate::model::IncarnationId::mint(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            event_at_rafka_ms: 4_242,
+        };
+        let receipt = |operation: &str| BuildStepReceipt {
+            build_id: BuildId("b1".into()),
+            attempt: 2,
+            operation: operation.into(),
+            step: "Complete".into(),
+            outcome: crate::build_state::StepOutcome::Complete,
+            output: Some(serde_json::to_value(&op).unwrap()),
+            executor: Some("mesh1.admin.1".into()),
+        };
+        let stop = BuildFact::Step(receipt("stop-node:mesh1.rpc.1"));
+        let (messages, refused) = encode_chunks(vec![stop.clone()]);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(BuildMessage::from_bytes(&messages[0]).unwrap().facts, vec![stop]);
+        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt("create-node:mesh1.rpc.1"))]);
+        assert_eq!(refused.len(), 1, "another operation's Complete commits no output");
+    }
+
     /// Packing measures each batch once and sends those bytes: a fresh
     /// nonce of another length can never push a sent message over the limit.
     #[test]

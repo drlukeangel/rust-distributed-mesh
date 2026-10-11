@@ -52,6 +52,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             seeds: Vec::new(),
             launcher: None,
             data_dir: data.clone(),
+            store_dir: data.clone(),
             mesh_id: None,
             mesh_issuer: None,
         };

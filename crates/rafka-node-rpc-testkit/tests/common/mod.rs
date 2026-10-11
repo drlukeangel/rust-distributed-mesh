@@ -206,6 +206,10 @@ pub use rafka_node_rpc_testkit::rig::*;
 
 /// A launch template for `rafka-rpc-node` with a fresh data root.
 pub fn template(fabric: &FabricId, seed: (String, SocketAddr), launcher: rafka_mesh_entity::launch::Launcher) -> LaunchTemplate {
+    let data_root = std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint()));
+    // The fabric's one store root, handed to every launch (R14).
+    let store_dir = data_root.join("store");
+    std::fs::create_dir_all(&store_dir).expect("the store root");
     LaunchTemplate {
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
@@ -216,7 +220,8 @@ pub fn template(fabric: &FabricId, seed: (String, SocketAddr), launcher: rafka_m
             .into_iter()
             .chain(ARTIFACT_DIR.with(|a| a.borrow().clone()).map(|d| ("RDM_EVIDENCE_DIR".to_string(), d.display().to_string())))
             .collect(),
-        data_root: std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint())),
+        data_root,
+        store_dir,
         mesh_issuer: None,
     }
 }

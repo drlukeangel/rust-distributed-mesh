@@ -39,6 +39,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
             seeds: vec![admin.seed.clone()],
             launcher: Some(admin.launcher.clone()),
             data_dir: dir.clone(),
+            store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
         };
@@ -83,6 +84,7 @@ fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
             seeds: vec![],
             launcher: None,
             data_dir: dir.clone(),
+            store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
         };

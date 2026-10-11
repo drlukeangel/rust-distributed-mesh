@@ -120,6 +120,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
             seeds: Vec::new(),
             launcher: None,
             data_dir: data_dir.clone(),
+            store_dir: data_dir.clone(),
             mesh_id: None,
             mesh_issuer: None,
         };
