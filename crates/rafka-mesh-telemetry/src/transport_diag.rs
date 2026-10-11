@@ -58,13 +58,14 @@ pub(crate) const DIRECTIVES: &[&str] = &[
     "noq_udp=debug",
 ];
 
-/// The directory the diagnostic file goes in, in an evidence run (`RDM_EVIDENCE_DIR` set): the
-/// node's own log directory, else the evidence directory. Outside an evidence run there is none,
-/// and the sink is not installed.
-pub(crate) fn dir() -> Option<std::path::PathBuf> {
-    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    let evidence = env("RDM_EVIDENCE_DIR")?;
-    Some(std::path::PathBuf::from(env("RDM_DATA_DIR").unwrap_or(evidence)))
+/// The diagnostic file, in an evidence run (`evidence`, `RDM_EVIDENCE_DIR`, set): in the node's own
+/// log directory (`data_dir`, `RDM_DATA_DIR`), else in the evidence directory. Outside an evidence
+/// run there is none, and the sink is not installed. `process` is this process's tag
+/// ([`crate::process_tag`]).
+pub(crate) fn file_path(data_dir: Option<&str>, evidence: Option<&str>, _service: &str, _process: &str) -> Option<std::path::PathBuf> {
+    let some = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    let evidence = some(evidence)?;
+    Some(some(data_dir).unwrap_or(evidence).join(TRANSPORT_DIAG_FILE))
 }
 
 /// The filter of the formatted lines: [`DIRECTIVES`] and nothing else, whatever RUST_LOG says.
@@ -107,8 +108,9 @@ pub(crate) fn start<S>(service: &str) -> Option<(impl Layer<S> + Send + Sync + '
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    let dir = dir()?;
-    let path = dir.join(TRANSPORT_DIAG_FILE);
+    let env = |k: &str| std::env::var(k).ok();
+    let path = file_path(env("RDM_DATA_DIR").as_deref(), env("RDM_EVIDENCE_DIR").as_deref(), service, &crate::process_tag())?;
+    let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
     let opened = std::fs::create_dir_all(&dir).and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(&path));
     let mut file = match opened {
         Ok(f) => f,
@@ -191,5 +193,26 @@ where
         let line = format!("{ts}  TRACE noq.packet {what} conn{{{conn}}}{} thread={}\n", fields.0, thread.name().unwrap_or("-"));
         let mut w = tracing_subscriber::fmt::MakeWriter::make_writer(&self.sink);
         let _ = w.write_all(line.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_path;
+    use std::path::PathBuf;
+
+    /// CONTRACT: in an evidence run a node writes `transport-diag.log` in its own log directory;
+    /// a process with no node log directory (the probe) writes beside its span files in the evidence
+    /// directory, in a file of its own named as they are, `<service>.<pid>-<pid ns>.transport-diag.log`,
+    /// so the probes of one run, which share that directory, never interleave lines in one file; and
+    /// outside an evidence run there is no file. What must NOT happen: two processes appending to one
+    /// shared diagnostic file whose lines do not say which process wrote them.
+    #[test]
+    fn each_process_writes_its_own_diagnostic_file_and_none_outside_an_evidence_run() {
+        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), Some("/e"), "rafka-rpc-node", "7-9"), Some(PathBuf::from("/d/mesh1.rpc.1-x/transport-diag.log")));
+        assert_eq!(file_path(None, Some("/e"), "rafka-rpc-probe", "7-9"), Some(PathBuf::from("/e/rafka-rpc-probe.7-9.transport-diag.log")));
+        assert_eq!(file_path(Some(""), Some("/e"), "rafka-rpc-probe", "8-9"), Some(PathBuf::from("/e/rafka-rpc-probe.8-9.transport-diag.log")));
+        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), None, "rafka-rpc-node", "7-9"), None);
+        assert_eq!(file_path(Some("/d/mesh1.rpc.1-x"), Some(""), "rafka-rpc-node", "7-9"), None);
     }
 }

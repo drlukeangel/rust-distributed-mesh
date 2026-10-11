@@ -320,6 +320,13 @@ pub fn current_tracestate() -> Option<String> {
 /// An evidence write at or beyond this length is named on stderr.
 pub(crate) const EVIDENCE_WRITE_STALL: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// This process among every process writing beside it: `<pid>-<pid namespace inode>` (a pid names
+/// one process only within its pid namespace, and every container has its own).
+pub(crate) fn process_tag() -> String {
+    let ns = std::fs::read_link("/proc/self/ns/pid").ok().and_then(|l| l.to_string_lossy().trim_start_matches("pid:[").trim_end_matches(']').parse::<u64>().ok()).unwrap_or(0);
+    format!("{}-{ns}", std::process::id())
+}
+
 #[derive(Debug)]
 pub(crate) struct JsonlSpanExporter {
     service: String,
@@ -329,8 +336,7 @@ pub(crate) struct JsonlSpanExporter {
 impl JsonlSpanExporter {
     pub fn create(dir: &std::path::Path, service: &str) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let ns = std::fs::read_link("/proc/self/ns/pid").ok().and_then(|l| l.to_string_lossy().trim_start_matches("pid:[").trim_end_matches(']').parse::<u64>().ok()).unwrap_or(0);
-        let path = dir.join(format!("{service}.{}-{ns}.spans.jsonl", std::process::id()));
+        let path = dir.join(format!("{service}.{}.spans.jsonl", process_tag()));
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self { service: service.to_string(), file })
     }
