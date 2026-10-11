@@ -615,6 +615,63 @@ mod tests {
         drop(l);
     }
 
+    /// CONTRACT: `docker inspect` of a name no container has is "not found"; any other failure
+    /// (a daemon that cannot be reached) is not, and is answered as the error it is.
+    #[test]
+    fn only_no_such_object_reads_as_no_container() {
+        assert!(inspect_says_absent("docker inspect: error: no such object: rafka-x"));
+        assert!(inspect_says_absent("docker inspect: Error: No such object: rafka-x"));
+        assert!(inspect_says_absent("docker inspect: Error response from daemon: No such container: rafka-x"));
+        assert!(!inspect_says_absent("docker inspect: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"));
+        assert!(!inspect_says_absent("docker inspect: permission denied while trying to connect to the Docker daemon socket"));
+    }
+
+    /// CONTRACT: the addresses `docker network inspect` lists are the addresses taken.
+    #[test]
+    fn network_addresses_are_read_from_the_inspect_listing() {
+        let got = parse_network_addresses("10.231.0.2/24 10.231.0.3/24 ");
+        let want: std::collections::BTreeSet<IpAddr> = ["10.231.0.2".parse().unwrap(), "10.231.0.3".parse().unwrap()].into_iter().collect();
+        assert_eq!(got, want);
+    }
+
+    /// CONTRACT: the container runs as this process's own user, read from the kernel, never a
+    /// fallback.
+    #[test]
+    fn the_container_runs_as_this_process_user() {
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        assert_eq!(current_user(), format!("{uid}:{gid}"));
+    }
+
+    /// CONTRACT: the Docker socket that is absent is no mount; a socket path that cannot be
+    /// looked at is an error naming it, never "no socket".
+    #[test]
+    fn an_unreadable_docker_socket_is_an_error_naming_it() {
+        let dir = crate::record_store::tempdir("container-socket");
+        assert_eq!(socket_group_at(&dir.join("missing.sock")), Ok(None));
+        let file = dir.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        let under_file = file.join("docker.sock");
+        let err = socket_group_at(&under_file).unwrap_err();
+        assert!(err.contains(&under_file.display().to_string()), "{err}");
+    }
+
+    /// CONTRACT: a launch's disk is prepared in one blocking call: the data dir made, the runtime
+    /// libraries that exist mounted, and a runtime record left by an earlier birth removed. A
+    /// record it cannot remove fails the launch naming the file.
+    #[test]
+    fn a_stale_runtime_record_that_cannot_be_removed_fails_the_launch_naming_it() {
+        let dir = crate::record_store::tempdir("container-launch-disk");
+        let ok = dir.join("clean");
+        let disk = launch_disk(&ok, false, &std::collections::BTreeMap::new()).unwrap();
+        assert!(ok.is_dir(), "the data dir is made");
+        assert!(disk.runtime_mounts.contains(&"/usr"), "{:?}", disk.runtime_mounts);
+        let stale = dir.join("stale");
+        let record = stale.join(rafka_mesh_entity::runtime::RUNTIME_FILE);
+        std::fs::create_dir_all(record.join("held")).unwrap();
+        let err = launch_disk(&stale, false, &std::collections::BTreeMap::new()).unwrap_err();
+        assert!(err.contains(&record.display().to_string()), "{err}");
+    }
+
     #[test]
     fn container_names_carry_only_safe_characters() {
         assert_eq!(docker_safe("mesh1.rpc.2/x y"), "mesh1.rpc.2-x-y");
