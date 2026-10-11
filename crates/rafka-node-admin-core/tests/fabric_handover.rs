@@ -1136,3 +1136,77 @@ async fn a_take_seats_call_from_an_endpoint_the_holder_never_heard_of_is_decided
     assert!(reasons.iter().all(|r| r == "not-the-claimed-executor" || r == "wrong-birth"), "only the payload's successor is refused: {reasons:?}");
     let _ = (&f.m, &f.x);
 }
+
+/// CONTRACT (node-rpc-envelope.md, op 0x21: "Epoch overflow cannot commit and is refused by name with
+/// a typed refusal"; TakeSeats: the row moves every seat "at each seat's next epoch"): a seat whose
+/// epoch is `u64::MAX` cannot advance. A TakeFabricPrimary naming the fabric seat at `u64::MAX`, the
+/// FabricPrimaryTaken completing that transfer, and a TakeSeats naming the mesh1 mesh-primary seat at
+/// `u64::MAX` are each refused `RejectedEpochOverflow { seat, epoch: u64::MAX }`, the receiver's reject
+/// span naming the reason `epoch-overflow`, the seat and the epoch. Nothing commits: no seat row, no
+/// seat-transfer row, no write cut-off, no committed span, every seat where it was. What must NOT
+/// happen: `NotReady` (a door that is not serving yet), or any seat moved.
+#[test]
+fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
+    let cap = crate::mesh_leave_resume::capture();
+    let op = "fabric-primary-handover:epoch-overflow";
+    let seats_op = "drain-node:mesh1.admin.1";
+    let (replies, trace_id) = cap.run(async {
+        let root = tracing::info_span!("rdm.test.fabric.reject.via-epoch-overflow");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let replies = tracing::Instrument::instrument(epoch_overflow(op, seats_op), root).await;
+        (replies, trace_id)
+    });
+    println!("trace_id={trace_id}");
+    let max = WireSeat::FabricPrimary;
+    let mesh1 = WireSeat::MeshPrimary { mesh: "mesh1".into() };
+    assert_eq!(
+        replies,
+        vec![
+            ("take-fabric-primary", Reply::RejectedEpochOverflow { seat: max.clone(), epoch: u64::MAX }),
+            ("fabric-primary-taken", Reply::RejectedEpochOverflow { seat: max, epoch: u64::MAX }),
+            ("take-seats", Reply::RejectedEpochOverflow { seat: mesh1, epoch: u64::MAX }),
+        ],
+        "each call naming a seat at u64::MAX is refused by name"
+    );
+    let spans = cap.spans();
+    let ours = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    let refused = ours(REJECTED);
+    for (call, side) in [("take", "successor"), ("taken", "incumbent")] {
+        let r = refused.iter().find(|s| s["attributes"]["call"] == call && s["attributes"]["side"] == side).unwrap_or_else(|| panic!("no {call} reject span at the {side}: {refused:?}"));
+        assert_eq!((r["attributes"]["reason"].as_str(), r["attributes"]["expected_epoch"].as_str()), (Some("epoch-overflow"), Some("18446744073709551615")), "{r:?}");
+        assert!(r["attributes"]["detail"].as_str().is_some_and(|d| d.contains("fabric-primary") && d.contains("18446744073709551615")), "the detail names the seat and its epoch: {r:?}");
+    }
+    let seats_refused = ours(SEATS_REJECTED);
+    assert_eq!(seats_refused.len(), 1, "one refusal of the seat transfer: {seats_refused:?}");
+    assert_eq!(seats_refused[0]["attributes"]["reason"], "epoch-overflow");
+    assert!(seats_refused[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains("mesh-primary") && d.contains("18446744073709551615")), "{seats_refused:?}");
+    for name in [COMMITTED, CONFIRMED, SEATS_COMMITTED, "rdm.node_admin.seat.update.via-writes-drained"] {
+        assert!(ours(name).is_empty(), "nothing commits: {name} {:?}", ours(name));
+    }
+}
+
+/// The three calls of [`a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits`], each
+/// reply named by its call, and the state each receiver holds after it.
+async fn epoch_overflow(op: &'static str, seats_op: &'static str) -> Vec<(&'static str, Reply)> {
+    let mut replies = Vec::new();
+    // The fabric seat at u64::MAX, held by mesh1's admin, on both admins.
+    let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
+    for a in [&f.incumbent, &f.successor] {
+        a.door.membership.seats().take(Seat::FabricPrimary, &holder_of(&f.incumbent, u64::MAX));
+    }
+    replies.push(("take-fabric-primary", send(&f.incumbent, &f.successor, take(&f, u64::MAX, op)).await));
+    replies.push(("fabric-primary-taken", send(&f.successor, &f.incumbent, taken(&f, u64::MAX, u64::MAX, op)).await));
+    for a in [&f.incumbent, &f.successor] {
+        assert_eq!(a.door.membership.seats().fabric(), Some(holder_of(&f.incumbent, u64::MAX)), "{}: the fabric seat did not move", a.resolved.name);
+        assert!(a.storage.seats().await.unwrap().is_empty(), "{}: no seat row is written", a.resolved.name);
+    }
+    // P holds the mesh1 mesh-primary seat at u64::MAX; N, the Won claim's executor, takes the seats.
+    let s = seats_fabric().await;
+    s.p.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&s.p, u64::MAX));
+    replies.push(("take-seats", send(&s.n, &s.p, take_seats(&s.p, &s.n, u64::MAX, 7, "b1", seats_op)).await));
+    assert!(s.p.storage.seat_transfers().await.unwrap().is_empty(), "no seat-transfer row is written");
+    assert!(s.p.cut_offs.lock().unwrap().is_empty(), "no write is cut off for a transfer that cannot commit: {:?}", s.p.cut_offs.lock().unwrap());
+    assert_eq!((s.p.door.membership.seats().mesh("mesh1"), s.p.door.membership.seats().fabric()), (Some(holder_of(&s.p, u64::MAX)), Some(holder_of(&s.p, 7))), "P's seats did not move");
+    let _ = (&s.m, &s.x);
+    replies
+}

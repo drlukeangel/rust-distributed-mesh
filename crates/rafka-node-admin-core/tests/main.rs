@@ -36,6 +36,7 @@ mod admin_serves_forward;
 mod boot_stop;
 mod loopback;
 mod mesh_leave_resume;
+mod mesh_delete_round;
 mod build_catch_up;
 mod build_admission;
 mod build_claim;

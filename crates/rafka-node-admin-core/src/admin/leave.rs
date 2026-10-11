@@ -356,6 +356,7 @@ impl AdminRunner {
             crate::mesh_leave::LeaveAdmission::Running => return StatusReply::AlreadyApplied,
             crate::mesh_leave::LeaveAdmission::Resend(manifest) => Some(manifest),
             crate::mesh_leave::LeaveAdmission::Start => None,
+            crate::mesh_leave::LeaveAdmission::Refused(reply) => return reply,
         };
         // The command's serve span carries the caller's propagated trace; the workflow it starts
         // continues it, so every member's calls join the outer trace.
@@ -533,9 +534,9 @@ impl AdminRunner {
     async fn validate_handoff_in(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, operation: &str, final_node_id: &NodeId, final_incarnation: &IncarnationId, final_runtime: &rafka_mesh_entity::RuntimeFact, receipt_manifest: &str) -> StatusReply {
         let unmatched = |field: &str, expected: String, reported: String| StatusReply::RejectedUnmatchedCompletion { field: field.into(), expected, reported };
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
-        let Some(admitted) = self.leaves.admitted(&key) else {
-            let open = self.leaves.open_for(mesh_id);
-            return unmatched("operation", if open.is_empty() { "an open shutdown of this mesh".into() } else { open.iter().map(|(b, a, o)| format!("{o} (build {b}, attempt {a})")).collect::<Vec<_>>().join(", ") }, format!("{operation} (build {build_id}, attempt {attempt})"));
+        let admitted = match self.leaves.admitted_for(&key) {
+            Ok(admitted) => admitted,
+            Err(refused) => return refused,
         };
         if receipt_manifest.len() > rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES {
             return unmatched("receipt_manifest", format!("at most {} bytes", rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES), format!("{} bytes", receipt_manifest.len()));

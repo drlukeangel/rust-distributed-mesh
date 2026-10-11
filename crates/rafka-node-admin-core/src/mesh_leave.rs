@@ -834,6 +834,20 @@ impl LeaveBook {
         self.open.lock().unwrap().get(key).map(|o| o.admitted.clone())
     }
 
+    /// What admission captured for the round a `MeshLeave` names, or the reply that refuses it: the
+    /// round must be an open leave of this owner.
+    pub fn admitted_for(&self, key: &LeaveKey) -> Result<Admitted, StatusReply> {
+        if let Some(admitted) = self.admitted(key) {
+            return Ok(admitted);
+        }
+        let open = self.open_for(&key.mesh_id);
+        Err(StatusReply::RejectedUnmatchedCompletion {
+            field: "operation".into(),
+            expected: if open.is_empty() { "an open shutdown of this mesh".into() } else { open.iter().map(|(b, a, o)| format!("{o} (build {b}, attempt {a})")).collect::<Vec<_>>().join(", ") },
+            reported: format!("{} (build {}, attempt {})", key.operation, key.build_id, key.attempt),
+        })
+    }
+
     /// The open leaves of `mesh_id`: `(build_id, attempt, operation)` of each.
     pub fn open_for(&self, mesh_id: &MeshId) -> Vec<(String, u32, String)> {
         self.open.lock().unwrap().keys().filter(|k| &k.mesh_id == mesh_id).map(|k| (k.build_id.clone(), k.attempt, k.operation.clone())).collect()
@@ -891,6 +905,8 @@ pub enum LeaveAdmission {
     Running,
     /// The manifest is recorded under this key: the handoff is what repeats, to this sender.
     Resend(ExitManifest),
+    /// The `leave-mesh` is refused by this reply; nothing is admitted and the leave held is unchanged.
+    Refused(StatusReply),
 }
 
 /// What a run's manifest found the leave holding when it was recorded.
