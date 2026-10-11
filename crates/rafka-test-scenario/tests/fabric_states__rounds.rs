@@ -356,6 +356,12 @@ async fn ready_under(estate: &Estate, build: &str) {
 /// each mesh primary its Mesh row and its members' Node rows, every node its connections rows). After
 /// that first state-commit the store exists: a node born later writes straight to it, and the next
 /// round's commit-state action of every node has nothing held to publish.
+///
+/// `fabric/` has one writer, the fabric-primary (R14 item 2: "Fabric-primary: `fabric/`. ... Keys
+/// never overlap across writers"): only its publication names a `fabric/` store (the Fabric
+/// identity, its pointers, the seat rows); the other mesh's primary holds and publishes none of
+/// them, and holds nothing back. When the fabric-primary accepts the next Build after state-commit,
+/// the pointer moves on the store root and the other mesh's primary reads the new `Fabric.build_id`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node_holds() {
     let test = "the_store_root_holds_no_row_until_state_commit_publishes_what_each_node_holds";
@@ -409,6 +415,15 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     ready_under(&estate, &second).await;
     let later = rows_on(&root);
     estate.artifact("rows-after-second-state-commit.json", &json!(later));
+    // The fabric-primary accepted the second Build after the first state-commit: its pointer row is
+    // on the store root, and the other mesh's primary reads the new Fabric.build_id.
+    let newest_pointer = later.iter().filter(|r| r.starts_with("fabric/pointers/")).max().cloned().unwrap_or_default();
+    assert!(newest_pointer.contains(&second), "the fabric-primary's newest pointer row on the store root names the second Build {second}: {later:#?}");
+    let mesh2_admin = nodes.iter().find(|n| n["name"] == "mesh2.admin.1").and_then(|n| n["admin_api_base"].as_str()).expect("mesh2.admin.1 advertises its control API").to_string();
+    let (status, other_fabric) = estate.http_get(&mesh2_admin, "/api/fabric").await;
+    estate.artifact("mesh2-admin-fabric-after-second-build.json", &other_fabric);
+    assert_eq!(status, 200, "{other_fabric}");
+    assert_eq!(s(&other_fabric["build_id"]), second, "the other mesh's primary reads the Fabric.build_id the fabric-primary moved on the store root: {other_fabric}");
     estate.stop().await;
     let spans = estate.spans();
 
@@ -427,6 +442,10 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
         if name.contains(".admin.") {
             assert!(stores.contains("meshes") && stores.contains("nodes"), "{name}, its mesh's primary, published its Mesh row and its members' Node rows: {stores}");
         }
+        if name != "mesh1.admin.1" {
+            // fabric/ has one writer, the fabric-primary (R14 item 2): no other node holds a row there.
+            assert!(!stores.contains("fabric"), "{name} does not hold the fabric seat, yet its commit-state publication names a fabric/ store: {stores}");
+        }
         let check_in = named(&spans, "rdm.node_admin.fabric.update.via-round-hook")
             .into_iter()
             .find(|h| h["attributes"]["hook"] == "state-committed" && s(&h["attributes"]["subject_id"]) == id_of[name] && flag(&h["attributes"]["bound"]) && start(h) >= start(first_root));
@@ -440,7 +459,18 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
             assert!(end <= start(h), "{name} published before it checked in: action {a}, check-in {h}");
         }
     }
-    assert!(s(&published["mesh1.admin.1"]["attributes"]["stores"]).contains("fabric"), "the fabric-primary published the Fabric row: {}", published["mesh1.admin.1"]);
+    let fp_stores = s(&published["mesh1.admin.1"]["attributes"]["stores"]);
+    for store in ["fabric=", "fabric/pointers=", "fabric/seats="] {
+        assert!(fp_stores.split(',').any(|p| p.starts_with(store)), "the fabric-primary published {store}: {}", published["mesh1.admin.1"]);
+    }
+    // The other mesh's primary took the second Build's pointer as its own runtime state, not as a row.
+    let learned = named(&spans, "rdm.node_admin.fabric.update.via-pointer-learned").into_iter().find(|sp| sp["attributes"]["node"] == "mesh2.admin.1" && sp["attributes"]["build_id"] == second.as_str());
+    assert!(learned.is_some(), "mesh2.admin.1 learned the second Build's pointer");
+    assert!(
+        named(&spans, "rdm.node_admin.fabric.update.via-build-accepted").into_iter().all(|sp| sp["attributes"]["node"] == "mesh1.admin.1"),
+        "only the fabric-primary moved a pointer through fabric.storage: {:?}",
+        named(&spans, "rdm.node_admin.fabric.update.via-build-accepted").iter().map(|sp| (&sp["attributes"]["node"], &sp["attributes"]["via"])).collect::<Vec<_>>()
+    );
 
     // The node born after the first state-commit opened its store on the store root; the second
     // round's actions had nothing held.

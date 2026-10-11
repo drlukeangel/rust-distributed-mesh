@@ -812,6 +812,27 @@ mod tests {
         assert_eq!(files(&d.join("cut")), vec!["a.json"], "a lifted cut-off writes the row the store kept");
     }
 
+    /// CONTRACT (R14 item 2: "Keys never overlap across writers"; states.md, Rounds): a store whose
+    /// writer does not own its rows when its scratchpad is published writes none of them and holds
+    /// none of them: after the publication every read and list answers the disk, where the key's one
+    /// writer puts the row. What must NOT happen: a row held at the publication read in place of the
+    /// row the key's writer later put on the disk.
+    #[tokio::test]
+    async fn a_row_held_by_a_writer_that_does_not_own_its_key_is_never_read_in_place_of_the_disk() {
+        let d = tempdir("records-shadow");
+        let pad = Scratchpad::new();
+        let other = FileRecords::open_held(&d, "fabric", &crate::model::IncarnationId("mesh2-admin-1".into()), &pad, "fabric".into()).unwrap();
+        other.set_publish_gate(std::sync::Arc::new(|| Err("fabric-primary seat: held by mesh1.admin.1".to_string())));
+        other.write("pointer", "thing/1", &"bld-1".to_string()).await.unwrap();
+        pad.publish().await.unwrap();
+        assert!(!other.holding(), "the publication ended the store's holding");
+        // The key's one writer puts its row on the disk after the publication.
+        FileRecords::open(&d, "fabric", &crate::model::IncarnationId("mesh1-admin-1".into())).unwrap().write("pointer", "thing/1", &"bld-2".to_string()).await.unwrap();
+        assert_eq!(other.read::<String>("pointer", "thing/1").await.unwrap().as_deref(), Some("bld-2"), "a row held at the publication was read in place of the row the key's writer put on the disk");
+        assert_eq!(other.list::<String>("thing/1").await.unwrap(), vec!["bld-2"], "a row held at the publication hid the disk's row from a list");
+        assert!(other.holds("pointer"), "the disk holds the key");
+    }
+
     /// CONTRACT (R14 item 5): every writer on the shared root names its temp file by the key and its
     /// own incarnation, `.<key>.<incarnation>.json.tmp`: two writers' temp files never share a name.
     /// The cell leaves a write's temp file in place (its rename target is a directory) and reads its name.
