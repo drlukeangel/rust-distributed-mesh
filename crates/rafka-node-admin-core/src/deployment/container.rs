@@ -749,8 +749,10 @@ mod tests {
     /// fallback.
     #[test]
     fn the_container_runs_as_this_process_user() {
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-        assert_eq!(current_user(), format!("{uid}:{gid}"));
+        // An oracle independent of the kernel calls: the real ids `/proc/self/status` lists.
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let real = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).and_then(|v| v.split_whitespace().next()).unwrap().to_string();
+        assert_eq!(current_user(), format!("{}:{}", real("Uid:"), real("Gid:")));
     }
 
     /// CONTRACT: the Docker socket that is absent is no mount; a socket path that cannot be
