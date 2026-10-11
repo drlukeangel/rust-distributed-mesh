@@ -86,7 +86,8 @@ impl NodeObserver for Counting<'_> {
     }
 }
 
-async fn create_losing(lose: Option<&'static str>) {
+/// Create toward one rpc node with `lose`'s receipts never kept; returns the pid of the runtime it launched.
+async fn create_losing(lose: Option<&'static str>) -> u32 {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
@@ -134,31 +135,38 @@ async fn create_losing(lose: Option<&'static str>) {
         }
     }
     // Whatever runs for this node stops with the test.
-    if let Some(h) = view.steps.iter().find(|r| r.step == CreateStep::DeployRuntime.name()).and_then(|r| r.output.clone()) {
-        if let Ok(h) = serde_json::from_value(h) {
-            let _ = provider.terminate(&h, TerminationMode::Immediate).await;
-        }
-    }
+    let handle: rafka_node_admin_core::deployment::provider::DeploymentHandle = view
+        .steps
+        .iter()
+        .find(|r| r.step == CreateStep::DeployRuntime.name())
+        .and_then(|r| r.output.clone())
+        .and_then(|h| serde_json::from_value(h).ok())
+        .expect("the runtime was deployed and its handle receipted");
+    let _ = provider.terminate(&handle, TerminationMode::Immediate).await;
     let _ = std::fs::remove_dir_all(&template.data_root);
+    handle.pid.expect("a process handle carries its pid")
 }
 
 #[test]
 fn ready_waits_on_a_complete_receipt_for_every_runtime_prerequisite() {
     let cap = crate::common::capture("ready_waits_on_a_complete_receipt_for_every_runtime_prerequisite");
-    cap.run(crate::common::Threads::Workers(4), async move {
-        for (i, lost) in READY_PREREQUISITES.iter().enumerate() {
-            let _ = i;
-            create_losing(Some(lost.name())).await;
+    let pids = cap.run(crate::common::Threads::Workers(4), async move {
+        let mut pids = Vec::new();
+        for lost in READY_PREREQUISITES {
+            pids.push(create_losing(Some(lost.name())).await);
         }
-    })
+        pids
+    });
+    for pid in pids {
+        crate::common::assert_launched_node_stopped_with_its_spans(&cap.dir, pid);
+    }
 }
 
 #[test]
 fn ready_follows_every_runtime_prerequisite_receipt() {
     let cap = crate::common::capture("ready_follows_every_runtime_prerequisite_receipt");
-    cap.run(crate::common::Threads::Workers(4), async move {
-        create_losing(None).await;
-    })
+    let pid = cap.run(crate::common::Threads::Workers(4), async move { create_losing(None).await });
+    crate::common::assert_launched_node_stopped_with_its_spans(&cap.dir, pid);
 }
 
 /// The live observer, except the birth's runtime exits the moment readiness is first asked, as a

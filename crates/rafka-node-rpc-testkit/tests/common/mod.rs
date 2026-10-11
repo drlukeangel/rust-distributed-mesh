@@ -154,6 +154,27 @@ impl Drop for Capture {
     }
 }
 
+/// A runtime the cell launched through [`template`] stopped and left its trace: its JSONL file in
+/// the cell's artifact dir (`rafka-rpc-node.<pid>-<ns>.spans.jsonl`) holds its boot span and the
+/// span of the stop it took. A runtime killed before its batch export leaves the file empty.
+pub fn assert_launched_node_stopped_with_its_spans(dir: &std::path::Path, pid: u32) {
+    let prefix = format!("rafka-rpc-node.{pid}-");
+    let file = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("the cell's artifact dir {} is unreadable: {e}", dir.display()))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".spans.jsonl")))
+        .unwrap_or_else(|| panic!("runtime {pid} left no span file in {}: RDM_EVIDENCE_DIR never reached it", dir.display()));
+    let names: Vec<String> = std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v["name"].as_str().map(str::to_string))
+        .collect();
+    for want in ["rdm.mesh.node.create.via-deployment", "rdm.mesh.node.delete.via-signal"] {
+        assert!(names.iter().any(|n| n == want), "runtime {pid} stopped without {want} in {} ({} spans: {names:?})", file.display(), names.len());
+    }
+}
+
 /// Every record published, and every name removed, in order.
 #[derive(Default)]
 pub struct Published {
