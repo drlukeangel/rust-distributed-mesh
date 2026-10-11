@@ -2907,7 +2907,7 @@ dependencies = [
 [[package]]
 name = "rafka-chaos"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "libc",
  "serde",
@@ -2918,7 +2918,7 @@ dependencies = [
 [[package]]
 name = "rafka-mesh-entity"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "blake3",
  "hex",
@@ -2931,7 +2931,7 @@ dependencies = [
 [[package]]
 name = "rafka-mesh-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2953,7 +2953,7 @@ dependencies = [
 [[package]]
 name = "rafka-mesh-transport"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2974,18 +2974,23 @@ dependencies = [
 [[package]]
 name = "rafka-node-admin-client"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
+ "iroh",
  "rafka-mesh-entity",
+ "rafka-node-rpc",
+ "rafka-node-rpc-contract",
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "rafka-node-admin-core"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3014,7 +3019,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-base"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "anyhow",
  "iroh",
@@ -3033,7 +3038,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3049,7 +3054,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc-contract"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "postcard",
  "rafka-mesh-entity",
@@ -3059,7 +3064,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc-testkit"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=426bed4a743c73482ed6c0383968a52b38721976#426bed4a743c73482ed6c0383968a52b38721976"
 dependencies = [
  "anyhow",
  "async-trait",

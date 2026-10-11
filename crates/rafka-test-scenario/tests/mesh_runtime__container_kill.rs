@@ -89,15 +89,17 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     // the node through every create step.
     const SCOPE: &str = "mesh1.rpc_node: 1 present of 2 accepted (exited: mesh1.rpc.1)";
     let is_drift = |sp: &&Value| s(&sp["attributes"]["build_id"]) == build_id && s(&sp["attributes"]["scope"]) == SCOPE;
-    let spans = wait_for("the drift attempt's spans are exported", Duration::from_secs(30), || async {
+    // Ending a span only queues it: each process's own export thread appends it to the evidence a
+    // batch later, so the read waits for both the admin's drift span and the re-created container's
+    // own boot span.
+    let is_born = |sp: &&Value| sp["attributes"]["incarnation_id"] == after["incarnation_id"];
+    let spans = wait_for("the drift attempt's spans and the re-created container's own boot span are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        named(&spans, "rdm.node_admin.build.update.via-proven-drift").iter().any(is_drift).then_some(spans)
+        (named(&spans, "rdm.node_admin.build.update.via-proven-drift").iter().any(is_drift) && named(&spans, "rdm.mesh.node.create.via-deployment").iter().any(is_born)).then_some(spans)
     })
     .await;
     let drift = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().find(|sp| is_drift(sp)).unwrap();
     assert_eq!((s(&drift["attributes"]["exit_code"]).as_str(), s(&drift["attributes"]["exit_proof"]).as_str()), ("137", "provider"), "the killed container is proven terminal by SIGKILL, by the provider's inspection of its exact id: {drift}");
-    let born = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().any(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"]);
-    assert!(born, "the re-created container's own boot span landed beside the admin's");
     let attempt = s(&drift["attributes"]["attempt"]);
     let deployed = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| {
         let at = &sp["attributes"];

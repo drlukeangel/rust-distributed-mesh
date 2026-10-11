@@ -366,9 +366,12 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     let removed = primary_of(&nodes, &admin2).unwrap();
     let removed_id = id_of(&nodes, &removed);
     accepted_build(&estate, estate.delete(&format!("/api/nodes/{removed}")).await).await;
-    let nodes = wait_for("the view drops the removed admin primary", Duration::from_secs(30), || async {
+    // The removed primary keeps its seat while it drains and leaves: a seat moves only by an
+    // explicit transfer or a proven loss, never by its holder's status (R-EL1). The view is
+    // read once the seat has left the removed birth.
+    let nodes = wait_for("the removed admin primary's seat moves to another admin of its mesh", Duration::from_secs(30), || async {
         let nodes = estate.nodes().await;
-        (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready-for-traffic") && primary_of(&nodes, &admin2).is_some()).then_some(nodes)
+        (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready-for-traffic") && primary_of(&nodes, &admin2).is_some_and(|p| p != removed)).then_some(nodes)
     })
     .await;
     let succ2 = primary_of(&nodes, &admin2).unwrap();
