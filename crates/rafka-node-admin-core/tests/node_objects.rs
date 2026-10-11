@@ -765,11 +765,12 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
     assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
 }
 
-/// CONTRACT: a valid put ends `NotBackedToday` naming the call, because no op carries the put;
-/// an invalid one is refused before that. Calls whose request no op carries say so by name.
+/// CONTRACT: a put that changes a field RDM owns is refused before anything is sent, and one that
+/// changes otel_debug, which no row field carries, ends `NotBackedToday`. Calls whose request no op
+/// carries say so by name.
 #[test]
 fn calls_no_op_carries_today_say_so_by_name() {
-    use rafka_node_admin_client::{MetaField, MetaFieldIsRdmOwned, NodeMeta};
+    use rafka_node_admin_client::{MetaField, NodeMeta};
     let cap = capture();
     cap.run(async {
         let rig = Arc::new(Rig::new());
@@ -788,8 +789,14 @@ fn calls_no_op_carries_today_say_so_by_name() {
             kind: NodeKind::RpcNode,
             otel_debug: false,
         };
-        assert!(matches!(nodes.update(&held, &held, false), Ok(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
-        assert_eq!(nodes.update(&NodeMeta { status: rafka_node_admin_client::NodeStatus::Dead, ..held.clone() }, &held, false).unwrap_err(), MetaFieldIsRdmOwned { field: MetaField::Status });
+        // The put reaches the node's mesh-primary only with what its request carries: a body that
+        // changes a field RDM owns is refused here, and one that changes otel_debug has no row field.
+        let (mp, route) = (NodeId::mint(), rafka_node_rpc::RouteChoice::Direct);
+        assert_eq!(
+            nodes.update(&NodeMeta { status: rafka_node_admin_client::NodeStatus::Dead, ..held.clone() }, &held, &mp, &route).await.expect("a typed refusal"),
+            rafka_node_rpc_contract::status::StatusReply::RejectedMetaFieldIsRdmOwned { field: MetaField::Status.name().into() }
+        );
+        assert!(matches!(nodes.update(&held, &NodeMeta { otel_debug: true, ..held.clone() }, &mp, &route).await, Err(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
         for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet)] {
             assert!(matches!(end, CallEnd::NotBackedToday { op: got, .. } if got == op), "{end:?}");
         }

@@ -309,10 +309,8 @@ impl StatusAuthority {
                 };
             }
             StatusRequest::UpdateNode { .. } => {
-                return match self.configs.get() {
-                    Some(configs) => crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, configs.client(), &self.row_moved, req).await,
-                    None => StatusReply::NotReady { reason: format!("{} has no node-RPC client yet; {} is refused", self.me, req.op()) },
-                };
+                // A stopped node is told nothing: only a live birth's apply needs the node-RPC client.
+                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| c.client()), &self.row_moved, req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {

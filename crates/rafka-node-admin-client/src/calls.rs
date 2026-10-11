@@ -353,8 +353,16 @@ impl<'a> NodeRpc<'a> {
     /// caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward `0x1A`),
     /// executed exactly as chosen (`NodeRpcClient::call_routed`).
     pub async fn node_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let _ = (mesh_primary, route, birth, name, opts);
-        Err(CallEnd::NotBackedToday { op: NodeOp::Update, why: "the meta put" })
+        let req = StatusRequest::UpdateNode { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+        let span = NodeOp::Update.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), route = route.token(), "an object call ended"));
+        r
     }
 
     /// The mesh-primary's call to the exact birth, after it wrote the renamed row: take this name and carry
