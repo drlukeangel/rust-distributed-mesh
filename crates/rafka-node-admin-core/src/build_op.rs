@@ -186,7 +186,7 @@ impl BuildDoor {
         let drive = self.drives.ensure(&self.env, &id);
         // A drive this admin took up after a seat move holds no frame of the attempts before it: the
         // steps the receipts say completed are read, from the attempt the caller opened on.
-        drive.replay_receipts(&p.steps, from_attempt, p.attempt + 1);
+        self.env.replay(&drive, &p.steps, from_attempt, p.attempt + 1).await;
         let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition }).await?;
         stream_frames(sink, drive.reader(from_attempt)).await
     }
