@@ -199,6 +199,12 @@ async fn ping(ctx: &EntryCtx, n: &MapNode) -> Result<(), String> {
     }
 }
 
+/// The births of the own-mesh map the entry pings, in path order: the candidates for the local
+/// node and the sweep's targets (node-admin-lifecycle.md §4.2).
+pub(crate) fn sweep_targets(map: &[MapNode]) -> Vec<MapNode> {
+    map.iter().filter(|n| n.settled).cloned().collect()
+}
+
 /// Enter the existing mesh of `ctx.me` from `held`, the topology its source gave: connect to a
 /// local node, read the current topology from it, then sweep the own mesh once.
 pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, held: Vec<MapNode>) -> SweepReport {
@@ -213,8 +219,8 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
     let mut map = own(&held);
     // A local node of the own mesh: the first of the map, in path order, that answers.
     let mut local = None;
-    for n in map.iter().filter(|n| n.settled) {
-        if ping(ctx, n).await.is_ok() {
+    for n in sweep_targets(&map) {
+        if ping(ctx, &n).await.is_ok() {
             local = Some(n.clone());
             break;
         }
@@ -238,7 +244,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
     // The sweep: one bounded Ping to every own-mesh node, SWEEP_CONCURRENCY at a time.
     let mut reached = Vec::new();
     let mut not_reached = Vec::new();
-    let swept: Vec<MapNode> = map.iter().filter(|n| n.settled).cloned().collect();
+    let swept: Vec<MapNode> = sweep_targets(&map);
     for chunk in swept.chunks(SWEEP_CONCURRENCY) {
         let answers = futures_util::future::join_all(chunk.iter().map(|n| async move { (n, ping(ctx, n).await) })).await;
         for (n, a) in answers {
@@ -276,4 +282,42 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         tracing::info!("the own-mesh sweep on entering the mesh");
     });
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_mesh_entity::MemberStatus;
+
+    /// An own-mesh birth of the map as a topology read gives it: the status its source held.
+    fn birth(name: &str, status: MemberStatus) -> MapNode {
+        MapNode {
+            node_id: NodeId::mint(),
+            name: name.parse().unwrap(),
+            endpoint_id: EndpointId("k".into()),
+            transport_addr: "127.0.0.1:1".parse().unwrap(),
+            incarnation: IncarnationId::mint(),
+            settled: status == MemberStatus::ReadyForTraffic,
+            ready: false,
+            data_dir: None,
+            admin_api_base: None,
+        }
+    }
+
+    /// CONTRACT (node-admin-lifecycle.md §4.2: "The new primary sends one bounded Ping, once, to
+    /// every node IN ITS OWN MESH"): the entry pings every birth of the own-mesh map, whatever the
+    /// status its source held. A member in a lifecycle transition (Pending, Draining, Leaving) is a
+    /// node of the mesh: in a leaving mesh every member is, and an entry that pings only the
+    /// ReadyForTraffic ones reads no local topology and sweeps none of them.
+    #[test]
+    fn the_entry_pings_every_own_mesh_birth_whatever_its_status() {
+        let map = vec![
+            birth("mesh2.rpc.1", MemberStatus::Leaving),
+            birth("mesh2.rpc.2", MemberStatus::ReadyForTraffic),
+            birth("mesh2.rpc.3", MemberStatus::Draining),
+            birth("mesh2.rpc.4", MemberStatus::Pending),
+        ];
+        let pinged: Vec<String> = sweep_targets(&map).iter().map(|n| n.name.to_string()).collect();
+        assert_eq!(pinged, vec!["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3", "mesh2.rpc.4"]);
+    }
 }
