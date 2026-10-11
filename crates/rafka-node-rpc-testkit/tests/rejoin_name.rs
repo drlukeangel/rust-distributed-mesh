@@ -99,3 +99,70 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
+
+/// CONTRACT: a node born `mesh1.rpc.1.new` takes `mesh1.rpc.1` live (`ApplyNodeName` answered
+/// `Applied`) and is then stopped: its authority's held stopped digest names `mesh1.rpc.1`, and so
+/// does its row. Its start presents the name it holds, `mesh1.rpc.1`, and is admitted. What must NOT
+/// happen: the join presenting the birth's frozen `.new`, refused `JoinMismatch("name")`.
+#[test]
+fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
+    let cap = crate::common::capture("a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), "a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start") {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let dir = std::env::temp_dir().join(format!("rejoin-held-name-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        let key = node::load_or_mint_key(&dir).unwrap();
+        let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
+        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        let launch = Launch {
+            fabric: "fabric1".into(),
+            fabric_id: fabric,
+            name: born.clone(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            seeds: vec![admin.seed.clone()],
+            launcher: Some(admin.launcher.clone()),
+            data_dir: dir.clone(),
+            mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
+            mesh_issuer: None,
+        };
+        admin.deployed(&launch, &key);
+        let _running = node::start(&launch, |b, _| b).await.expect("the node comes up");
+
+        let book = &admin.observer.membership.book;
+        let mut digests = book.digest_changes();
+        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+            digests.changed().await.unwrap();
+        }
+        let (d, _) = book.get(launch.node_id.as_str()).unwrap();
+        admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
+        let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.to_string() };
+        assert_eq!(call(&admin, &target, &apply).await, StatusReply::Applied);
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_held".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_held".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        assert!(matches!(call(&admin, &target, &stop).await, StatusReply::Stopped { .. }));
+        let seq_at_stop = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
+
+        // The authority holds the birth under its row's name, and its held stopped digest names it too.
+        admin.put_row(NodeRow { name: taken.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, config: Default::default() });
+        admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
+
+        assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");
+        digests.borrow_and_update();
+        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_stop || d.status != MemberStatus::ReadyForTraffic) {
+            digests.changed().await.unwrap();
+        }
+        assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, taken, "the started node publishes the name it holds");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
