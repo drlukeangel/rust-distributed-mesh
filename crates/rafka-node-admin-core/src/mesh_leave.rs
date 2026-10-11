@@ -764,11 +764,19 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
 }
 
 /// The verdict on the handoff of the leave `key` from the final primary's Build facts as `reader`
-/// read them from it (`read`, the sender `sender`'s FetchBuildFacts answer). `Err` is a read that
-/// decides nothing: the reply is not-ready by that name and the open leave stays open.
+/// read them from it (`read`, the sender `sender`'s FetchBuildFacts answer). A sender that holds no
+/// fact of the Build (`UnknownBuild`) recorded no exit manifest when it called: its member
+/// workflows are incomplete, every roster birth but the final primary without an Exited receipt,
+/// and the open leave ends now (mesh-leave.md: "Missing receipts ... leave the workflow
+/// incomplete"). `Err` is a read that decides nothing (not ready, unreached, interrupted, refused
+/// or an incomplete stream): the reply is not-ready by that name and the open leave stays open.
 pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, String> {
     match read {
         Ok(facts) => Ok(handoff_verdict(&facts, key, admitted, receipt_manifest)),
+        Err(crate::build_facts_read::FetchFailure::UnknownBuild(detail)) => Ok(match handoff_verdict(&[], key, admitted, receipt_manifest) {
+            HandoffVerdict::Incomplete { reason, without_exit } => HandoffVerdict::Incomplete { reason: format!("{reader}: the final primary {sender} holds no fact of the Build ({detail}): {reason}"), without_exit },
+            other => other,
+        }),
         Err(e) => Err(format!("{reader}: the manifest {receipt_manifest} could not be read from {sender}: {e}")),
     }
 }
