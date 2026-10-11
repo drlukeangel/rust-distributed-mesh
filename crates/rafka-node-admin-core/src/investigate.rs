@@ -373,8 +373,9 @@ pub async fn run(w: Watch) {
             _ = inv.landed() => {}
         }
         wait = w.round;
-        // Held here while the admin is parked: its own wait, outside every lock.
-        w.gate.opened().await;
+        // Held here while the admin is parked: its own wait, outside every lock. The turn ends with
+        // the pass.
+        let _turn = w.gate.turn("peer-mesh-investigation").await;
         let view = Arc::new(w.topology.read().await.clone());
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
         if !(fabric_primary && w.membership.authorizes()) {

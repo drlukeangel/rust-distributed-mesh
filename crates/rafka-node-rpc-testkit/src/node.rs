@@ -722,7 +722,7 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         self.membership.park().await;
         let pooled = self.client.close_pooled("node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
-        rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted }
+        rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
     async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {

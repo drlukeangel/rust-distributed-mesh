@@ -71,6 +71,9 @@ pub struct CutReport {
     pub pooled: usize,
     /// Connections peers had made to this node, closed (the commander's spared).
     pub accepted: usize,
+    /// Turns of the node's gated tasks still in progress when the cut began (a node-admin's park
+    /// gate; an ordinary node holds none).
+    pub turns_in_progress: usize,
 }
 
 /// Why a start stopped, and at which step.
@@ -568,7 +571,7 @@ impl NodeSelf {
         let _ = (self.set_status)(MemberStatus::Leaving);
         tracing::info_span!(
             "rdm.node_admin.node.connections.delete.via-stop-cut",
-            node = %self.held_name(), operation = %op.operation, neighbours = report.neighbours, pooled = report.pooled, accepted = report.accepted
+            node = %self.held_name(), operation = %op.operation, neighbours = report.neighbours, pooled = report.pooled, accepted = report.accepted, turns_in_progress = report.turns_in_progress
         )
         .in_scope(|| tracing::info!("the mesh connections were cut; the endpoint stays bound and the commander's connection stays open"));
         receipt
