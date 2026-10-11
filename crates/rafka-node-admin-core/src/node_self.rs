@@ -473,9 +473,8 @@ impl NodeSelf {
                 d.in_flight = Some(0);
                 let _ = self.membership.publish(&d).await;
                 tracing::Span::current().record("in_flight_at_zero", true);
-                for owed in self.drained() {
-                    owed.complete(&self).await;
-                }
+                // Each commander owed is called on its own: one that cannot be reached holds up no other.
+                futures_util::future::join_all(self.drained().into_iter().map(|owed| owed.complete(&self))).await;
             };
             tokio::join!(declared, completion);
         }
@@ -548,16 +547,17 @@ impl NodeSelf {
         // An established drain is this cycle's drain reaching zero: every commander whose
         // DrainNode joined it gets node-drained now, while the connections are whole. A deadline is
         // not drained, and owes none.
-        if matches!(receipt, DrainReceipt::Established { .. }) {
-            for owed in self.drained() {
-                owed.complete(self).await;
-            }
-        }
+        let owed = if matches!(receipt, DrainReceipt::Established { .. }) { self.drained() } else { Vec::new() };
+        let completions = futures_util::future::join_all(owed.into_iter().map(|owed| owed.complete(self)));
         // 2. Leaving is declared to the authority while this node can still reach it, then no more is
-        // said: the node gossips nothing for its stop.
-        if let Some(declare) = &self.declare {
-            declare(NodeState::Leaving).await;
-        }
+        // said: the node gossips nothing for its stop. The owed completions are called beside the
+        // declaration, so the stop waits for neither longer than for the slower.
+        let declared = async {
+            if let Some(declare) = &self.declare {
+                declare(NodeState::Leaving).await;
+            }
+        };
+        tokio::join!(completions, declared);
         // 3. The hard cut, sparing the commander's connection the stop call rides.
         let session = self.session.lock().unwrap().clone();
         let report = match session {
