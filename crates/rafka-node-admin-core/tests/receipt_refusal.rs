@@ -190,6 +190,47 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
 }
 
+/// The birth is never reached: every command ends `NotSent` (the client's dial deadline).
+struct NeverReached;
+#[async_trait::async_trait]
+impl NodeObserver for NeverReached {
+    async fn send_command(&self, _: &Node, _: NodeCommand, _: &CommandContext) -> CommandAdmission {
+        CommandAdmission::NotSent { reason: "dial-deadline: no connection to the target within the send budget".into() }
+    }
+    async fn await_completion(&self, _: &Node, _: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
+        panic!("a command that was never sent has no completion to await")
+    }
+    async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+        None
+    }
+    async fn ready(&self, _: &Node) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// CONTRACT (node-drain.md "Admission is not drain completion"; "never infer completion from
+/// silence"; node-recovery.md "An exit during a workflow belongs to that workflow: its Build ends
+/// Failed"): a standalone drain whose `drain-node` never reaches the birth (`NotSent`, as when the
+/// birth exited or is held) fails at `AwaitNodeDrained` by name, the admission and its reason in
+/// the error, and writes no `Complete`. A standalone stop never sent fails at `AwaitNodeLeft` the
+/// same way. Must NOT happen: the drain or stop recorded complete for a birth never told of it.
+#[tokio::test]
+async fn a_standalone_drain_or_stop_whose_command_is_never_sent_fails_by_name() {
+    for (stop, step) in [(false, "AwaitNodeDrained"), (true, "AwaitNodeLeft")] {
+        let local = MemoryBuildStateAdapter::new();
+        let build_id = BuildId::mint();
+        accepted_and_claimed(&local, &build_id).await;
+        let err = match standalone_through(&local, &build_id, &NeverReached, stop).await {
+            Err(e) => e,
+            Ok(()) => panic!("the {} command never reached the birth, yet the operation reported complete", if stop { "stop-node" } else { "drain-node" }),
+        };
+        assert_eq!(err.step, step, "{err:?}");
+        assert!(err.reason.contains("NotSent") && err.reason.contains("dial-deadline"), "the admission and its reason are named: {err:?}");
+        let steps: Vec<String> = local.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
+        assert!(!steps.iter().any(|s| s == "Complete"), "no Complete for an operation never sent: {steps:?}");
+    }
+}
+
 /// A capture of every finished span, by name.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
@@ -252,6 +293,12 @@ async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rafka_node_admin_co
 
 /// A standalone drain of a ready `mesh1.rpc.1` as attempt 1 of `build_id`, through `builds`.
 async fn drain_through(builds: &dyn BuildStateAdapter, build_id: &BuildId) -> Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError> {
+    standalone_through(builds, build_id, &Drains, false).await
+}
+
+/// A standalone drain (or, with `stop`, a standalone stop) of a ready `mesh1.rpc.1` as attempt 1 of
+/// `build_id`, through `builds`, its commands answered by `observer`.
+async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, observer: &dyn NodeObserver, stop: bool) -> Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError> {
     let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
     node.incarnation_id = Some(IncarnationId::mint());
     node.status = NodeStatus::ReadyForTraffic;
@@ -266,9 +313,14 @@ async fn drain_through(builds: &dyn BuildStateAdapter, build_id: &BuildId) -> Re
         mesh_issuer: None,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
-    let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Drains, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
+    let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rafka_node_admin_core::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    pipeline.drain(&RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal }).await
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal };
+    if stop {
+        pipeline.stop(&req).await
+    } else {
+        pipeline.drain(&req).await
+    }
 }
 
 /// Build `build_id` accepted and its attempt 1 claimed by `mesh1.admin.1`, in `builds`.
@@ -337,4 +389,33 @@ async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
     assert_eq!(spans[0].1.get("step").map(String::as_str), Some("DrainNode"), "{spans:?}");
     assert!(capture.spans("rdm.node_admin.build.reject.via-broadcast-refused").is_empty(), "nothing was broadcast for an unwritten receipt");
     eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {:?}", spans[0].0, spans[0].1);
+}
+
+/// CONTRACT (node-rpc-envelope.md "Build carrier": "Progress waits on no gossip; Build-topic facts
+/// remain durability and recovery evidence through the existing publication path"): a fabric-primary
+/// that yields its seat while its gossip is shut down sets the sticky fence (its Build log decides
+/// nothing after it) and hands on what it can: each send that fails is named under
+/// `rdm.node_admin.build.reject.via-broadcast-refused` (fact `hand-over`, sent by the yielding admin,
+/// the send error), and the yield reports the facts it held. Must NOT happen: the yield answered as
+/// failed because a broadcast failed after the local fence committed.
+#[tokio::test]
+async fn a_seat_yield_whose_broadcast_fails_is_fenced_and_names_each_refused_send() {
+    let (capture, _guard) = Capture::new("i143-3051-yield-broadcast-refused");
+    let local = std::sync::Arc::new(MemoryBuildStateAdapter::new());
+    let (_endpoint, gossip, _router, builds) = fabric_builds("mesh1.admin.1", local).await;
+    let build_id = BuildId::mint();
+    accepted_and_claimed(&builds, &build_id).await;
+    gossip.shutdown().await.unwrap();
+
+    let handed = match builds.yield_seat("the seat is now mesh2 test").await {
+        Ok(n) => n,
+        Err(e) => panic!("the fence committed locally and only the hand-over broadcast failed, yet the yield failed: {e}"),
+    };
+    assert!(handed >= 2, "the accepted Build and its claim were held and handed on: {handed}");
+    assert!(builds.fence_check().await.is_err(), "the fence holds: the yielded log decides nothing");
+    let refused = capture.spans("rdm.node_admin.build.reject.via-broadcast-refused");
+    let hand = refused.iter().find(|(_, a)| a.get("fact").map(String::as_str) == Some("hand-over")).unwrap_or_else(|| panic!("the hand-over's failed send is named: {refused:?}"));
+    assert_eq!(hand.1.get("sent_by").map(String::as_str), Some("mesh1.admin.1"), "{hand:?}");
+    assert!(hand.1.get("detail").is_some_and(|d| d.contains("hand")), "the send error is carried: {hand:?}");
+    eprintln!("span rdm.node_admin.build.reject.via-broadcast-refused trace_id={} {:?}", hand.0, hand.1);
 }

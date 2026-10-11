@@ -539,7 +539,9 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
 /// exited and submits the recovery"): a member of the mesh that does not hold the fabric-primary is
 /// held (SIGSTOP) and a drain of it is requested at once, attempt N of the accepted Build
 /// (`drain-node:<path>`, run by its mesh-primary). While that drain waits on the held process, the
-/// process is killed. Attempt N ends Failed at its DrainNode step; then the mesh-primary proves the
+/// process is killed. The drain-node command never reaches the birth (NotSent), so no node-drained
+/// can follow: attempt N ends Failed at AwaitNodeDrained, named by that admission (node-drain.md
+/// "Admission is not drain completion"), never Complete. Then the mesh-primary proves the
 /// exit and submits the recovery, a later attempt of the same Build, which completes: a new node.id
 /// at the path over the same endpoint key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -563,7 +565,9 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
         b["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(drain_attempt) && r["outcome"]["failed"].is_object())
     })
     .await;
-    assert_eq!(s(&failed["step"]), "DrainNode", "the workflow fails at the step the exit interrupted: {failed}");
+    // The drain-node command never reached the held, then exited, birth: no node-drained can follow.
+    assert_eq!(s(&failed["step"]), "AwaitNodeDrained", "the drain is not complete: {failed}");
+    assert!(s(&failed["outcome"]["failed"]["reason"]).contains("NotSent"), "the admission names why: {failed}");
 
     let after = wait_for(&format!("{node} ready as a new node"), SETTLE, || async {
         let n = estate.node_opt(&node).await?;
