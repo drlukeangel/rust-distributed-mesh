@@ -581,6 +581,16 @@ pub enum StatusReply {
 }
 
 impl StatusReply {
+    /// `ConfigRowRefused` for `node`, the store's refusal `reason`.
+    pub fn config_row_refused(node: &str, reason: &str) -> Self {
+        Self::ConfigRowRefused { node: node.into(), reason: reason.into() }
+    }
+
+    /// `ConfigNotApplied` for `node`: the birth `answered` (a reply or call-end name), and why.
+    pub fn config_not_applied(node: &str, answered: &str, reason: &str) -> Self {
+        Self::ConfigNotApplied { node: node.into(), answered: answered.into(), reason: reason.into() }
+    }
+
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -797,6 +807,20 @@ mod tests {
                 assert!(len <= MAX_CONFIG_REQUEST_BYTES, "{len} over the derived {MAX_CONFIG_REQUEST_BYTES}");
             }
         }
+    }
+
+    /// CONTRACT (an error carries every detail it can, and still reaches the caller): a config refusal
+    /// whose detail is longer than the reply bound is still a reply within `MAX_REPLY_FRAME_BYTES`, so
+    /// the server never resets it as a protocol violation and the caller gets the named arm.
+    #[test]
+    fn a_config_refusal_with_a_long_detail_encodes_within_the_reply_bound() {
+        let long = "x".repeat(4 * Status::MAX_REPLY_FRAME_BYTES);
+        for r in [StatusReply::config_row_refused(&long, &long), StatusReply::config_not_applied(&long, &long, &long)] {
+            let len = Status::encode_reply(&r).unwrap().len();
+            assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "{} encodes to {len}, over {}", r.name(), Status::MAX_REPLY_FRAME_BYTES);
+        }
+        let short = StatusReply::config_not_applied("mesh1.rpc.1", "busy", "at its admission bound");
+        assert_eq!(short, StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "at its admission bound".into() }, "a detail within its budget is kept whole");
     }
 
     #[test]
