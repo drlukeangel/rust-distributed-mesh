@@ -7,12 +7,15 @@
 //!
 //! One admin side commands the birth under several attempts of one Build: each attempt is its own
 //! open command in the admin's command book, matched by its attempt, so a completion carrying
-//! another attempt resolves nothing. The natural key holds no commander, so a second physical
-//! node-admin adds nothing the attempts do not already prove.
+//! another attempt resolves nothing. A drain's natural key holds no commander, so a second physical
+//! node-admin adds nothing the attempts do not already prove. A fabric round is scoped to the
+//! accepted Build and attempt (node-rpc-envelope.md, "Fabric status rounds") and its command comes
+//! from whichever node-admin holds the mesh's primary seat: its cell moves the seat between two
+//! admin sides.
 //!
 //! A cell that stops the birth runs in its own process (the process-wide parking flag).
 
-use crate::common::admin_side_serving;
+use crate::common::{admin_side_serving, admin_side_serving_as};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
@@ -37,7 +40,7 @@ struct Birth {
     pull: std::sync::Arc<PullServer>,
     target: NodeTarget,
     dir: std::path::PathBuf,
-    _running: node::RunningNode,
+    running: node::RunningNode,
 }
 
 impl Birth {
@@ -85,7 +88,7 @@ impl Birth {
             .await,
         }
         .expect("the node comes up");
-        let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, _running: running };
+        let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, running };
         birth.status_heard(MemberStatus::ReadyForTraffic).await;
         let (d, _) = birth.admin.observer.membership.book.get(birth.launch.node_id.as_str()).unwrap();
         birth.admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
@@ -311,6 +314,299 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         birth.status_heard(MemberStatus::ReadyForTraffic).await;
         let rejoins = spans_named(&spans, "rdm.mesh.node.update.via-start");
         assert_eq!(rejoins.len(), 1, "one rejoin of the birth: {rejoins:?}");
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
+
+/// CONTRACT: a birth whose start is under way is still in Leaving until the start ends
+/// (states.md, "Stopped nodes": node.start is the only transition out of Leaving and completes
+/// all start gates first; it is parked until then, and the probe answers `CurrentParked`). A
+/// `DrainNode` that reaches it then is the backward transition and is refused naming `Leaving`:
+/// its commander gets no `node-drained`. What must NOT happen: the drain of the cycle the stop
+/// ended answering for the start under way (`AlreadyApplied` and a `node-drained` at once, though
+/// the new cycle has drained nothing). Once started, the birth is a new cycle and its next
+/// `DrainNode` is admitted and drains.
+#[test]
+fn a_drain_during_a_start_is_refused_naming_leaving_and_gets_no_drained_of_the_parked_cycle() {
+    let cell = "a_drain_during_a_start_is_refused_naming_leaving_and_gets_no_drained_of_the_parked_cycle";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_hydrating("drain-during-start", Some(hydrator.clone())).await);
+
+        // The first cycle drains, then stops on that drain.
+        let mut first = birth.open_drain(1);
+        assert_eq!(birth.call(&birth.drain(1)).await, StatusReply::Applied, "the first cycle's drain is admitted");
+        node_drained(&mut first, 1).await;
+        let stopped = birth.call(&birth.stop(2)).await;
+        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{stopped:?}");
+
+        // The start runs until its hook, which holds until the cell lets it go.
+        let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
+        hydrator.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        birth.admin.deployed(&birth.launch, &birth.key);
+        let start = {
+            let birth = birth.clone();
+            tokio::spawn(async move { birth.call(&birth.start(3)).await })
+        };
+        started.notified().await;
+
+        // A drain of the birth while its start is under way.
+        let during = birth.open_drain(4);
+        assert_eq!(
+            birth.call(&birth.drain(4)).await,
+            StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving },
+            "a DrainNode while the start is under way meets a birth still in Leaving: refused by name, never the parked cycle's drain"
+        );
+
+        hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
+        resume.notify_one();
+        assert_eq!(start.await.unwrap(), StatusReply::Started);
+        birth.status_heard(MemberStatus::ReadyForTraffic).await;
+
+        // The started birth's drain is the new cycle's: admitted, and it drains.
+        let mut after = birth.open_drain(5);
+        assert_eq!(birth.call(&birth.drain(5)).await, StatusReply::Applied, "the started birth's drain is a new drain");
+        node_drained(&mut after, 5).await;
+        assert!(!*during.borrow(), "the refused DrainNode's commander is owed no node-drained");
+        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 2, "one drain task per cycle: the first cycle's and the started birth's");
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
+
+/// A round action that holds until the cell opens its gate, counting every run.
+struct HeldActions {
+    entered: tokio::sync::Notify,
+    gate: tokio::sync::watch::Sender<bool>,
+    runs: std::sync::atomic::AtomicUsize,
+}
+
+impl HeldActions {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { entered: tokio::sync::Notify::new(), gate: tokio::sync::watch::Sender::new(false), runs: std::sync::atomic::AtomicUsize::new(0) })
+    }
+    async fn run(&self) -> Result<(), String> {
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.entered.notify_one();
+        let mut open = self.gate.subscribe();
+        let _ = open.wait_for(|o| *o).await;
+        Ok(())
+    }
+    fn runs(&self) -> usize {
+        self.runs.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::fabric_rounds::RoundActions for HeldActions {
+    async fn commit_state(&self, _node: &rafka_mesh_entity::PathName) -> Result<(), String> {
+        self.run().await
+    }
+    async fn open_traffic(&self, _node: &rafka_mesh_entity::PathName) -> Result<(), String> {
+        self.run().await
+    }
+}
+
+impl Birth {
+    /// `admin` announces itself holder of `mesh1`'s primary seat at `epoch`; resolves once this
+    /// birth holds that record.
+    async fn seat(&self, admin: &crate::common::AdminSide, epoch: u64) {
+        let holder = rafka_mesh_entity::seat::SeatHolder { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), epoch };
+        admin.observer.membership.publish_lifecycle(&rafka_mesh_transport::membership::Frame::Seated { seat: rafka_mesh_entity::seat::Seat::MeshPrimary, holder: holder.clone() }).await.expect("the seat record publishes");
+        let seats = self.running.membership.seats();
+        let mut changed = seats.subscribe();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while seats.mesh("mesh1").as_ref() != Some(&holder) {
+                changed.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{NODE} never held {} as mesh1's primary at epoch {epoch}", admin.launcher.name));
+    }
+
+    /// The round command `kind` of `attempt` from `admin`, the birth resolved by it.
+    async fn round_from(&self, admin: &crate::common::AdminSide, kind: rafka_node_admin_core::fabric_state::RoundKind, attempt: u32) -> StatusReply {
+        let key = rafka_node_admin_core::fabric_state::RoundKey { kind, fabric_id: self.launch.fabric_id.clone(), build_id: BUILD.into(), attempt };
+        let req = kind.down(&key, self.launch.node_id.clone(), self.launch.incarnation.clone());
+        match admin.observer.client.call::<Status>(&self.target, &req, &Self::opts()).await.0 {
+            RpcOutcome::Reply(r) => r.into_value(),
+            other => panic!("{} from {} did not end in a reply: {other:?}", req.op(), admin.launcher.name),
+        }
+    }
+}
+
+/// Resolves once `admin` has taken a check-in named `completion` of `attempt` from the birth.
+async fn checked_in(admin: &crate::common::AdminSide, completion: &str, attempt: u32) {
+    let mut held = admin.observer.check_ins.subscribe();
+    tokio::time::timeout(Duration::from_secs(20), held.wait_for(|reqs| reqs.iter().any(|r| r.op() == completion && rafka_node_admin_core::fabric_state::RoundOp::of(r).is_some_and(|o| o.attempt == attempt))))
+        .await
+        .unwrap_or_else(|_| panic!("{} never took a {completion} check-in of attempt {attempt}", admin.launcher.name))
+        .expect("the check-ins are held by the admin side");
+}
+
+/// CONTRACT: a fabric round is scoped to the accepted Build and attempt, never to the node-admin
+/// that commands it (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to the
+/// accepted Build, attempt and planned exact births"; "Idempotency is the natural key"). When the
+/// mesh's primary seat moves and the new holder sends the same round, the birth answers it
+/// `AlreadyApplied` and its action is not run again: while the action runs the new holder is owed
+/// the check-in once it is stored, and after it is stored the check-in is made to the new holder at
+/// once (serve_round's contract: that is how a new primary's checklist rebuilds itself). What must
+/// NOT happen: `Applied` to the new holder and a second run of the round's action.
+#[test]
+fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_runs_once() {
+    let cell = "a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_runs_once";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        use rafka_node_admin_core::fabric_state::RoundKind;
+        let birth = Birth::up("round-new-commander").await;
+        let actions = HeldActions::new();
+        birth.running.own.set_round_actions(actions.clone());
+
+        // A second node-admin of mesh1 on the same gossip mesh, resolving the birth too.
+        let admin2 = admin_side_serving_as("127.0.0.1".parse().unwrap(), &birth.launch.fabric_id, "mesh1.admin.2", MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin1_addr = iroh::EndpointAddr::new(birth.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(birth.admin.seed.1);
+        admin2.observer.membership.join_peers(vec![admin1_addr]).await.expect("admin2 joins admin1's mesh channel");
+        let (d, _) = birth.admin.observer.membership.book.get(birth.launch.node_id.as_str()).unwrap();
+        admin2.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        let book = &birth.running.membership.book;
+        let (mut heard, mut digests) = (book.heard_changes(), book.digest_changes());
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while book.get(admin2.launcher.node_id.as_str()).is_none() {
+                tokio::select! {
+                    r = heard.changed() => r.unwrap(),
+                    r = digests.changed() => r.unwrap(),
+                }
+            }
+        })
+        .await
+        .expect("the birth hears admin2's digest");
+
+        // commit-state: admin1 commands it and the action runs, held.
+        birth.seat(&birth.admin, 1).await;
+        assert_eq!(birth.round_from(&birth.admin, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's first command is admitted");
+        actions.entered.notified().await;
+        // The seat moves; the new holder sends the same round while the action runs.
+        birth.seat(&admin2, 2).await;
+        assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::AlreadyApplied, "the same round from the new seat holder is the round already taken");
+        actions.gate.send_replace(true);
+        checked_in(&birth.admin, "state-committed", 1).await;
+        checked_in(&admin2, "state-committed", 1).await;
+        assert_eq!(actions.runs(), 1, "the commit-state action runs once for the round, whoever commands it");
+
+        // open-traffic: the action is stored before the seat moves; the new holder is checked in at once.
+        birth.seat(&birth.admin, 3).await;
+        assert_eq!(birth.round_from(&birth.admin, RoundKind::OpenTraffic, 1).await, StatusReply::Applied);
+        checked_in(&birth.admin, "traffic-opened", 1).await;
+        birth.seat(&admin2, 4).await;
+        assert_eq!(birth.round_from(&admin2, RoundKind::OpenTraffic, 1).await, StatusReply::AlreadyApplied, "a stored round from the new seat holder is the round already taken");
+        checked_in(&admin2, "traffic-opened", 1).await;
+        assert_eq!(actions.runs(), 2, "one action per round: commit-state once and open-traffic once");
+        for round in ["commit-state", "open-traffic"] {
+            let acted = |a: &str| spans_named(&spans, "rdm.node_admin.fabric.update.via-member-round").into_iter().filter(|f| f.get("round").map(String::as_str) == Some(round) && f.get("acted").map(String::as_str) == Some(a)).count();
+            assert_eq!((acted("true"), acted("false")), (1, 1), "{round}: one acted round for the first holder and one check-in without acting for the new holder");
+        }
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
+
+/// CONTRACT: `node.drain` observes the eligible in-flight work under the drain bound
+/// (node-drain.md step 3; Receipt: `Established { in_flight }`, or at the drain bound
+/// `Deadline { last_in_flight }`). A call that never finishes ends the drain at the bound with
+/// `Deadline` naming the count it last observed, never zero. The process keeps running and the
+/// birth stays Draining (node-drain.md: no connection cut, exit or Leaving is implied). A deadline
+/// is not drained: the commander is owed no `node-drained`, and a later `DrainNode` of the birth is
+/// the same drain, `AlreadyApplied`, with no drain of its own. What must NOT happen: a drain loop
+/// that never ends while the call is held.
+#[test]
+fn a_drain_with_work_that_never_finishes_ends_at_the_drain_bound_with_a_deadline_receipt() {
+    let cell = "a_drain_with_work_that_never_finishes_ends_at_the_drain_bound_with_a_deadline_receipt";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        // This process's drain bound.
+        std::env::set_var("RDM_DRAIN_DEADLINE_MS", "500");
+        let birth = std::sync::Arc::new(Birth::up("drain-bound").await);
+        let held = birth.hold_one_call().await;
+        let drained = birth.open_drain(1);
+
+        assert_eq!(birth.call(&birth.drain(1)).await, StatusReply::Applied, "the drain is admitted");
+        // The held call never finishes on its own: the drain ends at its bound.
+        let deadline = |f: &std::collections::BTreeMap<String, String>| f.get("receipt").map(String::as_str) == Some("deadline");
+        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-drain-node", deadline))
+            .await
+            .expect("the drain ends at its bound with a Deadline receipt while the held call is in flight");
+        let drain = spans_named(&spans, "rdm.node_admin.status.update.via-drain-node");
+        assert_eq!(drain.len(), 1, "one drain task: {drain:?}");
+        assert_eq!(drain[0].get("in_flight").map(String::as_str), Some("1"), "the Deadline receipt names the one call it last observed in flight, never zero: {drain:?}");
+        assert_eq!(*birth.running.status.lock().unwrap(), MemberStatus::Draining, "a drain at its bound leaves the birth Draining: no Leaving is implied");
+
+        // A deadline is not drained: no node-drained, and a later DrainNode is the same drain.
+        assert_eq!(birth.call(&birth.drain(2)).await, StatusReply::AlreadyApplied, "a DrainNode after the drain ended at its bound is the same natural key (node_id, incarnation, Draining)");
+        birth.pull.release();
+        held.await.unwrap();
+        assert!(!*drained.borrow(), "a drain that ended at its bound owes its commander no node-drained");
+        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 1, "the later DrainNode runs no drain of its own");
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
+
+/// CONTRACT: a `StopNode` that reaches a parked birth while its start is under way is refused
+/// `NotReady` naming the start under way, as a `StartNode` that reaches a birth whose stop is under
+/// way is refused naming the stop: the start ends the birth's stopped cycle, so the receipt of the
+/// stop that parked it answers for a birth that is leaving Leaving. Once the start ends, the stop
+/// is decided on the cycle it ended in: the started birth is stopped afresh, on a drain of its own.
+/// What must NOT happen: `Stopped` with the parked cycle's receipt while the start goes on to make
+/// the birth live (its commander holding a stopped birth that is ready for traffic, and the
+/// mesh-primary's NodeStopped for it published after the start's node.joined).
+#[test]
+fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parked_cycles_receipt() {
+    let cell = "a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parked_cycles_receipt";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_hydrating("stop-during-start", Some(hydrator.clone())).await);
+        let stopped = birth.call(&birth.stop(1)).await;
+        assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
+
+        // The start runs until its hook, which holds until the cell lets it go.
+        let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
+        hydrator.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        birth.admin.deployed(&birth.launch, &birth.key);
+        let start = {
+            let birth = birth.clone();
+            tokio::spawn(async move { birth.call(&birth.start(2)).await })
+        };
+        started.notified().await;
+
+        // A stop of the birth while its start is under way.
+        let during = birth.call(&birth.stop(3)).await;
+        assert!(
+            matches!(&during, StatusReply::NotReady { reason } if reason.contains("start is under way")),
+            "a StopNode while the start is under way is refused naming the start, never answered with the parked cycle's receipt: {during:?}"
+        );
+
+        hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
+        resume.notify_one();
+        assert_eq!(start.await.unwrap(), StatusReply::Started);
+        birth.status_heard(MemberStatus::ReadyForTraffic).await;
+
+        // The started birth's stop is a stop of its own cycle.
+        let after = birth.call(&birth.stop(4)).await;
+        assert!(matches!(after, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "the started birth is stopped afresh: {after:?}");
+        assert!(birth.running.own.is_parked(), "the stop that answered Stopped left the birth parked");
+        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-stop-node").len(), 2, "one stop per cycle: the first cycle's and the started birth's");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }

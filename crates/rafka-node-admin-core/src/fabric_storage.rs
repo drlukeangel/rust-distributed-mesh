@@ -488,7 +488,7 @@ impl FabricStorage for FileFabricStorage {
             Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => {
                 return Err(FabricStorageError::NotSeatHolder { file: file(), reason: format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here")) });
             }
-            Some(crate::fabric_builds::SeatRecord::Open) => {}
+            Some(crate::fabric_builds::SeatRecord::Open { .. }) => {}
         }
         self.pointers.write(&pointer.key(), POINTER_FORMAT, pointer).await
     }

@@ -114,7 +114,7 @@ async fn only_the_fabric_seat_holder_puts_a_pointer_on_the_store_root() {
     let root = rafka_node_admin_core::store_root::StoreRoot::at(&d);
     let fabric_id = FabricId::mint();
     let moved = SeatRecord::Moved { by: "the fabric seat record names mesh1 000000000001 (birth p) at epoch 3".into(), to: Some("mesh1.admin.1".into()) };
-    let (n, unset, p) = (file_writer(&root, Some(moved)), file_writer(&root, None), file_writer(&root, Some(SeatRecord::Open)));
+    let (n, unset, p) = (file_writer(&root, Some(moved)), file_writer(&root, None), file_writer(&root, Some(SeatRecord::Open { holder: Some("mesh1.admin.1".into()) })));
     p.put_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap();
     let pointer = |b: &str, at: u64| FabricPointer { build_id: BuildId(b.into()), submitted_at_ms: at };
     match n.put_pointer(&pointer("bld-n", 10)).await {

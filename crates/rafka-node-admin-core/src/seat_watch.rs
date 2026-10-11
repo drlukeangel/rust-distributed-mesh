@@ -97,7 +97,9 @@ pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view
 /// a birth proven gone (`lost`: a vacancy the election fills before this birth's own record lands)
 /// ends nothing; a record naming another live birth ended this birth's authority at its epoch, and
 /// names that birth's path.name from `name_of` (the digest book, which holds a birth before the
-/// projected view does). Read from the record alone: no history, no write.
+/// projected view does). An open record naming this birth names its path.name as the holder; one
+/// naming none or a birth proven gone names no holder. Read from the record alone: no history, no
+/// write.
 pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
@@ -105,7 +107,8 @@ pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSe
             let by = format!("the fabric seat record names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.0, h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
             crate::fabric_builds::SeatRecord::Moved { by, to }
         }
-        _ => crate::fabric_builds::SeatRecord::Open,
+        Some(h) if h.is_birth(&me.0, &me.1) => crate::fabric_builds::SeatRecord::Open { holder: name_of(&h.node_id) },
+        _ => crate::fabric_builds::SeatRecord::Open { holder: None },
     }
 }
 

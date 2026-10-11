@@ -18,10 +18,19 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     let created: Vec<&Value> = named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").into_iter().filter(|sp| sp["attributes"]["outcome"] == "created").collect();
     assert_eq!(created.len(), 1, "the fabric-primary created one admin for mesh2: {created:?}");
     assert_eq!(s(&created[0]["attributes"]["node"]), "mesh2.admin.2", "{}", created[0]);
-    // The created admin is handed the mesh's current state before its Ready, never Pending: a
-    // mesh's state only moves forward (states.md), and mesh2 is past Pending.
+    // mesh2's primary committed its own mesh row Leaving when it admitted leave-mesh and declared
+    // it up to the fabric-primary (DeclareMeshState, "report committed state upward"), which
+    // applied it before the primary was lost and before it created the admin.
+    let declared: Vec<&Value> = named(&run.spans, "rdm.node_admin.status.update.via-declaration")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["op"] == "declare-mesh-state" && sp["attributes"]["sender"] == "mesh2.admin.1" && sp["attributes"]["outcome"] == "applied" && s(&sp["attributes"]["node"]).starts_with("mesh1."))
+        .filter(|sp| start_ns(sp) < start_ns(created[0]))
+        .collect();
+    assert!(declared.iter().any(|sp| sp["attributes"]["state"] == "Leaving"), "the fabric-primary applied mesh2's declared Leaving before it created the admin: {declared:?}");
+    // The created admin is handed the mesh's current state before its Ready: mesh2 is leaving, and
+    // a mesh's state only moves forward (states.md), never back to Pending or ready-for-traffic.
     let handed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.update.via-state-handoff").into_iter().filter(|sp| sp["attributes"]["target"] == "mesh2.admin.2" && sp["attributes"]["outcome"] == "applied").collect();
-    assert!(handed.iter().any(|sp| sp["attributes"]["state"] != "Pending"), "the created admin is handed mesh2's current state: {handed:?}");
+    assert!(!handed.is_empty() && handed.iter().all(|sp| sp["attributes"]["state"] == "Leaving"), "the created admin is handed mesh2's Leaving: {handed:?}");
     let pending: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|sp| sp["attributes"]["target"] == "mesh2.admin.2").collect();
     assert!(pending.is_empty(), "the created admin is never handed Pending: {pending:?}");
     let amended = assert_resumed(&run, "mesh2.admin.2", 4);

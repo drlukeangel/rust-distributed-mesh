@@ -339,7 +339,10 @@ impl AdminRunner {
         tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
             .in_scope(|| tracing::info!("leave-mesh admitted at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
         match committed {
-            StatusReply::Applied | StatusReply::AlreadyApplied => {}
+            // The committed Leaving is owed upward now: the declarer reports it to the
+            // fabric-primary (DeclareMeshState, "report committed state upward"), whose map holds
+            // the state it hands an admin it creates for this mesh.
+            StatusReply::Applied | StatusReply::AlreadyApplied => self.records.wake.poke(),
             refused => return refused,
         }
         // The same commit applies the row to the view: the mesh is projected leaving now, and the
@@ -362,37 +365,43 @@ impl AdminRunner {
                 StatusReply::AlreadyApplied
             }
             None => {
-                tokio::spawn(async move { runner.run_leave(key, owner, parent).await });
+                tokio::spawn(async move { runner.run_leave(key, parent).await });
                 StatusReply::Applied
             }
         }
     }
 
-    async fn run_leave(self: Arc<Self>, key: LeaveKey, owner: NodeId, parent: tracing::Span) {
-        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty);
+    /// The one run of the member workflows of the leave `key` admitted, on its natural key
+    /// `(mesh_id, Leaving)` ([`crate::mesh_leave::run_admitted`]): a `leave-mesh` of a later attempt
+    /// admitted meanwhile joins it, and the handoff goes under the key admitted last.
+    async fn run_leave(self: Arc<Self>, key: LeaveKey, parent: tracing::Span) {
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, handoff_attempt = tracing::field::Empty);
         async {
-            match self.leave_members(&key, &owner).await {
-                Ok(manifest) => {
+            let end = crate::mesh_leave::run_admitted(&self.leave_runs, &key.mesh_id, |key, owner| {
+                let runner = self.clone();
+                async move { runner.leave_members(&key, &owner).await }
+            })
+            .await;
+            match end {
+                crate::mesh_leave::LeaveRunEnd::Exited { key, owner, manifest } => {
                     tracing::Span::current().record("outcome", "exited");
+                    tracing::Span::current().record("handoff_attempt", key.attempt);
                     // The handoff goes to the owner that sent leave-mesh last, read now.
-                    match self.leave_runs.exited(&key, &manifest) {
-                        Some(owner) => self.hand_off(&key, &owner, &manifest).await,
-                        None => tracing::info!("this leave's run is no longer held: the handoff waits for a repeated leave-mesh"),
-                    }
+                    self.hand_off(&key, &owner, &manifest).await;
                 }
-                Err(e) => {
+                crate::mesh_leave::LeaveRunEnd::Incomplete { key, owner, reason } => {
                     tracing::Span::current().record("outcome", "incomplete");
+                    tracing::Span::current().record("handoff_attempt", key.attempt);
                     // The run ends; its receipts stand. Every member that exited holds its exact
                     // Exited step receipt, and the roster its LeavingRoster receipt: a repeated
                     // leave-mesh, or the Build's next attempt, runs only the members without one.
-                    tracing::info!(error = %e, "the member workflows are incomplete: the owner is told now");
+                    tracing::info!(error = %reason, "the member workflows are incomplete: the owner is told now");
                     // The owner learns it inside the call: mesh-leave with no recorded manifest,
                     // which it refuses not-ready naming the births without an Exited receipt and
                     // ends its open leave with. No mesh-leave gossip runs: this is no handoff.
-                    if let Some(owner) = self.leave_runs.incomplete(&key) {
-                        self.call_mesh_leave(&key, &owner, "incomplete", 0).await;
-                    }
+                    self.call_mesh_leave(&key, &owner, "incomplete", 0).await;
                 }
+                crate::mesh_leave::LeaveRunEnd::Forgotten => tracing::info!("this leave's run is no longer held: the handoff waits for a repeated leave-mesh"),
             }
         }
         .instrument(span)
@@ -456,6 +465,22 @@ impl AdminRunner {
             return;
         }
         let (Some(final_incarnation), final_node_id) = (me.incarnation_id.clone(), me.node_id.clone()) else { return };
+        // mesh.deleted (ops-naming mesh.delete: "reported by the mesh-primary, still alive, from its
+        // members' exit proofs; mesh is dead, id kept retired"): every other member's exit is proven,
+        // so this primary commits its mesh row Dead (states.md: "one commit stores the row, applies
+        // it, gossips it and answers"); its view then states the mesh Dead and its status round
+        // publishes MeshStatus Dead, five sends, while it lives (R-NS1 item 1). A refused put
+        // answers no handoff: the owner's repeated leave-mesh decides it afresh.
+        let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Dead).await;
+        tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.me, mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name())
+            .in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exit proofs"));
+        match committed {
+            StatusReply::Applied | StatusReply::AlreadyApplied => self.refresh_view().await,
+            refused => {
+                tracing::info!(operation = %key.operation, reply = refused.name(), "the Dead row was not committed: the handoff waits for a repeated leave-mesh");
+                return;
+            }
+        }
         self.lifecycle_events
             .mesh_leave(&MeshLeaveEvent { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), receipt_manifest: Some(reference), final_primary: Some((final_node_id, final_incarnation)) })
             .await;

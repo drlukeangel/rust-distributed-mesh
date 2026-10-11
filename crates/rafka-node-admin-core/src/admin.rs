@@ -298,6 +298,14 @@ pub struct Records {
     /// again, so its projection holds ready while it has a primary, and the primary that takes over
     /// adopts that state and runs its round (R-S3).
     heard_ready: Mutex<BTreeSet<String>>,
+    /// Each MeshStatus Dead held, by its fact (mesh name, publisher, changed_at), bound to the mesh id
+    /// it is about: the id the publisher's own digest names when the fact is first held. Dead is a
+    /// mesh id's, never a name's (states.md: an id is never reissued; a name is, R-MN1). After
+    /// mesh.deleted the last admin, still its primary, publishes MeshStatus Dead (R-NS1 item 1).
+    heard_dead: Mutex<BTreeMap<(String, String, u64), Option<MeshId>>>,
+    /// This admin's own logical node, set once at start: the projection knows the mesh it authors
+    /// the status of (a mesh primary restates no heard status as its own, gossip.md MeshStatus).
+    me: std::sync::OnceLock<NodeId>,
     /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
     view_tick: tokio::sync::watch::Sender<u64>,
     /// The fabric-primary's writer of node rows: a birth its view holds for the first time claims
@@ -369,6 +377,34 @@ impl Records {
     /// Whether `mesh` was last heard ready-for-traffic.
     pub fn heard_ready(&self, mesh: &str) -> bool {
         self.heard_ready.lock().unwrap().contains(mesh)
+    }
+
+    /// This admin's own logical node, set once at start.
+    pub fn set_me(&self, me: NodeId) {
+        let _ = self.me.set(me);
+    }
+
+    /// Hold the MeshStatus Dead facts heard now, each `(mesh, publisher, changed_at)`. A fact held for
+    /// the first time is bound to the mesh id `id_of(mesh, publisher)` answers (the publisher's live
+    /// digest); a fact bound before keeps its id; a fact no longer held is dropped (a newer status of
+    /// the mesh, or its MeshLeft).
+    pub fn set_heard_dead(&self, facts: Vec<(String, String, u64)>, id_of: impl Fn(&str, &str) -> Option<MeshId>) {
+        let mut held = self.heard_dead.lock().unwrap();
+        held.retain(|k, _| facts.contains(k));
+        for f in facts {
+            let bound = held.entry(f.clone()).or_insert(None);
+            if bound.is_none() {
+                *bound = id_of(&f.0, &f.1);
+            }
+        }
+    }
+
+    /// Whether a MeshStatus Dead bound to the mesh `id` is held, unless this admin authors that mesh's
+    /// status (`authored_here`: it is the mesh's primary, which states the row it committed and
+    /// restates no heard status as its own). The mesh row's own Dead is read by the projection.
+    pub fn heard_dead(&self, id: Option<&MeshId>, authored_here: bool) -> bool {
+        let Some(id) = id else { return false };
+        !authored_here && self.heard_dead.lock().unwrap().values().any(|bound| bound.as_ref() == Some(id))
     }
 
     /// The planned births per mesh of the accepted Build held (empty: none held).
@@ -617,12 +653,13 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
 /// Where this birth's Build log reads its authority: the committed fabric seat record held in
 /// `book`, judged by [`crate::seat_watch::fabric_seat_record`] against the births proven gone (the
 /// lost set every election takes, [`incumbency_of`]) and named from the digests `book` holds.
-pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId)) -> crate::fabric_builds::SeatSource {
+pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName) -> crate::fabric_builds::SeatSource {
     let changed = Some(book.seats.subscribe());
-    let (book, records) = (book.clone(), records.clone());
+    let (book, records, me_name) = (book.clone(), records.clone(), me_name.to_string());
     let read = Arc::new(move || {
         let incumbency = incumbency_of(&book, &records);
-        crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, |id| book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()))
+        let name_of = |id: &NodeId| if *id == me.0 { Some(me_name.clone()) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
+        crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, name_of)
     });
     crate::fabric_builds::SeatSource { read, changed }
 }
@@ -939,10 +976,15 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         // A mesh past ready-for-traffic is the state its row holds (states.md: pending ->
         // ready-for-traffic -> leaving -> dead): the leaving mesh's primary commits Leaving at
         // leave-mesh, and this projection is what that primary announces on its MeshStatus send.
+        // Dead is final: after mesh.deleted the mesh row is Dead and its last admin, still its
+        // primary, publishes MeshStatus Dead (R-NS1 item 1); an admin that does not author the
+        // mesh's status also states the Dead it heard, bound to this mesh id (never to a name).
         let row = id.as_ref().and_then(|id| declared_meshes.get(id).copied());
+        let authored_here = records.me.get().is_some_and(|me| topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
         let status = match row {
-            Some(rafka_node_rpc_contract::status::MeshState::Leaving) => ScopeStatus::Leaving,
             Some(rafka_node_rpc_contract::status::MeshState::Dead) => ScopeStatus::Dead,
+            _ if records.heard_dead(id.as_ref(), authored_here) => ScopeStatus::Dead,
+            Some(rafka_node_rpc_contract::status::MeshState::Leaving) => ScopeStatus::Leaving,
             _ if ready => ScopeStatus::ReadyForTraffic,
             _ => ScopeStatus::Pending,
         };
@@ -1437,7 +1479,7 @@ impl crate::build_drive::Gate for SeatGate {
     fn authorizes(&self) -> bool {
         self.membership.authorizes()
     }
-    async fn fence(&self) -> Result<(), crate::build_state::BuildStateError> {
+    async fn fence(&self) -> Result<Option<String>, crate::build_state::BuildStateError> {
         self.builds.fence_check().await
     }
     async fn fence_set(&self) {
@@ -2356,6 +2398,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeStopped not sent on the mesh channel");
             }
+            // This admin executed the stop and holds its matching stopped reply: the overlay its own
+            // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
+            self.membership.book.executed_stop(op);
             tracing::info!("the node is parked: every mesh drops it from its book until it rejoins as itself");
         }
         .instrument(span)
@@ -2433,6 +2478,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
             }
+            // This admin executed the delete and holds the provider's exit proof: the departure its own
+            // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
+            self.membership.book.executed_delete(op);
             tracing::info!("the exact birth is proven terminal: it has left");
         }
         .instrument(span)
@@ -4032,16 +4080,17 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // its entry pull or the fabric control topic.
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
     let records = Arc::new(Records::default());
+    records.set_me(node_id.clone());
     // Only the fabric seat holder puts a pointer on the store root: the file store reads the
     // committed fabric seat record, as the Build gate does, before any pointer can be put.
-    fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone())));
+    fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
     // The status rows of this admin's mesh on the fabric's store root (`status/<mesh>/`): written by
     // the mesh's seat holder, folded into what this admin applied when it takes the seat.
     let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).map_err(storage_err)?);
     let status_storage: Arc<dyn crate::status_storage::StatusStorage> = status_files.clone();
     records.set_status(status_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
     let builds = Arc::new(
-        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone())), wiring.catch_up_seam.take())
+        FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name), wiring.catch_up_seam.take())
             .await
             .map_err(|e| e.to_string())?,
     );
@@ -5000,7 +5049,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let view = topology.read().await.clone();
                 let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
-                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), &view, &mesh_ids);
+                let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
+                let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
+                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
                 drop(turn);
                 // One coalesced wake from the inputs, never a timer: a poke during the round is
@@ -5260,6 +5311,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     records.set_planned(&b.topology);
                 }
                 records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == rafka_mesh_transport::membership::MESH_READY_FOR_TRAFFIC)).cloned().collect());
+                // A MeshStatus Dead is bound to the mesh id its publisher's own live digest names.
+                records.set_heard_dead(membership.mesh_statuses().into_iter().filter(|(_, h)| h.status == "dead").map(|(m, h)| (m, h.publisher, h.changed_at_rafka_ms)).collect(), |mesh, publisher| {
+                    membership.book.all().into_iter().find(|d| d.node.name.mesh == mesh && d.node.name.to_string() == publisher).and_then(|d| d.mesh_id)
+                });
                 // Decide on the view as it is now: a cached view can predate the seat record this admin holds
                 // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
                 // The seat records are read once per decision: the projection elects from them and
@@ -5318,6 +5373,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let mine: Vec<MeshDigest> = backbone.own_members(&membership);
                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 backbone.publish(&membership, mine.clone()).await;
+                // R-NS1: as fabric primary, the publisher of record of every mesh with no primary
+                // whose births it stopped or deleted.
+                backbone.publish_for_primaryless(&membership, |m| t.cohort_primary(m, NodeKind::NodeAdmin).map(|p| p.name.to_string())).await;
                 // A status is sent when it changed, never per round (gossip.md §3.2).
                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                 // The fabric's status as the live records state it: a round that just cleared the adopted
@@ -6529,7 +6587,7 @@ mod tests {
     /// from: a committed handover that lands while the loop awaits (its round climb) is not
     /// answered by the incumbent taking the seat back at the next epoch. Must NOT happen: the
     /// yielded incumbent announcing itself over the committed successor (the e3..e12 seat flap of
-    /// mesh_replace on f06c8197).
+    /// the fabric-primary handover stem on f06c8197).
     #[test]
     fn a_handover_committed_while_the_loop_awaits_is_not_taken_back_by_the_incumbent() {
         use MemberStatus::*;
