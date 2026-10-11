@@ -921,12 +921,14 @@ fn fabric_primary_of(nodes: &[Value]) -> String {
 /// node is alive and silent: the daemon acknowledges the pause, the view stops calling it ready,
 /// calls to it never complete, and no replacement, re-attempt or new birth follows; the unpause
 /// returns the SAME birth in the SAME container, which serves the value stored before the pause
-/// (the semantic wedge detector judges it). A killed rpc node and a killed non-fabric-primary
-/// node-admin are terminal by the daemon's observed exit only: the Fabric's authority opens the
-/// next attempt of the SAME Build (reason proven drift, no Build minted), the path is re-created as
-/// a new NodeId and incarnation in a new container at the same path.name through the deployment
-/// pipeline (every step a child of its pipeline), the old NodeId never follows the path, and
-/// exactly one container serves each path. What must NOT happen: a command reaching a container
+/// (the semantic wedge detector judges it). A killed rpc node and a killed node-admin that is
+/// neither mesh-primary nor fabric-primary are terminal by the daemon's observed exit only, and each
+/// is a lost member of a mesh with a live mesh-primary (node-recovery.md, mesh-recovery.md:8-9): its
+/// mesh-primary submits the recovery as the next attempt of the SAME Build (reason recovery,
+/// `recover-node:<path>`, no Build minted), the path is re-created as a new NodeId and incarnation
+/// in a new container at the same path.name over the inherited data dir through the recover
+/// pipeline (every step a child of it), the old NodeId never follows the path, and exactly one
+/// container serves each path. What must NOT happen: a command reaching a container
 /// the fact does not name, a paused container replaced, a Build minted for drift, the
 /// fabric-primary node-admin touched, or a mesh left without a node-admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1047,9 +1049,9 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let replacement_c = ExactContainer::of(&estate, &kill).expect("the replacement's container");
     assert_ne!(replacement_c.id, kill_c.id, "the replacement runs in a new container");
     let fresh = estate.probe(&["get", "--target", &format!("path:{kill}"), "--key", "83"]);
-    assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
+    assert_eq!(fresh["reply"]["result"], json!({"found": true, "value": "before-fault"}), "the recovered node serves the store of the data dir it inherited: {fresh}");
     let old = estate.probe(&["get", "--target", &kill_exact, "--key", "83"]);
-    assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
+    assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows the recovered node: {old}");
     assert_eq!(estate.live_containers().iter().filter(|(n, _)| *n == kill).count(), 1, "one container serves the path");
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact container.
@@ -1062,6 +1064,13 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let admin_new = wait_for("a new logical node holds the admin's path", Duration::from_secs(180), || async {
         let n = estate.node_opt(&admin).await?;
         (n["status"] == "ready-for-traffic" && n["node_id"] != admin_n["node_id"]).then_some(n)
+    })
+    .await;
+    assert_eq!(admin_new["endpoint_id"], admin_n["endpoint_id"], "the recovered node-admin holds the endpoint key of the data dir it inherited: {admin_new}");
+    // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
+    // submit followed the recover-node operation to its terminal frame.
+    wait_for("the node-admin's recovery is followed to its terminal", Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| attr(sp, "node") == admin && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
     })
     .await;
     estate.settled_shape(&[("mesh1", 3, 3)], Duration::from_secs(120)).await;
@@ -1080,26 +1089,26 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let recovery_for = |path: &str| -> Value {
         reconciles
             .iter()
-            .find(|r| attr(r, "reason") == "proven-drift" && attr(r, "operations").split(',').any(|op| op == format!("replace-node:{path}")))
+            .find(|r| attr(r, "reason") == "recovery" && attr(r, "operations").split(',').any(|op| op == format!("recover-node:{path}")))
             .cloned()
             .cloned()
-            .unwrap_or_else(|| panic!("a proven-drift attempt of {build_id} re-creating {path}: {reconciles:?}"))
+            .unwrap_or_else(|| panic!("a recovery attempt of {build_id} recovering {path}: {reconciles:?}"))
     };
     let (rpc_rec, admin_rec) = (recovery_for(&kill), recovery_for(&admin));
     assert!(named(&spans, "rdm.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
     let pipeline_of = |path: &str, attempt: u64| -> Value {
         named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
             .into_iter()
-            .find(|p| attr(p, "pipeline") == "replace" && attr(p, "node") == path && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
+            .find(|p| attr(p, "pipeline") == "recover" && attr(p, "node") == path && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
             .cloned()
-            .unwrap_or_else(|| panic!("a replace pipeline span of {path} at attempt {attempt}"))
+            .unwrap_or_else(|| panic!("a recover pipeline span of {path} at attempt {attempt}"))
     };
     let mut recoveries = Vec::new();
     for (path, rec) in [(&kill, &rpc_rec), (&admin, &admin_rec)] {
         let attempt = num(&rec["attributes"]["attempt"]);
         let pipe = pipeline_of(path, attempt);
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipe["span_id"]).collect();
-        assert!(!steps.is_empty(), "{path}: step spans are children of the replace pipeline");
+        assert!(!steps.is_empty(), "{path}: step spans are children of the recover pipeline");
         assert!(steps.iter().all(|st| st["trace_id"] == pipe["trace_id"] && attr(st, "node") == path.as_str()), "{path}: every step shares the pipeline's trace");
         recoveries.push(json!({
             "path": path, "attempt": rec["attributes"]["attempt"], "reason": rec["attributes"]["reason"], "action": rec["attributes"]["action"], "operations": rec["attributes"]["operations"],
