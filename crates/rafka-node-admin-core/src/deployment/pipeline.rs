@@ -852,6 +852,14 @@ pub struct CreateRequest {
 /// downstream starts under an assumed state.
 pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rafka_node_rpc_contract::status::MeshState, String>> + Send>> + Send + Sync>;
 
+/// Work a create awaits inside its `DeployRuntime` step right before it launches the new runtime,
+/// and only then: a step an earlier attempt receipted (its runtime still runs and is reused) and a
+/// runtime the provider finds this deployment already started run none of it. A create over an
+/// exited birth's data dir fences that birth here (node-recovery.md "Delete fences the old instance
+/// before the new join"): the new runtime carries the same endpoint key, so the fence is done before
+/// it exists and never once it does.
+pub(crate) type BeforeLaunch<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
 /// A request to retire one node.
 #[derive(Debug, Clone)]
 pub struct RetireRequest {
@@ -1232,20 +1240,21 @@ impl DeploymentPipeline<'_> {
 
     /// Create `req.node` through every step.
     pub async fn create(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
-        self.create_with(req, None).await
+        self.create_with(req, None, None).await
     }
 
     /// `create`, with `before_ready` run as the `ApplyMeshPending` step once the birth has joined
-    /// its mesh and before it is asked to be Ready.
-    pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
+    /// its mesh and before it is asked to be Ready, and `before_launch` awaited right before the new
+    /// runtime is launched ([`BeforeLaunch`]).
+    pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
-        self.create_steps(req, before_ready).instrument(span).await
+        self.create_steps(req, before_ready, before_launch).instrument(span).await
     }
 
-    async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
+    async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("create-node:{}", req.node)).await;
-        let mut created = self.create_to_ready(&mut run, req, before_ready, None).await?;
+        let mut created = self.create_to_ready(&mut run, req, before_ready, None, before_launch).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
@@ -1259,9 +1268,10 @@ impl DeploymentPipeline<'_> {
     /// inside its own operation ([`Replacing`]): once the successor's identity, storage and network
     /// are decided, the predecessor (parked by its stop) is ended and its storage handed over, and only then does the
     /// successor start.
-    /// `req.data_dir`: the data dir the spec names (node recovery's create over the exited birth's),
-    /// taken over whole (node-recovery.md sequence step 4).
-    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, replacing: Option<&Replacing<'_>>) -> Result<Created, PipelineError> {
+    /// `req.data_dir`: the data dir the spec names (the create over an exited birth's), taken over
+    /// whole (node-recovery.md sequence step 4). `before_launch`: awaited right before the new runtime
+    /// is launched, and only when it is ([`BeforeLaunch`]).
+    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, replacing: Option<&Replacing<'_>>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
@@ -1377,6 +1387,9 @@ impl DeploymentPipeline<'_> {
                 if let Some(h) = self.provider.find(&spec).await {
                     tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
                     return Ok(h);
+                }
+                if let Some(before) = before_launch {
+                    before.await;
                 }
                 self.provider.spawn(&spec).await.map_err(|e| e.to_string())
             })
@@ -2152,7 +2165,7 @@ impl DeploymentPipeline<'_> {
         .await?;
         let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, data_dir: None, held_runtimes: req.held_runtimes.clone() };
         let replacing = Replacing { build_id: &req.build_id, predecessor: &old, handle: &req.handle, terminated: !parked };
-        let mut created = self.create_to_ready(&mut run, &creq, before_ready, Some(&replacing)).await?;
+        let mut created = self.create_to_ready(&mut run, &creq, before_ready, Some(&replacing), None).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
         // The departure of the old identity: the provider's inspection is the proof, and the

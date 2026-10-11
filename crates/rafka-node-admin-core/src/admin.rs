@@ -2694,7 +2694,7 @@ impl AdminRunner {
         }
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: None, held_runtimes };
-        let created = self.pipeline(&template).create_with(&req, before_ready).await.map_err(|e| e.to_string())?;
+        let created = self.pipeline(&template).create_with(&req, before_ready, None).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
@@ -2768,10 +2768,8 @@ impl AdminRunner {
     /// Node recovery's node.delete (node-recovery.md sequence step 3; node-delete.md "Crashed
     /// target"): the exact exited birth `from` at `node`, deleted through the delete workflow on this
     /// admin's recorded exit proof, nothing sent to the dead process. A birth the provider sees running
-    /// is not exited and is not deleted. Then the old birth is fenced (its resolver entry and the
-    /// direct paths of its endpoint key), awaited: the node.create that follows takes the same key
-    /// from the data dir the delete keeps, and no late old digest or dial may return it to the old
-    /// port (node-recovery.md "Delete fences the old instance before the new join").
+    /// is not exited and is not deleted. The fence of the old birth is the create's
+    /// ([`Self::create_over`]), done right before the new birth with its key is launched.
     async fn delete_exited(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), String> {
         let exit = self
             .status_storage
@@ -2784,16 +2782,8 @@ impl AdminRunner {
             return Err(format!("retire-node:{node}: birth {} at {} still runs: it is not exited and is not deleted as a crashed target", from.node_id, from.incarnation.0));
         }
         let template = self.template_for(node.kind, &node.mesh).await?;
-        let pipeline = self.pipeline(&template);
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: exited.clone(), handle, exit: Some(exit) };
-        pipeline.retire(&req).await.map_err(|e| e.to_string())?;
-        // The key the fence names is the one the kept data dir holds (a record resolved from the
-        // durable runtime rows carries none): the node created over that dir will load exactly it.
-        let mut fenced = exited;
-        if fenced.endpoint_id.is_none() {
-            fenced.endpoint_id = crate::deployment::pipeline::load_transport_key(&pipeline.birth_dir(&fenced)).ok();
-        }
-        self.fence_exited(&fenced).await;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: exited, handle, exit: Some(exit) };
+        self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         let held = self.handles.lock().unwrap().get(node).is_some_and(|(n, _)| n.node_id == from.node_id && n.incarnation_id.as_ref() == Some(&from.incarnation));
         if held {
             self.handles.lock().unwrap().remove(node);
@@ -2806,16 +2796,30 @@ impl AdminRunner {
     /// that dir holds and binds port 0, with a new node.id and incarnation, no supersedes. Not through
     /// the create door's fence: the birth at the path is the exited one this recovery deleted, and
     /// the fence would replace it.
+    ///
+    /// The exited birth is fenced here, by the create (node-recovery.md "Delete fences the old
+    /// instance before the new join"): right before the new runtime with the same key is launched,
+    /// inside its `DeployRuntime` step ([`crate::deployment::pipeline::BeforeLaunch`]). Whichever
+    /// executor runs the create fences, so an executor lost after the delete's Complete leaves
+    /// nothing unfenced; a rerun that reuses a runtime an earlier attempt launched (it was fenced
+    /// before that launch) cuts none of that runtime's paths.
     async fn create_over(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), String> {
         let (exited, _) = self.exited_birth("create-node", node, from).await?;
         let template = self.config_seed_from_deleted_row(node).await?;
         let pipeline = self.pipeline(&template);
+        let data_dir = pipeline.birth_dir(&exited);
+        // The key the fence names is the one the kept data dir holds (a record resolved from the
+        // durable runtime rows carries none): the node created over that dir loads exactly it.
+        let mut fenced = exited;
+        if fenced.endpoint_id.is_none() {
+            fenced.endpoint_id = crate::deployment::pipeline::load_transport_key(&data_dir).ok();
+        }
         // A node-admin's recovery is a node-admin birth whose maker is this mesh-primary (the
         // template's seed): it is handed the durable runtime rows before it runs, as every admin
         // birth is.
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: Some(pipeline.birth_dir(&exited)), held_runtimes };
-        let created = pipeline.create_with(&req, None).await.map_err(|e| e.to_string())?;
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
+        let created = pipeline.create_with(&req, None, Some(Box::pin(self.fence_exited(&fenced)))).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
@@ -2846,8 +2850,8 @@ impl AdminRunner {
     }
 
     /// node-recovery.md "Delete fences the old instance before the new join": the exited birth's
-    /// resolver entry is retired and its direct paths dropped, awaited, before the new birth with
-    /// the same endpoint key is launched.
+    /// resolver entry is retired and its direct paths dropped, awaited, right before the new birth
+    /// with the same endpoint key is launched (the create over its data dir, [`Self::create_over`]).
     ///
     /// The await is bounded, and it is awaited (not spawned as `after_exit` does) because the new
     /// birth carries the SAME key: a retire landing after the new birth's paths exist would retire
