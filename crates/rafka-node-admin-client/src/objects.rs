@@ -1,22 +1,49 @@
-//! The `node` and `build` objects.
+//! The `node`, `mesh`, `fabric` and `build` objects.
 //!
 //! Workflows are submitted to the fabric-primary through the Build family (op `0x20`,
 //! `build.create`) and answered with a reply stream ([`WorkflowStream`]) read from the call itself.
-//! The `build` objects are that family's calls. The reads that have no node-RPC op yet (`node.get`,
-//! `node.connections.get`) go to one admin's control API. Calls whose request is valid but that no
-//! op carries yet end `NotBackedToday`, naming what will carry them; no request is invented for
-//! them.
+//! The `build` objects are that family's calls. The reads are Status calls (op `0x1B`): `node.get`,
+//! `mesh.get` and `fabric.get` go to the fabric-primary the carrier starts at, which answers from its
+//! view, and `node.connections.get` to the exact birth whose connections it reads. A read the node
+//! refuses ends `Rejected`, naming the refusal. Calls whose request is valid but that no op carries
+//! yet end `NotBackedToday`, naming why; no request is invented for them.
 
 use crate::build_stream::{BuildCarrier, BuildReceipts, BuildStream};
 use crate::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
-use crate::{Accepted, BuildId, CallEnd, ConnectionsView, FabricDesired, FabricView, MeshDesired, MeshView, NodeAdminClient, NodeStatus, NodeView};
+use crate::{Accepted, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricDesired, FabricView, MeshDesired, MeshView, NodeStatus, NodeView};
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
+use rafka_node_rpc::{CallOptions, NodeTarget};
 use rafka_node_rpc_contract::build::{BuildChange, MeshCounts};
+use rafka_node_rpc_contract::status::{NodeSelect, Status, StatusReply, StatusRequest};
 use std::collections::BTreeSet;
 
 fn counts(m: &MeshDesired) -> MeshCounts {
     MeshCounts { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
+}
+
+/// A read on op `0x1B` to `target`: the reply the node answered, or how the call ended.
+async fn read(carrier: &BuildCarrier, target: &NodeTarget, req: &StatusRequest) -> Result<StatusReply, CallEnd> {
+    crate::calls::ended(carrier.client().call::<Status>(target, req, &CallOptions::default()).await.0)
+}
+
+/// A reply other than the read's answer: the refusal, named, with what it carries.
+fn refused(target: &NodeTarget, op: &str, reply: StatusReply) -> CallEnd {
+    let detail = match &reply {
+        StatusReply::UnknownMesh { mesh } => format!("{target:?} holds no mesh {mesh}"),
+        StatusReply::ReadOverBound { read, bytes, max } => format!("{target:?}: the {read} answer encodes to {bytes} bytes, past the {max}-byte Status reply bound"),
+        other => format!("{target:?} answered {op} with {other:?}"),
+    };
+    CallEnd::Rejected { reason: reply.name().into(), detail }
+}
+
+/// Record how a read ended on its span.
+fn ended_read<T>(span: &tracing::Span, op: &'static str, r: &Result<T, CallEnd>) {
+    span.record("outcome", match r {
+        Ok(_) => "read",
+        Err(e) => e.outcome(),
+    });
+    span.in_scope(|| tracing::info!(op, "an object call ended"));
 }
 
 /// What `node.create` is given: the mesh to add a node to and the node's kind.
@@ -262,18 +289,16 @@ impl BuildPreset {
     }
 }
 
-/// The `node` objects: workflows through the fabric-primary's Build family, reads over one admin's
-/// control API.
+/// The `node` objects: workflows through the fabric-primary's Build family, reads as Status calls.
 #[derive(Debug, Clone)]
 pub struct Nodes {
-    admin: NodeAdminClient,
     carrier: BuildCarrier,
 }
 
 impl Nodes {
-    /// The objects over `admin` (reads) and `carrier` (workflows).
-    pub fn new(admin: NodeAdminClient, carrier: BuildCarrier) -> Self {
-        Self { admin, carrier }
+    /// The objects over `carrier`: workflows and view reads start at its fabric-primary.
+    pub fn new(carrier: BuildCarrier) -> Self {
+        Self { carrier }
     }
 
     /// Submit a workflow call. Its span opens here and closes with the returned stream; a call the
@@ -305,28 +330,25 @@ impl Nodes {
         }
     }
 
-    /// `node.get`: the nodes `selector` selects.
+    /// `node.get`: the nodes `selector` selects, as the fabric-primary's view holds them.
     pub async fn get(&self, selector: &NodeSelector) -> Result<Vec<NodeView>, CallEnd> {
         let span = NodeOp::Get.span();
         let r = tracing::Instrument::instrument(self.select(selector), span.clone()).await;
-        span.record("outcome", match &r {
-            Ok(_) => "read",
-            Err(e) => e.outcome(),
-        });
-        span.in_scope(|| tracing::info!(op = NodeOp::Get.name(), "an object call ended"));
+        ended_read(&span, NodeOp::Get.name(), &r);
         r
     }
 
     async fn select(&self, selector: &NodeSelector) -> Result<Vec<NodeView>, CallEnd> {
-        if matches!(selector, NodeSelector::Tags(_)) {
-            return Err(CallEnd::NotBackedToday { op: NodeOp::Get, why: "tags are node config, and no op carries node config yet" });
+        let select = match selector {
+            NodeSelector::Id(id) => NodeSelect::Id(id.clone()),
+            NodeSelector::Mesh(mesh) => NodeSelect::Mesh(mesh.clone()),
+            NodeSelector::Tags(_) => return Err(CallEnd::NotBackedToday { op: NodeOp::Get, why: "tags are node config, and how a tag is held in a node's config map is not documented, so no request selects by it" }),
+        };
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        match read(&self.carrier, &target, &StatusRequest::GetNodes { select }).await? {
+            StatusReply::Nodes { nodes } => Ok(nodes),
+            other => Err(refused(&target, NodeOp::Get.name(), other)),
         }
-        let all = self.admin.nodes().await?;
-        Ok(match selector {
-            NodeSelector::Id(id) => all.into_iter().filter(|n| &n.node_id == id).collect(),
-            NodeSelector::Mesh(mesh) => all.into_iter().filter(|n| &n.mesh == mesh).collect(),
-            NodeSelector::Tags(_) => unreachable!("refused above"),
-        })
     }
 
     /// `node.update`: put the full meta entity `body` over what RDM `held`, a single call to the
@@ -351,15 +373,19 @@ impl Nodes {
         crate::NodeRpc::new(self.carrier.client()).node_update(mesh_primary, route, &birth, &body.name, &rafka_node_rpc::CallOptions::default()).await
     }
 
-    /// `node.connections.get`: the connection facts the answering admin holds.
-    pub async fn connections_get(&self) -> Result<ConnectionsView, CallEnd> {
+    /// `node.connections.get`: the connections the exact birth `birth` holds, under the name it
+    /// holds, each named by the minted id [`Self::connections_delete`] names it by.
+    pub async fn connections_get(&self, birth: &ExactBirth) -> Result<ConnectionsView, CallEnd> {
         let span = NodeOp::ConnectionsGet.span();
-        let r = tracing::Instrument::instrument(self.admin.connections(), span.clone()).await.map_err(CallEnd::from);
-        span.record("outcome", match &r {
-            Ok(_) => "read",
-            Err(e) => e.outcome(),
-        });
-        span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsGet.name(), "an object call ended"));
+        let req = StatusRequest::GetConnections { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() };
+        let call = async {
+            match read(&self.carrier, &birth.target, &req).await? {
+                StatusReply::Connections { connections } => Ok(connections),
+                other => Err(refused(&birth.target, NodeOp::ConnectionsGet.name(), other)),
+            }
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        ended_read(&span, NodeOp::ConnectionsGet.name(), &r);
         r
     }
 
@@ -423,59 +449,63 @@ pub enum MeshSelector {
     Fabric,
 }
 
-/// The `mesh` objects: reads over one admin's control API.
+/// The `mesh` objects: reads as Status calls to the fabric-primary the carrier starts at.
 #[derive(Debug, Clone)]
 pub struct Meshes {
-    admin: NodeAdminClient,
+    carrier: BuildCarrier,
 }
 
 impl Meshes {
-    /// The objects over `admin`.
-    pub fn new(admin: NodeAdminClient) -> Self {
-        Self { admin }
+    /// The objects over `carrier`.
+    pub fn new(carrier: BuildCarrier) -> Self {
+        Self { carrier }
     }
 
-    /// `mesh.get`: the meshes `selector` selects.
+    /// `mesh.get`: the meshes `selector` selects, as the fabric-primary's view holds them. A mesh it
+    /// does not hold ends `Rejected` with `unknown-mesh`, naming the mesh.
     pub async fn get(&self, selector: &MeshSelector) -> Result<Vec<MeshView>, CallEnd> {
         let span = MeshOp::Get.span();
-        let read = async {
-            let views: Result<Vec<MeshView>, crate::ClientError> = match selector {
-                MeshSelector::Mesh(m) => Ok(vec![self.admin.mesh(m).await?]),
-                MeshSelector::Fabric => Ok(self.admin.fabric().await?.meshes),
-            };
-            views
+        let mesh = match selector {
+            MeshSelector::Mesh(m) => Some(m.clone()),
+            MeshSelector::Fabric => None,
         };
-        let r = tracing::Instrument::instrument(read, span.clone()).await.map_err(CallEnd::from);
-        span.record("outcome", match &r {
-            Ok(_) => "read",
-            Err(e) => e.outcome(),
-        });
-        span.in_scope(|| tracing::info!(op = MeshOp::Get.name(), "an object call ended"));
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let call = async {
+            match read(&self.carrier, &target, &StatusRequest::GetMeshes { mesh }).await? {
+                StatusReply::Meshes { meshes } => Ok(meshes),
+                other => Err(refused(&target, MeshOp::Get.name(), other)),
+            }
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        ended_read(&span, MeshOp::Get.name(), &r);
         r
     }
 }
 
-/// The `fabric` objects: reads over one admin's control API.
+/// The `fabric` objects: reads as Status calls to the fabric-primary the carrier starts at.
 #[derive(Debug, Clone)]
 pub struct Fabrics {
-    admin: NodeAdminClient,
+    carrier: BuildCarrier,
 }
 
 impl Fabrics {
-    /// The objects over `admin`.
-    pub fn new(admin: NodeAdminClient) -> Self {
-        Self { admin }
+    /// The objects over `carrier`.
+    pub fn new(carrier: BuildCarrier) -> Self {
+        Self { carrier }
     }
 
-    /// `fabric.get`: the fabric as the answering admin holds it.
+    /// `fabric.get`: the fabric as the fabric-primary's view holds it.
     pub async fn get(&self) -> Result<FabricView, CallEnd> {
         let span = FabricOp::Get.span();
-        let r = tracing::Instrument::instrument(self.admin.fabric(), span.clone()).await.map_err(CallEnd::from);
-        span.record("outcome", match &r {
-            Ok(_) => "read",
-            Err(e) => e.outcome(),
-        });
-        span.in_scope(|| tracing::info!(op = FabricOp::Get.name(), "an object call ended"));
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let call = async {
+            match read(&self.carrier, &target, &StatusRequest::GetFabric).await? {
+                StatusReply::Fabric { fabric } => Ok(fabric),
+                other => Err(refused(&target, FabricOp::Get.name(), other)),
+            }
+        };
+        let r = tracing::Instrument::instrument(call, span.clone()).await;
+        ended_read(&span, FabricOp::Get.name(), &r);
         r
     }
 }

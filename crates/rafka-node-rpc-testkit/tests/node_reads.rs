@@ -3,16 +3,16 @@
 //! every mesh of a fabric, `fabric.get` the fabric, each as the answering node-admin's view holds
 //! it, and `node.connections.get` a node's held connections (fabric-mesh-node-lifecycles.md:
 //! "Reading or cutting a node's held connections"). The typed objects read them from the node
-//! itself: nothing in these cells listens for a control API.
+//! itself over Node RPC; they hold no control API client.
 
 use rafka_mesh_entity::connections::NodeConnection;
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, PathName};
-use rafka_node_admin_client::{BuildCarrier, CallEnd, ConnectionsView, Fabrics, MeshSelector, Meshes, NodeAdminClient, NodeSelector, NodeStatus, Nodes};
+use rafka_node_admin_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeSelector, NodeStatus, Nodes};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
-use rafka_node_rpc::{NodeRpcClient, ResolvedNode, StaticResolver};
+use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
 use std::collections::BTreeSet;
@@ -20,9 +20,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 const WRONG: Duration = Duration::from_secs(60);
-
-/// No control API listens here: a read that needs one fails.
-const NO_CONTROL_API: &str = "http://127.0.0.1:1";
 
 fn day0_config(dir: &std::path::Path) -> AdminConfig {
     let dir = dir.display().to_string();
@@ -44,10 +41,15 @@ async fn caller(nodes: &[ResolvedNode]) -> (Arc<NodeRpcClient>, iroh::Endpoint) 
     (Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm")), endpoint)
 }
 
-/// The ids of what a node holds as its own: its latest Direct per destination and its active
-/// Proxies.
+/// The ids of the connections a node holds: its latest Direct per destination that is `connected`,
+/// and its active Proxies (the open entries `node.connections.delete` names).
 fn own_ids(held: &rafka_mesh_entity::connections::ConnectionsHeld) -> BTreeSet<String> {
-    held.own_latest_directs().into_iter().chain(held.own_active_proxies()).map(|e: &NodeConnection| e.id.to_string()).collect()
+    held.own_latest_directs()
+        .into_iter()
+        .filter(|e| e.state == rafka_mesh_entity::connections::ConnectionState::Connected)
+        .chain(held.own_active_proxies())
+        .map(|e: &NodeConnection| e.id.to_string())
+        .collect()
 }
 
 fn ids(view: &ConnectionsView) -> BTreeSet<String> {
@@ -61,8 +63,8 @@ fn ids(view: &ConnectionsView) -> BTreeSet<String> {
 /// `mesh.get` of `mesh1`, by name and by id, is the one mesh with the admin as its primary and only
 /// node; `mesh.get` of the fabric lists every mesh the view holds; a mesh it does not hold is
 /// refused naming the mesh (`unknown-mesh`). `fabric.get` is `fabric1` with the admin as its
-/// fabric-primary. `node.connections.get` of the admin names the admin and exactly the connections
-/// it holds as its own. Each read is served by the admin: its serve span names what was read and
+/// fabric-primary. `node.connections.get` of the admin's exact birth names the admin and exactly the
+/// connections it holds. Each read is served by the admin: its serve span names what was read and
 /// how much. What must NOT happen: a read that needs a control API, a read answered from anything
 /// but the admin's own view, or an unknown mesh answered as an empty list.
 #[test]
@@ -75,24 +77,29 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = std::env::temp_dir().join(format!("node-reads-{}", NodeId::mint()));
         let running = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let me = running.digest.lock().unwrap().clone();
+        // The reads answer from the view the admin holds: it holds itself ready, in both seats.
         tokio::time::timeout(WRONG, async {
-            while running.digest.lock().unwrap().status != MemberStatus::ReadyForTraffic {
+            loop {
+                let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rafka_node_admin_core::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
+                if ready {
+                    return;
+                }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
-        .expect("the admin never published ReadyForTraffic");
-        let me = running.digest.lock().unwrap().clone();
+        .expect("the admin's view never held it ready in both seats");
         let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::new(client.clone(), me.node.name.clone());
-        let nodes = Nodes::new(NodeAdminClient::new(NO_CONTROL_API), carrier.clone());
-        let meshes = Meshes::new(NodeAdminClient::new(NO_CONTROL_API));
-        let fabrics = Fabrics::new(NodeAdminClient::new(NO_CONTROL_API));
+        let nodes = Nodes::new(carrier.clone());
+        let meshes = Meshes::new(carrier.clone());
+        let fabrics = Fabrics::new(carrier.clone());
 
         // node.get: what the admin's view holds of itself, by mesh and by id.
         let by_mesh = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.unwrap_or_else(|e| panic!("node.get of mesh1: {e}"));
-        let view = (running.control.view_now.get().expect("the admin projects its view"))();
+        let view = running.control.topology.read().await.clone();
         let loads = (running.control.loads.get().expect("the admin reads its members' loads"))();
         let held = view.births().find(|n| n.node_id == me.node.node_id).cloned().expect("the admin's view holds the admin");
         assert_eq!(by_mesh.len(), 1, "mesh1 is the admin alone: {by_mesh:#?}");
@@ -127,14 +134,15 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
         assert_eq!((fabric.name.as_str(), fabric.fabric_primary.clone()), ("fabric1", Some(me.node.name.clone())));
         assert_eq!(fabric.meshes.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), held_meshes);
 
-        // node.connections.get of the admin: exactly what it holds as its own.
-        let connections = nodes.connections_get().await.unwrap_or_else(|e| panic!("node.connections.get of the admin: {e}"));
+        // node.connections.get of the admin: exactly what it holds.
+        let birth = ExactBirth { target: NodeTarget::ExactNode(me.node.node_id.clone()), node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() };
+        let connections = nodes.connections_get(&birth).await.unwrap_or_else(|e| panic!("node.connections.get of the admin: {e}"));
         let (complete, own) = {
             let held = running.control.connections.get().expect("the admin holds its connections").lock().unwrap();
             (held.is_complete(), own_ids(&held))
         };
         assert_eq!((connections.node.as_str(), connections.complete), ("mesh1.admin.1", complete));
-        assert_eq!(ids(&connections), own, "the admin's own connections: {connections:#?}");
+        assert_eq!(ids(&connections), own, "the connections the admin holds: {connections:#?}");
 
         running.leave().await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -150,11 +158,11 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
     assert!(served("rdm.node_admin.node.serve.via-connections-get", &|f| at(f, "node", "mesh1.admin.1")), "node.connections.get served by the admin");
 }
 
-/// CONTRACT: an rpc node answers `node.connections.get` itself, with exactly the connections it
-/// holds as its own (its latest Direct per destination and its active Proxies), named by the
-/// minted ids `node.connections.delete` names, its route to its admin among them, connected; the
-/// answer names the node by the name it holds. What must NOT happen: a control API in the path,
-/// or a connection the node does not hold as its own.
+/// CONTRACT: an rpc node answers `node.connections.get` of its exact birth itself, with exactly the
+/// connections it holds (its latest Direct per destination that is connected and its active
+/// Proxies), named by the minted ids `node.connections.delete` names, its route to its admin among
+/// them; the answer names the node by the name it holds. What must NOT happen: a control API in the
+/// path, or a connection the node does not hold.
 #[test]
 fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
     let cap = crate::common::capture("an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names");
@@ -206,15 +214,16 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let (d, _) = book.get(launch.node_id.as_str()).unwrap();
         let rpc = ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };
         let (client, _endpoint) = caller(&[rpc]).await;
-        let nodes = Nodes::new(NodeAdminClient::new(NO_CONTROL_API), BuildCarrier::new(client.clone(), "mesh1.admin.1".parse().unwrap()));
-        let connections = nodes.connections_get().await.unwrap_or_else(|e| panic!("node.connections.get of {name}: {e}"));
+        let nodes = Nodes::new(BuildCarrier::new(client.clone(), "mesh1.admin.1".parse().unwrap()));
+        let birth = ExactBirth { target: NodeTarget::ExactNode(launch.node_id.clone()), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() };
+        let connections = nodes.connections_get(&birth).await.unwrap_or_else(|e| panic!("node.connections.get of {name}: {e}"));
         let (complete, own) = {
             let held = seams.connections.held();
             let held = held.lock().unwrap();
             (held.is_complete(), own_ids(&held))
         };
         assert_eq!((connections.node.as_str(), connections.complete), ("mesh1.rpc.1", complete));
-        assert_eq!(ids(&connections), own, "exactly the node's own connections: {connections:#?}");
+        assert_eq!(ids(&connections), own, "exactly the connections the node holds: {connections:#?}");
         let to_admin = connections.connections.iter().find(|c| c.destination == "mesh1.admin.1").unwrap_or_else(|| panic!("the node's route to its admin is listed: {connections:#?}"));
         assert_eq!((to_admin.source.as_str(), to_admin.kind.as_str(), to_admin.state.as_str()), ("mesh1.rpc.1", "direct", "connected"));
         let _ = std::fs::remove_dir_all(&root);
