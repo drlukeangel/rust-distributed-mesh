@@ -219,8 +219,8 @@ impl DeploymentProvider for Fleet {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id && self.running(s.pid)).map(|s| s.handle.clone())
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id && self.running(s.pid)).map(|s| s.handle.clone()))
     }
 }
 

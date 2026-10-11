@@ -328,6 +328,23 @@ impl ContainerDeploymentProvider {
     }
 
     /// The handle's immutable container id.
+    /// The live container this launch started, by its name.
+    async fn find_by_name(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+        let name = container_name(spec);
+        let state = docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name]).await.ok()?;
+        let mut parts = state.split_whitespace();
+        let (status, pid, id) = (parts.next()?, parts.next()?, parts.next()?.to_string());
+        if status != "running" {
+            return None;
+        }
+        self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
+        Some(self.handle(spec.deployment_id.clone(), id, pid.parse().ok().filter(|p| *p > 0)))
+    }
+
+    fn launched_handles(&self) -> Vec<DeploymentHandle> {
+        self.data_dirs.lock().unwrap().iter().map(|(id, (_, dep))| self.handle(dep.clone(), id.clone(), None)).collect()
+    }
+
     fn container_of<'a>(&self, handle: &'a DeploymentHandle) -> Result<&'a str, DeployError> {
         handle.container.as_deref().ok_or_else(|| DeployError::Terminate {
             deployment: handle.deployment_id.0.clone(),
@@ -491,20 +508,12 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         Ok(())
     }
 
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        let name = container_name(spec);
-        let state = docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name]).await.ok()?;
-        let mut parts = state.split_whitespace();
-        let (status, pid, id) = (parts.next()?, parts.next()?, parts.next()?.to_string());
-        if status != "running" {
-            return None;
-        }
-        self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
-        Some(self.handle(spec.deployment_id.clone(), id, pid.parse().ok().filter(|p| *p > 0)))
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(self.find_by_name(spec).await)
     }
 
     fn launched(&self) -> Vec<DeploymentHandle> {
-        self.data_dirs.lock().unwrap().iter().map(|(id, (_, dep))| self.handle(dep.clone(), id.clone(), None)).collect()
+        self.launched_handles()
     }
 
     /// A container is given its own address on the fabric network before it starts (`--ip`): the

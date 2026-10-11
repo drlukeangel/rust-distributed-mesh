@@ -856,7 +856,7 @@ pub(crate) async fn exit_proof_of(
     // else proves nothing.
     let handle = crate::deployment::provider::adopt(provider, &fact).map_err(|e| format!("the provider refused to adopt its runtime: {e}"))?;
     let inspected = provider.inspect(&handle).await;
-    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0);
+    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0).await.map_err(|e| format!("its exit record cannot be read: {e}"))?;
     match status {
         crate::deployment::provider::DeploymentStatus::Exited { code } => {
             let source = match (&inspected, code) {

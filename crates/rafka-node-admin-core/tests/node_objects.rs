@@ -99,8 +99,8 @@ impl DeploymentProvider for Up {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        None
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(None)
     }
 }
 

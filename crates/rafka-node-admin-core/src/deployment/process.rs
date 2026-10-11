@@ -206,19 +206,8 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         Ok(())
     }
 
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        let raw = std::fs::read_to_string(spec.data_dir.join(DEPLOYMENT_FILE)).ok()?;
-        let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-        if v.get("deployment_id")?.as_str()? != spec.deployment_id.0 {
-            return None;
-        }
-        let pid = u32::try_from(v.get("pid")?.as_u64()?).ok()?;
-        let start = v.get("start").and_then(|s| s.as_u64());
-        #[cfg(unix)]
-        if !Self::runs(pid, &spec.executable) || start.is_some_and(|s| process_start_token(pid) != Some(s)) {
-            return None;
-        }
-        Some(self.handle(spec.deployment_id.clone(), pid, start.or_else(|| process_start_token(pid))))
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(self.find_on_disk(spec))
     }
 
     fn launched(&self) -> Vec<DeploymentHandle> {
@@ -249,6 +238,21 @@ impl DeploymentProvider for ProcessDeploymentProvider {
 }
 
 impl ProcessDeploymentProvider {
+    fn find_on_disk(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+        let raw = std::fs::read_to_string(spec.data_dir.join(DEPLOYMENT_FILE)).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        if v.get("deployment_id")?.as_str()? != spec.deployment_id.0 {
+            return None;
+        }
+        let pid = u32::try_from(v.get("pid")?.as_u64()?).ok()?;
+        let start = v.get("start").and_then(|s| s.as_u64());
+        #[cfg(unix)]
+        if !Self::runs(pid, &spec.executable) || start.is_some_and(|s| process_start_token(pid) != Some(s)) {
+            return None;
+        }
+        Some(self.handle(spec.deployment_id.clone(), pid, start.or_else(|| process_start_token(pid))))
+    }
+
     /// `pid` is alive and runs `executable` (a recycled pid runs something else).
     #[cfg(unix)]
     fn runs(pid: u32, executable: &std::path::Path) -> bool {
@@ -326,5 +330,58 @@ mod tests {
         }
         assert!(matches!(launcher.inspect(&h).await, DeploymentStatus::Exited { .. }));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT: find reads the launch's deployment record on the blocking pool.
+    #[test]
+    fn find_reads_the_deployment_record_on_the_blocking_pool() {
+        let dir = crate::record_store::tempdir("process-find-fifo");
+        let spec = launch(&dir);
+        let fifo = dir.join(DEPLOYMENT_FILE);
+        let (heard, found) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, br#"{"deployment_id":"another","pid":1}"#.to_vec(), Box::pin(async move { ProcessDeploymentProvider::new().find(&spec).await }));
+        assert!(heard, "the runtime stopped while the deployment record was read");
+        assert_eq!(found.unwrap(), None, "another launch's record");
+    }
+
+    /// CONTRACT: a deployment record that cannot be read or parsed is an error naming it, never
+    /// "this launch started nothing" (which would start a second runtime).
+    #[tokio::test]
+    async fn an_unreadable_deployment_record_is_an_error_naming_it() {
+        let dir = crate::record_store::tempdir("process-find-unreadable");
+        std::fs::create_dir_all(dir.join(DEPLOYMENT_FILE)).unwrap();
+        let err = ProcessDeploymentProvider::new().find(&launch(&dir)).await.expect_err("an unreadable record is not an absent one");
+        assert!(err.to_string().contains(DEPLOYMENT_FILE), "{err}");
+        std::fs::remove_dir(dir.join(DEPLOYMENT_FILE)).unwrap();
+        std::fs::write(dir.join(DEPLOYMENT_FILE), b"not json").unwrap();
+        let err = ProcessDeploymentProvider::new().find(&launch(&dir)).await.expect_err("an unparsable record is not an absent one");
+        assert!(err.to_string().contains(DEPLOYMENT_FILE), "{err}");
+    }
+
+    /// CONTRACT: inspecting an adopted process reads /proc on the blocking pool.
+    #[test]
+    fn inspecting_an_adopted_process_waits_on_the_blocking_pool() {
+        let me = std::process::id();
+        let (waited, status) = crate::record_store::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| {
+            Box::pin(async move {
+                let p = ProcessDeploymentProvider::new();
+                let h = p.handle(DeploymentId::mint(), me, process_start_token(me));
+                p.inspect(&h).await
+            })
+        });
+        assert!(waited, "the inspection finished on the runtime's thread while the blocking pool was held");
+        assert_eq!(status, DeploymentStatus::Running);
+    }
+
+    /// CONTRACT: a spawn (its data dir, logs, records and the fork) runs on the blocking pool.
+    #[test]
+    fn a_spawn_waits_on_the_blocking_pool() {
+        let dir = crate::record_store::tempdir("process-spawn-pool");
+        let spec = launch(&dir);
+        let p = std::sync::Arc::new(ProcessDeploymentProvider::new());
+        let spawner = p.clone();
+        let (waited, h) = crate::record_store::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { spawner.spawn(&spec).await }));
+        let h = h.unwrap();
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(p.terminate(&h, TerminationMode::Immediate)).unwrap();
+        assert!(waited, "the spawn finished on the runtime's thread while the blocking pool was held");
     }
 }

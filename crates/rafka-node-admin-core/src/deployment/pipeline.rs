@@ -1272,7 +1272,7 @@ impl DeploymentPipeline<'_> {
         let handle: DeploymentHandle = self
             .step(run, CreateStep::DeployRuntime.name(), async {
                 let spec = spec_for(rafka_mesh_telemetry::current_traceparent());
-                if let Some(h) = self.provider.find(&spec).await {
+                if let Some(h) = self.provider.find(&spec).await.map_err(|e| e.to_string())? {
                     tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
                     return Ok(h);
                 }

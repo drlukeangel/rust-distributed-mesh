@@ -75,7 +75,7 @@ impl DeploymentProvider for Stubborn<'_> {
         }
         self.inner.signal_stop(h).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, rafka_node_admin_core::deployment::provider::DeployError> {
         self.inner.find(spec).await
     }
 }
