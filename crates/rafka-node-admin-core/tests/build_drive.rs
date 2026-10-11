@@ -44,6 +44,17 @@ struct Switch {
     fenced: AtomicBool,
     /// The admin a committed seat transfer named in the fence, when the cell sets one.
     successor: Mutex<Option<String>>,
+    /// Set with `fenced` by a cell that fences while a dispatch is in flight.
+    fence_tx: tokio::sync::watch::Sender<bool>,
+}
+
+impl Switch {
+    /// Fence the Build log now, naming `successor` as the admin the committed transfer seated.
+    fn fence_to(&self, successor: Option<&str>) {
+        *self.successor.lock().unwrap() = successor.map(str::to_string);
+        self.fenced.store(true, Ordering::SeqCst);
+        self.fence_tx.send_replace(true);
+    }
 }
 
 #[async_trait::async_trait]
@@ -57,6 +68,9 @@ impl Gate for Switch {
         } else {
             Ok(())
         }
+    }
+    async fn fence_set(&self) {
+        let _ = self.fence_tx.subscribe().wait_for(|f| *f).await;
     }
 }
 
@@ -97,7 +111,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let ran = Arc::new(Creates(Mutex::new(Vec::new())));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
-    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None) });
+    let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0 });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
     let env = Arc::new(DriveEnv {
         me: me.clone(),
@@ -394,4 +408,46 @@ async fn a_run_that_seats_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it()
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string(), "create-node:mesh2.rpc.1".to_string()]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.1".to_string(), 2)], "mesh2's own primary ran the members");
+}
+
+/// Runs nothing to its end: every operation is held open, and the cell is told when the run began.
+struct HeldOpen {
+    began: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for HeldOpen {
+    async fn run(&self, _: &BuildId, _: u32, _: &BuildOperation) -> Result<(), String> {
+        self.began.notify_one();
+        std::future::pending().await
+    }
+}
+
+/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer"): the committed seat row
+/// is the fence, and when the holder was the fabric-primary it ends the caller's outer stream with
+/// the new seat after the row. The fence is set while the drive waits on the executor's run: the
+/// drive ends `SeatLost` at the fence, without waiting for that run's stream to end, the callers'
+/// streams end naming the successor the transfer committed, and no later attempt is claimed (the
+/// successor resumes the same attempt).
+#[tokio::test]
+async fn a_fence_set_while_the_executor_runs_ends_the_drive_at_the_fence_naming_the_successor() {
+    let held = Arc::new(HeldOpen { began: tokio::sync::Notify::new() });
+    let runner = held.clone();
+    let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, move |_, _| -> Arc<dyn OperationRunner> { runner }).await;
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    let (env, d) = (r.env.clone(), drive.clone());
+    let running = tokio::spawn(async move { env.run(&d).await });
+    held.began.notified().await;
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is running at the executor");
+    r.switch.fence_to(Some("mesh1.admin.2"));
+    let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends at the fence while the executor's run is still open").unwrap();
+    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("yielded the fabric-primary seat")), "the fence ends the drive SeatLost: {end:?}");
+    match next_within(&mut reader).await {
+        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh1.admin.2"), "the stream names the committed successor: {loss:?}"),
+        other => panic!("the reader ends with the seat loss, got {other:?}"),
+    }
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "no later attempt was claimed: the successor resumes attempt 1");
+    assert_eq!(r.dispatch.dispatched.lock().unwrap().len(), 1, "nothing more was dispatched");
 }

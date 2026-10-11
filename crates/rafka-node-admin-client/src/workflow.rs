@@ -94,10 +94,19 @@ struct Row {
     /// The step events the step's `Complete` receipt announces, in order.
     events: &'static [NodeEvent],
     terminal: bool,
+    /// A step the pipeline runs only for some targets (SeatTransfer: a node-admin target only). Its
+    /// absence does not stop the fold when a later step of the workflow has a receipt.
+    only_some_targets: bool,
 }
 
 const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, events: &'static [NodeEvent], terminal: bool) -> Row {
-    Row { operation, step, node_step, events, terminal }
+    Row { operation, step, node_step, events, terminal, only_some_targets: false }
+}
+
+/// The SeatTransfer row under `op`: a node-admin target's seats move to the executor by TakeSeats
+/// before it drains or stops (pipeline `seat_transfer_step`); any other target has no such step.
+const fn seat_transfer_row(operation: &'static str, node_step: NodeStep) -> Row {
+    Row { operation, step: "SeatTransfer", node_step, events: &[], terminal: false, only_some_targets: true }
 }
 
 /// The create leg, in pipeline order, under the operation prefix `op`; `last` is what the
@@ -142,6 +151,7 @@ macro_rules! retire_rows {
         [
             row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false),
             row("retire-node", "NodeRestarting", $first_step, $first, false),
+            seat_transfer_row("retire-node", NodeStep::Drain),
             row("retire-node", "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
             row("retire-node", "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
             row("retire-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
@@ -169,6 +179,7 @@ impl WorkflowKind {
             // The stop's one call drains, cuts the mesh connections and answers `stopped`: its receipts
             // announce all four events, and no runtime exits.
             Self::Stop(_) => vec![
+                seat_transfer_row("stop-node", NodeStep::Stop),
                 row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
                 row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
                 row("stop-node", "Complete", NodeStep::Stop, &[], true),
@@ -275,8 +286,9 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
     let mut frames = Vec::new();
     let mut completed = Vec::new();
     let mut next = None;
-    for r in &rows {
-        let held = latest.iter().find(|(op, st, ..)| r.operation == op.split(':').next().unwrap_or_default() && *st == r.step);
+    let held_of = |r: &Row| latest.iter().find(|(op, st, ..)| r.operation == op.split(':').next().unwrap_or_default() && *st == r.step);
+    for (i, r) in rows.iter().enumerate() {
+        let held = held_of(r);
         match held {
             Some((op, st, _, None)) => {
                 completed.push((op.clone(), st.clone()));
@@ -291,6 +303,8 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
                 frames.push(Frame::Failed { step: r.node_step, reason: reason.clone() });
                 break;
             }
+            // A step this target never runs: a later step's receipt says the workflow went past it.
+            None if r.only_some_targets && rows[i + 1..].iter().any(|later| held_of(later).is_some()) => {}
             None => {
                 if next.is_none() {
                     next = Some((r.operation.to_string(), r.step.to_string()));

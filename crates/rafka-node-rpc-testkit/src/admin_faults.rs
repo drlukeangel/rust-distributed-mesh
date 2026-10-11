@@ -438,6 +438,12 @@ impl FabricStorage for FaultedFabricStorage {
     async fn handovers(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::HandoverRow>, FabricStorageError> {
         self.inner.handovers().await
     }
+    async fn put_seat_transfer(&self, row: &rafka_node_admin_core::fabric_storage::SeatTransferRow) -> Result<(), FabricStorageError> {
+        self.inner.put_seat_transfer(row).await
+    }
+    async fn seat_transfers(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::SeatTransferRow>, FabricStorageError> {
+        self.inner.seat_transfers().await
+    }
 }
 
 /// The deployment provider; its control domain reads foreign while the provider-domain cut is armed.

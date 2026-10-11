@@ -144,10 +144,13 @@ pub struct NodeSelf {
     /// Declare the state this birth entered to its authority (a node-admin of its mesh); `None` for
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
-    /// Run before this birth publishes `Draining` or `Leaving`: the planned hand-over's fence. The
-    /// election hands a seat on at that status, so the old holder fences before it says it (R-A2:
-    /// "the old holder fences claims and transfers committed Build facts BEFORE the new holder
-    /// acts"). `None` for a node that holds no seat.
+    /// Run before this birth publishes `Draining` or `Leaving`: a birth that still holds the
+    /// fabric-primary seat at that point fences its Build log and hands its committed facts on. No
+    /// seat moves at that status (election.rs `holding` ignores status): a drained, stopped,
+    /// restarted or replaced holder's seats moved earlier, by its executor's TakeSeats, whose seat
+    /// row is the fence (node-rpc-envelope.md "TakeSeats"), so for it this finds no seat; it acts
+    /// only for a holder drained with no transfer before it (a mesh leave member, a fabric
+    /// shutdown's final admin). `None` for a node that holds no seat.
     pub yield_seat: Option<YieldSeat>,
     /// Cancelled when `drain-node` or `stop-node` is admitted: the birth is retired, so its
     /// `hydrate_before_ready` hook and any pull it has in flight end.

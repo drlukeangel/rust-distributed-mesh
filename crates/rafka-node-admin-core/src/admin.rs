@@ -537,6 +537,36 @@ impl TopologySink for Records {
     }
 }
 
+/// The executor an attempt's Won claim names: the claim fact this admin's Build log holds, else the
+/// one the fabric-primary's log holds (a claim the Build topic has not delivered here yet is read
+/// from the admin that decided it, `FetchBuildFacts`).
+struct AdminClaims {
+    builds: Arc<dyn BuildStateAdapter>,
+    topology: Arc<RwLock<Topology>>,
+    client: Arc<rafka_node_rpc::NodeRpcClient>,
+}
+
+#[async_trait::async_trait]
+impl crate::fabric_handover::WonClaims for AdminClaims {
+    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, String> {
+        let claim_in = |facts: &[crate::build_state::BuildFact]| {
+            facts.iter().find_map(|f| match f {
+                crate::build_state::BuildFact::Claim(c) if c.build_id.0 == build_id && c.attempt == attempt => Some(c.executor.clone()),
+                _ => None,
+            })
+        };
+        let local = self.builds.facts().await.map_err(|e| format!("this admin's Build log could not be read: {e}"))?;
+        if let Some(e) = claim_in(&local) {
+            return Ok(Some(e));
+        }
+        let Some(fp) = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone()) else { return Ok(None) };
+        let fetched = crate::build_facts_read::fetch_build_facts(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(fp.clone()), &crate::build::BuildId(build_id.to_string()))
+            .await
+            .map_err(|e| format!("the fabric-primary {fp}'s facts of Build {build_id} could not be read: {e}"))?;
+        Ok(claim_in(&fetched.facts))
+    }
+}
+
 /// What an election takes beside the nodes: the seat records this admin holds, and the births
 /// proven gone. A birth is proven gone when its runtime was found exited, when its departure was
 /// heard, or when a later birth announced that it replaced it (`supersedes`). Silence, an
@@ -1202,6 +1232,9 @@ impl crate::build_drive::Gate for SeatGate {
     async fn fence(&self) -> Result<(), crate::build_state::BuildStateError> {
         self.builds.fence_check().await
     }
+    async fn fence_set(&self) {
+        self.builds.fence_set().await
+    }
     fn frozen(&self) -> Option<String> {
         self.shutdown.held().map(|_| "a fabric shutdown froze reconciliation: no claim and no dispatch from here on".to_string())
     }
@@ -1653,6 +1686,8 @@ pub struct MembershipObserver {
     /// This admin's status authority, once it holds a view: a start begins a new cycle of the birth's
     /// declared states.
     pub authority: crate::status_rpc::AuthoritySlot,
+    /// This admin's 0x21 door, once it holds a view: the SeatTransfer step's TakeSeats goes through it.
+    pub handover: crate::fabric_handover::HandoverSlot,
 }
 
 impl MembershipObserver {
@@ -1686,6 +1721,12 @@ pub async fn probed_ready_blocker(client: &rafka_node_rpc::NodeRpcClient, book: 
 
 #[async_trait::async_trait]
 impl NodeObserver for MembershipObserver {
+    async fn transfer_seats(&self, node: &Node, ctx: &crate::deployment::pipeline::CommandContext) -> Result<crate::fabric_handover::SeatTransferOutcome, String> {
+        let Some(door) = self.handover.get().cloned() else {
+            return Err(format!("this admin holds no 0x21 door yet: the seats of {} cannot be transferred", node.name));
+        };
+        door.take_seats(node, &ctx.build_id, ctx.attempt, &ctx.operation).await
+    }
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
         self.book
             .get(node_id.as_str())
@@ -3548,6 +3589,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
                 rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
                 for row in rows {
+                    // A record a seat transfer's own row already holds is durable: nothing more is written for it.
+                    if seats.is_durable(row.seat, &row.holder) {
+                        written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch));
+                        continue;
+                    }
                     if written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch)) {
                         if let Err(e) = storage.put_seat(&row).await {
                             written.remove(&(row.seat, row.holder.mesh.clone(), row.holder.epoch));
@@ -3860,6 +3906,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 })
             })
         },
+        claims: Arc::new(AdminClaims { builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
+        project_view: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
     });
     handover.restore().await?;
     let _ = handover_slot.set(handover.clone());
@@ -3867,7 +3915,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         status_storage: status_storage.clone(),
         provider: provider_dyn.clone(),
         joins: joins.clone(),
-        observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone() }),
+        observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone(), handover: handover_slot.clone() }),
         records: records.clone(),
         builds: builds_dyn.clone(),
         template,
@@ -3931,7 +3979,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 rows
             },
         });
-        let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door }));
+        let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone() }));
         env
     };
 

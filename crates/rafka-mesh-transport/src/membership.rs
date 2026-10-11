@@ -25,6 +25,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
+use rafka_mesh_entity::seat::transfer::CommittedSeat;
 use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, SeatHolder, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -629,6 +630,20 @@ pub enum Frame {
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
     },
+    /// A seat holder committed a Build-driven seat transfer (gossip.md, "Seated-together seat
+    /// transfer"): its one seat row moved every seat in `seats` to `successor`, the executor of the
+    /// drain, stop, restart or replace `op` names. The holder publishes it on its own mesh channel
+    /// and the backbone before it answers SeatsCommitted; peer mesh primaries carry it unchanged.
+    /// Every node-admin holds the seats together; it announces committed leadership and opens no
+    /// executor gate (the SeatsCommitted reply does).
+    SeatedTogether {
+        /// The operation the transfer precedes; its subject is the former holder.
+        op: LifecycleOp,
+        /// The committed holder.
+        successor: SeatHolder,
+        /// Every seat the row moved, at its committed epoch.
+        seats: Vec<CommittedSeat>,
+    },
 }
 
 impl Frame {
@@ -952,6 +967,11 @@ struct HeldSeats {
     /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
+    /// The last seat transfer held together: replayed as one frame while its seats are the records held.
+    together: Option<(LifecycleOp, SeatHolder, Vec<CommittedSeat>)>,
+    /// The records already durable where they were committed (a transfer's own seat row): whoever
+    /// persists the held records writes nothing more for them.
+    durable: std::collections::HashSet<(Seat, String, u64)>,
 }
 
 /// A fabric-primary's contact addresses as its new-fabric-primary announcement states them: the
@@ -1013,6 +1033,51 @@ impl SeatBook {
         }
     }
 
+    /// Hold every seat of one committed transfer together, under one lock: either every seat's
+    /// record supersedes the one held and all are held, or none is (the seats a stale transfer
+    /// names stay as they are). `durable` says the transfer's own row already holds them, so whoever
+    /// persists the held records writes nothing more for them. Returns what happened per seat.
+    pub fn take_together(&self, op: &LifecycleOp, successor: &SeatHolder, seats: &[CommittedSeat], durable: bool) -> Vec<SeatTaken> {
+        let mut held = self.inner.lock().unwrap();
+        let current = |held: &HeldSeats, c: &CommittedSeat| match c.mesh_key() {
+            None => held.fabric.clone(),
+            Some(mesh) => held.meshes.get(mesh).cloned(),
+        };
+        let decided: Vec<SeatTaken> = seats
+            .iter()
+            .map(|c| match current(&held, c) {
+                Some(h) if h == c.record() => SeatTaken::Same,
+                Some(h) if !c.record().supersedes(&h) => SeatTaken::Refused { held: h },
+                previous => SeatTaken::Held { previous },
+            })
+            .collect();
+        if decided.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
+            return seats.iter().map(|c| SeatTaken::Refused { held: current(&held, c).unwrap_or_else(|| c.record()) }).collect();
+        }
+        for c in seats {
+            let record = c.record();
+            match c.mesh_key() {
+                None => held.fabric = Some(record.clone()),
+                Some(mesh) => {
+                    held.meshes.insert(mesh.to_string(), record.clone());
+                }
+            }
+            if durable {
+                held.durable.insert((c.seat.kind(), record.mesh.clone(), record.epoch));
+            }
+        }
+        held.together = Some((op.clone(), successor.clone(), seats.to_vec()));
+        if decided.iter().any(|t| matches!(t, SeatTaken::Held { .. })) {
+            self.changed.send_modify(|v| *v += 1);
+        }
+        decided
+    }
+
+    /// Whether `holder`'s record of `seat` is already durable where it was committed.
+    pub fn is_durable(&self, seat: Seat, holder: &SeatHolder) -> bool {
+        self.inner.lock().unwrap().durable.contains(&(seat, holder.mesh.clone(), holder.epoch))
+    }
+
     /// The fabric seat's held record.
     pub fn fabric(&self) -> Option<SeatHolder> {
         self.inner.lock().unwrap().fabric.clone()
@@ -1065,10 +1130,22 @@ impl SeatBook {
     /// Every record held, as the frames a primary replays to a neighbour that came up.
     pub fn held_frames(&self) -> Vec<Frame> {
         let held = self.inner.lock().unwrap();
-        let mut out: Vec<Frame> = held.meshes.values().map(|h| Frame::Seated { seat: Seat::MeshPrimary, holder: h.clone() }).collect();
+        // The last transfer, while every seat it moved is still the record held, replays as the one
+        // frame: two `Seated` frames would re-open the window between two installs.
+        let together = held.together.as_ref().filter(|(_, _, seats)| {
+            seats.iter().all(|c| match c.mesh_key() {
+                None => held.fabric.as_ref() == Some(&c.record()),
+                Some(mesh) => held.meshes.get(mesh) == Some(&c.record()),
+            })
+        });
+        let in_together = |seat: Seat, h: &SeatHolder| together.is_some_and(|(_, _, seats)| seats.iter().any(|c| c.seat.kind() == seat && &c.record() == h));
+        let mut out: Vec<Frame> = held.meshes.values().filter(|h| !in_together(Seat::MeshPrimary, h)).map(|h| Frame::Seated { seat: Seat::MeshPrimary, holder: h.clone() }).collect();
         out.sort_by_key(|f| if let Frame::Seated { holder, .. } = f { holder.mesh.clone() } else { String::new() });
-        if let Some(h) = &held.fabric {
+        if let Some(h) = held.fabric.as_ref().filter(|h| !in_together(Seat::FabricPrimary, h)) {
             out.push(Frame::Seated { seat: Seat::FabricPrimary, holder: h.clone() });
+        }
+        if let Some((op, successor, seats)) = together {
+            out.push(Frame::SeatedTogether { op: op.clone(), successor: successor.clone(), seats: seats.clone() });
         }
         out
     }
@@ -1128,6 +1205,7 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeRestarting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeStopped { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()) }),
+        Frame::SeatedTogether { op, successor, seats } if op.name.mesh != own_mesh => Some(Frame::SeatedTogether { op, successor, seats }),
         Frame::NodeDraining { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDraining { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeft { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeft { op, forwarded_by: Some(me.to_string()) }),
@@ -1900,6 +1978,10 @@ impl View {
                 self.note_seat(*seat, holder, via);
                 Vec::new()
             }
+            Frame::SeatedTogether { op, successor, seats } => {
+                self.note_seats_together(op, successor, seats, via);
+                Vec::new()
+            }
             Frame::NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base } => {
                 self.note_new_fabric_primary(holder, endpoint_id, *transport_addr, admin_api_base.as_deref(), via);
                 Vec::new()
@@ -2210,6 +2292,18 @@ impl View {
                 .in_scope(|| tracing::info!("a seat record was heard"));
         }
         taken
+    }
+
+    /// Hold the seats of a committed transfer together, naming what it did with them.
+    fn note_seats_together(&self, op: &LifecycleOp, successor: &SeatHolder, seats: &[CommittedSeat], via: &'static str) {
+        let taken = self.book.seats.take_together(op, successor, seats, false);
+        if taken.iter().all(|t| matches!(t, SeatTaken::Same)) {
+            return;
+        }
+        let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) { "refused-not-newer" } else { "held" };
+        let named: Vec<String> = seats.iter().map(|c| format!("{}={}", c.seat.name(), c.record())).collect();
+        tracing::info_span!("rdm.mesh.seat.update.via-seated-together", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, successor = %successor, seats = %named.join(","), via, outcome)
+            .in_scope(|| tracing::info!("a committed seat transfer was heard"));
     }
 
     /// Hold the fabric seat record a new-fabric-primary announcement carries under the seat's own
@@ -3163,6 +3257,20 @@ impl Backbone {
         if seat == Seat::MeshPrimary {
             let _ = self.membership.forward(&frame).await;
         }
+    }
+
+    /// The seat holder that committed a Build-driven seat transfer says so once, from its row: the
+    /// backbone, its own mesh channel and its own view, before it answers SeatsCommitted.
+    pub async fn announce_seats_together(&self, op: LifecycleOp, successor: SeatHolder, seats: Vec<CommittedSeat>) {
+        let named: Vec<String> = seats.iter().map(|c| format!("{}={}", c.seat.name(), c.record())).collect();
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-seated-together", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, successor = %successor, seats = %named.join(","));
+        let frame = Frame::SeatedTogether { op, successor, seats };
+        let send = async {
+            let _ = self.channel.broadcast(&frame).await;
+            let _ = self.membership.forward(&frame).await;
+            let _ = self.membership.view.take(&frame, &self.fabric, "own");
+        };
+        tracing::Instrument::instrument(send, span).await
     }
 
     /// The committed fabric-primary announces itself and its contacts on the backbone, once, after

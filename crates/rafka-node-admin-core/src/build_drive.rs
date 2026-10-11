@@ -49,6 +49,11 @@ pub trait Gate: Send + Sync {
     fn frozen(&self) -> Option<String> {
         None
     }
+    /// Resolves once the Build log's seat fence is set (never, for a gate with no fence): a drive
+    /// waiting on an executor's run ends at the fence, not when that run's stream does.
+    async fn fence_set(&self) {
+        std::future::pending::<()>().await
+    }
 }
 
 /// A gate that is always open: a fixture with no membership and no seat fence.
@@ -441,6 +446,9 @@ enum Inner {
     Refused(BuildReply),
     Unreached(String),
     Broke(String),
+    /// The Build log's seat fence was set while the executor's run was open: this admin's authority
+    /// ended at the fence, and the drive ends there without waiting for the run's stream.
+    Fenced,
 }
 
 impl DriveEnv {
@@ -621,6 +629,14 @@ impl DriveEnv {
                     self.blocked(drive, attempt, "", "dispatch", &why);
                     return self.stalled(drive, why);
                 }
+                Inner::Fenced => {
+                    dspan.record("outcome", "fenced");
+                    // The fence is sticky: `may_act` ends the drive SeatLost naming the new holder.
+                    return match self.may_act(drive).await {
+                        Some(end) => end,
+                        None => self.stalled(drive, format!("{}: attempt {attempt} of Build {id} stopped at a seat fence that the gate no longer reports", self.me)),
+                    };
+                }
                 Inner::Unreached(why) | Inner::Broke(why) => {
                     let (class, detail) = ("lost", why);
                     dspan.record("outcome", "executor-lost");
@@ -715,22 +731,25 @@ impl DriveEnv {
         drive.note_first_attempt(p.attempt);
         let context = self.door.contexts.get(id, p.attempt).await.ok().flatten().unwrap_or_default();
         let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %self.me, outcome = tracing::field::Empty);
-        match self.run_inner(drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
+        let why = match self.run_inner(drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
             Inner::Terminal(BuildReply::Complete { .. }) => {
                 span.record("outcome", "complete");
-                None
+                return None;
             }
-            other => {
-                let why = match other {
-                    Inner::Terminal(t) => format!("it answered {}", t.name()),
-                    Inner::Refused(r) => format!("it refused: {}", describe(&r)),
-                    Inner::Unreached(w) | Inner::Broke(w) => w,
-                };
-                span.record("outcome", "executor-lost");
-                drive.finish(BuildReply::NotReady { reason: format!("{}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", self.me, p.attempt) });
-                Some(DriveEnd::Terminal)
+            Inner::Fenced => {
+                span.record("outcome", "fenced");
+                return Some(match self.may_act(drive).await {
+                    Some(end) => end,
+                    None => self.stalled(drive, format!("{}: the replay of Build {id} stopped at a seat fence that the gate no longer reports", self.me)),
+                });
             }
-        }
+            Inner::Terminal(t) => format!("it answered {}", t.name()),
+            Inner::Refused(r) => format!("it refused: {}", describe(&r)),
+            Inner::Unreached(w) | Inner::Broke(w) => w,
+        };
+        span.record("outcome", "executor-lost");
+        drive.finish(BuildReply::NotReady { reason: format!("{}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", self.me, p.attempt) });
+        Some(DriveEnd::Terminal)
     }
 
     /// A `Step` frame new to `drive`, live from the executor or read from a receipt (a completed
@@ -762,13 +781,22 @@ impl DriveEnv {
             Dispatched::Unreached(why) => return Inner::Unreached(why),
         };
         loop {
-            match stream.next().await {
+            // Only the wait for the next item races the fence: a frame in hand is handled whole.
+            let item = tokio::select! {
+                biased;
+                _ = self.gate.fence_set() => return Inner::Fenced,
+                item = stream.next() => item,
+            };
+            match item {
                 InnerItem::Frame(f) => match f {
                     BuildReply::Step { .. } => self.step(drive, f, None).await,
                     BuildReply::Blocked { .. } => {
                         drive.push(f);
                     }
                     t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),
+                    // The executor took the fabric-primary seat during the run: this admin's seat row
+                    // fenced it, and the drive ends at that fence.
+                    BuildReply::SeatMoved { .. } => return Inner::Fenced,
                     other => return Inner::Refused(other),
                 },
                 InnerItem::Ended => return Inner::Broke("the inner stream ended without its terminal".into()),

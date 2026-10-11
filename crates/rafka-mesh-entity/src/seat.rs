@@ -66,6 +66,90 @@ impl std::fmt::Display for SeatHolder {
     }
 }
 
+/// The seat transfer's own wire types (node-rpc-envelope.md, "Fabric-primary-handover, op `0x21`"
+/// and "TakeSeats: Build-driven seat transfer"; gossip.md "Seated-together seat transfer"): the
+/// shapes the 0x21 family and the `SeatedTogether` frame carry, in the doc's field order and enum
+/// positions. They convert to and from the seat records ([`super::Seat`], [`SeatHolder`]) at the
+/// edges; nothing else reads them.
+pub mod transfer {
+    use super::SeatHolder;
+    use crate::ids::{IncarnationId, NodeId};
+    use serde::{Deserialize, Serialize};
+
+    /// An exact birth named by a handover or a seat transfer: its mesh, node and incarnation.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub struct HandoverBirth {
+        /// The mesh the birth belongs to.
+        pub mesh: String,
+        /// The birth's node.
+        pub node_id: NodeId,
+        /// The birth's incarnation.
+        pub incarnation: IncarnationId,
+    }
+
+    /// A seat as a transfer names it. The discriminants are the wire positions.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub enum Seat {
+        /// The fabric primary.
+        FabricPrimary,
+        /// The node-admin primary of `mesh`.
+        MeshPrimary {
+            /// The mesh whose primary seat it is.
+            mesh: String,
+        },
+    }
+
+    impl Seat {
+        /// The transfer's name for the record seat `seat` of `mesh`.
+        pub fn of(seat: super::Seat, mesh: &str) -> Self {
+            match seat {
+                super::Seat::FabricPrimary => Self::FabricPrimary,
+                super::Seat::MeshPrimary => Self::MeshPrimary { mesh: mesh.to_string() },
+            }
+        }
+        /// The record seat it names.
+        pub fn kind(&self) -> super::Seat {
+            match self {
+                Self::FabricPrimary => super::Seat::FabricPrimary,
+                Self::MeshPrimary { .. } => super::Seat::MeshPrimary,
+            }
+        }
+        /// The seat's name as it appears in spans and evidence.
+        pub fn name(&self) -> &'static str {
+            self.kind().name()
+        }
+    }
+
+    /// One seat a transfer committed: the seat, its committed holder's exact birth and the epoch.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub struct CommittedSeat {
+        /// The seat that moved.
+        pub seat: Seat,
+        /// Its committed holder.
+        pub holder: HandoverBirth,
+        /// The epoch the transfer committed.
+        pub epoch: u64,
+    }
+
+    impl CommittedSeat {
+        /// The committed seat of the record `holder` holds for `seat`.
+        pub fn of(seat: super::Seat, holder: &SeatHolder) -> Self {
+            Self { seat: Seat::of(seat, &holder.mesh), holder: HandoverBirth { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation.clone() }, epoch: holder.epoch }
+        }
+        /// The seat record it commits.
+        pub fn record(&self) -> SeatHolder {
+            SeatHolder { mesh: self.holder.mesh.clone(), node_id: self.holder.node_id.clone(), incarnation: self.holder.incarnation.clone(), epoch: self.epoch }
+        }
+        /// The mesh the record is keyed by: the seat's mesh for a mesh primary, none for the fabric's.
+        pub fn mesh_key(&self) -> Option<&str> {
+            match &self.seat {
+                Seat::MeshPrimary { mesh } => Some(mesh),
+                Seat::FabricPrimary => None,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

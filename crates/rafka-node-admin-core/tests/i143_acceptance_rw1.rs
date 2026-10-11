@@ -143,6 +143,11 @@ fn frames() -> Vec<Frame> {
         Frame::Seated { seat: rafka_mesh_entity::Seat::MeshPrimary, holder: rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 } },
         Frame::Concern { seat: rafka_mesh_entity::Seat::FabricPrimary, node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
         Frame::NewFabricPrimary { holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
+        Frame::SeatedTogether {
+            op: op("replace-node:mesh2.admin.1"),
+            successor: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 },
+            seats: [rafka_mesh_entity::Seat::MeshPrimary, rafka_mesh_entity::Seat::FabricPrimary].into_iter().map(|seat| rafka_mesh_entity::seat::transfer::CommittedSeat::of(seat, &rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 })).collect(),
+        },
         Frame::StateCommitting { hook: round_hook("commit-state"), forwarded_by: None },
         Frame::StateCommitted { hook: round_hook("commit-state"), forwarded_by: Some("mesh2.admin.1".into()) },
         Frame::TrafficOpening { hook: round_hook("open-traffic"), forwarded_by: None },
@@ -241,6 +246,17 @@ fn facts() -> Vec<BuildFact> {
     }
     out.push(step(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), Some(evidence(Some("/var/lib/rafka/mesh2.rpc.1")))));
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": "Pending" }))));
+    // The SeatTransfer step commits its outcome, every arm of it.
+    {
+        use rafka_node_admin_core::fabric_handover::SeatTransferOutcome;
+        let seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> = [rafka_mesh_entity::Seat::MeshPrimary, rafka_mesh_entity::Seat::FabricPrimary]
+            .into_iter()
+            .map(|seat| rafka_mesh_entity::seat::transfer::CommittedSeat::of(seat, &rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 }))
+            .collect();
+        for o in [SeatTransferOutcome::NotAHolder, SeatTransferOutcome::Committed { seats: seats.clone() }, SeatTransferOutcome::HeldRecords { seats }, SeatTransferOutcome::NoTransfer, SeatTransferOutcome::OtherMesh { holder_mesh: "mesh1".into() }] {
+            out.push(step(rafka_node_admin_core::deployment::pipeline::RetireStep::SeatTransfer.name(), Some(to_json(&o))));
+        }
+    }
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": null, "reason": "not a mesh's first admin" }))));
     for s in [RetireStep::NodeDeleting, RetireStep::NodeRestarting, RetireStep::NodeDeleted] {
         out.push(step(s.name(), Some(to_json(&op("retire-node:mesh2.rpc.1")))));
