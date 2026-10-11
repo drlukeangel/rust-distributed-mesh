@@ -411,11 +411,12 @@ pub enum BuildReply {
         /// What holds the number.
         detail: String,
     },
-    /// Refusal: the receiver yielded the fabric-primary seat and dispatches nothing.
+    /// Refusal: the committed fabric seat record moved the seat off the receiver, which dispatches
+    /// nothing.
     Fenced {
-        /// The admin that yielded.
+        /// The admin whose Build log is fenced.
         node: String,
-        /// Why it yielded.
+        /// The record that moved the seat, in words.
         by: String,
     },
     /// Refusal: the Build cannot leave history.

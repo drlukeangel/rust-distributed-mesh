@@ -245,7 +245,13 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     // (via-material-change, proven per event in rafka-mesh-transport round_wake; another wake of the same
     // round may win the race) and publishes a new mesh1 version carrying the overlay, so EVERY member it
     // stops, the other node-admin included, is held Leaving and parked, not routable, at a mesh2 admin
-    // (backbone) and a mesh2 ordinary node (mesh channel, forwarded by mesh2's primary).
+    // (backbone) and a mesh2 ordinary node, from mesh2's primary: forwarded on the mesh channel, or,
+    // when the ordinary node finds a version gap in what was forwarded, the entry pull that closes
+    // it (gossip.md, the entry pull): a topology read its own mesh primary serves. The pull's span
+    // (`rdm.mesh.entry.update.via-top-up`) is emitted once its install is done, so the first one on
+    // that node at or after the held state is the read that installed it; it must name mesh2's
+    // primary as the server and mesh1 as installed.
+    let top_ups = named(&spans, "rdm.mesh.entry.update.via-top-up");
     let stopped_members: Vec<String> = ["mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string()].into_iter().chain(tier2.iter().map(|n| n.to_string())).collect();
     let published_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped");
     let stopped_at = |m: &str| -> u64 {
@@ -259,7 +265,20 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
         assert!(mesh1_publications.iter().any(|p| *p >= at), "mesh1's primary published a new version after {m}'s NodeStopped at {at}: publications {mesh1_publications:?}");
         let held: Vec<&Value> = leaving_states.iter().copied().filter(|sp| s(&sp["attributes"]["member"]) == *m && parked(sp)).collect();
         assert!(held.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.admin.") && sp["attributes"]["channel"] == "backbone"), "a mesh2 admin held {m} parked from mesh1's backbone Members.in_flight: {held:?}");
-        assert!(held.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held {m} parked from what mesh2's primary forwarded: {held:?}");
+        let from_mesh2_primary = |sp: &&Value| -> bool {
+            let node = s(&sp["attributes"]["node"]);
+            if !node.starts_with("mesh2.rpc.") {
+                return false;
+            }
+            match s(&sp["attributes"]["channel"]).as_str() {
+                "mesh-channel" => true,
+                "topology-read" => top_ups.iter().filter(|t| s(&t["attributes"]["node"]) == node && start_ns(t) >= start_ns(sp)).min_by_key(|t| start_ns(t)).is_some_and(|t| {
+                    s(&t["attributes"]["served_by"]).starts_with("mesh2.admin.") && s(&t["attributes"]["installed"]).split(',').any(|i| i.starts_with("mesh1@"))
+                }),
+                _ => false,
+            }
+        };
+        assert!(held.iter().any(from_mesh2_primary), "a mesh2 ordinary node held {m} parked from mesh2's primary (its mesh channel, or the entry pull it served): {held:?}");
     }
     let left = heard("via-mesh-left");
     assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a mesh2 node held mesh1's births departed on mesh-left: {left:?}");

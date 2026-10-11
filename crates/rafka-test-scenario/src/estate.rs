@@ -306,7 +306,7 @@ pub fn binary(name: &str) -> PathBuf {
 fn package_of(name: &str) -> &'static str {
     match name {
         "rafka-node-admin" => "rafka-node-admin-core",
-        "rafka-rpc-probe" | "rafka-rpc-node" => "rafka-node-rpc-testkit",
+        "rafka-rpc-probe" | "rafka-rpc-node" | "faulted-node-admin" => "rafka-node-rpc-testkit",
         "rafka-broker" => "rafka-broker",
         "rafka-gateway" => "rafka-gateway",
         "rafka-compute" => "rafka-compute",
@@ -1539,8 +1539,12 @@ mod spawn_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("silent-admin.sh");
         let pid_file = dir.join("pid");
-        std::fs::write(&script, format!("#!/bin/sh\necho $$ > {}\nexec sleep 60 >/dev/null\n", pid_file.display())).unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        // The script is written by a child process, never through a write fd of this one: a fork by
+        // another test's thread (the reaper cell spawns) inherits every fd this process holds open
+        // until its exec, and an executable with a write fd open anywhere refuses exec (ETXTBSY).
+        let body = format!("#!/bin/sh\necho $$ > {}\nexec sleep 60 >/dev/null\n", pid_file.display());
+        let wrote = Command::new("sh").args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "write-script", &body, &script.display().to_string()]).status().unwrap();
+        assert!(wrote.success(), "the silent admin's script is written");
         let err = std::panic::catch_unwind(|| spawn_admin(&script, &[], "the silent admin")).expect_err("refused");
         let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
         assert!(msg.contains("the silent admin never advertised RDM_NODE_ADMIN_API_BASE"), "{msg}");

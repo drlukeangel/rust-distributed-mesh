@@ -311,7 +311,7 @@ fn fabric_primary_of(t: &Topology) -> Option<String> {
 /// its Build door and driven from the committed seat; once the handover is confirmed, the
 /// incumbent's view names the successor. What must NOT happen: the successor answering Applied
 /// while its view still names the incumbent (its Build door then refuses the resubmit
-/// not-fabric-primary, naming the admin that yielded).
+/// not-fabric-primary, naming the incumbent the seat moved from).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_successor_answers_the_command_with_its_view_naming_it_the_fabric_primary() {
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;

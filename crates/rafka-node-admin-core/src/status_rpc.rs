@@ -348,6 +348,7 @@ impl StatusAuthority {
             "rdm.node_admin.status.update.via-declaration",
             node = %self.me,
             op = req.op(),
+            state = %declared_state(req),
             sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(),
             outcome = reply.name(),
             detail = %detail(&reply),
@@ -518,6 +519,7 @@ impl StatusAuthority {
             "rdm.node_admin.status.update.via-declaration",
             node = %self.me,
             op = "apply-mesh-state",
+            state = "Pending",
             sender = %self.me,
             outcome = reply.name(),
             detail = "self-applied: initial fabric bootstrap, no upstream authority",
@@ -684,6 +686,15 @@ pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -
             Ok(reply)
         }
     })
+}
+
+/// The state a declaration declares (`DeclareNodeState`, `DeclareMeshState`); empty for any other op.
+fn declared_state(req: &StatusRequest) -> String {
+    match req {
+        StatusRequest::DeclareNodeState { state, .. } => format!("{state:?}"),
+        StatusRequest::DeclareMeshState { state, .. } => format!("{state:?}"),
+        _ => String::new(),
+    }
 }
 
 fn detail(r: &StatusReply) -> String {

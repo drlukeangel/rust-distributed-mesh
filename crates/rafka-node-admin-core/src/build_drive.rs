@@ -14,9 +14,11 @@
 //! projection: a successor fabric-primary resumes from it, and the attempt it finds claimed it
 //! dispatches again (start-or-reattach), so no completed step runs twice.
 //!
-//! Before every claim and every dispatch the drive passes three gates: this admin holds the seat
-//! in its view, its view may authorize anything at all (a cut-off view dispatches nothing), and
-//! the Build log's sticky seat fence is not set (a fabric-primary that yielded dispatches nothing).
+//! Before every claim and every dispatch the drive passes three gates: the Build log's sticky seat
+//! fence is not set (a fabric-primary whose committed seat record names another live birth
+//! dispatches nothing), this admin holds the seat in its view, and its view may authorize anything
+//! at all (a cut-off view dispatches nothing). A seat loss names the holder the committed seat
+//! record names, never the view's.
 //! An executor that cannot be reached is replaced only on proof of its departure, never on
 //! silence.
 
@@ -42,8 +44,10 @@ pub trait Gate: Send + Sync {
     /// Whether this admin's view may authorize anything now: not cut off, and not within one
     /// silence window of healing (`CutOff::authorizes`).
     fn authorizes(&self) -> bool;
-    /// The seat fence of the Build log: refused by name once this admin yielded the seat.
-    async fn fence(&self) -> Result<(), BuildStateError>;
+    /// The seat fence of the Build log, read from the committed fabric seat record: refused by name
+    /// once the record names another live birth; otherwise the path.name of the birth it names when
+    /// that is this birth, `None` when it names none or a birth proven gone.
+    async fn fence(&self) -> Result<Option<String>, BuildStateError>;
     /// Why reconciliation is frozen (a fabric shutdown is in force), when it is: no claim and no
     /// dispatch from here on.
     fn frozen(&self) -> Option<String> {
@@ -64,8 +68,8 @@ impl Gate for OpenGate {
     fn authorizes(&self) -> bool {
         true
     }
-    async fn fence(&self) -> Result<(), BuildStateError> {
-        Ok(())
+    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+        Ok(None)
     }
 }
 
@@ -122,13 +126,14 @@ pub trait Dispatcher: Send + Sync {
     async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
 }
 
-/// Why a drive ended without the seat: what the old seat says, and the admin its view names as the
-/// seat's holder now.
+/// Why a drive ended without the seat: what the old seat says, and the admin the committed fabric
+/// seat record names as the seat's holder now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatLoss {
     /// Why this admin may not act as the fabric-primary.
     pub why: String,
-    /// The admin (path.name) that holds the seat now, when this admin's view names one.
+    /// The admin (path.name) the committed fabric seat record names as the holder, when it names a
+    /// live birth whose path.name is known here.
     pub to: Option<String>,
 }
 
@@ -472,18 +477,21 @@ impl DriveEnv {
     /// The committed fabric seat record is read first: it is the fence (node-rpc-envelope.md
     /// TakeSeats), and it names the holder this admin's authority ended at, while the view follows it.
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
-        if let Err(e) = self.gate.fence().await {
-            let why = e.to_string();
-            // The record names the holder (its path.name from the digest book); none only when no
-            // digest of that birth is held, and the reason says so.
-            let to = match e {
-                BuildStateError::Fenced { to, .. } => to,
-                _ => None,
-            };
-            tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
-            drive.lose_seat(SeatLoss { why: why.clone(), to });
-            return Some(DriveEnd::SeatLost(why));
-        }
+        let record_holder = match self.gate.fence().await {
+            Ok(holder) => holder,
+            Err(e) => {
+                let why = e.to_string();
+                // The record names the holder (its path.name from the digest book); none only when no
+                // digest of that birth is held, and the reason says so.
+                let to = match e {
+                    BuildStateError::Fenced { to, .. } => to,
+                    _ => None,
+                };
+                tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
+                drive.lose_seat(SeatLoss { why: why.clone(), to });
+                return Some(DriveEnd::SeatLost(why));
+            }
+        };
         // The seat is this admin's when the view's holder is the birth it was born as (its node id):
         // another birth at the same path.name (a successor, a retired birth) is not this admin.
         let (held, seat) = {
@@ -491,10 +499,13 @@ impl DriveEnv {
             (t.holds_fabric_seat(&self.door.node_id), t.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone())))
         };
         if !held {
+            // Where the seat is comes from the committed seat record, never the view: past the
+            // fence it names this birth, none, or a birth proven gone (no holder).
             let shows = seat.as_ref().map(|(name, id)| format!("{name} ({id})")).unwrap_or_else(|| "none".into());
-            let why = format!("{} ({}) does not hold the fabric-primary seat in its view (it shows {shows})", self.me, self.door.node_id);
-            tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id, node = %self.me, detail = %why).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
-            drive.lose_seat(SeatLoss { why: why.clone(), to: seat.map(|(name, _)| name.to_string()) });
+            let names = record_holder.as_deref().unwrap_or("none");
+            let why = format!("{} ({}) does not hold the fabric-primary seat in its view (it shows {shows}); the committed fabric seat record names {names}", self.me, self.door.node_id);
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id, node = %self.me, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
+            drive.lose_seat(SeatLoss { why: why.clone(), to: record_holder });
             return Some(DriveEnd::SeatLost(why));
         }
         if let Some(why) = self.gate.frozen() {
