@@ -755,7 +755,7 @@ mod tests {
     /// drops it; a recovery's new node claiming over a `Deleted` row of another node, or a blind put
     /// over another node's row, leaves that node with no entry. A node that never held a row has
     /// none; a claim of a key the node already holds names it (a write that ended between the row
-    /// file and its entry). What must NOT happen: an entry naming a key whose row another node
+    /// file and its entry); a put of the row a node already holds writes no entry. What must NOT happen: an entry naming a key whose row another node
     /// holds, or a row its node holds that no entry names.
     #[tokio::test]
     async fn the_node_rows_id_index_names_exactly_the_row_each_node_holds() {
@@ -786,6 +786,17 @@ mod tests {
             assert_eq!((n.node_row_name("mesh1", &new.node_id).await.unwrap(), n.node_row_name("mesh1", &over.node_id).await.unwrap()), (None, Some(over.name.clone())));
         }
         assert_eq!(keys(&root.nodes("mesh1").join("ids")).len(), 1, "on disk, one entry per node that holds a row");
+        // A put of the row a node already holds at its key (a status change: the Deleted row of a
+        // delete) writes the row and nothing of the index: its entry already names the key, and a
+        // durable write that changes nothing is a second fsync on every such put.
+        let held = row("mesh1.rpc.4");
+        assert_eq!(file.claim_node_row(&held).await.unwrap(), Ok(Claimed::Written));
+        let entry = root.nodes("mesh1").join("ids").join(format!("{}.json", held.node_id));
+        let inode = |p: &std::path::Path| std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(p).unwrap());
+        let before = inode(&entry);
+        file.put_node_row(&NodeRow { status: crate::model::NodeStatus::Deleted, ..held.clone() }).await.unwrap();
+        assert_eq!(inode(&entry), before, "the entry naming the key is not written again");
+        assert_eq!(file.node_row_name("mesh1", &held.node_id).await.unwrap(), Some(held.name.clone()));
         // A write that ended between the row and its entry (two files): the node's claim of the key
         // it holds names it, so the retried move that claims it again leaves no row unnamed.
         let torn = row("mesh1.rpc.3");
