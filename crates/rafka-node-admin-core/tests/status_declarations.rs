@@ -813,36 +813,69 @@ fn update_node(b: &Birth, name: &str) -> StatusRequest {
     StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into() }
 }
 
-/// CONTRACT (R13; node-rpc-envelope.md "Meta and config": node.update is one write path at the
-/// node's mesh-primary): a caller's `UpdateNode` renaming a live successor `mesh1.rpc.3.new` to
-/// `mesh1.rpc.3` (nothing routed to it) at mesh1's primary ends `NodeUpdated` naming the exact
-/// birth; before it answered, the row at `mesh1.rpc.3` holds the node (claimed insert-and-fail in
-/// the store adapter, the `.new` key released) and the birth was told `ApplyNodeName` exactly once;
-/// the mesh-primary's view holds the node at `mesh1.rpc.3`; one
-/// `rdm.node_admin.node.update.via-update-node` span says `node-updated`, the apply `applied`.
-/// What must NOT happen: the request refused as not the admin's to decide, the row unwritten, the
-/// birth told nothing, or `NodeUpdated` before the apply answered.
+/// CONTRACT (R-CR1a, R-CR2, rulings 2026-10-11: a node changes its name only when it is not
+/// ready-for-traffic and holds no connection, stopped or drained with `node.connections.deleted`; the
+/// node's mesh-primary refuses any other rename by name): a caller's `UpdateNode` renaming the live,
+/// ready-for-traffic successor `mesh1.rpc.3.new` to `mesh1.rpc.3` at mesh1's primary is refused `Busy`
+/// naming the held status and that the mesh-primary holds no `node.connections.deleted` for the birth.
+/// Nothing is claimed (no row at `mesh1.rpc.3`), the view keeps the birth at `.new`, and the birth is
+/// told nothing. One `rdm.node_admin.node.update.via-update-node` span says `busy` with
+/// `traffic=ReadyForTraffic` and `connections=none-deleted`. What must NOT happen: the row written,
+/// the birth told `ApplyNodeName`, or `NodeUpdated`.
 #[test]
-fn a_rename_through_the_mesh_primary_writes_the_row_then_the_live_node_applies_it() {
+fn a_ready_for_traffic_nodes_rename_is_refused_by_name_at_the_mesh_primary_and_nothing_is_claimed_or_told() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
         let (succ, node) = successor_new(&rig).await;
         let reply = reply(&call(&rig, &b["admin2"], &update_node(&succ, "mesh1.rpc.3")).await);
-        assert_eq!(reply, StatusReply::NodeUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
+        assert!(
+            matches!(&reply, StatusReply::Busy { reason } if reason.contains("ReadyForTraffic") && reason.contains("no node.connections.deleted")),
+            "a ready-for-traffic node keeps its name, refused naming its held status and the missing node.connections.deleted: {reply:?}"
+        );
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
-        assert_eq!(row.node_id, succ.node.node_id, "the row at mesh1.rpc.3 is the successor");
-        assert_eq!(rig.nodes.node_row_at(&succ.node.name).await.unwrap(), None, "the .new key is released");
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }]);
-        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == succ.node.node_id && n.name == taken), "the mesh-primary's view moved with the row");
+        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
+        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == succ.node.node_id && n.name == succ.node.name), "the view keeps the birth at its name");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-update-node");
     assert_eq!(spans.len(), 1, "{spans:?}");
     let (trace_id, attrs) = &spans[0];
-    assert_eq!(attrs.get("outcome").map(String::as_str), Some("node-updated"), "{attrs:?}");
-    assert_eq!(attrs.get("answered").map(String::as_str), Some("applied"), "{attrs:?}");
-    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-update-node from=mesh1.rpc.3.new to=mesh1.rpc.3 answered=applied outcome=node-updated");
+    assert_eq!(
+        (attrs.get("outcome").map(String::as_str), attrs.get("traffic").map(String::as_str), attrs.get("connections").map(String::as_str), attrs.get("answered")),
+        (Some("busy"), Some("ReadyForTraffic"), Some("none-deleted"), None),
+        "{attrs:?}"
+    );
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-update-node from=mesh1.rpc.3.new to=mesh1.rpc.3 traffic=ReadyForTraffic connections=none-deleted outcome=busy");
+}
+
+/// CONTRACT (R-CR1a, R-CR2: drained, then `node.connections.delete` has completed): the successor
+/// `mesh1.rpc.3.new`, drained (Draining in the mesh-primary's view, its declared state Draining), is
+/// refused the rename `Busy` naming its held status and that no `node.connections.deleted` is held for
+/// the birth, nothing claimed and nothing told. What must NOT happen: a drained node that still holds
+/// its connections takes another name.
+#[test]
+fn a_drained_nodes_rename_is_refused_until_node_connections_deleted_then_applied() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (succ, node) = successor_new(&rig).await;
+        if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == succ.node.node_id) {
+            (n.status, n.declared) = (NodeStatus::Draining, Some("Draining".into()));
+        }
+        let taken: PathName = "mesh1.rpc.3".parse().unwrap();
+        let refused = reply(&call(&rig, &b["admin2"], &update_node(&succ, "mesh1.rpc.3")).await);
+        assert!(
+            matches!(&refused, StatusReply::Busy { reason } if reason.contains("Draining") && reason.contains("no node.connections.deleted")),
+            "a drained node whose connections were not deleted keeps its name: {refused:?}"
+        );
+        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
+        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-update-node");
+    let outcomes: Vec<_> = spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("connections").cloned().unwrap_or_default())).collect();
+    assert_eq!(outcomes, vec![("busy".to_string(), "none-deleted".to_string())], "{spans:?}");
+    eprintln!("trace {}: rdm.node_admin.node.update.via-update-node outcomes={outcomes:?}", spans[0].0);
 }
 
 /// CONTRACT (R13 step 3): a rename into a name another node holds is refused `NameHeld { by }` by
