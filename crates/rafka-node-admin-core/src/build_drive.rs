@@ -49,6 +49,11 @@ pub trait Gate: Send + Sync {
     fn frozen(&self) -> Option<String> {
         None
     }
+    /// Resolves once the Build log's seat fence is set (never, for a gate with no fence): a drive
+    /// waiting on an executor's run ends at the fence, not when that run's stream does.
+    async fn fence_set(&self) {
+        std::future::pending::<()>().await
+    }
 }
 
 /// A gate that is always open: a fixture with no membership and no seat fence.
