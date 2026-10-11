@@ -189,7 +189,7 @@ fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> Com
     match r {
         Ok(StatusReply::Applied) => CommandAdmission::Admitted,
         Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted,
-        Ok(StatusReply::Stopped { receipt }) => CommandAdmission::Stopped { receipt },
+        Ok(StatusReply::Stopped { receipt, boundary }) => CommandAdmission::Stopped { receipt, boundary },
         Ok(StatusReply::Started) => CommandAdmission::Started,
         Ok(StatusReply::StartFailed { step, reason }) => CommandAdmission::StartFailed { step, reason },
         Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },

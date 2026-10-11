@@ -89,7 +89,7 @@ fn replies_match_the_frozen_thirty_three_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "0e02"),
         (Unauthorized { reason: "u".into() }, "0f0175"),
         (RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, "1007617474656d707401310132"),
-        (Stopped { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
+        (Stopped { receipt: DrainReceipt::Established { in_flight: 0 }, boundary: 15 }, "1100000f"),
         (Started, "12"),
         (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
         (CurrentParked { node_id: node(), incarnation: birth() }, "140c303132333435363738396162056269727468"),
@@ -115,14 +115,15 @@ fn replies_match_the_frozen_thirty_three_variant_wire_schema() {
 }
 
 /// CONTRACT: the drain receipt a `Stopped` carries is frozen: `Established` is variant 0, `Deadline` variant 1,
-/// each with its count as a varint.
+/// each with its count as a varint; the stop boundary (R-HB1, the node's last `digest_seq`) follows it
+/// as a varint, the reply's last field.
 #[test]
 fn a_left_reply_carries_its_drain_receipt_in_frozen_bytes() {
     use StatusReply::Stopped;
     for (reply, hex) in [
-        (Stopped { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
-        (Stopped { receipt: DrainReceipt::Established { in_flight: 3 } }, "110003"),
-        (Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 300 } }, "1101ac02"),
+        (Stopped { receipt: DrainReceipt::Established { in_flight: 0 }, boundary: 15 }, "1100000f"),
+        (Stopped { receipt: DrainReceipt::Established { in_flight: 3 }, boundary: 300 }, "110003ac02"),
+        (Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 300 }, boundary: 7 }, "1101ac0207"),
     ] {
         let expected = bytes(hex);
         assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");

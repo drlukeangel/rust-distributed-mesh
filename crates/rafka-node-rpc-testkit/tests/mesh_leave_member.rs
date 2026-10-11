@@ -32,7 +32,7 @@ impl LifecycleEvents for Recorder {
     async fn restarting(&self, op: &LifecycleOp) {
         self.1.lock().unwrap().push(format!("NodeRestarting:{}", op.operation));
     }
-    async fn stopped(&self, op: &LifecycleOp) {
+    async fn stopped(&self, op: &LifecycleOp, _boundary: u64) {
         self.1.lock().unwrap().push(format!("NodeStopped:{}", op.operation));
         self.0.lock().unwrap().push(op.clone());
     }

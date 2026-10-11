@@ -611,10 +611,17 @@ pub enum StatusReply {
     },
     /// The reply of a `StopNode` call, sent when the stop is done (`stopped`): the birth drained, cut
     /// its mesh connections and is `Leaving`, parked with its process alive. The receipt is what
-    /// its drain established.
+    /// its drain established; the boundary is the node's own last heartbeat number (R-HB1).
     Stopped {
         /// What the drain established.
         receipt: DrainReceipt,
+        /// The stop boundary (R-HB1): the birth's last `digest_seq`, captured once its heartbeat
+        /// publication was quiesced and its mesh connections cut, every publication already
+        /// allocated accounted for. Every heartbeat the birth sent before it stopped is at or below
+        /// it. A repeated reply for the completed stop carries the value captured then. Liveness
+        /// evidence only: its mesh-primary copies it onto `NodeStopped`, and a receiver holds a
+        /// same-birth heartbeat at or below it as pre-stop evidence that ends nothing.
+        boundary: u64,
     },
     /// The reply of a `StartNode` call: the parked birth rejoined as itself.
     Started,
@@ -992,7 +999,7 @@ mod tests {
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
             (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 2 } }, ReplyKind::Success),
+            (StatusReply::Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 2 }, boundary: 15 }, ReplyKind::Success),
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),

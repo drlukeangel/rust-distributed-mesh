@@ -136,6 +136,43 @@ async fn stop_then_start(test: &str, node: &str) {
     assert_eq!(stop_span.len(), 1, "{stop_span:?}");
     assert_eq!(of_node("rdm.node_admin.node.connections.delete.via-stop-cut").len(), 1);
     assert_eq!(of_node("rdm.node_admin.node.update.via-node-stopped").len(), 1, "the mesh primary publishes NodeStopped once");
+    // R-HB1: the stop reply names the node's own boundary, the mesh primary copies it onto NodeStopped,
+    // and every node of the mesh fences the stop on it: what each held at the stop is at or below it,
+    // every refused digest of the parked birth is pre-stop evidence or not a rejoin, and the rejoin
+    // each takes is above it.
+    let num = |sp: &Value, k: &str| -> u64 {
+        let v = &sp["attributes"][k];
+        v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or_else(|| panic!("{k} is not a number: {sp}"))
+    };
+    let boundary = num(stop_span[0], "boundary");
+    assert_eq!(num(of_node("rdm.node_admin.node.update.via-node-stopped")[0], "boundary"), boundary, "NodeStopped carries the boundary the stop reply named");
+    // Each other node fences the stop on the node's boundary: from the NodeStopped frame, or, where
+    // its mesh's aggregate overlay reached it first, from the frame that followed it.
+    let parked_at = of_node("rdm.mesh.membership.remove.via-node-stopped");
+    let installed = of_node("rdm.mesh.membership.update.via-stop-boundary");
+    for peer in &others {
+        let holder = peer.name.to_string();
+        let held: Vec<&&Value> = parked_at.iter().filter(|sp| sp["attributes"]["holder"] == holder.as_str()).collect();
+        assert_eq!(held.len(), 1, "{holder} parks the birth once: {parked_at:?}");
+        assert!(num(held[0], "held_digest_seq") <= boundary, "{holder} held a digest above the node's boundary at the stop: {}", held[0]);
+        let fenced = match held[0]["attributes"]["fenced_by"].as_str() {
+            Some("node-boundary") => num(held[0], "boundary"),
+            _ => num(installed.iter().find(|sp| sp["attributes"]["holder"] == holder.as_str()).unwrap_or_else(|| panic!("{holder} held the stop from an overlay and never took the node's boundary: {installed:?}")), "boundary"),
+        };
+        assert_eq!(fenced, boundary, "{holder} fences the stop on the node's own boundary");
+    }
+    for sp in of_node("rdm.mesh.membership.reject.via-stopped-birth") {
+        let ready = matches!(sp["attributes"]["status"].as_str(), Some("Pending" | "ReadyForTraffic"));
+        assert!(num(sp, "digest_seq") <= boundary || !ready, "a Pending or ReadyForTraffic digest above the boundary is the rejoin, never refused: {sp}");
+        if sp["attributes"]["fenced_by"] == "node-boundary" {
+            assert_eq!(num(sp, "boundary"), boundary, "{sp}");
+        }
+    }
+    let rejoined = of_node("rdm.mesh.membership.update.via-node-started");
+    assert!(!rejoined.is_empty(), "the start's rejoin is taken");
+    for sp in &rejoined {
+        assert!(num(sp, "digest_seq") > boundary, "the rejoin taken is above the boundary: {sp}");
+    }
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == node).count(), 0, "the node gossiped no node-left");
     let served = of_node("rdm.node_admin.status.update.via-start-node");
     assert_eq!((served.len(), served[0]["attributes"]["outcome"].as_str()), (1, Some("started")), "{served:?}");

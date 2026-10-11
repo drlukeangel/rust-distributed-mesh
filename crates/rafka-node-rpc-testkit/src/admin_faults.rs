@@ -516,8 +516,8 @@ impl LifecycleEvents for FaultedEvents {
     }
     // Every other event the admin publishes passes through unchanged: a decorator that leaves one
     // to the trait's empty default withholds that event's gossip from every faulted estate.
-    async fn stopped(&self, op: &LifecycleOp) {
-        self.inner.stopped(op).await
+    async fn stopped(&self, op: &LifecycleOp, boundary: u64) {
+        self.inner.stopped(op, boundary).await
     }
     async fn draining(&self, op: &LifecycleOp) {
         self.inner.draining(op).await

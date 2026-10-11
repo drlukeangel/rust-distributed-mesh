@@ -216,7 +216,7 @@ fn a_drain_from_a_later_attempt_joins_the_drain_under_way_and_each_commander_get
 
         // StopNode is a different state: admitted, the drain established with nothing in flight.
         let stopped = birth.call(&birth.stop(4)).await;
-        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "a StopNode after a completed drain is admitted: {stopped:?}");
+        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. }, .. }), "a StopNode after a completed drain is admitted: {stopped:?}");
         // A drain of a stopped birth goes backward: refused naming the state it is in.
         assert_eq!(birth.call(&birth.drain(5)).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, "a DrainNode after the stop is refused by name");
 
@@ -263,7 +263,7 @@ fn a_drain_during_a_stop_joins_the_stops_drain_and_runs_no_drain_of_its_own() {
         held.await.unwrap();
         node_drained(&mut drained, 2).await;
         let stopped = stop.await.unwrap();
-        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "the stop completes on its own drain: {stopped:?}");
+        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. }, .. }), "the stop completes on its own drain: {stopped:?}");
         assert!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").is_empty(), "the stop's drain is the only drain: no drain task of its own for the DrainNode");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
@@ -343,7 +343,7 @@ fn a_drain_during_a_start_is_refused_naming_leaving_and_gets_no_drained_of_the_p
         assert_eq!(birth.call(&birth.drain(1)).await, StatusReply::Applied, "the first cycle's drain is admitted");
         node_drained(&mut first, 1).await;
         let stopped = birth.call(&birth.stop(2)).await;
-        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{stopped:?}");
+        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. }, .. }), "{stopped:?}");
 
         // The start runs until its hook, which holds until the cell lets it go.
         let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
@@ -604,7 +604,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parke
 
         // The started birth's stop is a stop of its own cycle.
         let after = birth.call(&birth.stop(4)).await;
-        assert!(matches!(after, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "the started birth is stopped afresh: {after:?}");
+        assert!(matches!(after, StatusReply::Stopped { receipt: DrainReceipt::Established { .. }, .. }), "the started birth is stopped afresh: {after:?}");
         assert!(birth.running.own.is_parked(), "the stop that answered Stopped left the birth parked");
         assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-stop-node").len(), 2, "one stop per cycle: the first cycle's and the started birth's");
         let _ = std::fs::remove_dir_all(&birth.dir);

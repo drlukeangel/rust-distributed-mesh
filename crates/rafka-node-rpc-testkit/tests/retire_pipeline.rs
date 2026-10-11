@@ -74,7 +74,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         assert_eq!(drained, CommandAdmission::Admitted, "DrainNode");
         // The stop is answered `Stopped` on its own call: the receipt names what its drain established.
         let stopped: CommandAdmission = serde_json::from_value(output(RetireStep::StopNode)).expect("a CommandAdmission");
-        assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::DrainReceipt::Established { .. } }), "StopNode: {stopped:?}");
+        assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::DrainReceipt::Established { .. }, .. }), "StopNode: {stopped:?}");
         for step in [RetireStep::AwaitNodeDrained, RetireStep::AwaitNodeLeft] {
             let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
             assert_eq!(completion, Completion::Received, "{}", step.name());

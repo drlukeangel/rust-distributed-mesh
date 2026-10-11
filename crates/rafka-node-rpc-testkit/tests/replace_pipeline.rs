@@ -89,9 +89,9 @@ impl LifecycleEvents for Recorder<'_> {
     async fn restarting(&self, op: &LifecycleOp) {
         self.log.lock().unwrap().push(format!("NodeRestarting:{}", op.node_id));
     }
-    async fn stopped(&self, op: &LifecycleOp) {
+    async fn stopped(&self, op: &LifecycleOp, boundary: u64) {
         self.log.lock().unwrap().push(format!("NodeStopped:{}:{}", op.node_id, op.operation));
-        self.hear(rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None }).await;
+        self.hear(rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None, boundary }).await;
     }
     // The replace's order is asserted from its steps; the drain and leaving hooks and the mesh-leave
     // events are not part of what this recorder hears.

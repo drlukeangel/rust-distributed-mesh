@@ -629,6 +629,10 @@ pub enum Frame {
         op: LifecycleOp,
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
+        /// The stopping birth's own boundary (R-HB1), copied from its `Stopped` reply: its last
+        /// `digest_seq`, captured after its stop quiesce. A receiver fences the stop on it: a
+        /// same-birth heartbeat at or below it is pre-stop evidence and ends nothing.
+        boundary: u64,
     },
     /// A seat holder committed a Build-driven seat transfer (gossip.md, "Seated-together seat
     /// transfer"): its one seat row moved every seat in `seats` to `successor`, the executor of the
@@ -1239,7 +1243,7 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeRestarting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeStopped { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeStopped { op, boundary, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), boundary }),
         Frame::SeatedTogether { op, successor, seats } if op.name.mesh != own_mesh => Some(Frame::SeatedTogether { op, successor, seats }),
         Frame::NodeDraining { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDraining { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
@@ -1922,9 +1926,9 @@ impl View {
                 self.book.restarting(op.clone());
                 Vec::new()
             }
-            Frame::NodeStopped { op, .. } => {
+            Frame::NodeStopped { op, boundary, .. } => {
                 let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
-                if self.book.stopped(op.clone()) {
+                if self.book.stopped(op.clone(), Some(*boundary)) {
                     self.note_member_parked(op, prior, via);
                 }
                 Vec::new()
@@ -2281,7 +2285,9 @@ impl View {
                 self.book.restarting(op);
             } else if op.is_stop() {
                 let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
-                if self.book.stopped(op.clone()) {
+                // An in-flight overlay is the op alone: it carries no stop boundary (R-HB1 names
+                // the boundary on `NodeStopped` and the `Stopped` reply only).
+                if self.book.stopped(op.clone(), None) {
                     self.note_member_parked(&op, prior, side.name());
                 }
             } else {
@@ -2664,6 +2670,13 @@ impl Membership {
         });
         self.book.record(d.clone());
         self.mesh.broadcast(&Frame::Digest { digest: d }).await
+    }
+
+    /// The last `digest_seq` this birth allocated to a publication (0 before its first). Read once
+    /// the birth's heartbeat publication is quiesced and its mesh connections cut, it is the stop
+    /// boundary (R-HB1): every heartbeat the birth sent is at or below it.
+    pub fn last_digest_seq(&self) -> u64 {
+        self.digest_seq.load(Ordering::SeqCst)
     }
 
     /// Hold `config` as this birth's config: every digest this membership publishes from now on carries
@@ -3564,6 +3577,37 @@ pub enum Heard {
     Topology,
 }
 
+/// One parked birth's stop as a book holds it (`NodeStopped`, R-HB1).
+#[derive(Debug, Clone)]
+struct StoppedMark {
+    /// The parked incarnation.
+    incarnation: IncarnationId,
+    /// The highest `digest_seq` this book held of the birth when it dropped it (0 when it held none).
+    held_seq: u64,
+    /// The birth's own stop boundary, from its mesh-primary's `NodeStopped` frame. `None` while the
+    /// stop is held only from an aggregate's in-flight overlay, which carries the op alone.
+    boundary: Option<u64>,
+    /// The last digest this book held of the birth.
+    held_digest: Option<MeshDigest>,
+}
+
+impl StoppedMark {
+    /// The `digest_seq` a same-birth heartbeat must exceed to be the rejoin: the node's own boundary,
+    /// or, while the stop is held without one, the highest sequence this book held at the stop.
+    fn fence(&self) -> u64 {
+        self.boundary.unwrap_or(self.held_seq)
+    }
+
+    /// Which number [`Self::fence`] is, as the spans name it.
+    fn fenced_by(&self) -> &'static str {
+        if self.boundary.is_some() {
+            "node-boundary"
+        } else {
+            "held-digest-seq"
+        }
+    }
+}
+
 /// The latest digest held per logical node: when it was taken, and how it was heard.
 #[derive(Debug, Clone)]
 pub struct DigestBook {
@@ -3594,10 +3638,9 @@ pub struct DigestBook {
     refused_departures: Arc<Mutex<HashMap<String, BTreeSet<(String, u32, String)>>>>,
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
     in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
-    /// The parked births (`NodeStopped`) by NodeId: the incarnation and the highest `digest_seq`
-    /// this book held of it when it dropped it. Only that birth's own rejoin (a `Pending`, or a
-    /// `ReadyForTraffic` after a `Draining`, with a higher sequence) reopens it.
-    stopped_marks: Arc<Mutex<HashMap<String, (IncarnationId, u64, Option<MeshDigest>)>>>,
+    /// The parked births (`NodeStopped`) by NodeId: what fences each stop (R-HB1). Only that birth's
+    /// own rejoin (a `Pending` or `ReadyForTraffic` digest above the fence) reopens it.
+    stopped_marks: Arc<Mutex<HashMap<String, StoppedMark>>>,
     /// The stop and restart overlays that ended here (their birth rejoined), by operation key: a
     /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
@@ -3965,11 +4008,17 @@ impl DigestBook {
         }
     }
 
-    /// Accept a parked birth (`op` is `stop-node:<path>`, naming the birth that stopped): the node
-    /// leaves the book and is not routable, and its own rejoin is the only digest that brings it
-    /// back (`stopped_refuses`). `false` when already held, when the node departed, or when a later
-    /// birth of the node is held (the stop is of an older birth).
-    pub fn stopped(&self, op: LifecycleOp) -> bool {
+    /// Accept a parked birth (`op` is `stop-node:<path>`, naming the birth that stopped) with the
+    /// node's own stop `boundary` (R-HB1; `None` when the stop arrives as an aggregate's in-flight
+    /// overlay, which carries the op alone): the node leaves the book and is not routable, and its
+    /// own rejoin is the only digest that brings it back (`stopped_refuses`). `false` when already
+    /// held, when the node departed, when a later birth of the node is held (the stop is of an older
+    /// birth), or when the stop is superseded: this book already holds the same birth's `Pending` or
+    /// `ReadyForTraffic` heartbeat above the boundary (it was started before the stop arrived). A
+    /// superseded stop's operation key is recorded as applied, so a replay of it is a no-op. A
+    /// `NodeStopped` frame for a stop already held from an overlay installs its boundary.
+    pub fn stopped(&self, op: LifecycleOp, boundary: Option<u64>) -> bool {
+        use rafka_mesh_entity::MemberStatus::{Pending, ReadyForTraffic};
         if self.is_departed(op.node_id.as_str()) {
             reject_departed_overlay(&self.holder.lock().unwrap(), &op, "node-stopped");
             return false;
@@ -3982,16 +4031,42 @@ impl DigestBook {
         if self.ended_overlays.lock().unwrap().contains(&op.key()) {
             return false;
         }
+        if let (Some(boundary), Some((_, seq, status))) = (boundary, held.as_ref()) {
+            if *seq > boundary && matches!(status, Pending | ReadyForTraffic) {
+                self.ended_overlays.lock().unwrap().insert(op.key());
+                tracing::info_span!(
+                    "rdm.mesh.membership.reject.via-stop-superseded",
+                    holder = %self.holder.lock().unwrap(),
+                    node = %op.name,
+                    node_id = %op.node_id,
+                    incarnation_id = %op.incarnation.0,
+                    build_id = %op.build_id,
+                    attempt = op.attempt,
+                    operation = %op.operation,
+                    held_status = ?status,
+                    held_digest_seq = *seq,
+                    boundary,
+                )
+                .in_scope(|| tracing::info!("the birth was started before its stop arrived: it is held above the stop boundary, so the stop is superseded and applied as such"));
+                return false;
+            }
+        }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if !new {
+            if let Some(boundary) = boundary {
+                self.install_boundary(&op, boundary);
+            }
             return false;
         }
         self.overlays_moved();
         let seq = held.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
-        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), seq, held_digest));
+        let mark = StoppedMark { incarnation: op.incarnation.clone(), held_seq: seq, boundary, held_digest };
+        let fenced_by = mark.fenced_by();
+        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), mark);
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
-        tracing::info_span!(
+        let span = tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-stopped",
+            holder = %self.holder.lock().unwrap(),
             node = %op.name,
             node_id = %op.node_id,
             incarnation_id = %op.incarnation.0,
@@ -4001,36 +4076,85 @@ impl DigestBook {
             was_held = removed,
             held_status = held.as_ref().map(|(_, _, st)| format!("{st:?}")).unwrap_or_default(),
             held_digest_seq = seq,
-        )
-        .in_scope(|| tracing::info!("the exact birth is parked: dropped from the view, it is heard again only when it rejoins as itself"));
+            boundary = tracing::field::Empty,
+            fenced_by,
+        );
+        if let Some(boundary) = boundary {
+            span.record("boundary", boundary);
+        }
+        span.in_scope(|| tracing::info!("the exact birth is parked: dropped from the view, it is heard again only when it rejoins as itself"));
         self.births.send_modify(|v| *v += 1);
         true
     }
 
-    /// Whether `d` is refused because its birth is parked: only the birth's own rejoin, a digest of
-    /// the parked incarnation with a higher sequence than the one held when it was dropped and a
-    /// status of `Pending` or `ReadyForTraffic`, is taken (and ends the stop). A digest of another
-    /// birth of the node ends the stop and is taken by the rules of any birth.
+    /// The stop `op` is held, from an overlay that carried no boundary; its `NodeStopped` frame brings
+    /// the node's own `boundary`, which fences the stop from now on.
+    fn install_boundary(&self, op: &LifecycleOp, boundary: u64) {
+        let mut marks = self.stopped_marks.lock().unwrap();
+        let Some(mark) = marks.get_mut(op.node_id.as_str()).filter(|m| m.incarnation == op.incarnation && m.boundary.is_none()) else { return };
+        mark.boundary = Some(boundary);
+        let held_seq = mark.held_seq;
+        drop(marks);
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-stop-boundary",
+            holder = %self.holder.lock().unwrap(),
+            node = %op.name,
+            node_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            operation = %op.operation,
+            held_digest_seq = held_seq,
+            boundary,
+        )
+        .in_scope(|| tracing::info!("the stop held from an in-flight overlay takes the node's own boundary from its NodeStopped"));
+    }
+
+    /// Whether `d` is refused because its birth is parked (R-HB1): a digest of the parked
+    /// incarnation at or below the stop's fence (the node's own boundary) is pre-stop evidence and
+    /// changes nothing; above it, only a `Pending` or `ReadyForTraffic` digest is the birth's rejoin
+    /// (it was started), taken, and ends the stop; any other status above it leaves the stop
+    /// standing. A digest of another birth of the node ends the stop and is taken by the rules of
+    /// any birth.
     fn stopped_refuses(&self, d: &MeshDigest) -> bool {
         let mark = self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).cloned();
-        let Some((incarnation, seq, _)) = mark else { return false };
-        let rejoin = incarnation != d.node.incarnation || (d.digest_seq > seq && matches!(d.status, rafka_mesh_entity::MemberStatus::Pending | rafka_mesh_entity::MemberStatus::ReadyForTraffic));
+        let Some(mark) = mark else { return false };
+        let fence = mark.fence();
+        let rejoin = mark.incarnation != d.node.incarnation || (d.digest_seq > fence && matches!(d.status, rafka_mesh_entity::MemberStatus::Pending | rafka_mesh_entity::MemberStatus::ReadyForTraffic));
         if !rejoin {
-            tracing::info_span!(
+            let refused = tracing::info_span!(
                 "rdm.mesh.membership.reject.via-stopped-birth",
+                holder = %self.holder.lock().unwrap(),
                 node = %d.node.name,
                 node_id = %d.node.node_id,
                 incarnation_id = %d.node.incarnation.0,
                 status = ?d.status,
                 digest_seq = d.digest_seq,
-                held_digest_seq = seq,
-            )
-            .in_scope(|| tracing::info!("a digest of a parked birth that is not its rejoin: refused, the stop stands"));
+                held_digest_seq = mark.held_seq,
+                boundary = tracing::field::Empty,
+                fenced_by = mark.fenced_by(),
+            );
+            if let Some(b) = mark.boundary {
+                refused.record("boundary", b);
+            }
+            refused.in_scope(|| tracing::info!("a digest of a parked birth that is not its rejoin: refused, the stop stands"));
             return true;
         }
         self.end_stop(d.node.node_id.as_str());
-        tracing::info_span!("rdm.mesh.membership.update.via-node-started", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0, status = ?d.status, digest_seq = d.digest_seq)
-            .in_scope(|| tracing::info!("the parked birth rejoined as itself: held again"));
+        let started = tracing::info_span!(
+            "rdm.mesh.membership.update.via-node-started",
+            holder = %self.holder.lock().unwrap(),
+            node = %d.node.name,
+            node_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            status = ?d.status,
+            digest_seq = d.digest_seq,
+            held_digest_seq = mark.held_seq,
+            boundary = tracing::field::Empty,
+            fenced_by = mark.fenced_by(),
+        );
+        if let Some(b) = mark.boundary {
+            started.record("boundary", b);
+        }
+        started.in_scope(|| tracing::info!("the parked birth rejoined as itself: held again"));
         false
     }
 
@@ -4038,7 +4162,7 @@ impl DigestBook {
     /// `Leaving`, in its view though the book dropped it. A birth this book never held a digest of
     /// (a late joiner) is not listed.
     pub fn parked(&self) -> Vec<MeshDigest> {
-        self.stopped_marks.lock().unwrap().values().filter_map(|(_, _, d)| d.clone()).collect()
+        self.stopped_marks.lock().unwrap().values().filter_map(|m| m.held_digest.clone()).collect()
     }
 
     /// The open stop overlays of parked births this book never held a digest of (an admin that
@@ -4050,7 +4174,7 @@ impl DigestBook {
             .lock()
             .unwrap()
             .values()
-            .filter(|op| op.is_stop() && marks.get(op.node_id.as_str()).is_some_and(|(inc, _, held)| *inc == op.incarnation && held.is_none()))
+            .filter(|op| op.is_stop() && marks.get(op.node_id.as_str()).is_some_and(|m| m.incarnation == op.incarnation && m.held_digest.is_none()))
             .cloned()
             .collect()
     }
@@ -4878,8 +5002,8 @@ mod tests {
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
         let o = op(&id, &inc, "stop-node:mesh1.rpc.1");
-        assert!(book.stopped(o.clone()));
-        assert!(!book.stopped(o.clone()), "the same event twice is applied once");
+        assert!(book.stopped(o.clone(), Some(111)));
+        assert!(!book.stopped(o.clone(), Some(111)), "the same event twice is applied once");
         assert!(book.get(id.as_str()).is_none(), "dropped from the book");
         assert!(!book.routable(id.as_str()));
         assert_eq!(book.in_flight(), vec![o.clone()]);
@@ -4898,7 +5022,7 @@ mod tests {
         assert!(book.routable(id.as_str()), "its ready-for-traffic restores selection");
         // A departure ends a stop for good.
         let o2 = op(&id, &inc, "stop-node:mesh1.rpc.1");
-        assert!(book.stopped(LifecycleOp { attempt: 2, ..o2 }));
+        assert!(book.stopped(LifecycleOp { attempt: 2, ..o2 }, Some(125)));
         assert!(book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1")));
         assert!(book.in_flight().is_empty(), "the departure cleared the stop overlay");
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a departed node never returns");
@@ -4920,7 +5044,7 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 13)));
         let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
-        assert!(book.stopped(stop.clone()));
+        assert!(book.stopped(stop.clone(), Some(15)));
         for late in [digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 14), digest(&id, &inc, None, MemberStatus::Draining, 15)] {
             assert!(!book.record(late.clone()), "sent before the stop: {late:?}");
             assert!(!book.record_forwarded(late.clone()), "{late:?}");
@@ -4956,7 +5080,7 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 13)));
         let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
-        assert!(book.stopped(stop.clone()));
+        assert!(book.stopped(stop.clone(), Some(15)));
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::Draining, 15)), "15 is the boundary: pre-stop evidence");
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::Leaving, 16)), "above the boundary but neither Pending nor ReadyForTraffic: the stop holds");
         assert_eq!(book.in_flight(), vec![stop.clone()]);
@@ -4966,7 +5090,7 @@ mod tests {
         assert!(!book.routable(id.as_str()), "the rejoined birth is Pending: a routing stop until it says ready-for-traffic");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 18)));
         assert!(book.routable(id.as_str()), "its ready-for-traffic restores selection");
-        assert!(!book.stopped(stop), "a replay of the ended stop opens nothing");
+        assert!(!book.stopped(stop, Some(15)), "a replay of the ended stop opens nothing");
         assert!(book.get(id.as_str()).is_some());
         let started = spans.named("rdm.mesh.membership.update.via-node-started");
         assert_eq!(started.len(), 1, "{started:?}");
@@ -4992,11 +5116,11 @@ mod tests {
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 16)));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 17)));
         let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
-        assert!(!book.stopped(stop.clone()), "superseded: the birth already rejoined");
+        assert!(!book.stopped(stop.clone(), Some(15)), "superseded: the birth already rejoined");
         assert!(book.in_flight().is_empty(), "no overlay opens");
         assert_eq!(book.get(id.as_str()).map(|(d, _)| d.digest_seq), Some(17), "the rejoined birth stays held");
         assert!(book.routable(id.as_str()));
-        assert!(!book.stopped(stop.clone()), "a replay is a no-op");
+        assert!(!book.stopped(stop.clone(), Some(15)), "a replay is a no-op");
         assert!(book.in_flight().is_empty() && book.get(id.as_str()).is_some());
         let superseded = spans.named("rdm.mesh.membership.reject.via-stop-superseded");
         assert_eq!(superseded.len(), 1, "named once; the replay is a copy of a stop already applied: {superseded:?}");
@@ -5005,6 +5129,35 @@ mod tests {
             ("17", "ReadyForTraffic", "15", "stop-node:mesh1.rpc.1")
         );
         assert!(spans.named("rdm.mesh.membership.remove.via-node-stopped").is_empty(), "nothing was parked");
+    }
+
+    /// CONTRACT (R-HB1): a stop first held from an aggregate's in-flight overlay, which carries the op
+    /// alone, is fenced on the sequence this book held until the stop's `NodeStopped` frame arrives;
+    /// the frame installs the node's own boundary, and from then on a heartbeat at or below it is
+    /// refused as pre-stop evidence. Must NOT happen: the fence left at the receiver's held sequence
+    /// because the overlay reached it before the frame.
+    #[test]
+    fn a_stop_held_from_an_overlay_takes_the_node_boundary_from_its_node_stopped_frame() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 13)));
+        let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        assert!(book.stopped(stop.clone(), None), "the overlay parks the birth");
+        assert!(!book.stopped(stop.clone(), Some(15)), "the frame of a stop already held opens nothing new");
+        assert!(!book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 14)), "14 is at or below the node's boundary");
+        assert_eq!(book.in_flight(), vec![stop]);
+        assert!(book.get(id.as_str()).is_none());
+        let parked = spans.named("rdm.mesh.membership.remove.via-node-stopped");
+        assert_eq!((parked.len(), parked[0]["fenced_by"].as_str(), parked[0].get("boundary")), (1, "held-digest-seq", None), "{parked:?}");
+        let installed = spans.named("rdm.mesh.membership.update.via-stop-boundary");
+        assert_eq!(installed.len(), 1, "{installed:?}");
+        assert_eq!((installed[0]["held_digest_seq"].as_str(), installed[0]["boundary"].as_str()), ("13", "15"));
+        let refused = spans.named("rdm.mesh.membership.reject.via-stopped-birth");
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!((refused[0]["digest_seq"].as_str(), refused[0]["boundary"].as_str(), refused[0]["fenced_by"].as_str()), ("14", "15", "node-boundary"));
     }
 
     /// CONTRACT (membership.rs `restarts_from_facts`; node-restart.md: no event is inferred from
@@ -5064,9 +5217,9 @@ mod tests {
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 125)));
         assert!(book.routable(id.as_str()), "no overlay holds it: the ready birth of a ready mesh is selected");
         let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
-        assert!(book.stopped(stop.clone()));
+        assert!(book.stopped(stop.clone(), Some(125)));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 130)));
-        assert!(!book.stopped(stop), "a snapshot built before the rejoin does not park the node again");
+        assert!(!book.stopped(stop, None), "a snapshot built before the rejoin does not park the node again");
         assert!(book.get(id.as_str()).is_some());
     }
 
@@ -5078,10 +5231,10 @@ mod tests {
         let book = DigestBook::default();
         let (id, old, new) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &new, Some(old.clone()), MemberStatus::ReadyForTraffic, 100)));
-        assert!(!book.stopped(op(&id, &old, "stop-node:mesh1.rpc.1")), "the stop names a birth the held one superseded");
+        assert!(!book.stopped(op(&id, &old, "stop-node:mesh1.rpc.1"), None), "the stop names a birth the held one superseded");
         assert!(book.get(id.as_str()).is_some());
         let late_joiner = DigestBook::default();
-        assert!(late_joiner.stopped(op(&id, &new, "stop-node:mesh1.rpc.1")));
+        assert!(late_joiner.stopped(op(&id, &new, "stop-node:mesh1.rpc.1"), None));
         assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::Draining, 90)));
         assert!(late_joiner.record(digest(&id, &new, None, MemberStatus::Pending, 1)));
     }
@@ -5097,7 +5250,7 @@ mod tests {
         assert!(stop.is_stop() && !stop.is_restart());
         assert!(!op(&id, &inc, "restart-node:mesh1.rpc.1").is_stop());
         assert!(!op(&id, &inc, "retire-node:mesh1.rpc.1").is_stop());
-        assert!(book.stopped(stop.clone()));
+        assert!(book.stopped(stop.clone(), None));
         let (in_flight, departed) = book.overlays_of("mesh1");
         assert_eq!(in_flight, vec![stop]);
         assert!(departed.is_empty());
@@ -5829,7 +5982,7 @@ mod tests {
 
     /// Every span opened while the capture is the thread's subscriber: its name and its fields.
     #[derive(Clone, Default)]
-    struct OpenedSpans(Arc<Mutex<Vec<(String, BTreeMap<String, String>)>>>);
+    struct OpenedSpans(Arc<Mutex<Vec<(tracing::span::Id, String, BTreeMap<String, String>)>>>);
 
     struct SpanFields<'a>(&'a mut BTreeMap<String, String>);
 
@@ -5840,16 +5993,22 @@ mod tests {
     }
 
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OpenedSpans {
-        fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
             let mut fields = BTreeMap::new();
             attrs.record(&mut SpanFields(&mut fields));
-            self.0.lock().unwrap().push((attrs.metadata().name().to_string(), fields));
+            self.0.lock().unwrap().push((id.clone(), attrs.metadata().name().to_string(), fields));
+        }
+        /// A field recorded after the span opened (declared `Empty`) joins the fields it opened with.
+        fn on_record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            if let Some((_, _, fields)) = self.0.lock().unwrap().iter_mut().rev().find(|(i, _, _)| i == id) {
+                values.record(&mut SpanFields(fields));
+            }
         }
     }
 
     impl OpenedSpans {
         fn named(&self, name: &str) -> Vec<BTreeMap<String, String>> {
-            self.0.lock().unwrap().iter().filter(|(n, _)| n == name).map(|(_, f)| f.clone()).collect()
+            self.0.lock().unwrap().iter().filter(|(_, n, _)| n == name).map(|(_, _, f)| f.clone()).collect()
         }
     }
 
@@ -5871,7 +6030,7 @@ mod tests {
         let stop_own = op_at("mesh2.rpc.1", &own.0, &own.1, "stop-node:mesh2.rpc.1");
         let delete = op_at("mesh4.admin.1", &deleted.0, &deleted.1, "retire-node:mesh4.admin.1");
         for o in [&stop_last, &stop_other, &stop_own] {
-            assert!(book.stopped(o.clone()));
+            assert!(book.stopped(o.clone(), None));
         }
         assert!(book.depart(delete.clone()));
         assert!(book.executed_overlays_beyond("mesh2").is_empty(), "nothing executed, nothing listed");
@@ -5906,7 +6065,7 @@ mod tests {
         assert_eq!(book.mesh_left(&mesh_id, Some("mesh1"), "b1", 1, 1).departed, 1);
         let late_stop = op_at("mesh1.admin.1", &id, &inc, "stop-node:mesh1.admin.1");
         let late_stop = LifecycleOp { build_id: "b0".into(), ..late_stop };
-        assert!(!book.stopped(late_stop.clone()), "a late NodeStopped opens nothing");
+        assert!(!book.stopped(late_stop.clone(), Some(100)), "a late NodeStopped opens nothing");
         assert!(book.in_flight().is_empty() && book.get(id.as_str()).is_none(), "nothing is resurrected");
         let late_delete = op_at("mesh1.admin.1", &id, &inc, "retire-node:mesh1.admin.1");
         assert!(!book.depart(late_delete.clone()), "a late NodeDeleted departs nothing again");

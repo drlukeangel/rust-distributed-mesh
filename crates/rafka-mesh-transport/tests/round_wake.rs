@@ -158,7 +158,7 @@ async fn a_member_stop_overlay_between_two_rounds_reaches_the_backbone_at_once()
         event_at_rafka_ms: 2_000,
     };
     let stopped_at = std::time::Instant::now();
-    src_m.publish_lifecycle(&Frame::NodeStopped { op: op.clone(), forwarded_by: None }).await.unwrap();
+    src_m.publish_lifecycle(&Frame::NodeStopped { op: op.clone(), forwarded_by: None, boundary: stopped.digest_seq }).await.unwrap();
 
     let held = loop {
         let parked = peer_m.book.in_flight().iter().any(|o| o.key() == op.key());

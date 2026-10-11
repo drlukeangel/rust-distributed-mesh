@@ -161,17 +161,27 @@ enum RoundProgress {
     Acted,
 }
 
+/// What a completed stop answers, every time it is asked: the receipt its drain established and the
+/// stop boundary (R-HB1), this birth's last `digest_seq` captured once its heartbeat publication was
+/// quiesced and its mesh connections cut.
+#[derive(Debug, Clone, Copy)]
+struct StopDone {
+    receipt: DrainReceipt,
+    boundary: u64,
+}
+
 /// Where a birth stands between a stop and a start.
 enum Cycle {
     /// Running: a stop has not been admitted.
     Live,
-    /// A stop is under way; later stops of the birth wait for the same receipt.
-    Stopping(tokio::sync::watch::Receiver<Option<DrainReceipt>>),
-    /// Stopped and parked, with the receipt its drain established.
-    Parked(DrainReceipt),
+    /// A stop is under way; later stops of the birth wait for the same answer.
+    Stopping(tokio::sync::watch::Receiver<Option<StopDone>>),
+    /// Stopped and parked, with the receipt its drain established and the boundary it captured.
+    Parked(StopDone),
     /// Parked and a start is under way (the natural key `(node_id, incarnation, Pending)`): later
     /// starts of the birth answer the same outcome, and a stop is refused naming the start. A failed
-    /// start parks the birth again with the receipt it was parked with.
+    /// start parks the birth again with the receipt it was parked with and a boundary captured after
+    /// its own cut.
     Starting {
         /// The outcome of the start under way, once it ends.
         outcome: tokio::sync::watch::Receiver<Option<StatusReply>>,
@@ -422,7 +432,7 @@ impl NodeSelf {
     /// Whether this birth is parked: stopped, its process alive, waiting for a start or a delete.
     /// A birth whose start is under way is parked until the start ends.
     pub fn is_parked(&self) -> bool {
-        matches!(*self.cycle.lock().unwrap(), Cycle::Parked(_) | Cycle::Starting { .. })
+        matches!(*self.cycle.lock().unwrap(), Cycle::Parked(..) | Cycle::Starting { .. })
     }
 
     /// This surface, completing `actions` before it checks in to a round.
@@ -721,15 +731,16 @@ impl NodeSelf {
     }
 
     /// The stop: drain, declare `Leaving`, hard-cut the mesh connections, park. The receipt is the
-    /// drain's. A second stop of the same birth, while this one runs or after it, answers the same
-    /// receipt: stopping a stopped birth is done. A stop while a start of the birth is under way is
+    /// drain's; the boundary (R-HB1) is this birth's last `digest_seq`, captured after the cut. A
+    /// second stop of the same birth, while this one runs or after it, answers the same receipt and
+    /// boundary: stopping a stopped birth is done. A stop while a start of the birth is under way is
     /// refused naming the start.
     async fn stop(self: &Arc<Self>, commander: NodeId, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
         use tracing::Instrument;
         enum Next {
-            Done(DrainReceipt),
-            Wait(tokio::sync::watch::Receiver<Option<DrainReceipt>>),
-            Run(tokio::sync::watch::Sender<Option<DrainReceipt>>),
+            Done(StopDone),
+            Wait(tokio::sync::watch::Receiver<Option<StopDone>>),
+            Run(tokio::sync::watch::Sender<Option<StopDone>>),
         }
         let next = {
             let mut cycle = self.cycle.lock().unwrap();
@@ -752,8 +763,8 @@ impl NodeSelf {
                 }
             }
         };
-        let receipt = match next {
-            Next::Done(r) => r,
+        let done = match next {
+            Next::Done(d) => d,
             Next::Wait(mut rx) => match rx.wait_for(|r| r.is_some()).await {
                 Ok(r) => r.expect("waited for a receipt"),
                 Err(_) => return StatusReply::NotReady { reason: format!("{}: the stop that was under way ended without a receipt", self.held_name()) },
@@ -763,19 +774,20 @@ impl NodeSelf {
                     parent: &parent,
                     "rdm.node_admin.status.update.via-stop-node",
                     node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-                    commander = %commander, state = "Leaving", receipt = tracing::field::Empty, "otel.kind" = "internal"
+                    commander = %commander, state = "Leaving", receipt = tracing::field::Empty, boundary = tracing::field::Empty, "otel.kind" = "internal"
                 );
-                let receipt = self.park(&commander, spare, &op).instrument(span.clone()).await;
-                span.record("receipt", receipt.name());
-                *self.cycle.lock().unwrap() = Cycle::Parked(receipt);
-                let _ = tx.send(Some(receipt));
-                receipt
+                let done = self.park(&commander, spare, &op).instrument(span.clone()).await;
+                span.record("boundary", done.boundary);
+                span.record("receipt", done.receipt.name());
+                *self.cycle.lock().unwrap() = Cycle::Parked(done);
+                let _ = tx.send(Some(done));
+                done
             }
         };
-        StatusReply::Stopped { receipt }
+        StatusReply::Stopped { receipt: done.receipt, boundary: done.boundary }
     }
 
-    async fn park(&self, commander: &NodeId, spare: Option<iroh::PublicKey>, op: &LifecycleOp) -> DrainReceipt {
+    async fn park(&self, commander: &NodeId, spare: Option<iroh::PublicKey>, op: &LifecycleOp) -> StopDone {
         use tracing::Instrument;
         parking().park();
         if let Some(retire) = &self.retire {
@@ -844,7 +856,11 @@ impl NodeSelf {
             node = %self.held_name(), operation = %op.operation, neighbours = report.neighbours, pooled = report.pooled, accepted = report.accepted, turns_in_progress = report.turns_in_progress
         )
         .in_scope(|| tracing::info!("the mesh connections were cut; the endpoint stays bound and the commander's connection stays open"));
-        receipt
+        // 6. The stop boundary (R-HB1): the heartbeat publication is held (step 2) and the mesh
+        // connections are cut (step 5), so every publication this birth allocated is accounted for
+        // and nothing it allocates from here reaches a peer: its last `digest_seq` now is at or above
+        // every heartbeat it sent.
+        StopDone { receipt, boundary: self.membership.last_digest_seq() }
     }
 
     /// Refuse new work and wait for the eligible in-flight work, bounded by the drain deadline. The
@@ -887,20 +903,20 @@ impl NodeSelf {
         );
         let reply = async {
             enum Next {
-                Run(tokio::sync::watch::Sender<Option<StatusReply>>, DrainReceipt, Arc<dyn Session>),
+                Run(tokio::sync::watch::Sender<Option<StatusReply>>, StopDone, Arc<dyn Session>),
                 Join(tokio::sync::watch::Receiver<Option<StatusReply>>),
             }
             let next = {
                 let mut cycle = self.cycle.lock().unwrap();
                 match &*cycle {
                     Cycle::Parked(r) => {
-                        let receipt = *r;
+                        let parked = *r;
                         let Some(session) = self.session.lock().unwrap().clone() else {
                             return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.held_name()) };
                         };
                         let (tx, rx) = tokio::sync::watch::channel(None);
                         *cycle = Cycle::Starting { outcome: rx };
-                        Next::Run(tx, receipt, session)
+                        Next::Run(tx, parked, session)
                     }
                     Cycle::Starting { outcome, .. } => Next::Join(outcome.clone()),
                     Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
@@ -915,7 +931,7 @@ impl NodeSelf {
                     }
                 }
             };
-            let (outcome, receipt, session) = match next {
+            let (outcome, parked, session) = match next {
                 Next::Join(mut rx) => {
                     tracing::Span::current().record("joined", true);
                     return match rx.wait_for(|r| r.is_some()).await {
@@ -923,7 +939,7 @@ impl NodeSelf {
                         Err(_) => StatusReply::NotReady { reason: format!("{}: the start that was under way ended without an outcome", self.held_name()) },
                     };
                 }
-                Next::Run(tx, receipt, session) => (tx, receipt, session),
+                Next::Run(tx, parked, session) => (tx, parked, session),
             };
             let retire = match &self.retire {
                 Some(r) => r.renew(),
@@ -955,7 +971,10 @@ impl NodeSelf {
                     self.server.drain();
                     let _ = session.park_tasks().await;
                     let _ = session.cut(spare).await;
-                    *self.cycle.lock().unwrap() = Cycle::Parked(receipt);
+                    // Parked again with the receipt it was parked with; the boundary is captured
+                    // afresh after this cut (R-HB1), since the rejoin may have published before it
+                    // failed: every heartbeat the birth sent stays at or below the boundary it answers.
+                    *self.cycle.lock().unwrap() = Cycle::Parked(StopDone { receipt: parked.receipt, boundary: self.membership.last_digest_seq() });
                     tracing::Span::current().record("failed_step", failed.step);
                     StatusReply::StartFailed { step: failed.step.to_string(), reason: failed.reason }
                 }

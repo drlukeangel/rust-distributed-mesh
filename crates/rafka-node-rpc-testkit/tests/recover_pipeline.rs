@@ -69,7 +69,7 @@ impl LifecycleEvents for Recorder {
     }
     // A recovery publishes no stop, drain, leaving or mesh-leave event; this cell records the removal
     // and restart events it asserts, and states the rest as not recorded.
-    async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn stopped(&self, _op: &LifecycleOp, _boundary: u64) {}
     async fn draining(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     async fn mesh_leaving(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}

@@ -545,6 +545,9 @@ pub enum CommandAdmission {
     Stopped {
         /// The drain's receipt.
         receipt: rafka_node_rpc_contract::status::DrainReceipt,
+        /// The birth's own stop boundary (R-HB1): its last `digest_seq` after its stop quiesce,
+        /// which the mesh primary copies onto `NodeStopped`.
+        boundary: u64,
     },
     /// The birth answered `start-node` with `Started`: it rejoined as itself.
     Started,
@@ -602,7 +605,7 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
         RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => CommandAdmission::Admitted,
             StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted,
-            StatusReply::Stopped { receipt } => CommandAdmission::Stopped { receipt: *receipt },
+            StatusReply::Stopped { receipt, boundary } => CommandAdmission::Stopped { receipt: *receipt, boundary: *boundary },
             StatusReply::Started => CommandAdmission::Started,
             StatusReply::StartFailed { step, reason } => CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone() },
             other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
@@ -722,8 +725,9 @@ pub trait LifecycleEvents: Send + Sync {
     /// A restart's pre-event (`NodeRestarting`): the birth is held through its Leaving.
     async fn restarting(&self, op: &LifecycleOp);
     /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
-    /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
-    async fn stopped(&self, op: &LifecycleOp);
+    /// the departure as `NodeStopped` in its in-flight overlay, carrying the `boundary` the birth's
+    /// `Stopped` reply named (R-HB1); the node gossips nothing.
+    async fn stopped(&self, op: &LifecycleOp, boundary: u64);
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
     /// channel and the backbone.
     async fn draining(&self, op: &LifecycleOp);
@@ -752,7 +756,7 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleting(&self, _op: &LifecycleOp) {}
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
-    async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn stopped(&self, _op: &LifecycleOp, _boundary: u64) {}
     async fn draining(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
@@ -1949,10 +1953,14 @@ impl DeploymentPipeline<'_> {
                     c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.drain) => c,
                     () = self.until_exited(handle) => Completion::RuntimeExited,
                 };
-                // The mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
+                // The mesh primary publishes the departure from the matching `stopped`, carrying the
+                // boundary that reply named (R-HB1); the node gossips nothing.
                 if publish_stopped && c == Completion::Received {
+                    let CommandAdmission::Stopped { boundary, .. } = admission else {
+                        return Err(format!("{}: the stop's completion was received but stop-node answered {admission:?}, not the stopped reply that names the birth's boundary; NodeStopped is not published", node.name));
+                    };
                     let op = self.command_op(&ctx, node)?;
-                    self.lifecycle.stopped(&op).await;
+                    self.lifecycle.stopped(&op, boundary).await;
                 }
                 match (proof != StopProof::Lenient, &c) {
                     (true, c) if *c != Completion::Received => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),

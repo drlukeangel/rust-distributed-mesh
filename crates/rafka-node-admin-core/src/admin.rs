@@ -2393,9 +2393,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .instrument(span)
         .await
     }
-    async fn stopped(&self, op: &rafka_mesh_entity::LifecycleOp) {
-        let f = rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None };
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+    async fn stopped(&self, op: &rafka_mesh_entity::LifecycleOp, boundary: u64) {
+        let f = rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None, boundary };
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, boundary);
         async {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeStopped not sent on the mesh channel");
@@ -2403,7 +2403,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             // This admin executed the stop and holds its matching stopped reply: the overlay its own
             // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
             self.membership.book.executed_stop(op);
-            tracing::info!("the node is parked: every mesh drops it from its book until it rejoins as itself");
+            tracing::info!("the node is parked: every mesh drops it from its book until it rejoins as itself, fenced on the node's own boundary");
         }
         .instrument(span)
         .await
@@ -6975,7 +6975,7 @@ mod tests {
             name: held.node.name.clone(),
             event_at_rafka_ms: 1,
         };
-        assert!(book.stopped(stop));
+        assert!(book.stopped(stop, Some(held.digest_seq)));
         let records = Records::default();
         let to: PathName = "mesh1.rpc.1.old".parse().unwrap();
         records.rename_birth(&held.node.name, &held.node.node_id, &held.node.incarnation, &to);
@@ -7080,7 +7080,7 @@ mod tests {
 
         facts.seen();
         let stop = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1 };
-        assert!(book.stopped(stop));
+        assert!(book.stopped(stop, None));
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
 
@@ -7125,7 +7125,7 @@ mod tests {
             name: stopped.node.name.clone(),
             event_at_rafka_ms: 1,
         };
-        assert!(book.stopped(stop));
+        assert!(book.stopped(stop, None));
         assert!(book.get(stopped.node.node_id.as_str()).is_none(), "this admin never held the node's digest");
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         let n = t.node(&stopped.node.name).expect("the stop overlay lists the parked node");

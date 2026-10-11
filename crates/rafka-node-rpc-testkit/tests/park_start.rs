@@ -2,7 +2,10 @@
 //!
 //! CONTRACT: `stop-node` is answered `Stopped` on its own call, after the node drained, cut its mesh
 //! connections and entered Leaving; the node gossips nothing for it, its process stays alive with its
-//! endpoint bound, and a probe answers `CurrentParked`. `start-node` is answered `Started` once the
+//! endpoint bound, and a probe answers `CurrentParked`. The `Stopped` reply names the node's stop
+//! boundary (R-HB1): its last `digest_seq` once its heartbeats were held and its connections cut, at
+//! or above every digest the admin holds of it, unmoved while it is parked, answered again by a
+//! repeated stop, and below every digest it publishes once started. `start-node` is answered `Started` once the
 //! same birth (same node id, incarnation, endpoint key and port) rejoined through the admin that
 //! commanded it, and a probe answers `Current` again. What must NOT happen: a stop answered before the
 //! node parked, a digest of a parked node reaching the admin, a start that makes a new birth, or a start
@@ -84,7 +87,8 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
 
         // The stop is answered Stopped on its own call, with the drain's receipt.
         let left = call(&admin, &target, &stop).await;
-        assert!(matches!(left, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{left:?}");
+        let StatusReply::Stopped { receipt: DrainReceipt::Established { .. }, boundary } = left else { panic!("{left:?}") };
+        assert_eq!(boundary, running.membership.last_digest_seq(), "the boundary is the node's own last digest_seq, captured after its stop quiesce");
         assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentParked { .. }), "a parked node answers CurrentParked");
         assert_eq!(running.membership.neighbours(), 0, "the node left its gossip topic");
         // Stopping a parked node is done: the same receipt again.
@@ -94,6 +98,8 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         let seq_at_stop = book.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq).unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
         assert_eq!(book.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq), Some(seq_at_stop), "no digest of a parked node reaches the admin");
+        assert!(seq_at_stop <= boundary, "every digest the admin holds of the node was sent at or below its boundary: {seq_at_stop} > {boundary}");
+        assert_eq!(running.membership.last_digest_seq(), boundary, "a parked node allocates no digest after its boundary");
         assert!(node::stop_commanded(), "the process is parked");
 
         // The start: the same birth rejoins through the admin that commands it.
@@ -123,6 +129,7 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         };
         assert_eq!((after.node.node_id.clone(), after.node.incarnation.clone(), after.node.endpoint_id.clone(), after.node.transport_addr), (born.node.node_id.clone(), born.node.incarnation.clone(), born.node.endpoint_id.clone(), born.node.transport_addr), "the same birth at the same endpoint and port");
         assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
+        assert!(after.digest_seq > boundary, "the started birth publishes above its stop boundary: its rejoin");
         assert!(!node::stop_commanded(), "the process is live again");
         assert!(running.membership.neighbours() >= 1, "the node is a neighbour again");
         let _ = std::fs::remove_dir_all(&dir);
