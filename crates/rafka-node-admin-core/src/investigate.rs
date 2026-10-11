@@ -726,19 +726,21 @@ impl ProbeCalls for WatchCalls<'_> {
 /// Probe `mesh`'s node-admins (mesh-investigation.md steps 1 and 3) through `calls`: `ProbeNodeState`
 /// to the exact mesh-primary the held seat record `record` names first, then to each other
 /// node-admin (`admins_in_probe_order`), each direct and, when that fails, Forwarded through a member
-/// that answered a Ping ([`find_carrier`]). `carriers` holds the carrier each mesh's latest probe went
-/// through; probe 2 prefers a member probe 1 did not use.
+/// that answered the Ping round made for it ([`find_carrier`]). `carriers` holds the carrier each
+/// mesh's latest probe went through; probe 2 prefers another member.
 pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rafka_mesh_entity::seat::SeatHolder>, mesh: &str, n: u8) -> Found {
     let seat_record = record.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let admins = admins_in_probe_order(view, mesh, record.as_ref());
     if admins.is_empty() {
         return Found { detail: format!("the view holds no node-admin of {mesh}"), seat_record, ..Found::default() };
     }
-    // Each node-admin in turn, the exact mesh-primary first: direct, then through a carrier member
-    // (found once per probe, on the first direct contact that fails). The first node-admin that
-    // answers ends the probe.
-    let mut carrier: Option<Option<Node>> = None;
-    let (mut members_asked, mut carrier_why) = (String::new(), String::new());
+    // Each node-admin in turn, the exact mesh-primary first, follows the direct-then-via-peer policy:
+    // direct; when that fails, its own Ping round and the Forward through the member that ponged. The
+    // first node-admin that answers ends the probe. The carrier probe 2 prefers to avoid is the one
+    // that carried probe 1, read once here, never one this probe has used since.
+    let avoid = (n > 1).then(|| carriers.lock().unwrap().get(mesh).cloned()).flatten();
+    let mut carrier: Option<PathName> = None;
+    let mut members_asked: Vec<String> = Vec::new();
     let (mut outcomes, mut asked_admins, mut details) = (Vec::new(), Vec::new(), Vec::new());
     let (mut iroh_known, mut iroh_active) = (Vec::new(), Vec::new());
     for admin in &admins {
@@ -756,51 +758,51 @@ pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BT
             break;
         }
         let direct_failed = format!("direct: {}", direct.end);
-        if carrier.is_none() {
-            let (found, asked, why) = find_carrier(calls, carriers, view, mesh, n).await;
-            (members_asked, carrier_why) = (asked, why);
-            carrier = Some(found);
+        let (found, asked, why) = find_carrier(calls, view, mesh, avoid.as_ref()).await;
+        for m in asked {
+            if !members_asked.contains(&m) {
+                members_asked.push(m);
+            }
         }
-        let Some(Some(c)) = &carrier else {
+        let Some(c) = found else {
             outcomes.push(ProbeOutcome::Unreachable);
             asked_admins.push(format!("{}=unreachable", admin.name));
-            details.push(format!("{direct_failed}; no member answered the Ping ({carrier_why})"));
+            details.push(format!("{direct_failed}; no member answered the Ping ({why})"));
             continue;
         };
-        let carried = calls.via(c, admin, &req).await;
+        let carried = calls.via(&c, admin, &req).await;
         outcomes.push(carried.outcome);
         asked_admins.push(format!("{}={}(via {})", admin.name, carried.outcome.as_str(), c.name));
         details.push(format!("{direct_failed}; {}", carried.detail));
+        carrier = Some(c.name);
         if carried.outcome == ProbeOutcome::AdminAlive {
             break;
         }
     }
-    let carrier = carrier.flatten().map(|c| c.name.to_string()).unwrap_or_default();
-    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), seat_record }
+    if let Some(c) = &carrier {
+        carriers.lock().unwrap().insert(mesh.to_string(), c.clone());
+    }
+    let carrier = carrier.map(|c| c.to_string()).unwrap_or_default();
+    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked.join(","), carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), seat_record }
 }
 
-/// The carrier of a probe: a few of `mesh`'s ordinary members Pinged in parallel, active
-/// connections first, then path order; probe 2 prefers a member probe 1 did not carry through.
-/// Answers the member that ponged (`None`: none did), the members asked, and why each failed.
-async fn find_carrier<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, mesh: &str, n: u8) -> (Option<Node>, String, String) {
+/// The carrier for one node-admin: a few of `mesh`'s ordinary members Pinged in parallel, active
+/// connections first, then path order, the member `avoid` (the one that carried probe 1, when this is
+/// probe 2) asked last. Answers the first member in that order that ponged (`None`: none did), the
+/// members asked, and why each failed.
+async fn find_carrier<C: ProbeCalls + ?Sized>(calls: &C, view: &Topology, mesh: &str, avoid: Option<&PathName>) -> (Option<Node>, Vec<String>, String) {
     let mut members: Vec<Node> = view.members().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving && m.status != NodeStatus::Restarting).cloned().collect();
     members.sort_by_key(|m| (!calls.connected(&m.node_id), m.name.to_string()));
-    let used = (n > 1).then(|| carriers.lock().unwrap().get(mesh).cloned()).flatten();
-    if n > 1 {
-        members.sort_by_key(|m| used.as_ref() == Some(&m.name));
-    }
+    members.sort_by_key(|m| avoid == Some(&m.name));
     let asked: Vec<Node> = members.into_iter().take(PROBE_FANOUT).collect();
     let pings = futures_util::future::join_all(asked.iter().map(|m| async move {
         let (ponged, end) = calls.ping(m).await;
         (m, ponged, end)
     }))
     .await;
-    let members_asked = asked.iter().map(|m| m.name.to_string()).collect::<Vec<_>>().join(",");
+    let members_asked = asked.iter().map(|m| m.name.to_string()).collect();
     let why = pings.iter().map(|(m, _, o)| format!("{}: {o}", m.name)).collect::<Vec<_>>().join("; ");
     let carrier = pings.iter().find(|(_, ponged, _)| *ponged).map(|(m, _, _)| (*m).clone());
-    if let Some(c) = &carrier {
-        carriers.lock().unwrap().insert(mesh.to_string(), c.name.clone());
-    }
     (carrier, members_asked, why)
 }
 
