@@ -14,7 +14,7 @@
 use super::*;
 use crate::build_state::{BuildStepReceipt, StepOutcome};
 use crate::deployment::pipeline::{MeshLeaveEvent, RuntimeProof, TerminalReceipt};
-use crate::mesh_leave::{accepted_roster, first_mismatch, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
+use crate::mesh_leave::{accepted_roster, first_mismatch, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_LEFT};
 use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
@@ -316,22 +316,20 @@ impl AdminRunner {
         let my_fact = self.held_runtime(&me).ok_or_else(|| format!("{} publishes no runtime fact: its own exact runtime cannot be named", me.name))?;
         let me_birth = RosterBirth::of(&me)?;
         let my_runtime = RuntimeProof::of(&my_fact);
-        let roster = accepted_roster(&*self.builds, key, STEP_LEAVING_ROSTER, &self.me.to_string(), &me_birth, &my_runtime, || {
+        // The roster captured once, or, when this admin holds none, what the owner admitted: the
+        // roster amendments the fabric-primary recorded (a primary lost mid-leave) are read from the
+        // owner's Build facts when this admin has not yet heard them ([`crate::mesh_leave::leaving_roster`]).
+        let build_id = crate::build::BuildId(key.build_id.clone());
+        let fetch_owner = || async {
+            let node_rpc = self.node_rpc.as_ref().ok_or_else(|| format!("{} holds no Node RPC client to read the owner {owner}'s Build facts with", self.me))?;
+            crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(owner.clone()), &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}", self.me))
+        };
+        let capture = || {
             let mut roster = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.node_id != me.node_id).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
             roster.push(me_birth.clone());
             Ok(roster)
-        })
-        .await?;
-        // The roster amendments the fabric-primary recorded (a primary lost mid-leave): their new
-        // final primaries join the roster captured once, read from the owner's Build facts when
-        // this admin has not yet heard the amendment that admits it.
-        let build_id = crate::build::BuildId(key.build_id.clone());
-        let steps = self.builds.read_build(&build_id).await.map_err(|e| format!("{}: the Build {} could not be read for its roster amendments: {e}", self.me, key.build_id))?.steps;
-        let fetch_owner = || async {
-            let node_rpc = self.node_rpc.as_ref().ok_or_else(|| format!("{} holds no Node RPC client to read the owner {owner}'s Build facts with", self.me))?;
-            crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(owner.clone()), &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for its roster amendments: {e}", self.me))
         };
-        let (roster, known) = crate::mesh_leave::admission_roster(&roster, &steps, &key.operation, &me_birth, fetch_owner).await?;
+        let (roster, known) = crate::mesh_leave::leaving_roster(&*self.builds, key, &self.me.to_string(), &me_birth, &my_runtime, capture, fetch_owner).await?;
         let records: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
         members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, &records, &known, |n| async move { self.shutdown_one(key, &n).await }).await
     }

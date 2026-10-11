@@ -529,13 +529,29 @@ where
 }
 
 /// The path of the one node-admin the fabric-primary creates for a leaving mesh no admin of which
-/// survives (mesh-leave.md, "Resume after the primary's loss", step 2).
+/// survives (mesh-leave.md, "Resume after the primary's loss", step 2: "the one node-admin the
+/// fabric-primary created for it, the only new birth a leaving mesh may gain"): a new birth, so a
+/// path no birth ever held, the next admin ordinal of `mesh` above every one the accepted roster
+/// (`roster`) and the view (`held`, every status, `.old` names included) hold. A path a lost birth
+/// still holds is never reused: the create door would fence against that birth and replace it.
 pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate::model::PathName]) -> Result<crate::model::PathName, String> {
-    let _ = (roster, held);
-    format!("{mesh}.admin.1").parse::<crate::model::PathName>().map_err(|e| format!("{mesh}: {e}"))
+    let named = roster.iter().filter_map(|b| b.node.parse::<crate::model::PathName>().ok());
+    let top = named.chain(held.iter().cloned()).filter(|p| p.mesh == mesh && p.kind == NodeKind::NodeAdmin).map(|p| p.ordinal).max().unwrap_or(0);
+    let next = top.checked_add(1).ok_or_else(|| format!("{mesh}: no admin ordinal is free above {top}"))?;
+    Ok(crate::model::PathName { mesh: mesh.to_string(), kind: NodeKind::NodeAdmin, ordinal: next, old: false })
 }
 
-/// The roster a leaving primary runs `LeaveMesh` over and the owner's step receipts it read for it.
+/// The roster a leaving primary `me` runs `LeaveMesh` over, and the owner's step receipts it read
+/// for it (mesh-leave.md step 1 and "Resume after the primary's loss"). A `LeavingRoster` this admin
+/// holds is the roster captured once ([`admission_roster`] extends it by the amendments). With none
+/// held, this admin does not know from its own facts whether it is admitted at all: the owner's
+/// Build facts are read (`fetch_owner`, the sender of `LeaveMesh`; gossip is never authority) and
+/// what the owner admitted decides. Admitted as the final primary at admission: the first run of the
+/// leave, and `capture()` is recorded as the `LeavingRoster`. Admitted by a `RosterAmended` (the admin
+/// the election seated, or the one node-admin the fabric-primary created when none survived): the
+/// roster is the owner's accepted roster plus every amendment, used for this run and written
+/// nowhere, so the accepted roster is never recaptured. Any other final primary refuses the run by
+/// name, both births named.
 #[allow(clippy::too_many_arguments)]
 pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
 where
@@ -543,9 +559,27 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<Vec<BuildFact>, String>>,
 {
-    let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, capture).await?;
-    let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for its roster amendments: {e}", key.build_id))?.steps;
-    admission_roster(&roster, &steps, &key.operation, me, fetch_owner).await
+    let operation = key.operation.as_str();
+    let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
+    let build_id = BuildId(key.build_id.clone());
+    let own = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}"))?.steps;
+    if accepted_row(&own, operation, STEP_LEAVING_ROSTER).is_some() {
+        let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, capture).await?;
+        return admission_roster(&roster, &own, operation, me, fetch_owner).await;
+    }
+    let known: Vec<BuildStepReceipt> = fetch_owner().await?.into_iter().filter_map(|f| if let BuildFact::Step(r) = f { Some(r) } else { None }).filter(|r| r.operation == operation || r.operation.starts_with(&format!("{operation}/"))).collect();
+    let all: Vec<BuildStepReceipt> = own.iter().cloned().chain(known.iter().cloned()).collect();
+    let admitted = admitted_of(&all, operation).ok_or_else(|| format!("{operation}: neither {executor}'s Build facts nor the owner's hold an {STEP_ACCEPTED_ROSTER} receipt: the leave was admitted for no birth, so no member is stopped"))??;
+    if &admitted.final_primary != me {
+        return Err(format!("{operation}: {executor} ({}) is not the final primary: the owner admitted {} after {} amendment(s), so no member is stopped", named(me), named(&admitted.final_primary), admitted.amendments.len()));
+    }
+    if admitted.amendments.is_empty() {
+        let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, capture).await?;
+        return Ok((roster, known));
+    }
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-owner-admitted-roster", operation = %operation, me = %named(me), amendments = admitted.amendments.len(), roster = admitted.roster.len(), owner_receipts = known.len())
+        .in_scope(|| tracing::info!("this admin holds no roster and an amendment admits it: it runs the owner's accepted roster plus every amendment and captures none"));
+    Ok((admitted.roster, known))
 }
 
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
