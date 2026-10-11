@@ -322,6 +322,14 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     for sp in named(&spans, "rdm.node_admin.build.update.via-seat-moved").into_iter().filter(|sp| attr(sp, "build_id") == build) {
         assert_eq!(attr(sp, "to"), n_name, "SeatMoved names N: {sp:#?}");
     }
+    // The planned move ends N's inner stream by the typed new-seat frame: once its own seat book
+    // names it the fabric-primary, N answers the old driver's `build.attempt.run` with SeatMoved
+    // naming itself instead of writing the next frame. A planned move leaves no fault anywhere in
+    // the run (the fault span of a handler is a root of its own trace, so the whole run is read).
+    let n_moved: Vec<&Value> = named(&spans, "rdm.node_admin.build.serve.via-node-rpc").into_iter().filter(|sp| attr(sp, "node") == n_name && attr(sp, "call") == "attempt.run" && attr(sp, "outcome") == "seat-moved").collect();
+    assert_eq!(n_moved.len(), 1, "N ended the old driver's attempt.run with SeatMoved once: {:#?}", named(&spans, "rdm.node_admin.build.serve.via-node-rpc"));
+    let faults = named(&spans, "rdm.node_rpc.handler.reject.via-internal-rpc-failure");
+    assert!(faults.is_empty(), "a planned seat move left a handler fault: {faults:#?}");
     let later_claims: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "won" && num(sp, "attempt").is_some_and(|a| a > transfer_attempt)).collect();
     assert!(later_claims.is_empty(), "N resumed the same attempt; no later attempt was claimed: {later_claims:#?}");
     // The Build facts were handed on with the fence.
