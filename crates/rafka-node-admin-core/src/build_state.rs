@@ -61,6 +61,9 @@ pub enum AttemptReason {
     Stop,
     /// A standalone start of a parked birth was requested (`start-node:<path>`).
     Start,
+    /// A mesh-primary proved a member's exact birth exited and submitted its recovery
+    /// (`recover-node:<path>`, node-recovery.md).
+    Recovery,
 }
 
 impl AttemptReason {
@@ -75,6 +78,7 @@ impl AttemptReason {
             Self::Drain => "drain",
             Self::Stop => "stop",
             Self::Start => "start",
+            Self::Recovery => "recovery",
         }
     }
 }
@@ -255,6 +259,18 @@ pub struct BuildProjection {
     /// The fenced action the current attempt carries, when it carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<AttemptAction>,
+    /// The fenced action each claimed attempt carried, by attempt (from its `Opened` fact). A
+    /// receipt names its attempt; this names the birth that attempt acted on, so a standalone
+    /// operation's `Complete` needs no output of its own to say which birth it completed for.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attempt_actions: BTreeMap<u32, AttemptAction>,
+}
+
+impl BuildProjection {
+    /// Whether `attempt` carried exactly `action`.
+    pub fn carried(&self, attempt: u32, action: &AttemptAction) -> bool {
+        self.attempt_actions.get(&attempt) == Some(action)
+    }
 }
 
 /// The result of claiming an attempt.
@@ -373,6 +389,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     last_failure: None,
                     reason: AttemptReason::Requested,
                     action: None,
+                    attempt_actions: BTreeMap::new(),
                 });
             }
             BuildFact::Opened(o) => {
@@ -405,6 +422,9 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                         p.attempt = c.attempt;
                         p.executor = Some(c.executor.clone());
                         p.state = BuildState::Running;
+                        if let Some(a) = &p.action {
+                            p.attempt_actions.insert(c.attempt, a.clone());
+                        }
                     }
                 }
             }
@@ -549,6 +569,30 @@ pub trait BuildStateAdapter: Send + Sync {
     /// attached to the run, never a fact, never durable. A state with no call attached to its runs
     /// has nobody to tell.
     async fn note_blocked(&self, _build_id: &BuildId, _attempt: u32, _operation: &str, _step: &str, _reason: &str) {}
+    /// The Build and attempt whose `recover-node:<path>` operation completed for the exited birth
+    /// `(node_id, incarnation)`, from every Build's step receipts in the log (a forgotten Build's
+    /// receipts included: forgetting leaves the views, never the receipts). The first such attempt.
+    /// A point read by the exited birth: every adapter answers it from its index (or delegates to
+    /// the adapter it decorates), never by reading the fact log.
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError>;
+}
+
+/// The exited birth a `recover-node:<path>` `NodeDeleted` receipt names: its output is the
+/// lifecycle operation of the exited instance's node.delete, `(path, node_id, incarnation)`.
+pub(crate) fn recovery_deleted(s: &BuildStepReceipt) -> Option<(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)> {
+    if s.step != "NodeDeleted" || s.outcome != StepOutcome::Complete {
+        return None;
+    }
+    let path = s.operation.strip_prefix("recover-node:")?.parse().ok()?;
+    let output = s.output.as_ref()?;
+    let node_id = serde_json::from_value(output.get("node_id")?.clone()).ok()?;
+    let incarnation = serde_json::from_value(output.get("incarnation")?.clone()).ok()?;
+    Some((path, node_id, incarnation))
+}
+
+/// Whether `s` is the `Complete` receipt of a `recover-node:<path>` operation.
+fn recovery_completed(s: &BuildStepReceipt) -> bool {
+    s.step == "Complete" && s.outcome == StepOutcome::Complete && s.operation.starts_with("recover-node:")
 }
 
 /// What an opened attempt carries, for a refusal: its reason, its action and who opened it.
@@ -559,6 +603,7 @@ fn describe_open(o: &AttemptOpened) -> String {
         Some(crate::accepted::AttemptAction::Drain { path, from_incarnation }) => format!("drain of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
         None => "no fenced action".to_string(),
     };
     format!("{} ({action}, opened by {})", o.reason.as_str(), o.opened_by)
@@ -568,9 +613,50 @@ fn describe_open(o: &AttemptOpened) -> String {
 #[derive(Debug, Default)]
 struct FactLog {
     facts: Vec<BuildFact>,
+    /// The recovery index, in two halves a receipt fills in whatever order it arrives (gossip and
+    /// catch-up deliver in any order): every `recover-node:<path>` `NodeDeleted` by the exited birth
+    /// `(node_id, incarnation)` it names, to its path, Build and attempt...
+    recovery_deletes: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(crate::model::PathName, BuildId, u32)>>,
+    /// ...and the attempts of each `(Build, recover-node operation)` whose `Complete` is receipted.
+    /// A birth is recovered once its `NodeDeleted` and a `Complete` of the same operation at that
+    /// attempt or later are both held. Filled by [`FactLog::push`], the one place a fact enters the
+    /// log (own appends, absorbed facts and a journal's replay alike); forgetting a Build leaves
+    /// both, as it leaves the receipts.
+    recovery_completes: std::collections::HashMap<(BuildId, String), std::collections::BTreeSet<u32>>,
 }
 
 impl FactLog {
+    /// Append `fact` to the log and fold it into the indexes.
+    fn push(&mut self, fact: BuildFact) {
+        if let BuildFact::Step(s) = &fact {
+            if let Some((path, node_id, incarnation)) = recovery_deleted(s) {
+                let held = self.recovery_deletes.entry((node_id, incarnation)).or_default();
+                if !held.iter().any(|(p, b, a)| *p == path && *b == s.build_id && *a == s.attempt) {
+                    held.push((path, s.build_id.clone(), s.attempt));
+                }
+            } else if recovery_completed(s) {
+                self.recovery_completes.entry((s.build_id.clone(), s.operation.clone())).or_default().insert(s.attempt);
+            }
+        }
+        self.facts.push(fact);
+    }
+
+    /// The point read of [`BuildStateAdapter::recovery_of`]: the exited birth's `NodeDeleted`
+    /// receipts at `path`, each answered by the first `Complete` of its operation at its attempt or
+    /// later; the first such attempt.
+    fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, u32)> {
+        let operation = format!("recover-node:{path}");
+        self.recovery_deletes
+            .get(&(node_id.clone(), incarnation.clone()))?
+            .iter()
+            .filter(|(p, _, _)| p == path)
+            .filter_map(|(_, build, deleted)| {
+                let completed = self.recovery_completes.get(&(build.clone(), operation.clone()))?.range(*deleted..).next()?;
+                Some((build.clone(), *completed))
+            })
+            .min_by_key(|(_, a)| *a)
+    }
+
     fn accepted_conflict(&self, accepted: &BuildAccepted) -> Result<bool, BuildStateError> {
         for f in &self.facts {
             if let BuildFact::Accepted(i) = f {
@@ -664,7 +750,7 @@ impl MemoryBuildStateAdapter {
         let mut log = self.log.lock().unwrap();
         for f in facts {
             if log.is_new(f) {
-                log.facts.push(f.clone());
+                log.push(f.clone());
             }
         }
     }
@@ -707,7 +793,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let mut log = self.log.lock().unwrap();
         if !log.accepted_conflict(accepted)? {
-            log.facts.push(BuildFact::Accepted(accepted.clone()));
+            log.push(BuildFact::Accepted(accepted.clone()));
         }
         Ok(())
     }
@@ -718,7 +804,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
             return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
         }
         if log.admit_open(opened)? {
-            log.facts.push(BuildFact::Opened(opened.clone()));
+            log.push(BuildFact::Opened(opened.clone()));
         }
         Ok(())
     }
@@ -742,7 +828,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         if let Some(not_open) = log.not_open(&claim) {
             return Ok(not_open);
         }
-        log.facts.push(BuildFact::Claim(claim.clone()));
+        log.push(BuildFact::Claim(claim.clone()));
         Ok(ClaimOutcome::Won)
     }
 
@@ -752,12 +838,12 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        self.log.lock().unwrap().facts.push(BuildFact::Step(receipt.clone()));
+        self.log.lock().unwrap().push(BuildFact::Step(receipt.clone()));
         Ok(())
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.log.lock().unwrap().facts.push(BuildFact::Attempt(receipt.clone()));
+        self.log.lock().unwrap().push(BuildFact::Attempt(receipt.clone()));
         Ok(())
     }
 
@@ -765,8 +851,12 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         Ok(self.log.lock().unwrap().facts.clone())
     }
 
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+        Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
+    }
+
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        self.log.lock().unwrap().facts.push(BuildFact::Forget { build_id: build_id.clone() });
+        self.log.lock().unwrap().push(BuildFact::Forget { build_id: build_id.clone() });
         Ok(())
     }
 }
@@ -802,7 +892,7 @@ impl FileJournal {
                 }
                 let fact: BuildFact = serde_json::from_str(&line)
                     .map_err(|e| BuildStateError::CorruptJournal { line: i + 1, reason: e.to_string() })?;
-                log.facts.push(fact);
+                log.push(fact);
             }
         }
         Ok(Self { path, log: Mutex::new(log), writer: tokio::sync::Mutex::new(()) })
@@ -818,7 +908,7 @@ impl FileJournal {
             writeln!(f, "{line}").and_then(|_| f.sync_data()).map_err(|e| BuildStateError::Io(e.to_string()))
         })
         .await?;
-        self.log.lock().unwrap().facts.push(fact);
+        self.log.lock().unwrap().push(fact);
         Ok(())
     }
 }
@@ -896,6 +986,10 @@ impl BuildStateAdapter for FileJournal {
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         Ok(self.log.lock().unwrap().facts.clone())
+    }
+
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32)>, BuildStateError> {
+        Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -1182,6 +1276,50 @@ mod tests {
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         let again = FileJournal::open(&dir).unwrap();
         assert_eq!(again.read_build(&BuildId("b1".into())).await.unwrap().state, BuildState::Complete);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (node-recovery.md "A repeat submit answers AlreadyApplied ... never a second
+    /// recovery"): the recovery index is folded wherever a fact enters the log, so a restarted
+    /// fabric-primary's journal replay and an absorbed fact answer the point read as an own append
+    /// does, and the first recovering attempt stays the answer.
+    /// Must NOT happen: a restarted admin answering None for a birth its journal holds recovered.
+    #[tokio::test]
+    async fn the_recovery_index_is_folded_on_append_replay_and_absorb() {
+        let (path, node_id, incarnation): (crate::model::PathName, _, _) = ("mesh1.rpc.1".parse().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        // A recovery's receipts as the pipeline writes them: NodeDeleted names the exited birth (its
+        // lifecycle operation), and Complete commits no output.
+        let receipt = |build: &str, attempt: u32, step: &str| BuildStepReceipt {
+            build_id: BuildId(build.into()),
+            attempt,
+            operation: format!("recover-node:{path}"),
+            step: step.into(),
+            outcome: StepOutcome::Complete,
+            output: (step == "NodeDeleted").then(|| {
+                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: build.into(), attempt, operation: format!("recover-node:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+            }),
+            executor: Some("mesh1.admin.1".into()),
+        };
+        let dir = tmp();
+        {
+            let j = FileJournal::open(&dir).unwrap();
+            j.publish_accepted(&intent("b1")).await.unwrap();
+            j.append_step_receipt(&receipt("b1", 2, "NodeDeleted")).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "deleted, not complete: not recovered");
+            j.append_step_receipt(&receipt("b1", 2, "Complete")).await.unwrap();
+            j.append_step_receipt(&receipt("b1", 3, "NodeDeleted")).await.unwrap();
+            j.append_step_receipt(&receipt("b1", 3, "Complete")).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId("b1".into()), 2)), "own append: the first recovering attempt");
+        }
+        let j = FileJournal::open(&dir).unwrap(); // the admin restarted
+        assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId("b1".into()), 2)), "journal replay");
+        assert_eq!(j.recovery_of(&"mesh1.rpc.2".parse().unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
+        let m = MemoryBuildStateAdapter::new();
+        // Gossip delivers in any order: the Complete heard before the NodeDeleted.
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "Complete"))]);
+        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
+        m.absorb(&[BuildFact::Step(receipt("b1", 2, "NodeDeleted"))]);
+        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId("b1".into()), 2)), "absorbed, in either order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

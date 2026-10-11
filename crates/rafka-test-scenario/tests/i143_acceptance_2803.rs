@@ -11,7 +11,6 @@ use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
@@ -56,11 +55,13 @@ fn births(nodes: &[Value]) -> BTreeMap<String, String> {
 /// and opens an attempt of the SAME accepted Build that runs the mesh-create flow for the lost
 /// mesh's first admin with its EXISTING MeshId (no id is minted). That admin calls its maker
 /// (JoinNode), reads a local member's topology, becomes Ready and sweeps its own mesh once with a
-/// Ping: the two members that live answer, the one that died does not. The unreached member goes
-/// through the standard decommission (its runtime inspected as exited, `NodeDeleted` on that proof)
-/// and is replaced under the same Build; the second admin is created by the NEW mesh primary. What
-/// must NOT happen: a new MeshId or Build id, a surviving member re-created, a member that answered
-/// decommissioned, the fabric primary creating the second admin.
+/// Ping: the two members that live answer, the one that died does not. The unreached member goes to
+/// node recovery (mesh-recovery.md step 6): the new mesh-primary's tickle, then the provider's exact
+/// exit proof, then one recovery under the same Build (`recover-node:<path>`: node.delete of the
+/// exited instance with no RPC to it, node.create at the same path.name); a missing Ping reply is the
+/// trigger, never the proof. The second admin is created by the NEW mesh primary. What must NOT
+/// happen: a new MeshId or Build id, a surviving member re-created, a member that answered
+/// recovered, the fabric primary creating the second admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let cell = "recovery_admin_restores_lost_cohort_preserves_mesh_and_build";
@@ -90,6 +91,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let (_, b0) = estate.get(&format!("/api/builds?id={accepted}")).await;
     let attempt_before = b0["attempt"].as_u64().unwrap_or(0);
     let lost_births: BTreeMap<String, String> = births(&before).into_iter().filter(|(n, _)| n.starts_with(&format!("{lost}.admin.")) || *n == window_victim).collect();
+    let victim_id = before.iter().find(|n| s(&n["name"]) == window_victim).map(|n| s(&n["node_id"])).expect("the member's node id");
 
     // Control goes through the fabric primary's advertised API, which the fault never touches.
     estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_holder).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
@@ -108,14 +110,13 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         killed.push(json!({"node": "mesh1.admin.1", "pid": "bootstrap"}));
     }
     assert_eq!(killed.len(), 2, "both admins of {lost} were lost: {killed:?}");
-    // The member is frozen (SIGSTOP): its exact runtime still runs but it answers nothing, so no
-    // proof of exit exists and only the decommission, which may terminate, can replace it.
-    let mut frozen_pid = 0u32;
+    // The member dies too (SIGKILL): its exact runtime exits while the mesh has no admin.
+    let mut victim_pid = 0u32;
     for (path, pid) in estate.live_runtimes() {
         if path.file_name().unwrap().to_string_lossy().starts_with(&format!("{window_victim}-")) {
-            assert!(Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success());
-            frozen_pid = pid;
-            killed.push(json!({"node": window_victim, "pid": pid, "signal": "STOP"}));
+            estate.kill_pid(pid);
+            victim_pid = pid;
+            killed.push(json!({"node": window_victim, "pid": pid, "signal": "KILL"}));
         }
     }
     assert_eq!(killed.len(), 3, "the member died in the admin-less window: {killed:?}");
@@ -176,33 +177,30 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     for m in &survivors {
         assert!(!silent.contains(m), "{m} answered the sweep: {silent:?}");
     }
-    // Not reached starts the standard decommission, one attempt per node in path order. The frozen
-    // member has no exit to prove, so only the decommission replaces it: its retire pipeline drains
-    // when sendable, terminates and inspects the exact runtime, and publishes NodeDeleted on that
-    // proven exit; the node is then created again under the same Build. The dead sibling admin is
-    // replaced by this queue or by the drift check that proves the same exit, whichever opened its
-    // attempt first.
-    let decommissions: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").into_iter().filter(|sp| attr(sp, "sweeper") == recovery_admin).collect();
-    for dead in [&window_victim, &sibling] {
-        assert!(decommissions.iter().any(|sp| attr(sp, "node") == *dead), "{dead} entered the decommission queue: {decommissions:?}");
-    }
-    // Both admins of the mesh sweep, so two spans name the member: the admin whose attempt ran it
-    // ends `attempt N`, the other finds it `replaced-by-another-attempt`. Either admin of the mesh may be the one that ran it.
-    let victim: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").into_iter().filter(|sp| attr(sp, "node") == window_victim && attr(sp, "sweeper").starts_with(&format!("{lost}.admin."))).collect();
-    assert!(
-        victim.iter().any(|sp| attr(sp, "outcome").starts_with("attempt ") && !attr(sp, "outcome").contains("failed")),
-        "the frozen member's decommission ended complete in the attempt that ran it: {victim:?}"
-    );
+    // Not reached goes to node recovery under the new mesh-primary (mesh-recovery.md step 6): its tickle,
+    // the provider's exact exit proof, one recovery of the exited birth under the same Build. No
+    // decommission queue exists.
+    assert!(named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").is_empty(), "no sweep decommission: the unreached member is node-recovered");
+    let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+        .into_iter()
+        .filter(|sp| attr(sp, "node") == window_victim && attr(sp, "node_id") == victim_id && attr(sp, "outcome").starts_with("complete"))
+        .collect();
+    assert_eq!(recovery.len(), 1, "the dead member is recovered once, keyed on its exited birth: {recovery:?}");
+    assert!(attr(recovery[0], "submitter").starts_with(&format!("{lost}.admin.")), "by its own mesh's new primary: {recovery:?}");
+    assert_eq!(attr(recovery[0], "build_id"), accepted, "under the same Build: {recovery:?}");
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "outcome") == "complete")
+        .filter(|sp| attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "attempt") == attr(recovery[0], "attempt") && attr(sp, "outcome") == "complete")
         .map(|sp| attr(sp, "step"))
         .collect();
-    for step in ["DrainNode", "StopNode", "TerminateRuntime", "NodeDeleted"] {
-        assert!(victim_steps.iter().any(|n| n == step), "the standard retire ran {step} for {window_victim}: {victim_steps:?}");
+    for step in ["NodeDeleting", "NodeDeleted", "DeployRuntime", "WaitForNodeReady", "Complete"] {
+        assert!(victim_steps.iter().any(|n| n == step), "the recovery ran {step} for {window_victim}: {victim_steps:?}");
     }
-    let gone = !std::path::Path::new(&format!("/proc/{frozen_pid}")).exists() || std::fs::read_to_string(format!("/proc/{frozen_pid}/stat")).unwrap_or_default().contains(") Z ");
-    assert!(gone, "the frozen member's exact runtime (pid {frozen_pid}) was terminated and inspected as exited");
+    for step in ["DrainNode", "StopNode"] {
+        assert!(!victim_steps.iter().any(|n| n == step), "no RPC to the exited process: {step} ran for {window_victim}: {victim_steps:?}");
+    }
+    let gone = !std::path::Path::new(&format!("/proc/{victim_pid}")).exists() || std::fs::read_to_string(format!("/proc/{victim_pid}/stat")).unwrap_or_default().contains(") Z ");
+    assert!(gone, "the member's exact runtime (pid {victim_pid}) exited");
     // The members that answered are never retired or created again.
     let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
@@ -214,9 +212,9 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
 
     // The second admin was created by an attempt the NEW mesh primary executed, not the fabric primary.
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == accepted).collect();
-    // The birth is an operation of the accepted Build: `create.via-build` when the drift check
-    // proved the exit first (node-recovery.md), `update.via-build` when the sweep's decommission
-    // queue opened the replace first (node-replace.md). Either admin of the mesh may open it.
+    // The birth is an operation of the accepted Build: the fabric-primary's drift check replaces the
+    // proven-exited admin (`node.update.via-build`, node-replace.md), or the shape creates the missing
+    // one (`node.create.via-build`).
     let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
