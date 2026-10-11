@@ -435,7 +435,7 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
 /// application's `hydrate_before_ready` does) streams one `Blocked { operation, step, reason }` frame
 /// naming the step in flight and the check's own reason, however many times the check is polled with
 /// that reason; the blocker is live progress, so the stream goes on, and when the node is ready it
-/// emits `node.ready` and `Complete`.
+/// emits `node.created` and `Complete`.
 #[test]
 fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() {
     let cap = capture();
@@ -480,7 +480,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
 
 /// CONTRACT: a create whose node has joined but only reports Pending (no hook has named a blocker)
 /// streams no `Blocked` frame however long the Ready check fails; when the node is ready the stream
-/// emits `node.ready` and `Complete`.
+/// emits `node.created` and `Complete`.
 #[test]
 fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
     let cap = capture();
@@ -502,7 +502,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
     });
     assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Blocked { .. })), "a Pending node with no named blocker is not a Blocked frame: {frames:?}");
-    assert_eq!(frames[frames.len() - 2..], [Frame::Event(NodeEvent::Ready), Frame::Complete], "the ready node ends the stream: {frames:?}");
+    assert_eq!(frames[frames.len() - 2..], [Frame::Event(NodeEvent::Created), Frame::Complete], "the ready node ends the stream: {frames:?}");
 }
 
 /// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
