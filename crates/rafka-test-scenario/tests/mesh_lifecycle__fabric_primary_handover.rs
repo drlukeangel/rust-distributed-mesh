@@ -287,11 +287,11 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
     let dead_held: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-mesh-status").into_iter().filter(|sp| at_other(sp, "admin") && sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "dead" && s(&sp["attributes"]["publisher"]) == final_name && (sp["attributes"]["taken"] == json!(true) || sp["attributes"]["taken"] == "true")).collect();
     assert!(dead_held.iter().any(|sp| start_ns(sp) < final_exit), "an admin of {other_mesh} held mesh1 Dead from its last admin {final_name} while it lived: {dead_held:?}");
-    // 2. Stopped: the fabric-primary publishes mesh1's own aggregate as its publisher of record (no
-    // digests, the stop in in_flight). Its delivery before MeshLeft is not ordered by gossip (R-NS1
-    // acceptance: no ordering guarantee), so whether a peer installs it is read only in the held cell.
-    let acting: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-acting-primary").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == fabric_primary && attr_u(sp, "in_flight") >= 1 && attr_u(sp, "departed") == 0).collect();
-    assert!(!acting.is_empty(), "the fabric-primary {fabric_primary} published mesh1's own aggregate as its publisher of record once mesh1 had no primary");
+    // 2. Stopped: from the stop on the fabric-primary is mesh1's publisher of record, on the ordinary
+    // anti-entropy cadence (R-NS1 item 2). Here MeshLeft follows the stop within tens of milliseconds, so
+    // neither its acting aggregate nor a peer's stopped hold is owed before MeshLeft (R-NS1 acceptance:
+    // Running -> Gone is valid for an immediate teardown); both are read in the cell that holds the
+    // stopped phase.
     // 3. Gone after delete, and 4. nothing resurrects it: once a node of the other mesh applied mesh-left,
     // no mesh1 birth is held by it again (a late frame is refused by the departed fence, by name).
     let mesh_left_at: Vec<(String, u64)> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{other_mesh}.")) && attr_u(sp, "births_departed") > 0).map(|sp| (s(&sp["attributes"]["node"]), start_ns(sp))).collect();
