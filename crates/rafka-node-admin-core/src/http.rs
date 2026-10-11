@@ -145,14 +145,6 @@ impl ControlPlane {
 
     /// [`ControlPlane::submit`] under `span`, which names the surface the change came through.
     pub async fn submit_in(&self, span: tracing::Span, route: &'static str, change: TopologyChange) -> Result<Opened, Refusal> {
-        // `node.delete` of the parked predecessor a replacement left at `<path>.old`: the topology
-        // never names that path, so the delete is the next attempt of the accepted Build, fenced to
-        // the exact parked birth (node-decommission.md).
-        if let TopologyChange::RemoveNode { node } = &change {
-            if node.old {
-                return self.open_attempt_in(span, route, AttemptReason::Delete, node.clone(), ActionKind::Delete, None).await;
-            }
-        }
         // The span is entered by the future on each poll, never by a guard held across an await
         // (a guard stays entered on the worker while the task is parked). A refusal is reported
         // beside the request span, in the caller's span.
@@ -523,6 +515,12 @@ async fn spawn_node(State(cp): State<Shared>, raw: String) -> Result<Response, R
 
 async fn delete_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
+    // `node.delete` of the parked predecessor a replacement left at `<path>.old`: the topology never
+    // names that path, so the delete is the next attempt of the accepted Build, fenced to the exact
+    // parked birth (node-decommission.md).
+    if node.old {
+        return Ok(accepted(cp.open_attempt("DELETE /api/nodes/{name}", AttemptReason::Delete, node, ActionKind::Delete, None).await?));
+    }
     Ok(accepted(cp.submit("DELETE /api/nodes/{name}", TopologyChange::RemoveNode { node }).await?))
 }
 
