@@ -82,14 +82,14 @@ impl NodeConfigs {
         let _one = self.one_at_a_time.lock().await;
         let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
         if let Err(e) = storage.put_node_row(&row).await {
-            return StatusReply::ConfigRowRefused { node: subject.name.to_string(), reason: format!("{me}: nodes.storage refused the row of {node_id}: {e}") };
+            return StatusReply::config_row_refused(&subject.name.to_string(), &format!("{me}: nodes.storage refused the row of {node_id}: {e}"));
         }
         let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
         let told = NodeRpc::new(&self.client).config_apply(&birth, &route, config.clone(), &CallOptions::default()).await;
         match told {
             Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() },
-            Ok(refused) => StatusReply::ConfigNotApplied { node: subject.name.to_string(), answered: refused.name().into(), reason: format!("{me} wrote the row; the birth answered {refused:?}") },
-            Err(end) => StatusReply::ConfigNotApplied { node: subject.name.to_string(), answered: end.outcome().into(), reason: format!("{me} wrote the row; apply-node-config ended {}", describe(&end)) },
+            Ok(refused) => StatusReply::config_not_applied(&subject.name.to_string(), refused.name(), &format!("{me} wrote the row; the birth answered {refused:?}")),
+            Err(end) => StatusReply::config_not_applied(&subject.name.to_string(), end.outcome(), &format!("{me} wrote the row; apply-node-config ended {}", describe(&end))),
         }
     }
 }
