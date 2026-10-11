@@ -27,7 +27,7 @@
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-use rafka_mesh_entity::{ConfigOverCap, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS};
+use rafka_mesh_entity::{ConfigOverCap, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS, OPAQUE_ID_LEN};
 use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
@@ -340,10 +340,10 @@ const CONFIG_STRING_PREFIX_BYTES: usize = 2;
 const _: () = assert!(MAX_CONFIG_BYTES < 1 << 14, "a config string's length prefix is assumed to be at most two bytes");
 
 /// The most bytes an `UpdateNodeConfig` (or `ApplyNodeConfig`) at the config cap encodes to: the
-/// variant (a varint, at most five bytes), two ids (each a one-byte length and [`CROCKFORD60_LEN`]
-/// characters), the map's length (a varint under the key cap, at most two bytes), and every key and
+/// variant (a varint, at most five bytes), the node id (a one-byte length and [`CROCKFORD60_LEN`]
+/// characters), the incarnation (a one-byte length and [`OPAQUE_ID_LEN`] characters), the map's length (a varint under the key cap, at most two bytes), and every key and
 /// value at the cap with its length prefix. Derived from the cap, so the two cannot drift.
-pub const MAX_CONFIG_REQUEST_BYTES: usize = 5 + 2 * (1 + CROCKFORD60_LEN) + 2 + MAX_CONFIG_BYTES + MAX_CONFIG_KEYS * 2 * CONFIG_STRING_PREFIX_BYTES;
+pub const MAX_CONFIG_REQUEST_BYTES: usize = 5 + (1 + CROCKFORD60_LEN) + (1 + OPAQUE_ID_LEN) + 2 + MAX_CONFIG_BYTES + MAX_CONFIG_KEYS * 2 * CONFIG_STRING_PREFIX_BYTES;
 
 /// The bound every other Status request fits in.
 const MAX_DECLARATION_REQUEST_BYTES: usize = 1024;
@@ -560,6 +560,24 @@ pub enum StatusReply {
         /// The keys and bytes of the refused config and the bounds.
         over: ConfigOverCap,
     },
+    /// The config put was not made: the nodes store refused the node's row, so nothing was told to
+    /// the birth and the node's record is what it was.
+    ConfigRowRefused {
+        /// The node's `path.name`, the row the store refused.
+        node: String,
+        /// The store's refusal.
+        reason: String,
+    },
+    /// The fabric-primary wrote the node's row, and the exact birth did not apply the config: the
+    /// record holds the new config, the birth does not.
+    ConfigNotApplied {
+        /// The node's `path.name`.
+        node: String,
+        /// The birth's reply to `apply-node-config` by name, or the call's end by name.
+        answered: String,
+        /// Its detail.
+        reason: String,
+    },
 }
 
 impl StatusReply {
@@ -589,6 +607,8 @@ impl StatusReply {
             Self::CurrentParked { .. } => "current-parked",
             Self::ConfigUpdated { .. } => "config-updated",
             Self::RejectedConfig { .. } => "rejected-config",
+            Self::ConfigRowRefused { .. } => "config-row-refused",
+            Self::ConfigNotApplied { .. } => "config-not-applied",
         }
     }
 }
@@ -604,7 +624,7 @@ impl NodeProtocol for Status {
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 19;
-    const REPLY_VARIANTS: u32 = 23;
+    const REPLY_VARIANTS: u32 = 25;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -627,7 +647,9 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedInvalidMeshTransition { .. }
             | StatusReply::RejectedUnmatchedCompletion { .. }
             | StatusReply::StartFailed { .. }
-            | StatusReply::RejectedConfig { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::RejectedConfig { .. }
+            | StatusReply::ConfigRowRefused { .. }
+            | StatusReply::ConfigNotApplied { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -711,6 +733,8 @@ mod tests {
             (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::RejectedConfig { over: ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, ReplyKind::ProtocolRefusal),
+            (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
