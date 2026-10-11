@@ -913,6 +913,131 @@ mod writer {
         eprintln!("trace {}: via-node-row moment=claim outcome=row-written; trace {}: rdm.node_admin.node.remove.via-claim-withdrawn outcome=withdrawn", claims[0]["trace_id"].as_str().unwrap_or(""), withdrawn[0]["trace_id"].as_str().unwrap_or(""));
     }
 
+    /// The Build state of an executor lost while one step of attempt 1 ran: that step's work ran and
+    /// its receipt is never written (the run stops there, as a killed executor's does, and the step's
+    /// failure path never runs past it). Every other receipt reaches `inner`.
+    struct LostAt<'a> {
+        inner: &'a MemoryBuildStateAdapter,
+        step: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl rafka_node_admin_core::build_state::BuildStateAdapter for LostAt<'_> {
+        async fn publish_accepted(&self, a: &rafka_node_admin_core::build_state::BuildAccepted) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.publish_accepted(a).await
+        }
+        async fn open_attempt(&self, o: &rafka_node_admin_core::build_state::AttemptOpened) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.open_attempt(o).await
+        }
+        async fn read_build(&self, id: &BuildId) -> Result<rafka_node_admin_core::build_state::BuildProjection, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.read_build(id).await
+        }
+        async fn list_active(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildProjection>, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.list_active().await
+        }
+        async fn claim_attempt(&self, c: &rafka_node_admin_core::build_state::BuildAttemptClaim) -> Result<rafka_node_admin_core::build_state::ClaimOutcome, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.claim_attempt(c).await
+        }
+        async fn adopt_claim(&self, c: &rafka_node_admin_core::build_state::BuildAttemptClaim) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.adopt_claim(c).await
+        }
+        async fn append_step_receipt(&self, r: &rafka_node_admin_core::build_state::BuildStepReceipt) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+            if r.step == self.step && r.attempt == 1 {
+                return Err(rafka_node_admin_core::build_state::BuildStateError::Io(format!("the executor of {} attempt 1 was lost before its {} receipt was written", r.build_id, r.step)));
+            }
+            self.inner.append_step_receipt(r).await
+        }
+        async fn append_attempt_receipt(&self, r: &rafka_node_admin_core::build_state::BuildAttemptReceipt) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.append_attempt_receipt(r).await
+        }
+        async fn facts(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildFact>, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.facts().await
+        }
+        async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.recovery_of(path, node_id, incarnation).await
+        }
+        async fn forget(&self, id: &BuildId) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.forget(id).await
+        }
+    }
+
+    /// Attempt `attempt` of `create-node:<name>` in the Build `build`, its receipts in `builds`, run
+    /// by the executor whose rows writer `records` feeds, over `provider`: its error.
+    async fn create_attempt(records: &Records, provider: &Counted, builds: &dyn rafka_node_admin_core::build_state::BuildStateAdapter, build: &BuildId, name: &str, attempt: u32) -> Result<(), String> {
+        let data_root = std::env::temp_dir().join(format!("node-rows-create-{}", NodeId::mint()));
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            executable: "/nonexistent/node-rows".into(),
+            seeds: vec![],
+            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            env: Default::default(),
+            data_root: data_root.clone(),
+            store_dir: data_root.join("store"),
+            mesh_issuer: None,
+        };
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
+        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, held_runtimes: Vec::new() };
+        let r = pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string());
+        let _ = std::fs::remove_dir_all(&data_root);
+        r
+    }
+
+    /// CONTRACT (lifecycles/node-create.md step 1: the row writer claims the name before anything is
+    /// launched; mesh_recover's lost mesh): a create whose executor is lost mid-create leaves no claim
+    /// that no receipt names. The identity's receipt is written before the claim that names its node
+    /// id, so a rerun of the same operation holds every claim an earlier attempt made:
+    /// - lost after the identity was minted and before its `AllocateIdentity` receipt was written
+    ///   (`mesh1.rpc.5`): attempt 2 claims the name for its own new node id, is not refused
+    ///   `name-held`, and reaches `DeployRuntime`;
+    /// - lost after the claim, with the `AllocateIdentity` receipt naming node X written and the
+    ///   store holding X's `Pending` row (`mesh1.rpc.6`): attempt 2 reuses X, its claim finds the row
+    ///   X holds (`row-held-by-node`), and it reaches `DeployRuntime`.
+    /// Must NOT happen: attempt 2 refused `name-held` by a node no receipt of the Build names (the
+    /// orphan claim mesh_recover's attempt 3 met: "mesh1.rpc.5 is held by node 0krc0z5weqyk").
+    #[test]
+    fn a_create_whose_executor_is_lost_mid_create_leaves_no_claim_a_rerun_cannot_hold() {
+        let cap = capture();
+        let (lost_before_receipt, rerun_after_loss, x, rerun_after_claim) = cap.run(async {
+            let storage = Arc::new(MemoryNodesStorage::default());
+            let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
+            let provider = Counted::default();
+            let builds = MemoryBuildStateAdapter::new();
+            // Lost before the AllocateIdentity receipt of attempt 1.
+            let lost = LostAt { inner: &builds, step: "AllocateIdentity" };
+            let build = BuildId("build-node-rows-5".into());
+            let lost_before_receipt = create_attempt(&records, &provider, &lost, &build, "mesh1.rpc.5", 1).await;
+            let rerun_after_loss = create_attempt(&records, &provider, &builds, &build, "mesh1.rpc.5", 2).await;
+            // Lost after the claim: the identity receipt names X, the store holds X's claim row.
+            let x = NodeId::mint();
+            let identity = serde_json::json!({ "node_id": x, "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": rafka_node_admin_core::model::DeploymentId::mint() });
+            let other = BuildId("build-node-rows-6".into());
+            rafka_node_admin_core::build_state::BuildStateAdapter::append_step_receipt(
+                &builds,
+                &rafka_node_admin_core::build_state::BuildStepReceipt { build_id: other.clone(), attempt: 1, operation: "create-node:mesh1.rpc.6".into(), step: "AllocateIdentity".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(identity), executor: None },
+            )
+            .await
+            .unwrap();
+            storage.put_node_row(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new() }).await.unwrap().unwrap();
+            let rerun_after_claim = create_attempt(&records, &provider, &builds, &other, "mesh1.rpc.6", 2).await;
+            (lost_before_receipt, rerun_after_loss, x, rerun_after_claim)
+        });
+        assert!(lost_before_receipt.expect_err("attempt 1's executor is lost").contains("was not written"), "attempt 1 stops at its unwritten receipt");
+        let rerun = rerun_after_loss.expect_err("attempt 2 fails where this provider launches nothing");
+        assert!(rerun.contains("DeployRuntime") && !rerun.contains("name-held"), "attempt 2 is not refused by attempt 1's claim and reaches DeployRuntime: {rerun}");
+        let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        let of = |subject: &str| claims.iter().filter(|s| s["attributes"]["subject"] == subject && s["attributes"]["moment"] == "claim").map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>();
+        let rpc5 = of("mesh1.rpc.5");
+        assert!(rpc5.iter().all(|(_, o)| o != "name-held"), "no claim of mesh1.rpc.5 is refused name-held: {rpc5:?}");
+        assert_eq!(rpc5.iter().filter(|(_, o)| o == "row-written").count(), 1, "one claim of mesh1.rpc.5 is written, attempt 2's: {rpc5:?}");
+        let rerun = rerun_after_claim.expect_err("attempt 2 fails where this provider launches nothing");
+        assert!(rerun.contains("DeployRuntime"), "attempt 2 after a loss past the claim reaches DeployRuntime: {rerun}");
+        assert_eq!(of("mesh1.rpc.6"), vec![(x.to_string(), "row-held-by-node".to_string())], "attempt 2 reuses X and its claim holds X's row");
+        let trace = claims.iter().find(|s| s["attributes"]["subject"] == "mesh1.rpc.5").and_then(|s| s["trace_id"].as_str()).unwrap_or("");
+        eprintln!("trace {trace}: via-node-row claims of mesh1.rpc.5 {rpc5:?}; mesh1.rpc.6 {:?}", of("mesh1.rpc.6"));
+    }
+
     /// CONTRACT: another mesh's primary never writes a row of a mesh with no primary; the
     /// fabric-primary does, as that mesh's acting primary (R13). `mesh1` has no node-admin: a create
     /// of `mesh1.rpc.2` executed by `mesh3`'s primary is refused at its claim `not-mesh-primary`,
