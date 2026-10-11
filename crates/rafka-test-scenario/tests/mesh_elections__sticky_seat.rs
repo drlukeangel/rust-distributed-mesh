@@ -319,9 +319,13 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     let transfer_attempt = num(committed[0], "attempt").unwrap();
     let p_drive: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(p_drive.iter().any(|sp| attr(sp, "outcome") == "seat-lost"), "P's drive ends at its seat row: {p_drive:#?}");
-    for sp in named(&spans, "rdm.node_admin.build.update.via-seat-moved").into_iter().filter(|sp| attr(sp, "build_id") == build) {
-        assert_eq!(attr(sp, "to"), n_name, "SeatMoved names N: {sp:#?}");
-    }
+    // The replace came in by REST, so no caller holds P's outer stream; what a stream attached there
+    // would end with is the seat loss P's drive records at its fence (`via-fenced`, its `to` is the
+    // SeatMoved frame's seat), and the inner stream N ends carries the same new seat.
+    let p_fenced: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
+    assert!(!p_fenced.is_empty() && p_fenced.iter().all(|sp| attr(sp, "to") == n_name), "P's drive lost the seat at its fence naming N: {p_fenced:#?}");
+    let moved: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-moved").into_iter().filter(|sp| attr(sp, "build_id") == build).collect();
+    assert!(!moved.is_empty() && moved.iter().all(|sp| attr(sp, "to") == n_name), "every SeatMoved of the Build names N: {moved:#?}");
     // The planned move ends N's inner stream by the typed new-seat frame: once its own seat book
     // names it the fabric-primary, N answers the old driver's `build.attempt.run` with SeatMoved
     // naming itself instead of writing the next frame. A planned move leaves no fault anywhere in
