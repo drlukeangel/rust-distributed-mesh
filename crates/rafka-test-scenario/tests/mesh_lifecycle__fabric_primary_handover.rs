@@ -263,8 +263,11 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // every other member stopped, and the other mesh holds mesh1 from that admin's own aggregate. Which
     // of its last versions a peer hears before the stop's cut is gossip delivery inside a window of tens
     // of milliseconds at this cadence, so the hold is read from any version it published.
-    let lone_published = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1);
-    assert!(lone_published, "the last admin {final_name} published mesh1's aggregate with itself the only member");
+    // mesh.deleted is its mesh-leave hook; the fabric-primary's drain that follows moves its own status,
+    // a material change its round publishes at once.
+    let deleted_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["publisher"]) == final_name).map(|sp| start_ns(sp)).min().expect("the last admin reported mesh.deleted (its mesh-leave hook)");
+    let lone_published = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) > deleted_at);
+    assert!(lone_published, "after mesh.deleted the last admin {final_name} kept publishing mesh1's aggregate with itself the only member");
     assert!((1..=4).any(|m| !mesh1_installed(&final_name, m).is_empty()), "an admin of {other_mesh} held mesh1 from its last admin {final_name}'s own aggregate");
     // 2. Stopped: the fabric-primary publishes mesh1's own aggregate (no digests, the stop in in_flight),
     // and the other mesh holds the last admin parked from it: an admin from the backbone, an ordinary
