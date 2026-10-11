@@ -267,6 +267,14 @@ pub enum BuildOperation {
 }
 
 impl BuildOperation {
+    /// The node the operation acts on; `None` for a mesh operation.
+    pub fn node(&self) -> Option<&PathName> {
+        match self {
+            Self::CreateNode { node } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DrainNode { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::RecoverNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } => None,
+        }
+    }
+
     /// The idempotency key.
     pub fn key(&self) -> String {
         match self {

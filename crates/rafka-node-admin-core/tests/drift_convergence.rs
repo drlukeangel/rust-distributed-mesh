@@ -26,7 +26,7 @@ use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, MeshTopolog
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
 use rafka_node_admin_core::build_state::{BuildState, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::build_drive::{Drive, DriveEnv, OpenGate};
+use rafka_node_admin_core::build_drive::{Drive, DriveEnd, DriveEnv, OpenGate};
 use rafka_node_admin_core::executor::OperationRunner;
 use rafka_node_admin_core::fence::{fence, FenceOutcome, PathProbe};
 use rafka_node_admin_core::model::*;
@@ -343,28 +343,7 @@ impl Estate {
     /// again and leaves `Dead` in the view.
     async fn converge(&self) {
         for _ in 0..8 {
-            // The claim is decided at the fabric-primary's door, as the product decides it.
-            let primary: PathName = self.fabric_primary().await.parse().expect("a fabric-primary");
-            let primary_id = own_id(&*self.view.read().await, &primary);
-            let door = Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
-                node_id: primary_id.clone(),
-                me: primary.clone(),
-                topology: self.view.clone(),
-                builds: self.builds.clone(),
-                contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
-            });
-            let env = Arc::new(DriveEnv {
-                me: primary.clone(),
-                topology: self.view.clone(),
-                accepted: self.accepted.clone(),
-                builds: self.builds.clone(),
-                door,
-                dispatcher: self.dispatch.clone(),
-                gate: Arc::new(OpenGate),
-                departure: Arc::new(crate::loopback::Proofs::default()),
-                verdicts: Arc::new(crate::loopback::NoVerdicts),
-                rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, self.view.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
-            });
+            let env = self.drive_env().await;
             if let Some(current) = self.accepted.current(&*self.builds).await {
                 if matches!(current.state, BuildState::Pending | BuildState::Running) {
                     let done = env.run(&Drive::detached(current.build_id.clone())).await;
@@ -380,6 +359,75 @@ impl Estate {
             }
         }
         panic!("the accepted Build did not finish: {:?}", self.accepted.current(&*self.builds).await.map(|b| (b.state, b.attempt)));
+    }
+
+    /// The fabric-primary's drive over the estate: the claim decided at its own door, as the
+    /// product decides it.
+    async fn drive_env(&self) -> Arc<DriveEnv> {
+        let primary: PathName = self.fabric_primary().await.parse().expect("a fabric-primary");
+        let primary_id = own_id(&*self.view.read().await, &primary);
+        let door = Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
+            node_id: primary_id.clone(),
+            me: primary.clone(),
+            topology: self.view.clone(),
+            builds: self.builds.clone(),
+            contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
+        });
+        Arc::new(DriveEnv {
+            me: primary.clone(),
+            topology: self.view.clone(),
+            accepted: self.accepted.clone(),
+            builds: self.builds.clone(),
+            door,
+            dispatcher: self.dispatch.clone(),
+            gate: Arc::new(OpenGate),
+            departure: Arc::new(crate::loopback::Proofs::default()),
+            verdicts: Arc::new(crate::loopback::NoVerdicts),
+            rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, self.view.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        })
+    }
+
+    /// One pass of the fabric-primary's drive over the accepted Build.
+    async fn drive_once(&self) -> DriveEnd {
+        let current = self.accepted.current(&*self.builds).await.expect("an accepted Build");
+        self.drive_env().await.run(&Drive::detached(current.build_id)).await
+    }
+
+    /// `path`, a node-admin whose runtime runs and answers, is heard again; `lost`, its mesh's
+    /// primary proven exited, holds no seat: its mesh seats `path` (election.rs: lowest Ready).
+    async fn seat(&self, path: &str, lost: &str) {
+        let mut v = self.view.write().await;
+        for n in v.nodes.iter_mut() {
+            if n.name.to_string() == path {
+                n.status = NodeStatus::ReadyForTraffic;
+            } else if n.name.to_string() == lost {
+                n.status = NodeStatus::Dead;
+            }
+        }
+        rafka_node_admin_core::election::resolve(&mut v.nodes);
+    }
+
+    /// The fabric-primary's first drive pass after a peer mesh lost its primary while its other
+    /// node-admin `survivor` is held silent (R-D1; R-A2 "cross-mesh only when the whole cohort is
+    /// proven lost"; node-rpc-envelope.md TakeSeats: the executor is the same-mesh successor): the
+    /// drive stalls naming the mesh and `survivor`, nothing is dispatched and nothing is born; then
+    /// `survivor` is seated by its own mesh and is the executor from there.
+    async fn stalls_until_seated(&self, lost_mesh: &str, lost: &str) -> String {
+        let survivor = self.view.read().await.cohort(lost_mesh, NodeKind::NodeAdmin).map(|n| n.name.to_string()).find(|n| n != lost).expect("a second admin in the lost mesh");
+        match self.drive_once().await {
+            DriveEnd::Stalled(why) => assert!(why.contains(lost_mesh) && why.contains(&survivor), "the stall names the mesh and its held admin: {why}"),
+            other => panic!("the fabric-primary never acts on {lost_mesh} while {survivor} is held: {other:?}"),
+        }
+        assert!(self.dispatch.dispatched.lock().unwrap().is_empty() && self.born().is_empty(), "nothing dispatched and nothing born while {survivor} is held");
+        self.seat(&survivor, lost).await;
+        assert_eq!(self.mesh_primary_of(lost).await, survivor, "{lost_mesh} seats its own surviving admin");
+        survivor
+    }
+
+    /// Every attempt the drive dispatched ran on `executor`.
+    fn executed_only_by(&self, executor: &str) {
+        let dispatched = self.dispatch.dispatched.lock().unwrap().clone();
+        assert!(!dispatched.is_empty() && dispatched.iter().all(|(x, _)| x == executor), "the seated same-mesh admin executes the recovery: {dispatched:?}");
     }
 
     /// The topology holds: every path of the accepted shape has exactly one live birth.
@@ -542,6 +590,13 @@ async fn a_lost_fabric_primary_is_recovered_by_its_own_meshs_new_primary() {
     e.holds_the_shape().await;
 }
 
+/// CONTRACT (R-D1: the fabric-primary acts on a peer mesh's node-admin only when every admin of
+/// that mesh is proven gone, or as the restore the investigation's rebirth verdict authorizes; R-A2:
+/// cross-mesh only when the whole cohort is proven lost): a peer mesh's primary admin exits and every
+/// member of that mesh goes silent at once (its forwarder is gone), its second admin included,
+/// though it runs and answers. The fabric-primary's drive stalls by name while that admin is held,
+/// and once its own mesh seats it, it executes the repair: only the exited admin is reborn and no
+/// member that answers is created over.
 #[tokio::test]
 async fn members_unheard_through_a_lost_forwarder_are_fenced_never_duplicated() {
     let e = estate().await;
@@ -556,7 +611,9 @@ async fn members_unheard_through_a_lost_forwarder_are_fenced_never_duplicated() 
     let refs: Vec<&str> = members.iter().map(String::as_str).collect();
     e.unheard(&refs).await;
     e.drift().await.expect("the one proven loss opens the next attempt");
+    let survivor = e.stalls_until_seated(lost, &primary).await;
     e.converge().await;
+    e.executed_only_by(&survivor);
     assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is reborn: {:?}", e.runner.ran.lock().unwrap());
     for m in members.iter().filter(|m| **m != primary) {
         assert!(e.fence_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} answers: never created over: {:?}", e.fence_of(m));
@@ -584,7 +641,9 @@ async fn a_path_the_view_does_not_hold_but_where_a_runtime_runs_is_held() {
 /// The seeded soak's finding (seed 7, round 3, trace in the spans of
 /// `fabric_soak__seeded`): the lost mesh's primary is reborn as the attempt's first operation, its
 /// members are heard again through it before the attempt's next operation, and that operation
-/// must find them live and leave them alone. A plan made on the older view is not a licence.
+/// must find them live and leave them alone. A plan made on the older view is not a licence. The
+/// lost mesh's second admin runs and answers, so the fabric-primary stalls by name until that
+/// mesh seats it, and the seated admin executes the attempt (R-D1, R-A2).
 #[tokio::test]
 async fn members_heard_again_mid_attempt_through_the_reborn_forwarder_are_never_created_over() {
     let e = estate().await;
@@ -598,7 +657,9 @@ async fn members_heard_again_mid_attempt_through_the_reborn_forwarder_are_never_
     let refs: Vec<&str> = members.iter().map(String::as_str).collect();
     e.unheard(&refs).await;
     e.drift().await.expect("the one proven loss opens the next attempt");
+    let survivor = e.stalls_until_seated(lost, &primary).await;
     e.converge().await;
+    e.executed_only_by(&survivor);
     assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is reborn: {:?}", e.runner.ran.lock().unwrap());
     for m in members.iter().filter(|m| **m != primary) {
         assert!(e.fence_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} is live in the view by the time its operation runs: never created over: {:?}", e.fence_of(m));
@@ -809,7 +870,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     assert_eq!((w.name.to_string(), w.incarnation_id.clone(), w.status), (lost.clone(), Some(row.incarnation_id.clone()), NodeStatus::PendingReconnect), "the row's exact birth, silent");
     // TRUE OFFLINE (the tickle's verdict): due for recovery at the seat holder, and at nobody else.
     let offline: HashSet<(NodeId, IncarnationId)> = [(row.node_id.clone(), row.incarnation_id.clone())].into();
-    let due: Vec<String> = rafka_node_admin_core::admin::recovery_due(true, peer, &watched, &offline).iter().map(|n| n.name.to_string()).collect();
+    let due: Vec<String> = rafka_node_admin_core::admin::recovery_due(true, false, peer, &watched, &offline).iter().map(|n| n.name.to_string()).collect();
     assert_eq!(due, vec![lost.clone()], "{mp} inspects {lost} for recovery");
     // The provider's exact-exit proof, from the row.
     let proof = rafka_node_admin_core::admin::exit_proof_of(&e.provider, &None, Some(&row)).await;
@@ -1334,9 +1395,33 @@ mod unheard_mesh_hold {
         assert_eq!(path.to_string(), admins[0], "the first admin in path order");
         let first = e.node_id(&admins[0]).await;
         assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
-        // The decision released one node-admin: that release is spent until the mesh is heard again, so
-        // the second node-admin's exit is evidence, not an attempt.
-        assert!(started.iter().any(|k| k.2 == vec!["recovery".to_string(), peer_mesh.clone()]), "the release is recorded: {started:?}");
+        // The restore runs on the same Build (mesh-investigation.md step 6): its attempt is claimed for the
+        // fabric-primary, its receipt written and the Build settled; the view holds the restored admin's
+        // new birth, which the fabric-primary has not heard on the backbone yet.
+        use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter as _, BuildStepReceipt, ClaimOutcome, StepOutcome};
+        let restore = before.attempt + 1;
+        let fp = e.fabric_primary().await;
+        assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { build_id: before.build_id.clone(), attempt: restore, executor: fp }).await.unwrap(), ClaimOutcome::Won);
+        e.builds
+            .append_step_receipt(&BuildStepReceipt { build_id: before.build_id.clone(), attempt: restore, operation: format!("replace-node:{}", admins[0]), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None })
+            .await
+            .unwrap();
+        e.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: before.build_id.clone(), attempt: restore, outcome: AttemptOutcome::Converged }).await.unwrap();
+        {
+            let fabric_id = e.view.read().await.fabric.id.clone();
+            let reborn = birth(&e.world, &e.book, &fabric_id, &admins[0], None);
+            let mut v = e.view.write().await;
+            v.nodes.retain(|n| n.name.to_string() != admins[0]);
+            v.nodes.push(reborn);
+        }
+        // The decision released one node-admin, and the Build says which: a reconcile pass that holds
+        // nothing of the earlier passes (a fresh `started`) reads it there, so the second node-admin's exit
+        // is evidence, not an attempt, until the mesh is heard again.
+        let mut fresh = HashSet::new();
+        assert_eq!(pass(&e, &mut fresh, &mut held, &decided).await, None, "no second node-admin of the reborn mesh is replaced from here");
+        let second = e.node_id(&admins[1]).await;
+        assert!(held.iter().any(|(n, _)| n.as_str() == second), "the second node-admin's exit is held as evidence: {held:?}");
+        assert_eq!(e.accepted.current(&*e.builds).await.unwrap().attempt, restore, "no attempt was opened after the restore");
     }
 }
 

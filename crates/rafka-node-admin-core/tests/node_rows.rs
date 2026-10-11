@@ -586,8 +586,8 @@ fn a_successor_heard_before_the_predecessor_lets_go_is_refused_name_held_and_the
 /// CONTRACT: the writer writes a birth's row when its view holds the birth for the first time in its
 /// tenure (ops-naming "Node data": the row is written once, from the held record), never again on a
 /// later view install. A birth that left the view (a departure the projection dropped) and is put
-/// back by a forwarded copy of a peer mesh's view (gossip.md §3.2 forwarded grace) is the same birth,
-/// not a new arrival: one `via-node-row` span for it, the row written once.
+/// back by a later backbone copy of a peer mesh's view is the same birth, not a new arrival: one
+/// `via-node-row` span for it, the row written once.
 #[test]
 fn a_birth_that_leaves_the_view_and_returns_is_written_once() {
     let cap = capture();

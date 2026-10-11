@@ -27,6 +27,9 @@ pub struct LiveMesh {
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
     pub commands: Arc<rafka_node_admin_core::node_commands::CommandBook>,
+    /// Every round check-in (`StateCommitted`, `TrafficOpened`) a node made to this admin side, in
+    /// arrival order: the request as it came.
+    pub check_ins: Arc<tokio::sync::watch::Sender<Vec<rafka_node_rpc_contract::status::StatusRequest>>>,
 }
 
 impl LiveMesh {
@@ -303,13 +306,20 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
     // The completion calls a commanded node makes back (`node-drained`, `node-left`) resolve the
     // open commands of this admin side.
     let commands = Arc::new(rafka_node_admin_core::node_commands::CommandBook::default());
+    // The round check-ins a node makes to this admin side as its commander are held in order and
+    // acknowledged; the admin side keeps no checklist.
+    let check_ins = Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
     let serve_commands = {
-        let commands = commands.clone();
+        let (commands, check_ins) = (commands.clone(), check_ins.clone());
         move |b: rafka_node_rpc::ServerBuilder| {
             b.serve::<rafka_node_rpc_contract::status::Status, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Product("rdm".into()), move |_peer: rafka_node_rpc::PeerContext, req: rafka_node_rpc_contract::status::StatusRequest| {
-                let commands = commands.clone();
+                let (commands, check_ins) = (commands.clone(), check_ins.clone());
                 async move {
                     use rafka_node_rpc_contract::status::StatusRequest as R;
+                    if matches!(req, R::StateCommitted { .. } | R::TrafficOpened { .. }) {
+                        check_ins.send_modify(|held| held.push(req));
+                        return Ok(rafka_node_rpc_contract::status::StatusReply::Applied);
+                    }
                     let (R::NodeDrained { node_id, incarnation, .. } | R::NodeLeft { node_id, incarnation, .. }) = &req else {
                         return Ok(rafka_node_rpc_contract::status::StatusReply::NotReady { reason: "the admin side serves completion calls only".into() });
                     };
@@ -360,7 +370,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
     let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
-        observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands },
+        observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, check_ins },
         seed: (admin_ep.id().to_string(), addr),
         joins,
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },

@@ -29,9 +29,24 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
 
-/// Every span: name, parent name, and its recorded fields.
+/// Every span: name, parent name, and its recorded fields; the third part ticks whenever a span is
+/// created or a field recorded, so a cell awaits a span fact instead of looking again and again.
 #[derive(Clone, Default)]
-pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>, Arc<Mutex<(u64, HashMap<u64, u64>)>>);
+pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>, Arc<Mutex<(u64, HashMap<u64, u64>)>>, Arc<tokio::sync::watch::Sender<u64>>);
+
+impl Spans {
+    /// Resolves once a span named `name` holds fields `wanted` says yes to.
+    pub async fn recorded(&self, name: &str, wanted: impl Fn(&BTreeMap<String, String>) -> bool) {
+        let mut ticks = self.2.subscribe();
+        loop {
+            let held = self.0.lock().unwrap().values().any(|(n, _, f)| n == name && wanted(f));
+            if held {
+                return;
+            }
+            ticks.changed().await.expect("the capture is held by the cell");
+        }
+    }
+}
 
 struct Fields<'a>(&'a mut BTreeMap<String, String>);
 impl tracing::field::Visit for Fields<'_> {
@@ -67,6 +82,7 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
             key
         };
         self.0.lock().unwrap().insert(key, (attrs.metadata().name().into(), parent, fields));
+        self.2.send_modify(|t| *t += 1);
     }
     fn on_record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
         let key = self.1.lock().unwrap().1.get(&id.into_u64()).copied();
@@ -74,6 +90,7 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
             if let Some((_, _, fields)) = self.0.lock().unwrap().get_mut(&key) {
                 values.record(&mut Fields(fields));
             }
+            self.2.send_modify(|t| *t += 1);
         }
     }
 }
