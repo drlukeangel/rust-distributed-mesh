@@ -140,12 +140,6 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     assert_eq!((s(&row["record"]["mesh_id"]), s(&row["record"]["state"])), (mesh1_bare.clone(), "Leaving".to_string()), "{row}");
     let (_, fabric_now) = estate.get("/api/fabric").await;
     estate.admin = s(&fabric_now["admin_api_base"]);
-    let owner_name = {
-        let spans = estate.spans();
-        let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
-        let r = reconciles.iter().find(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["outcome"] == "converged" && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains("shutdown-mesh:"))).cloned().expect("a reconcile converged the shutdown-mesh operation");
-        s(&r["attributes"]["executor"])
-    };
     // The MeshLeft receipt, read from the live Build projection (the admin API): one Complete
     // receipt under the outer operation, covering every birth of the mesh.
     let (_, build_now) = estate.get(&format!("/api/builds?id={b}")).await;
@@ -153,6 +147,13 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     let other_receipts: Vec<Value> = build_now["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == "OtherMembersExited").collect();
     estate.stop().await;
     let spans = estate.spans();
+    // The executor's reconcile span ends after the run returned its terminal, which can be after the
+    // Build was read Complete: it is read from the evidence every process flushed on exit.
+    let owner_name = {
+        let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
+        let r = reconciles.iter().find(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["outcome"] == "converged" && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains("shutdown-mesh:"))).cloned().expect("a reconcile converged the shutdown-mesh operation");
+        s(&r["attributes"]["executor"])
+    };
     assert_eq!(other_receipts.len(), 1, "one OtherMembersExited receipt, recorded by mesh1's primary: {build_now}");
     assert_eq!(other_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(3), "a terminal receipt for every birth of mesh1 but its final primary");
     assert_eq!(left_receipts.len(), 1, "one MeshLeft receipt under {b} (owner {owner_name})");
