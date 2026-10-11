@@ -30,13 +30,13 @@ const FINAL: &str = "mesh2.admin.1";
 
 /// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on
 /// every thread of the cell's own runtime.
-struct Capture {
+pub(crate) struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
     provider: opentelemetry_sdk::trace::TracerProvider,
     dispatch: tracing::Dispatch,
 }
 
-fn capture() -> Capture {
+pub(crate) fn capture() -> Capture {
     use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
     crate::enable_callsites();
@@ -50,7 +50,7 @@ fn capture() -> Capture {
 }
 
 impl Capture {
-    fn run<F: std::future::Future>(&self, f: F) -> F::Output {
+    pub(crate) fn run<F: std::future::Future>(&self, f: F) -> F::Output {
         let d = self.dispatch.clone();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -62,7 +62,7 @@ impl Capture {
         rt.block_on(f)
     }
 
-    fn spans(&self) -> Vec<Value> {
+    pub(crate) fn spans(&self) -> Vec<Value> {
         let _ = self.provider.force_flush();
         self.exporter
             .get_finished_spans()
