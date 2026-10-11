@@ -504,8 +504,15 @@ impl TopologySink for Records {
         let gone = self.nodes.lock().unwrap().remove(name);
         self.removed.lock().unwrap().insert((name.clone(), gone.and_then(|n| n.incarnation_id)));
     }
-    fn remove_birth(&self, name: &PathName, _node_id: &NodeId, _incarnation: &IncarnationId) {
-        self.remove(name);
+    fn remove_birth(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
+        // Only the exact birth leaves the records; another birth held at the path (the new node a
+        // recovery created there) stays. The exited birth is held removed whether or not the
+        // records held it, so the view does not take it back from the book.
+        let mut nodes = self.nodes.lock().unwrap();
+        if nodes.get(name).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)) {
+            nodes.remove(name);
+        }
+        self.removed.lock().unwrap().insert((name.clone(), Some(incarnation.clone())));
     }
     fn rename_predecessor(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
         let mut nodes = self.nodes.lock().unwrap();

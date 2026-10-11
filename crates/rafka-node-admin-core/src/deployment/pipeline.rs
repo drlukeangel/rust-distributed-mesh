@@ -2113,8 +2113,9 @@ impl DeploymentPipeline<'_> {
             .await?;
         self.lifecycle.deleted(&op).await;
         // The exited instance leaves the path, and is fenced before the new birth (same endpoint key)
-        // exists: no late old digest or dial returns the key to the old port.
-        self.sink.remove(name);
+        // exists: no late old digest or dial returns the key to the old port. Only that exact birth
+        // leaves: on a rerun the new node may already hold the path, and it stays.
+        self.sink.remove_birth(name, &old.node_id, &birth);
         // The key the fence names is the one in the inherited data dir (a record resolved from the
         // durable runtime rows carries none): the new birth will load exactly it.
         let mut fenced = old.clone();
