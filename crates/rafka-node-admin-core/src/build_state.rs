@@ -473,8 +473,8 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 /// The lifecycle operations open in `builds`: every `NodeDeleting` step a retire operation
 /// completed with no `NodeDeleted` step of the same operation after it, and every
 /// `NodeRestarting` step whose restart (`restart-node:<path>`, the op it carries) has no
-/// `Complete` step yet. Derived from the Build facts on every round, never stored: a successor
-/// primary publishes the same overlays from the same facts.
+/// `Complete` step yet. Derived from the Build facts as each fact enters the log, never stored: a
+/// successor primary publishes the same overlays from the same facts.
 pub(crate) fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
     let mut out = InFlight::default();
     for p in builds.values() {
@@ -629,9 +629,12 @@ fn describe_open(o: &AttemptOpened) -> String {
 }
 
 /// The shared append-and-fold core of both RDM adapters.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct FactLog {
     facts: Vec<BuildFact>,
+    /// Ticks each time a fact enters the log ([`FactLog::push`]): what everything derived from the
+    /// facts (the lifecycle overlays a book holds) is recomputed on, as the fact lands.
+    changes: tokio::sync::watch::Sender<u64>,
     /// The recovery index, in two halves a receipt fills in whatever order it arrives (gossip and
     /// catch-up deliver in any order): every deleting workflow's (`recover-node`, `replace-node`,
     /// `retire-node`) `NodeDeleted` by the birth `(node_id, incarnation)` it names, to its path,
@@ -645,8 +648,14 @@ struct FactLog {
     recovery_completes: std::collections::HashMap<(BuildId, String), std::collections::BTreeSet<u32>>,
 }
 
+impl Default for FactLog {
+    fn default() -> Self {
+        Self { facts: Vec::new(), changes: tokio::sync::watch::channel(0).0, recovery_deletes: Default::default(), recovery_completes: Default::default() }
+    }
+}
+
 impl FactLog {
-    /// Append `fact` to the log and fold it into the indexes.
+    /// Append `fact` to the log, fold it into the indexes and tick [`FactLog::changes`].
     fn push(&mut self, fact: BuildFact) {
         if let BuildFact::Step(s) = &fact {
             if let Some((path, node_id, incarnation)) = recovery_deleted(s) {
@@ -659,6 +668,7 @@ impl FactLog {
             }
         }
         self.facts.push(fact);
+        self.changes.send_modify(|n| *n += 1);
     }
 
     /// The point read of [`BuildStateAdapter::recovery_of`]: the birth's `NodeDeleted` receipts at
@@ -782,6 +792,9 @@ pub trait LocalBuildLog: BuildStateAdapter {
     /// Merge facts heard from the fabric (append the unseen ones; intents, opens and claims are
     /// insert-and-fail, receipts deduplicate).
     async fn absorb_facts(&self, facts: &[BuildFact]);
+    /// Ticks each time a fact enters this log, whoever put it there: an own append, an absorbed
+    /// fact or a journal's replay. What is derived from the facts is recomputed on it.
+    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64>;
 }
 
 #[async_trait]
@@ -789,10 +802,18 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
     async fn absorb_facts(&self, facts: &[BuildFact]) {
         self.absorb(facts)
     }
+
+    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.log.lock().unwrap().changes.subscribe()
+    }
 }
 
 #[async_trait]
 impl LocalBuildLog for FileJournal {
+    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.log.lock().unwrap().changes.subscribe()
+    }
+
     async fn absorb_facts(&self, facts: &[BuildFact]) {
         let _w = self.writer.lock().await;
         for f in facts {

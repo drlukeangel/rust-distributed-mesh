@@ -17,7 +17,7 @@
 //! retire) and the lifecycle pipeline (a node's `Pending -> ReadyForTraffic`).
 
 use crate::build::BuildOperation;
-use crate::build_state::BuildStateAdapter;
+use crate::build_state::{BuildStateAdapter, LocalBuildLog as _};
 use crate::deployment::endpoint::spec_for;
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
@@ -3278,6 +3278,43 @@ pub fn rpc_server(
     crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join).carry::<rafka_node_rpc_contract::status::Status>()
 }
 
+/// The unreadable pre-event steps already named: each is named once, not on every fact.
+type NamedSteps = HashSet<(String, u32, String, String)>;
+
+/// Apply the lifecycle overlays the facts of `log` name open to `book`: the restarts as the facts'
+/// truth (`DigestBook::restarts_from_facts`), every other open operation as a hold, and every
+/// pre-event step this build cannot read refused by name, once.
+async fn overlays_from_facts(log: &dyn crate::build_state::LocalBuildLog, book: &DigestBook, named: &mut NamedSteps) {
+    let facts = match log.facts().await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.build.reject.via-facts-unread", error = %e)
+                .in_scope(|| tracing::warn!("this admin's Build log could not be read: its lifecycle overlays wait on its next fact"));
+            return;
+        }
+    };
+    let in_flight = crate::build_state::in_flight_ops(&crate::build_state::fold(&facts));
+    book.restarts_from_facts(&in_flight.ops);
+    for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
+        book.deleting(op);
+    }
+    for u in in_flight.unrecognised {
+        if named.insert((u.build_id.0.clone(), u.attempt, u.operation.clone(), u.step.clone())) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
+                .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
+        }
+    }
+}
+
+/// [`overlays_from_facts`] each time a fact enters `log` (`facts_moved`, the log's fact watch):
+/// one coalesced recomputation per wake, no timer.
+async fn follow_overlays_from_facts(log: Arc<crate::build_state::FileJournal>, book: DigestBook, mut facts_moved: tokio::sync::watch::Receiver<u64>, mut named: NamedSteps) {
+    while facts_moved.changed().await.is_ok() {
+        facts_moved.borrow_and_update();
+        overlays_from_facts(&*log, &book, &mut named).await;
+    }
+}
+
 /// Bring a node-admin up: identity, policy, membership, Build state, the
 /// control API, the projection and the executor.
 pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
@@ -4851,6 +4888,18 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         tasks.push(park_gate.spawn(crate::seat_watch::run(watch)));
     }
 
+    // The open lifecycle overlays, derived from the Build facts as each fact enters this admin's
+    // log (its own appends and the facts it absorbs from the fabric alike): a hold opens with its
+    // pre-event's receipt and closes with its operation's `Complete`, never at the next round. A
+    // successor primary publishes the same overlays from the same facts. Derived once before the
+    // hierarchy's first round, then on every fact.
+    {
+        let facts_moved = journal.fact_changes();
+        let mut named = HashSet::new();
+        overlays_from_facts(&*journal, &membership.book, &mut named).await;
+        tasks.push(park_gate.spawn(follow_overlays_from_facts(journal.clone(), membership.book.clone(), facts_moved, named)));
+    }
+
     let hierarchy;
     // The hierarchy: while this admin is its mesh's primary it publishes the
     // mesh's members on the backbone and forwards the other meshes onto its
@@ -4868,24 +4917,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             // The round a new primary runs before it republishes the status it adopted (`crate::round`).
             let mut rounds = crate::round::RoundDriver::new(me.clone(), seat_node_id.clone());
             let mut was_fabric_primary = false;
-            // Each unreadable pre-event step is named once, not every round.
-            let mut named: std::collections::HashSet<(String, u32, String, String)> = std::collections::HashSet::new();
             loop {
-                // The open lifecycle overlays, derived from the Build facts each round: a
-                // successor primary publishes the same ones from the same facts.
-                if let Ok(facts) = adapter.facts().await {
-                    let in_flight = crate::build_state::in_flight_ops(&crate::build_state::fold(&facts));
-                    membership.book.restarts_from_facts(&in_flight.ops);
-                    for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
-                        membership.book.deleting(op);
-                    }
-                    for u in in_flight.unrecognised {
-                        if named.insert((u.build_id.0.clone(), u.attempt, u.operation.clone(), u.step.clone())) {
-                            tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
-                                .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
-                        }
-                    }
-                }
                 // The accepted Build's planned births are what a mesh's readiness is counted over.
                 if let Some(b) = accepted.current(&*adapter).await {
                     records.set_planned(&b.topology);

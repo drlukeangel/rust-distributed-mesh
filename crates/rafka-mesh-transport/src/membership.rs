@@ -3614,21 +3614,33 @@ impl DigestBook {
             self.restarting(op.clone());
         }
         let keep: BTreeSet<(String, u32, String)> = open.iter().filter(|o| o.is_restart()).map(|o| o.key()).collect();
-        let cleared = {
+        let mut cleared = Vec::new();
+        {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();
-            let before = in_flight.len();
             in_flight.retain(|k, o| {
                 let gone = o.is_restart() && !keep.contains(k);
                 if gone {
                     ended.insert(k.clone());
+                    cleared.push(o.clone());
                 }
                 !gone
             });
-            in_flight.len() != before
-        };
-        if cleared {
+        }
+        if !cleared.is_empty() {
             self.overlays_moved();
+        }
+        for op in cleared {
+            tracing::info_span!(
+                "rdm.mesh.membership.update.via-restart-closed-by-facts",
+                node = %op.name,
+                node_id = %op.node_id,
+                incarnation_id = %op.incarnation.0,
+                build_id = %op.build_id,
+                attempt = op.attempt,
+                operation = %op.operation,
+            )
+            .in_scope(|| tracing::info!("the Build facts no longer name the restart open: its Complete is receipted (or its Build was forgotten)"));
         }
     }
 
