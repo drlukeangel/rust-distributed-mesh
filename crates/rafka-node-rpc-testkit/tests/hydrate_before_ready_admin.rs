@@ -81,9 +81,10 @@ fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_st
 /// The Day-0 admin's own hook is held, so its pull gate is closed: the joining admin's pull is
 /// answered typed `NotReady`, its hook is `Blocked { AuthorityReady }`, the Ready check names that
 /// blocker (`rdm.node_admin.runtime.reject.via-not-authority-capable`) and it publishes Pending.
-/// When the Day-0 admin's hook returns and it publishes ReadyForTraffic, the joining admin's hook
+/// Its executor's `ready_blocker` (a `ProbeNodeState` to the exact birth) is answered `NotReady`
+/// carrying that blocker with no attempt counter (node-start.md step 3). When the Day-0 admin's hook returns and it publishes ReadyForTraffic, the joining admin's hook
 /// runs again, pulls the rows and it publishes ReadyForTraffic after its authority. What must NOT
-/// happen: the joining admin Ready while its hook is blocked.
+/// happen: the joining admin Ready while its hook is blocked, or its probe answered `Current`.
 #[test]
 fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
@@ -175,6 +176,31 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         assert!(matches!(blocked, HydrationState::Blocked { retry_on: RetryOn::AuthorityReady, .. }), "{blocked:?}");
         assert_eq!(joiner.digest.lock().unwrap().status, MemberStatus::Pending, "a blocked admin is Pending");
         assert_eq!(pull.answered(), 0, "the Day-0 admin answered no rows before its own hook passed");
+        // node-start.md step 3: while Blocked, the node answers its executor's ProbeNodeState with
+        // NotReady { reason } carrying the hook's blocker, and the executor's `ready_blocker` returns it.
+        let HydrationState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
+        let joiner_digest = joiner.digest.lock().unwrap().clone();
+        let mut subject = rafka_node_admin_core::model::Node::allocated(joiner_digest.node.name.clone());
+        subject.node_id = joiner_digest.node.node_id.clone();
+        subject.incarnation_id = Some(joiner_digest.node.incarnation.clone());
+        let observer = rafka_node_admin_core::admin::MembershipObserver {
+            book: root.membership.book.clone(),
+            client: Some(root.node_rpc.client.clone()),
+            commands: Arc::default(),
+            authority: Arc::default(),
+        };
+        let named = tokio::time::timeout(WRONG, async {
+            loop {
+                if let Some(why) = rafka_node_admin_core::deployment::pipeline::NodeObserver::ready_blocker(&observer, &subject).await {
+                    return why;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the executor's ready_blocker names the blocked admin's blocker");
+        assert!(named.contains("mesh1.admin.2") && named.contains(&hook_reason) && named.contains("authority-ready"), "the blocker names the birth, the hook's reason and its retry event: {named}");
+        assert!(!named.contains("(attempt "), "no attempt counter: {named}");
         // The Ready check reports a changed blocker list on its own cadence.
         let ready_blockers = tokio::time::timeout(WRONG, async {
             loop {
