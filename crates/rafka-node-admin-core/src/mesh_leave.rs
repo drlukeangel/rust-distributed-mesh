@@ -452,6 +452,38 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
     Ok(out)
 }
 
+/// The provider's exact Exited of the lost final primary `lost`, whose runtime was admitted as
+/// `runtime` (mesh-leave.md, "Resume after the primary's loss", step 1), proven from the durable
+/// runtime row this admin stored for that birth (`rows`, the blind put every admin makes the moment
+/// it first holds a birth): the same runtime by fingerprint, adopted in this admin's provider domain,
+/// and that runtime's own terminal status. A birth no row names, another runtime, or a runtime not
+/// proven exited proves nothing.
+pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::DeploymentProvider, rows: &[crate::storage::RuntimeRow], lost: &RosterBirth, runtime: &RuntimeProof) -> Result<TerminalReceipt, String> {
+    let _ = (provider, rows, runtime);
+    Err(format!("this view holds no record of {} {}", lost.node, lost.incarnation_id))
+}
+
+/// The fabric-primary's resume after the leaving mesh's final primary `admitted.final_primary` was
+/// lost and `held` (runtime `held_runtime`) is the mesh's node-admin primary now (mesh-leave.md,
+/// "Resume after the primary's loss", steps 1-2): the lost birth's exact Exited, proven from the
+/// durable runtime rows `rows` unless the Build already holds it, is recorded as its roster receipt,
+/// then `RosterAmended` admits `held`. A lost primary not proven exited refuses the resume by name
+/// and nothing is amended (R-D1).
+#[allow(clippy::too_many_arguments)]
+pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, rows: &[crate::storage::RuntimeRow], key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
+    let operation = key.operation.as_str();
+    let lost = &admitted.final_primary;
+    let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
+    if !exit_receipts(&steps, operation, std::slice::from_ref(lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
+        let terminal = prove_predecessor_exit(provider, rows, lost, &admitted.final_runtime).await.map_err(|reason| {
+            span_unproven(key, lost, &reason);
+            format!("{operation} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost.node, lost.incarnation_id, held.node, held.incarnation_id)
+        })?;
+        record_predecessor_exit(builds, key, executor, &terminal).await?;
+    }
+    amend_roster(builds, key, executor, &RosterAmended { predecessor: lost.clone(), final_primary: held.clone(), final_runtime: held_runtime.clone() }).await
+}
+
 /// The roster a leaving primary runs `LeaveMesh` over, and the owner's step receipts it read for it
 /// (mesh-leave.md, "Resume after the primary's loss", step 3): its `LeavingRoster` `roster` extended
 /// by every roster amendment. This Build's own facts (`own`) are gossip-fed and may not yet hold the

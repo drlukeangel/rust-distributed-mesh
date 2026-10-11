@@ -93,7 +93,7 @@ impl AdminRunner {
         if let Some(adm) = &recorded {
             let held = RosterBirth::of(&primary)?;
             if held != adm.final_primary {
-                self.amend_after_loss(&key, adm, &view, &primary, &held).await?;
+                self.amend_after_loss(&key, adm, &primary, &held).await?;
                 let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
                 recorded = crate::mesh_leave::admitted_of(&steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))?;
             }
@@ -135,50 +135,18 @@ impl AdminRunner {
     /// The resume after the leaving mesh's final primary `adm.final_primary` was lost and `held`
     /// (`primary`, the surviving admin the election seated or the one node-admin this fabric-primary
     /// created for the mesh) is its primary now (mesh-leave.md, "Resume after the primary's loss",
-    /// steps 1-2): the lost birth's exact provider Exited is proven and recorded as its roster
-    /// receipt, then `RosterAmended` admits `held`. A lost primary that is silent but not proven
-    /// exited refuses the resume by name and nothing is amended (R-D1).
-    async fn amend_after_loss(&self, key: &LeaveKey, adm: &Admitted, view: &Topology, primary: &Node, held: &RosterBirth) -> Result<(), String> {
+    /// steps 1-2; [`crate::mesh_leave::resume_after_loss`]): the lost birth's exit is proven from
+    /// this admin's durable runtime row of it, never from the view, which drops a departed birth.
+    async fn amend_after_loss(&self, key: &LeaveKey, adm: &Admitted, primary: &Node, held: &RosterBirth) -> Result<(), String> {
         let outer = key.operation.as_str();
-        let lost = &adm.final_primary;
-        let steps = self.builds.read_build(&crate::build::BuildId(key.build_id.clone())).await.map_err(|e| format!("{outer}: the Build {} could not be read for its receipts: {e}", key.build_id))?.steps;
-        let proven = crate::mesh_leave::exit_receipts(&steps, outer, std::slice::from_ref(lost)).remove(&(lost.node_id.clone(), lost.incarnation_id.clone()));
-        if proven.is_none() {
-            let terminal = self.prove_exit(lost, &adm.final_runtime, view).await.map_err(|reason| {
-                crate::mesh_leave::span_unproven(key, lost, &reason);
-                format!("{outer} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost.node, lost.incarnation_id, held.node, held.incarnation_id)
-            })?;
-            crate::mesh_leave::record_predecessor_exit(&*self.builds, key, &self.me.to_string(), &terminal).await?;
-        }
         if primary.kind != NodeKind::NodeAdmin {
             return Err(format!("{outer} is refused: {} {} is not a node-admin and cannot be the final primary", held.node, held.incarnation_id));
         }
         let (_, handle) = self.handle_for(primary).await.map_err(|e| format!("{outer} is refused: no provider proof path for the new final primary {}: {e}", primary.name))?;
         let fact = handle.fact().ok_or_else(|| format!("{outer} is refused: the new final primary {} has no exact runtime handle", primary.name))?;
-        let amendment = crate::mesh_leave::RosterAmended { predecessor: lost.clone(), final_primary: held.clone(), final_runtime: RuntimeProof::of(&fact) };
-        crate::mesh_leave::amend_roster(&*self.builds, key, &self.me.to_string(), &amendment).await.map(|_| ())
-    }
-
-    /// The provider's exact Exited of `lost`, whose runtime was admitted as `runtime`: its runtime
-    /// fact from this admin's membership or durable runtime rows (`handle_for`), the same runtime by
-    /// fingerprint, and that runtime's own terminal status. Anything else proves nothing.
-    async fn prove_exit(&self, lost: &RosterBirth, runtime: &RuntimeProof, view: &Topology) -> Result<TerminalReceipt, String> {
-        let record = view
-            .nodes
-            .iter()
-            .find(|n| n.node_id.to_string() == lost.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == lost.incarnation_id))
-            .cloned()
-            .ok_or_else(|| format!("this view holds no record of {} {}", lost.node, lost.incarnation_id))?;
-        let (record, handle) = self.handle_for(&record).await?;
-        let fact = handle.fact().ok_or_else(|| format!("{} {} has no exact runtime handle", lost.node, lost.incarnation_id))?;
-        if &RuntimeProof::of(&fact) != runtime {
-            return Err(format!("the runtime held for {} {} is {:?}, not the one admitted for it {runtime:?}", lost.node, lost.incarnation_id, RuntimeProof::of(&fact)));
-        }
-        let inspected = self.provider.inspect(&handle).await;
-        match crate::deployment::provider::exit_proof(inspected, &fact, record.data_dir.as_deref().map(std::path::Path::new), &lost.incarnation_id) {
-            crate::deployment::provider::DeploymentStatus::Exited { code } => Ok(TerminalReceipt { node: lost.node.clone(), node_id: lost.node_id.clone(), incarnation_id: lost.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: code }),
-            other => Err(format!("its runtime is not proven exited: {other:?}")),
-        }
+        let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {} holds no durable runtime rows to prove the lost final primary {} {}'s exit from", self.me, adm.final_primary.node, adm.final_primary.incarnation_id))?;
+        let rows = store.runtimes().await.map_err(|e| format!("{outer} is refused: {}'s durable runtime rows could not be read to prove the lost final primary {} {}'s exit: {e}", self.me, adm.final_primary.node, adm.final_primary.incarnation_id))?;
+        crate::mesh_leave::resume_after_loss(&*self.builds, &*self.provider, &rows, key, &self.me.to_string(), adm, held, &RuntimeProof::of(&fact)).await.map(|_| ())
     }
 
     /// Steps 2-7 of the owner's workflow, for the leave `key` opened with `admitted`.
