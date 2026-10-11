@@ -4630,6 +4630,80 @@ mod tests {
         assert!(book.departed().is_empty(), "the departures are held for the normal retention only");
     }
 
+    /// CONTRACT (gossip.md, "Snapshot, delta and top-up agreement"; issue #3067 acceptance 2): a node
+    /// of a peer mesh that joins after `mesh-leaving` installs what its mesh primary holds, from the
+    /// topology read (op `0x1E`) and the neighbour-up replay, and holds the Leaving mesh's member
+    /// births from new work exactly as a node that heard the event does.
+    #[test]
+    fn a_node_joining_after_mesh_leaving_holds_the_leaving_mesh_from_what_it_installs_at_join() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let m1 = MeshId::mint();
+        let (admin, rpc) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1));
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let members = Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: publisher.clone(),
+            forwarded_by: None,
+            topology_version: 1,
+            published_at_rafka_ms: 1,
+            snapshot_id: 1,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests: vec![admin.clone(), rpc.clone()],
+            in_flight: Vec::new(),
+            departed: Vec::new(),
+        };
+        // mesh2's primary holds mesh1 and forwards it into mesh2, then hears mesh-leaving.
+        let primary = View::new("mesh2", "mesh2.admin.1");
+        primary.primary.store(true, Ordering::Relaxed);
+        let taken = primary.take_snapshot(&members, &fabric, Side::Backbone);
+        let (mesh, from, version, full) = taken.source.expect("a complete source snapshot");
+        let _ = primary.forwarder.lock().unwrap().source("mesh2.admin.1", &mesh, &from, version, &full, 1);
+        primary.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
+        assert!(!primary.book.routable(rpc.node.node_id.as_str()), "the primary that heard mesh-leaving holds mesh1");
+        // A new mesh2 node joins: it reads the primary's topology (0x1E), then hears its replay.
+        let joiner = View::new("mesh2", "mesh2.rpc.9");
+        let held: Vec<crate::snapshot::SourceSnapshot> = primary.forwarder.lock().unwrap().snapshots();
+        for s in &held {
+            for f in crate::snapshot::chunks_of(&s.full(), |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+                mesh: s.mesh.clone(),
+                publisher: s.publisher.clone(),
+                forwarded_by: None,
+                topology_version: s.topology_version,
+                published_at_rafka_ms: 0,
+                snapshot_id: 1,
+                chunk_index,
+                chunk_count,
+                digests,
+                in_flight,
+                departed,
+            }) {
+                let Frame::Members { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } = f else { unreachable!() };
+                let chunk = crate::snapshot::Chunk { mesh, publisher, forwarded_by: None, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed };
+                let mut rx = joiner.mesh_rx.lock().unwrap();
+                if let crate::snapshot::Taken::Installed(i) = rx.take_read_chunk(chunk) {
+                    joiner.installed(&i, &fabric, Side::Read, 0);
+                }
+            }
+        }
+        let mut replay = primary.statuses.held_frames(&fabric, "mesh2.admin.1");
+        replay.extend(primary.book.seats.held_frames());
+        replay.extend(primary.forwarder.lock().unwrap().replay("mesh2.admin.1", 2));
+        for f in &replay {
+            match f {
+                Frame::Members { .. } | Frame::MembersDelta { .. } => {
+                    joiner.take_snapshot(f, &fabric, Side::MeshChannel);
+                }
+                _ => {
+                    joiner.take(f, &fabric, "mesh-channel");
+                }
+            }
+        }
+        assert!(joiner.book.get(rpc.node.node_id.as_str()).is_some(), "the joiner installed mesh1's births at their addresses");
+        assert!(joiner.book.is_mesh_leaving(&m1), "the joiner holds mesh1 Leaving from what it installed at join");
+        assert!(!joiner.book.routable(admin.node.node_id.as_str()) && !joiner.book.routable(rpc.node.node_id.as_str()), "the joiner routes nothing new to the Leaving mesh's members");
+    }
+
     /// CONTRACT (gossip.md, snapshot, delta and top-up agreement): a Leaving mesh is still updated
     /// by the source projection this node holds; after `mesh-left` the source projection is gone,
     /// the accepted Build does not name the mesh, and an older aggregate of it, the same version
