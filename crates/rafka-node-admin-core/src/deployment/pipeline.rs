@@ -1131,12 +1131,14 @@ impl DeploymentPipeline<'_> {
         }
         let r = work.instrument(span.clone()).await;
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-        span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
         let (outcome, output) = match &r {
             Ok(v) => (StepOutcome::Complete, serde_json::to_value(v).ok().filter(|v| !v.is_null())),
             Err(reason) => (StepOutcome::Failed { reason: reason.clone() }, None),
         };
-        let _ = self
+        // The receipt is the step's durable commit: a step whose receipt the Build state refuses
+        // (a fact with no wire shape, a fenced seat, an I/O failure) is not complete, and the run
+        // stops at it by name.
+        let appended = self
             .builds
             .append_step_receipt(&BuildStepReceipt {
                 build_id: run.build_id.clone(),
@@ -1148,6 +1150,26 @@ impl DeploymentPipeline<'_> {
                 executor: Some(self.template.executor()),
             })
             .await;
+        if let Err(e) = appended {
+            span.record("outcome", "receipt-refused");
+            tracing::info_span!(
+                "rdm.node_admin.deployment.reject.via-receipt-refused",
+                step,
+                build_id = %run.build_id,
+                attempt = run.attempt,
+                operation = %run.operation,
+                node = %run.node,
+                work = if r.is_ok() { "complete" } else { "failed" },
+                detail = %e,
+            )
+            .in_scope(|| tracing::info!("the step's receipt was refused: the step is not committed"));
+            let reason = match r {
+                Ok(_) => format!("{} {step}: its receipt was not recorded: {e}", run.operation),
+                Err(failed) => format!("{failed}; and its Failed receipt was not recorded: {e}"),
+            };
+            return Err(PipelineError { step, reason });
+        }
+        span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
         r.map_err(|reason| PipelineError { step, reason })
     }
 
@@ -1504,7 +1526,7 @@ impl DeploymentPipeline<'_> {
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("drain-node:{name}")).await;
             let mut node = req.node.clone();
             self.drain_steps_with(&mut run, &mut node, &req.handle, true).await?;
-            self.complete_for_birth(&mut run, &node).await
+            self.complete(&mut run).await
         }
         .instrument(span)
         .await
@@ -1522,7 +1544,7 @@ impl DeploymentPipeline<'_> {
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await;
             let mut node = req.node.clone();
             self.stop_steps_with(&mut run, &mut node, &req.handle, true, StopEnd::Park { publish_stopped: true }).await?;
-            self.complete_for_birth(&mut run, &node).await?;
+            self.complete(&mut run).await?;
             Ok(())
         }
         .instrument(span)
@@ -1539,7 +1561,7 @@ impl DeploymentPipeline<'_> {
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("start-node:{name}")).await;
             let mut node = req.node.clone();
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
-            self.complete_for_birth(&mut run, &node).await?;
+            self.complete(&mut run).await?;
             Ok(())
         }
         .instrument(span)
@@ -1615,15 +1637,12 @@ impl DeploymentPipeline<'_> {
         Ok(())
     }
 
-    /// The `Complete` receipt of a standalone operation: it names the exact birth the operation
-    /// completed for, so a later attempt's plan reads it and plans nothing more for that birth.
-    async fn complete_for_birth(&self, run: &mut Run<'_>, node: &Node) -> Result<(), PipelineError> {
-        let birth = serde_json::json!({
-            "node_id": node.node_id,
-            "incarnation": node.incarnation_id,
-        });
-        let _: serde_json::Value = self.step(run, RetireStep::Complete.name(), async { Ok(birth) }).await?;
-        Ok(())
+    /// The `Complete` receipt of a standalone operation. It commits no output: the attempt it
+    /// belongs to carried the action fenced to the exact birth (its `Opened` fact,
+    /// `BuildProjection::attempt_actions`), so a later attempt's plan reads it as that birth's and
+    /// plans nothing more for it.
+    async fn complete(&self, run: &mut Run<'_>) -> Result<(), PipelineError> {
+        self.step(run, RetireStep::Complete.name(), async { Ok(()) }).await
     }
 
     /// Retire `req.node` through every step.
@@ -2044,7 +2063,8 @@ impl DeploymentPipeline<'_> {
     ///
     /// `after_deleted` fences the exited birth before the new one joins (the resolver and the direct
     /// paths of the retained endpoint key); `after_ready` commits the new node's ReadyForTraffic.
-    /// The `Complete` receipt names the EXITED birth: the recovery is keyed on it.
+    /// The `NodeDeleted` receipt names the EXITED birth (its lifecycle operation), and the recovery
+    /// is keyed on it with the operation's `Complete`, which commits no output.
     pub async fn recover<D, DFut, F, Fut>(&self, req: &RecoverRequest, after_deleted: D, after_ready: F) -> Result<Created, PipelineError>
     where
         D: FnOnce(Node) -> DFut,
@@ -2129,14 +2149,13 @@ impl DeploymentPipeline<'_> {
         let mut created = self.create_to_ready(&mut run, &creq, None, None, Some(inherited)).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
-        // One Complete: the new node published, the receipt naming the EXITED birth it recovered.
-        let recovered = serde_json::json!({ "node_id": old.node_id, "incarnation": birth });
-        let _: serde_json::Value = self
-            .step(&mut run, CreateStep::Complete.name(), async {
-                self.sink.publish(created.node.clone());
-                Ok(recovered)
-            })
-            .await?;
+        // One Complete: the new node published. With the `NodeDeleted` above it says the exited
+        // birth is recovered.
+        self.step(&mut run, CreateStep::Complete.name(), async {
+            self.sink.publish(created.node.clone());
+            Ok(())
+        })
+        .await?;
         Ok(created)
     }
 
