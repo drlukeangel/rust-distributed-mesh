@@ -597,7 +597,17 @@ where
 /// one. A birth neither holds is absent, and its tier fails naming it ([`members_exited`]).
 pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&RosterBirth) -> Option<Node>) -> Vec<Node> {
     let exact = |b: &RosterBirth, n: &Node| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
-    roster.iter().filter_map(|b| view.iter().find(|n| exact(b, n)).cloned().or_else(|| held(b).filter(|n| exact(b, n)))).collect()
+    roster
+        .iter()
+        .filter_map(|b| {
+            view.iter().find(|n| exact(b, n)).cloned().or_else(|| {
+                let n = held(b).filter(|n| exact(b, n))?;
+                tracing::info_span!("rdm.node_admin.mesh.resolve.via-held-record", member = %b.node, node_id = %b.node_id, incarnation_id = %b.incarnation_id, status = ?n.status)
+                    .in_scope(|| tracing::info!("a roster birth the view no longer holds is worked from the record this admin's membership holds of it"));
+                Some(n)
+            })
+        })
+        .collect()
 }
 
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):

@@ -1202,6 +1202,8 @@ fn a_roster_birth_the_view_dropped_after_its_leaving_is_worked_from_the_record_i
         let mesh_id = MeshId::mint();
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 2, operation: operation(&mesh_id) };
         let deleted = std::sync::Mutex::new(Vec::new());
+        // The leave's records, under the cell's capture: the held record is named as it is taken.
+        let worked = roster_records(&view, &roster, |b| (b.node == FAILING).then(|| held_stopped.clone()));
         let manifest = members_exited(&builds, &key, FINAL, &roster, &me, runtime.clone(), &worked, &[], |n: Node| {
             let runtime = runtime.clone();
             async move { Ok(exited(&RosterBirth::of(&n).unwrap(), &runtime)) }
@@ -1215,4 +1217,6 @@ fn a_roster_birth_the_view_dropped_after_its_leaving_is_worked_from_the_record_i
     let manifest = manifest.expect("the tier completes over every roster birth");
     assert!(births(&manifest.receipts).contains(FAILING), "the stopped birth's exact Exited receipt is in the manifest: {:?}", births(&manifest.receipts));
     assert!(deleted.iter().any(|n| n == FAILING), "its row is written Deleted on its receipt: {deleted:?}");
+    let held = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.mesh.resolve.via-held-record").collect::<Vec<_>>();
+    assert_eq!(held.iter().map(|s| (s["attributes"]["member"].as_str().unwrap_or("").to_string(), s["attributes"]["status"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>(), vec![(FAILING.to_string(), "Leaving".to_string())], "{held:#?}");
 }
