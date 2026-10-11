@@ -1098,7 +1098,7 @@ pub async fn reconcile_drift(
         authority = %authority.name,
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
-        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start" }).unwrap_or("none"),
+        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover" }).unwrap_or("none"),
         exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
         exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
     );
@@ -2355,6 +2355,11 @@ impl AdminRunner {
             BuildOperation::StopNode { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 self.standalone(build_id, attempt, node, from_incarnation, true).instrument(span).await
+            }
+            BuildOperation::RecoverNode { node, node_id, from_incarnation } => {
+                // node-recovery.md names the operation's span `node.create.via-build`.
+                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %node_id, incarnation_id = %from_incarnation.0);
+                span.in_scope(|| Err(format!("recover-node:{node}: this executor holds no recovery workflow for the exited birth {node_id} at {}", from_incarnation.0)))
             }
             BuildOperation::RetireNode { node } => {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);

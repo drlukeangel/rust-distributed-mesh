@@ -15,7 +15,7 @@ use rafka_mesh_entity::meta::NodeMeta;
 use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired};
 use crate::build_state::{BuildProjection, BuildStateAdapter, BuildStateError};
 use crate::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricStorage, FabricStorageError};
-use crate::model::{is_valid_mesh_name, IncarnationId, NodeKind, NodeStatus, PathName};
+use crate::model::{is_valid_mesh_name, IncarnationId, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use tracing::Instrument as _;
 use serde::{Deserialize, Serialize};
@@ -233,6 +233,16 @@ pub enum AttemptAction {
         /// The node.
         path: PathName,
         /// The birth started.
+        from_incarnation: IncarnationId,
+    },
+    /// Recover the node at a path from its exact exited birth (node-recovery.md): the exited
+    /// instance is deleted and a new node is created at the path over its data dir.
+    Recover {
+        /// The node.
+        path: PathName,
+        /// The exited instance's node.id.
+        node_id: NodeId,
+        /// The exited birth.
         from_incarnation: IncarnationId,
     },
 }

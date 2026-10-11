@@ -13,7 +13,7 @@
 //! a pinned intent, by any executor and any attempt, computes only what is
 //! left; once satisfied it plans nothing, never a second node or restart.
 
-use crate::model::{is_valid_mesh_name, IncarnationId, NodeKind, NodeStatus, PathName};
+use crate::model::{is_valid_mesh_name, IncarnationId, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -228,6 +228,18 @@ pub enum BuildOperation {
         /// The birth started.
         from_incarnation: IncarnationId,
     },
+    /// Recover `node` from its exact exited birth `(node_id, from_incarnation)` (node-recovery.md):
+    /// node.delete of the exited instance (no stop frames; node.deleted from the exit proof), then
+    /// node.create at the same path.name over the inherited data dir, with a new node.id. Executed
+    /// by the node's mesh-primary.
+    RecoverNode {
+        /// The node's `path.name`.
+        node: PathName,
+        /// The exited instance's node.id.
+        node_id: NodeId,
+        /// The exited birth.
+        from_incarnation: IncarnationId,
+    },
     /// Remove the logical node through the retire pipeline; what happens to its storage is the
     /// accepted Build's StorageMeta for the path, decided there.
     RetireNode {
@@ -256,6 +268,7 @@ impl BuildOperation {
             Self::DrainNode { node, .. } => format!("drain-node:{node}"),
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::StartNode { node, .. } => format!("start-node:{node}"),
+            Self::RecoverNode { node, .. } => format!("recover-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }

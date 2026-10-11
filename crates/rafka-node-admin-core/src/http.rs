@@ -313,6 +313,29 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
+    /// Open the next attempt of the accepted Build as the recovery of `path` from its exited birth
+    /// `(node_id, incarnation)` (node-recovery.md "Execution"): one topology Build in flight, so a
+    /// Build still Pending or Running answers `BuildInProgress`. No live-status check: the node is
+    /// silent or absent by definition.
+    pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Opened, Refusal> {
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery-admitted", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.0);
+        let outer = tracing::Span::current();
+        async {
+            self.authority(route).await?;
+            let current = self.current_settled().await?;
+            if !current.topology.contains(&path) {
+                let reject = BuildReject::UnknownNode { node: path.to_string() };
+                outer.in_scope(|| reject_span(route, &reject));
+                return Err(Refusal::Reject(reject));
+            }
+            let node_name = path.to_string();
+            let action = AttemptAction::Recover { path, node_id, from_incarnation: incarnation };
+            self.open_with(&current, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await
+        }
+        .instrument(span.clone())
+        .await
+    }
+
     /// A finished Build leaves history. The Build the pointer names, and a Build still reconciling,
     /// stay.
     pub async fn forget_build(&self, id: &BuildId) -> Result<(), Refusal> {

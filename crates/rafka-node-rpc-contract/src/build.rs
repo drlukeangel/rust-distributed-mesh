@@ -30,7 +30,7 @@ use crate::context::CallContext;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
-use rafka_mesh_entity::{IncarnationId, NodeKind, PathName};
+use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 use serde::{Deserialize, Serialize};
 
 /// The Build protocol: Builds are created, driven, read and deleted through the fabric-primary.
@@ -119,6 +119,18 @@ pub enum BuildChange {
     Start {
         /// The node.
         node: PathName,
+    },
+    /// Recover the node at `node` whose exact birth `(node_id, incarnation)` its mesh-primary proved
+    /// exited (node-recovery.md): node.delete of that instance, then node.create at the same
+    /// path.name over the inherited data dir, with a new node.id. Keyed on the exited birth: a
+    /// repeat answers `AlreadyApplied` or `BuildInProgress`, never a second recovery.
+    Recover {
+        /// The node's `path.name`.
+        node: PathName,
+        /// The exited instance's node.id.
+        node_id: NodeId,
+        /// The exited instance's incarnation.
+        incarnation: IncarnationId,
     },
 }
 
