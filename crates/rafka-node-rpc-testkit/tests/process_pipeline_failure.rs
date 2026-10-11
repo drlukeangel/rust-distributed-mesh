@@ -27,6 +27,8 @@ impl TopologySink for Discard {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
     let data_root = std::env::temp_dir().join(format!("i143-e2s3-{}", NodeId::mint()));
+    // A cell that fails before its own terminate leaves no node running.
+    let _reap = common::ReapOnDrop(data_root.clone());
     // No seeds and no fabric: the node refuses to start (exit 2) before binding.
     let template = LaunchTemplate {
         fabric: String::new(),

@@ -180,6 +180,8 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     let admin = admin_side(prepared.admin_ip, &fabric_id).await;
     let observer = &admin.observer;
     let template = template(&fabric_id, admin.seed.clone(), admin.launcher.clone());
+    // A cell that fails before its own terminate leaves no node running.
+    let _reap = ReapOnDrop(template.data_root.clone());
     let data_root = template.data_root.clone();
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;

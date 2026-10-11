@@ -383,7 +383,7 @@ impl FabricRounds {
         };
         let mut out = mesh_blockers(view, &meshes, &self.env.records.planned());
         let primaries: Vec<(String, Option<IncarnationId>, bool)> =
-            meshes.iter().map(|m| { let p = view.cohort_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.name == self.env.me)) }).collect();
+            meshes.iter().map(|m| { let p = view.cohort_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
         let reports = self.env.records.declared.lock().unwrap().reports.clone();
         out.extend(crate::round::fabric_missing(&primaries, self.env.records.declare_gate(), &reports));
         out
@@ -638,7 +638,7 @@ impl FabricRounds {
             book_tick.borrow_and_update();
             view_tick.borrow_and_update();
             let view = self.env.topology.read().await.clone();
-            if !view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == self.env.me) {
+            if !view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == self.env.node_id) {
                 tracing::info!("this admin no longer holds its mesh's primary seat: the round is the next primary's");
                 self.mesh_book.close(key);
                 return;
@@ -729,7 +729,7 @@ impl FabricRounds {
     }
 
     async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
-        let Some(me) = own_row(view, &self.env.me, &self.env.node_id) else {
+        let Some(me) = own_row(view, &self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
         let Some(sender) = sender else { return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } } };
@@ -770,7 +770,7 @@ impl FabricRounds {
     }
 
     fn serve_up(&self, view: &Topology, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
-        let Some(me) = own_row(view, &self.env.me, &self.env.node_id) else {
+        let Some(me) = own_row(view, &self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
         let who = sender.map(|n| (&n.node_id, n.incarnation_id.as_ref(), n.name.to_string()));
@@ -787,9 +787,10 @@ impl FabricRounds {
     }
 }
 
-/// This admin's own row in `view`.
-fn own_row<'a>(view: &'a Topology, me: &PathName, _node_id: &NodeId) -> Option<&'a Node> {
-    view.members().find(|n| n.name == *me)
+/// This admin's own row in `view`, by the node id it was born with. Never by path.name: a replace
+/// keeps the path.name and mints a new node id, so a view can hold the retired birth's row too.
+fn own_row<'a>(view: &'a Topology, node_id: &NodeId) -> Option<&'a Node> {
+    view.members().find(|n| n.node_id == *node_id)
 }
 
 /// The meshes among `meshes` that are not ready-for-traffic in `view`, with the nodes behind each. A
@@ -886,7 +887,7 @@ mod tests {
         let reborn = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, false);
         let view = projected(vec![retired.clone(), reborn.clone(), node("mesh1.admin.2", NodeStatus::ReadyForTraffic, true)]);
         assert_eq!(view.members().filter(|n| n.name == reborn.name).count(), 2, "both births of mesh1.admin.1 are in the view");
-        let me = own_row(&view, &reborn.name, &reborn.node_id).expect("this admin is in its view");
+        let me = own_row(&view, &reborn.node_id).expect("this admin is in its view");
         assert_eq!(me.node_id, reborn.node_id, "the reborn admin's own row, not the retired birth's {}", retired.node_id);
     }
 

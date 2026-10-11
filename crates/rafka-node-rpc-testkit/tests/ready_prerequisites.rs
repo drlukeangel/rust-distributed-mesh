@@ -90,6 +90,8 @@ async fn create_losing(lose: Option<&'static str>) {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+    // A cell that fails before its own terminate leaves no node running.
+    let _reap = common::ReapOnDrop(template.data_root.clone());
     let inner = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&inner, add_node()).await;
     let builds = Losing { inner, lose };
@@ -184,6 +186,8 @@ async fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() 
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+    // A cell that fails before its own terminate leaves no node running.
+    let _reap = common::ReapOnDrop(template.data_root.clone());
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
     let provider = ProcessDeploymentProvider::new();
