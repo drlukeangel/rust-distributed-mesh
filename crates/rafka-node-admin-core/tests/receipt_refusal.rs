@@ -232,13 +232,13 @@ async fn a_standalone_drain_or_stop_whose_command_is_never_sent_fails_by_name() 
 }
 
 /// A capture of every finished span, by name.
-struct Capture {
+pub(crate) struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
     provider: opentelemetry_sdk::trace::TracerProvider,
 }
 
 impl Capture {
-    fn new(service: &'static str) -> (Self, tracing::subscriber::DefaultGuard) {
+    pub(crate) fn new(service: &'static str) -> (Self, tracing::subscriber::DefaultGuard) {
         crate::enable_callsites();
         let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
         let provider = opentelemetry_sdk::trace::TracerProvider::builder()
@@ -249,7 +249,7 @@ impl Capture {
         (Self { exporter, provider }, guard)
     }
 
-    fn spans(&self, name: &str) -> Vec<(String, std::collections::BTreeMap<String, String>)> {
+    pub(crate) fn spans(&self, name: &str) -> Vec<(String, std::collections::BTreeMap<String, String>)> {
         let _ = self.provider.force_flush();
         self.exporter
             .get_finished_spans()

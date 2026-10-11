@@ -1011,12 +1011,15 @@ pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], p
 }
 
 /// What the mesh primary's tick watches, by node id: every silent (`PendingReconnect` or `Dead`)
-/// member of its view other than itself, of its own mesh or a node-admin of any mesh.
+/// member of its view other than itself, of its own mesh or a node-admin of any mesh; and every
+/// birth of its own mesh only a durable runtime row names (`durable_births`: never heard, never
+/// launched by this admin), which is node recovery driven by this mesh-primary like any other
+/// member's (mesh-recovery.md:8-9).
 pub fn watched_births(view: &Topology, me: &PathName, mesh: &str, durable: &[Node]) -> BTreeMap<String, Node> {
-    let _ = durable;
     view.members()
         .filter(|n| n.name != *me && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))
         .filter(|n| n.mesh == mesh || n.kind == NodeKind::NodeAdmin)
+        .chain(durable.iter().filter(|n| n.mesh == mesh && n.name != *me))
         .map(|n| (n.node_id.to_string(), n.clone()))
         .collect()
 }
