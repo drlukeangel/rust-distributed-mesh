@@ -969,3 +969,29 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
     assert!(named("rdm.node_admin.mesh.resolve.via-owner-admitted-roster").iter().any(|s| s["attributes"]["amendments"] == "1" && s["attributes"]["roster"] == "4" && s["attributes"]["me"].as_str().is_some_and(|m| m.contains(NEW_ADMIN))), "the admission took the owner's admitted roster");
     assert!(named("rdm.node_admin.mesh.resolve.via-retained-receipts").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "2" && s["attributes"]["remaining"] == "1"));
 }
+
+/// CONTRACT (R11 form (b); node-recovery.md step 2-3, run by the seat watch: "A node-admin watching
+/// a silent seat holder (seat watch) runs this same ladder", then "the provider about the exact
+/// runtime recorded at launch"): the node-admin the fabric-primary created for a leaving mesh holds
+/// the lost primary's seat record but never heard its digest (the primary was gone before the admin
+/// was born). Its seat watch proves the holder's exit from the runtime row handed into its
+/// nodes.storage at its create, the exact runtime recorded at launch, so the seat yields to it. With
+/// no digest and no row the finding stays unproven: silence is not death.
+#[test]
+fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row() {
+    use rafka_node_admin_core::seat_watch::{inspect_birth, Finding};
+    use rafka_node_admin_core::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
+    let lost = node(FINAL);
+    let h = handle(FINAL, 49_001);
+    let fleet = Fleet { pids: [(49_001, FINAL.to_string())].into_iter().collect(), ..Default::default() };
+    let book = rafka_mesh_transport::membership::DigestBook::default();
+    let (without_row, with_row) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let nodes = MemoryNodesStorage::default();
+        let without_row = inspect_birth(&fleet, &book, Some(&nodes), &lost).await;
+        nodes.put_runtime(&RuntimeRow { node_id: lost.node_id.clone(), name: lost.name.clone(), incarnation_id: lost.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+        let with_row = inspect_birth(&fleet, &book, Some(&nodes), &lost).await;
+        (without_row, with_row)
+    });
+    assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no runtime row")), "no digest and no row: unproven, naming both: {without_row:?}");
+    assert_eq!(with_row, Finding::Exited { code: Some(0) }, "the runtime row recorded at launch is what the provider inspects");
+}

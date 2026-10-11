@@ -179,6 +179,8 @@ pub struct Looker {
     pub client: Arc<NodeRpcClient>,
     /// Its deployment provider.
     pub provider: Arc<dyn crate::deployment::provider::DeploymentProvider>,
+    /// Its nodes.storage: the runtime row of each birth recorded at launch or handed at its create.
+    pub nodes: Option<Arc<dyn crate::storage::NodesStorage>>,
 }
 
 impl Looker {
@@ -222,20 +224,26 @@ impl Looker {
 
     /// The provider's inspection of `n`'s exact runtime.
     async fn inspect(&self, n: &Node) -> Finding {
-        let Some(inc) = n.incarnation_id.clone() else { return Finding::Unproven { reason: "the view holds no incarnation for it".into() } };
-        let held = self.membership.book.get(n.node_id.as_str()).filter(|(d, _)| d.node.incarnation == inc);
-        let Some((digest, _)) = held else { return Finding::Unproven { reason: "this admin holds no digest of this exact birth, so no runtime fact".into() } };
-        let Some(fact) = digest.node.runtime.clone() else { return Finding::Unproven { reason: "its digest carries no runtime fact".into() } };
-        let handle = match crate::deployment::provider::adopt(&*self.provider, &fact) {
-            Ok(h) => h,
-            Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
-        };
-        let inspected = self.provider.inspect(&handle).await;
-        match crate::deployment::provider::exit_proof(inspected, &fact, digest.data_dir.as_deref().map(std::path::Path::new), &inc.0) {
-            crate::deployment::provider::DeploymentStatus::Exited { code } => Finding::Exited { code },
-            crate::deployment::provider::DeploymentStatus::Running => Finding::Running,
-            other => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
-        }
+        inspect_birth(&*self.provider, &self.membership.book, self.nodes.as_deref(), n).await
+    }
+}
+
+/// The provider's inspection of the exact runtime of `n`'s birth (node-recovery.md step 3: "the
+/// exact runtime recorded at launch"): the runtime fact its digest carries in `book`.
+pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rafka_mesh_transport::membership::DigestBook, _nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
+    let Some(inc) = n.incarnation_id.clone() else { return Finding::Unproven { reason: "the view holds no incarnation for it".into() } };
+    let held = book.get(n.node_id.as_str()).filter(|(d, _)| d.node.incarnation == inc);
+    let Some((digest, _)) = held else { return Finding::Unproven { reason: "this admin holds no digest of this exact birth, so no runtime fact".into() } };
+    let Some(fact) = digest.node.runtime.clone() else { return Finding::Unproven { reason: "its digest carries no runtime fact".into() } };
+    let handle = match crate::deployment::provider::adopt(provider, &fact) {
+        Ok(h) => h,
+        Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
+    };
+    let inspected = provider.inspect(&handle).await;
+    match crate::deployment::provider::exit_proof(inspected, &fact, digest.data_dir.as_deref().map(std::path::Path::new), &inc.0) {
+        crate::deployment::provider::DeploymentStatus::Exited { code } => Finding::Exited { code },
+        crate::deployment::provider::DeploymentStatus::Running => Finding::Running,
+        other => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
     }
 }
 
