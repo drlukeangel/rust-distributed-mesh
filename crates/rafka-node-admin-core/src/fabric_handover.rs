@@ -182,8 +182,8 @@ pub struct HandoverDoor {
     pub book: DigestBook,
     /// The records the election's inputs come from.
     pub records: Arc<crate::admin::Records>,
-    /// This admin's own contact addresses, once its digest is built.
-    pub contacts: OnceLock<OwnContacts>,
+    /// This admin's own contact addresses: what its new-fabric-primary announces.
+    pub contacts: OwnContacts,
     /// The handovers this node took part in.
     pub handovers: HandoverBook,
     /// Fences this admin's Build log, naming why and the new holder, when a committed transfer takes
@@ -427,10 +427,9 @@ impl HandoverDoor {
 
     async fn complete(&self, payload: Payload, committed: u64, publish: bool) {
         if publish {
-            if let Some(c) = self.contacts.get() {
-                let holder = SeatHolder { mesh: payload.successor.mesh.clone(), node_id: payload.successor.node_id.clone(), incarnation: payload.successor.incarnation.clone(), epoch: committed };
-                self.backbone.announce_new_fabric_primary(holder, c.endpoint_id.clone(), c.transport_addr, c.admin_api_base.clone()).await;
-            }
+            let holder = SeatHolder { mesh: payload.successor.mesh.clone(), node_id: payload.successor.node_id.clone(), incarnation: payload.successor.incarnation.clone(), epoch: committed };
+            let c = &self.contacts;
+            self.backbone.announce_new_fabric_primary(holder, c.endpoint_id.clone(), c.transport_addr, c.admin_api_base.clone()).await;
         }
         match self.call(&payload.incumbent.node_id, &payload.taken(committed)).await {
             Ok(Reply::Applied | Reply::AlreadyApplied) => {

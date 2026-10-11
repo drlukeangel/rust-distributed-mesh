@@ -115,11 +115,10 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         storage: storage.clone(),
         client: client.clone(),
         records: Arc::new(Records::default()),
-        contacts: OnceLock::new(),
+        contacts: OwnContacts { endpoint_id: ep.id().to_string(), transport_addr: addr, admin_api_base: Some(format!("http://127.0.0.1:{}", addr.port() + 1)) },
         handovers: Default::default(),
         fence_builds: Arc::new(|_, _| Box::pin(async {})),
     });
-    let _ = door.contacts.set(OwnContacts { endpoint_id: ep.id().to_string(), transport_addr: addr, admin_api_base: Some(format!("http://127.0.0.1:{}", addr.port() + 1)) });
     if fill_slot {
         let _ = slot.set(door.clone());
     }
