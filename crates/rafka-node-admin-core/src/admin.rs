@@ -6827,6 +6827,42 @@ mod tests {
         }
     }
 
+    /// CONTRACT (R-MN1: a mesh removal deletes every roster birth, and a mesh created again under
+    /// the name is a new mesh; mesh-leave.md step 7: at mesh-left the fabric-primary is the acting
+    /// primary of a mesh that has none left, and departed births resolve Gone; R14 item 2: a mesh's
+    /// contacts are its primary's rows; `dropped_contacts`: a departed birth's contact is dropped, so
+    /// a maker's stored map never hands it to a mesh created again under the same name): mesh-left
+    /// drops the contact of every birth its proof set names from the removed mesh's contacts, so
+    /// the stored map the fabric-primary answers a recreated mesh's first admin with names none of
+    /// them. Must NOT happen: mesh_identity::canonical_ids at :208 (trace
+    /// a6f24e5914ac3658d302079ddb0c28f0): the recreated mesh2.admin.1's entry sweep pings the removed
+    /// mesh's births (via-entry-sweep-no-reply), handed by the maker's stored map from the contacts
+    /// nobody dropped (rdm.mesh.topology.serve.via-read stored 1, stored_nodes 5).
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn mesh_left_drops_the_removed_meshs_contacts_of_every_birth_its_proof_set_names() {
+        use crate::storage::NodesStorage;
+        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
+        let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
+        let member = with_id(digest("mesh2.rpc.1", MemberStatus::Leaving), "210000000000");
+        let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
+        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+        let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
+        // mesh2's primary wrote its members' contacts while it held the seat; mesh1's own stays.
+        for d in [&last, &member, &fp] {
+            storage.put_contact(&contact(d)).await.unwrap();
+        }
+        prove_exit(&book, &records, &last).await;
+        records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+        let key = crate::mesh_leave::LeaveKey { mesh_id: mesh_id("mesh2"), build_id: "bld-leave".into(), attempt: 1, operation: format!("shutdown-mesh:{}", mesh_id("mesh2")) };
+        let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
+        let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
+        let status = crate::status_storage::MemoryStatusStorage::default();
+        crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary).await.unwrap_or_else(|e| panic!("mesh-left's rows: {e}"));
+        let held: Vec<String> = storage.contacts().await.unwrap().into_iter().map(|c| c.name.to_string()).collect();
+        assert_eq!(held, vec!["mesh1.admin.1".to_string()], "no contact of the removed mesh's births stands; another mesh's is untouched");
+    }
+
     /// CONTRACT (mesh-leave.md, "Resume after the primary's loss", steps 1-2: the lost final
     /// primary's exact Exited is proven and recorded first, then the fabric-primary creates the one
     /// node-admin of a mesh with no live admin; R11: record predecessor Exited first): the proven
