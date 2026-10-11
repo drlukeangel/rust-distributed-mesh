@@ -3483,6 +3483,39 @@ impl Default for DigestBook {
     }
 }
 
+/// The routing facts a book holds, watched: a held member first held, its birth or status changed,
+/// heard again after silence; a lifecycle overlay opened or closed; a departure. What application
+/// routing's view rebuild wakes on, so a fact is applied on receipt (states.md "Routing"). A local
+/// observation of the book; nothing is sent.
+pub struct RoutingWatch {
+    heard: tokio::sync::watch::Receiver<u64>,
+    births: tokio::sync::watch::Receiver<u64>,
+    overlays: tokio::sync::watch::Receiver<u64>,
+}
+
+impl RoutingWatch {
+    /// Every fact moved so far is seen: called right before a rebuild reads the book, so a fact taken
+    /// while it reads wakes the next one.
+    pub fn seen(&mut self) {
+        self.heard.borrow_and_update();
+        self.births.borrow_and_update();
+        self.overlays.borrow_and_update();
+    }
+
+    /// Returns when a fact moved since [`RoutingWatch::seen`]. A book that is gone moves nothing:
+    /// this never returns then.
+    pub async fn moved(&mut self) {
+        let ok = tokio::select! {
+            r = self.heard.changed() => r.is_ok(),
+            r = self.births.changed() => r.is_ok(),
+            r = self.overlays.changed() => r.is_ok(),
+        };
+        if !ok {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 /// What applying `mesh-left` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshLeftApplied {
@@ -4176,6 +4209,11 @@ impl DigestBook {
         self.births.subscribe()
     }
 
+    /// The routing facts this book holds, watched ([`RoutingWatch`]).
+    pub fn routing_watch(&self) -> RoutingWatch {
+        RoutingWatch { heard: self.heard.subscribe(), births: self.births.subscribe(), overlays: self.overlays.subscribe() }
+    }
+
     /// Ticks each time a member is first held, changes its birth or its status, or is heard again
     /// after it had been silent past the staleness floor. The value is a count: a waiter that
     /// recorded it before an event sees the count move after the event, however the two
@@ -4525,6 +4563,37 @@ mod tests {
         assert!(matches!(&leaving, Frame::MeshStatus { status, publisher, .. } if status == "leaving" && publisher == "mesh1.admin.1"), "{leaving:?}");
         assert!(peer.statuses.take(&leaving, &fabric));
         assert!(!peer.routable(id.as_str()), "a peer holding the mesh leaving selects none of its births, though the member still says ready-for-traffic");
+    }
+
+    /// Whether `w` says a routing fact moved, without waiting.
+    async fn moved_now(w: &mut RoutingWatch) -> bool {
+        tokio::select! {
+            biased;
+            _ = w.moved() => true,
+            _ = std::future::ready(()) => false,
+        }
+    }
+
+    /// CONTRACT (states.md "Routing": a stop is applied on receipt): the book's routing watch moves
+    /// when a mesh status is taken, a held birth says another status, or an overlay opens; a repeat
+    /// of the held mesh status moves nothing. Must NOT happen: a mesh status that changes what routing
+    /// selects taken silently, so a view waits for its poll to apply it.
+    #[tokio::test]
+    async fn a_mesh_status_taken_moves_the_books_routing_watch() {
+        let (book, fabric) = (DigestBook::default(), FabricId::parse("fab000000001").unwrap());
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        let mut w = book.routing_watch();
+        w.seen();
+        assert!(!moved_now(&mut w).await, "nothing moved yet");
+        let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "leaving".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        assert!(book.statuses.take(&f, &fabric));
+        assert!(moved_now(&mut w).await, "a mesh status taken moves the routing watch");
+        w.seen();
+        assert!(!book.statuses.take(&f, &fabric), "the same change again is taken once");
+        assert!(!moved_now(&mut w).await, "a repeat moves nothing");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
+        assert!(moved_now(&mut w).await, "a birth saying another status moves it");
     }
 
     #[test]

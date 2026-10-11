@@ -951,6 +951,16 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
     topology
 }
 
+/// How often the view is rebuilt when no routing fact moved: the projection also reads the clock
+/// (a member silent past the staleness floor, a terminal `Leaving` one gossip interval old).
+const VIEW_POLL: Duration = Duration::from_millis(200);
+
+/// The view's next rebuild is due: after `poll`.
+pub(crate) async fn view_rebuild_due(facts: &mut rafka_mesh_transport::membership::RoutingWatch, poll: Duration) {
+    let _ = facts;
+    tokio::time::sleep(poll).await;
+}
+
 /// Every birth of `fabric` this admin's book holds besides itself, heard a moment ago or only
 /// carried in an installed topology read. These are the contacts a restarted admin can try, and the
 /// births a maker serves a joining admin for a mesh it holds no snapshot of.
@@ -5305,7 +5315,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
         tasks.push(park_gate.spawn(async move {
             let mut held: BTreeSet<PathName> = BTreeSet::new();
+            let mut facts = book.routing_watch();
             loop {
+                facts.seen();
                 let t = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
                 elections.observe(&t);
                 // A name this view held and now lacks: the exclusion is named from the same
@@ -5321,7 +5333,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 if authority.get().is_some() && held.contains(&me) {
                     rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                view_rebuild_due(&mut facts, VIEW_POLL).await;
             }
         }));
     }
@@ -6787,6 +6799,40 @@ mod tests {
         assert_eq!(status("mesh1"), ScopeStatus::Leaving, "a mesh whose row holds Leaving is projected leaving, so its primary announces leaving");
         assert_eq!(status("mesh2"), ScopeStatus::Dead, "a mesh whose row holds Dead is projected dead");
         assert_eq!(status("mesh3"), ScopeStatus::ReadyForTraffic, "a mesh whose row holds ready-for-traffic is projected from its members, as before");
+    }
+
+    /// CONTRACT (states.md "Routing": a stop is applied by a peer on receipt of the fact): the view
+    /// application routing reads is rebuilt at once when a routing fact is taken, never on the
+    /// poll. A mesh status taken makes the rebuild due though the poll is an hour away; so does a
+    /// birth saying another status, and a lifecycle overlay opening. Must NOT happen: the view
+    /// waiting for its poll to apply a fact the book already holds.
+    #[tokio::test(start_paused = true)]
+    async fn the_view_rebuild_is_due_on_receipt_of_a_routing_fact_not_on_the_poll() {
+        use futures_util::FutureExt;
+        use rafka_mesh_transport::membership::Frame;
+        let book = DigestBook::default();
+        let rpc = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        assert!(book.record(rpc.clone()));
+        let hour = Duration::from_secs(3600);
+        let mut facts = book.routing_watch();
+
+        facts.seen();
+        let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 };
+        assert!(book.statuses.take(&f, &fabric1()));
+        assert!(view_rebuild_due(&mut facts, hour).now_or_never().is_some(), "a mesh status taken makes the rebuild due at once");
+
+        facts.seen();
+        assert!(view_rebuild_due(&mut facts, hour).now_or_never().is_none(), "nothing moved: the rebuild waits for its poll");
+        let mut draining = rpc.clone();
+        draining.status = MemberStatus::Draining;
+        draining.digest_seq += 1;
+        assert!(book.record(draining));
+        assert!(view_rebuild_due(&mut facts, hour).now_or_never().is_some(), "a birth saying Draining makes the rebuild due at once");
+
+        facts.seen();
+        let stop = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1 };
+        assert!(book.stopped(stop));
+        assert!(view_rebuild_due(&mut facts, hour).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
 
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
