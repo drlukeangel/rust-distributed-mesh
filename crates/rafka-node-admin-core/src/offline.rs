@@ -679,4 +679,93 @@ mod tests {
         held.incarnation_id = None;
         assert!(put_silence_status(&store, &held, None).await.is_err(), "a held record with no birth is named, never skipped");
     }
+
+    /// A status store whose every put of a silence row is refused, as a full or read-only disk would.
+    #[derive(Default)]
+    struct SilenceRefusing {
+        inner: crate::status_storage::MemoryStatusStorage,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::status_storage::StatusStorage for SilenceRefusing {
+        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status(row).await
+        }
+        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rafka_node_rpc_contract::status::MeshState>, crate::record_store::StorageError> {
+            self.inner.mesh_statuses().await
+        }
+        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_fabric_event(row).await
+        }
+        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events().await
+        }
+        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_declared(row).await
+        }
+        async fn remove_node_declared(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_node_declared(node_id, incarnation_id).await
+        }
+        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::record_store::StorageError> {
+            self.inner.node_declared().await
+        }
+        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Io { file: format!("status/silence/{}", row.key()), reason: "No space left on device (os error 28)".into() })
+        }
+        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::record_store::StorageError> {
+            self.inner.node_silences().await
+        }
+        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_exit(row).await
+        }
+        async fn node_exit(&self, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+            self.inner.node_exit(node_id, incarnation_id).await
+        }
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof" step 2: TRUE OFFLINE is "written as status
+    /// Dead on the node's row"; CLAUDE.md: an error state names what failed and where, and distinct
+    /// facts get distinct spans): when status.storage refuses the mesh primary's put of a birth's
+    /// silence row, the refusal is one `rdm.node_admin.node.reject.via-status-storage` span naming the
+    /// node, its exact birth, the status being written, the store and the store's own cause, and the
+    /// write answers that refusal; no row stands. A held record with no incarnation is another fact:
+    /// one `via-no-birth` span, never the storage span. Must NOT happen: a refused write with no span
+    /// (an info line only), or the two refusals under one span.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_refused_silence_status_write_is_spanned_with_the_birth_the_status_and_the_stores_cause() {
+        use crate::model::{IncarnationId, Node, NodeStatus, PathName};
+        use crate::status_storage::StatusStorage;
+        let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
+        held.incarnation_id = Some(IncarnationId::mint());
+        let store = SilenceRefusing::default();
+        let capture = crate::span_capture::Capture::new("i143-3051-silence-refused");
+        let (refused, unborn) = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            let refused = put_silence_status(&store, &held, Some(NodeStatus::Dead)).await;
+            let mut unborn = held.clone();
+            unborn.incarnation_id = None;
+            (refused, put_silence_status(&store, &unborn, Some(NodeStatus::PendingReconnect)).await)
+        };
+        let why = refused.expect_err("a refused put answers its refusal");
+        assert!(why.contains("No space left on device"), "the answer carries the store's cause: {why}");
+        assert!(store.node_silences().await.unwrap().is_empty(), "no silence row stands");
+        let spans = capture.named("rdm.node_admin.node.reject.via-status-storage");
+        assert_eq!(spans.len(), 1, "one span for the one refused put: {spans:?}");
+        let a = &spans[0].attributes;
+        let attr = |k: &str| a.get(k).map(String::as_str).unwrap_or_default().to_string();
+        assert_eq!(attr("node"), "mesh1.rpc.1", "{a:?}");
+        assert_eq!(attr("node_id"), held.node_id.to_string(), "{a:?}");
+        assert_eq!(attr("incarnation_id"), held.incarnation_id.clone().unwrap().0, "the exact birth: {a:?}");
+        assert_eq!(attr("status"), "dead", "the status it was writing: {a:?}");
+        assert_eq!(attr("store"), "status.storage", "{a:?}");
+        assert!(attr("error").contains("status/silence/") && attr("error").contains("No space left on device (os error 28)"), "the store's own cause, with its file: {a:?}");
+        eprintln!("span rdm.node_admin.node.reject.via-status-storage trace_id={} {a:?}", spans[0].trace_id);
+        assert!(unborn.is_err(), "a held record with no birth is named, never skipped");
+        let no_birth = capture.named("rdm.node_admin.node.reject.via-no-birth");
+        assert_eq!(no_birth.len(), 1, "the unborn record is its own refusal: {no_birth:?}");
+        let b = &no_birth[0].attributes;
+        assert_eq!((b.get("node").map(String::as_str), b.get("status").map(String::as_str)), (Some("mesh1.rpc.1"), Some("pending-reconnect")), "{b:?}");
+        eprintln!("span rdm.node_admin.node.reject.via-no-birth trace_id={} {b:?}", no_birth[0].trace_id);
+    }
 }
