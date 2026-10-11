@@ -30,7 +30,44 @@ pub fn cell(text: &str) -> String {
 /// their inner text, since the page has no target for them, then [`cell`] escaping. A bracket
 /// inside inline code, or one that opens a real link (`](` or `][`), is kept.
 pub fn doc(text: &str) -> String {
-    cell(text)
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let (mut i, mut in_code) = (0, false);
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '`' {
+            in_code = !in_code;
+        }
+        if c == '[' && !in_code {
+            // The matching `]`, skipping any backticked span inside the brackets.
+            let (mut j, mut code) = (i + 1, false);
+            while j < chars.len() && (chars[j] != ']' || code) {
+                if chars[j] == '`' {
+                    code = !code;
+                }
+                j += 1;
+            }
+            if j < chars.len() {
+                match chars.get(j + 1) {
+                    // A real link: `[text](target)` or `[text][label]`, kept whole.
+                    Some(&open @ ('(' | '[')) => {
+                        let close = if open == '(' { ')' } else { ']' };
+                        let end = chars[j + 1..].iter().position(|&c| c == close).map_or(chars.len(), |k| j + 1 + k + 1);
+                        out.extend(&chars[i..end]);
+                        i = end;
+                    }
+                    _ => {
+                        out.extend(&chars[i + 1..j]);
+                        i = j + 1;
+                    }
+                }
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    cell(&out)
 }
 
 /// `text` as inline code, safe for a table cell.
