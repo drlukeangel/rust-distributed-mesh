@@ -374,14 +374,44 @@ fn enum_arms(text: &str, name: &str) -> Option<Vec<String>> {
     Some(arms)
 }
 
-/// `scan_tokens` over the code before each file's `#[cfg(test)]` module.
+/// The lines of `text` with every `#[cfg(test)]` item blanked, in place, so line numbers hold:
+/// the one rule every non-test scan shares. The attribute gates exactly the next item (its other
+/// attributes, then a `;`-ended item or a braced item to its closing brace); code after that item
+/// is read again, so an item-level `#[cfg(test)]` (a gated helper) hides nothing below it, and a
+/// test module at the end of a file is skipped whole.
+pub fn non_test_lines(text: &str) -> Vec<&str> {
+    let mut lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        if !lines[i].trim_start().starts_with("#[cfg(test)]") {
+            i += 1;
+            continue;
+        }
+        let mut depth: i32 = 0;
+        let mut opened = false;
+        while i < lines.len() {
+            let c = code(lines[i]);
+            let t = c.trim();
+            lines[i] = "";
+            i += 1;
+            if !opened && (t.is_empty() || (t.starts_with("#[") && t.ends_with(']'))) {
+                continue;
+            }
+            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
+            opened |= c.contains('{');
+            if (opened && depth <= 0) || (!opened && t.ends_with(';')) {
+                break;
+            }
+        }
+    }
+    lines
+}
+
+/// `scan_tokens` over each file's non-test code ([`non_test_lines`]).
 fn scan_non_test_tokens(root: &Path, files: &[PathBuf], tokens: &[&str], ratchet: Ratchet, out: &mut Vec<Violation>) {
     for f in files {
         let Ok(text) = std::fs::read_to_string(f) else { continue };
-        for (i, line) in text.lines().enumerate() {
-            if line.trim_start().starts_with("#[cfg(test)]") {
-                break;
-            }
+        for (i, line) in non_test_lines(&text).into_iter().enumerate() {
             let c = code(line);
             for t in tokens {
                 if c.contains(t) {
@@ -394,11 +424,11 @@ fn scan_non_test_tokens(root: &Path, files: &[PathBuf], tokens: &[&str], ratchet
 
 /// The guards a source binds with `span.enter()` / `span.entered()` that are still alive at an
 /// `.await` of the same block, as `(line, guard name)` pairs of the first such await's line.
-/// A test module (from its `#[cfg(test)]` line to the end of the file) is not scanned. A guard
-/// dropped by name before the await is not held across it.
+/// Only non-test code is scanned ([`non_test_lines`]). A guard dropped by name before the await
+/// is not held across it.
 pub fn span_guards_across_await(text: &str) -> Vec<(usize, usize, String)> {
-    let lines: Vec<&str> = text.lines().collect();
-    let end = lines.iter().position(|l| l.trim_start().starts_with("#[cfg(test)]")).unwrap_or(lines.len());
+    let lines = non_test_lines(text);
+    let end = lines.len();
     let mut found = Vec::new();
     for (i, line) in lines[..end].iter().enumerate() {
         let c = code(line);
@@ -650,7 +680,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             // `node_rows::move_row` claims the new name and releases the old key. Nothing else
             // releases a node row's key, and no second rename door stands beside it.
             let files: Vec<PathBuf> = files_in(root, RUNTIME_SOURCES).into_iter().filter(|f| !rel(root, f).ends_with(NODE_ROWS) && !rel(root, f).ends_with(NODES_STORAGE)).collect();
-            scan_tokens(root, &files, &[".release_node_row("], ratchet, &mut out);
+            scan_non_test_tokens(root, &files, &[".release_node_row("], ratchet, &mut out);
             scan_tokens(root, &files_in(root, &[NODE_ROWS]), &["pub async fn rename(", "fn rename_steps("], ratchet, &mut out);
             require(root, NODE_ROWS, &["pub(crate) async fn move_row(storage: &dyn NodesStorage,"], ratchet, &mut out);
         }

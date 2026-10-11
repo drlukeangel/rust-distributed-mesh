@@ -339,8 +339,9 @@ fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
 }
 
 /// CONTRACT: a span guard bound with `enter()` or `entered()` and still alive at an `.await` of
-/// its block is refused in non-test code; a guard released before the await, one that never meets
-/// an await, a discarded `let _ =` and a test module are not.
+/// its block is refused in non-test code, including code below an item-level `#[cfg(test)]`; a
+/// guard released before the await, one that never meets an await, a discarded `let _ =` and a
+/// test module are not.
 #[test]
 fn no_span_guard_across_await_refuses_a_guard_alive_at_an_await() {
     let t = Planted::of_tree();
@@ -348,7 +349,10 @@ fn no_span_guard_across_await_refuses_a_guard_alive_at_an_await() {
     let v = only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
     assert!(matches!(&v[0], Violation::Token { file, line: 2, token, .. } if file.ends_with("planted.rs") && token.contains("held across the .await at line 3")), "{v:?}");
     t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn f(span: tracing::Span) {\n    let g = span.clone().entered();\n    if ok() {\n        step();\n    }\n    other().await;\n}\n");
-    only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
+    only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);    // An item-level `#[cfg(test)]` gates its one item: the guard below it is still read.
+    t.write("crates/rafka-node-admin-core/src/planted.rs", "#[cfg(test)]\nfn helper() {}\n\nasync fn f(span: tracing::Span) {\n    let _g = span.enter();\n    work().await;\n}\n");
+    let v = only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
+    assert!(matches!(&v[0], Violation::Token { file, line: 5, .. } if file.ends_with("planted.rs")), "{v:?}");
 }
 
 #[test]
