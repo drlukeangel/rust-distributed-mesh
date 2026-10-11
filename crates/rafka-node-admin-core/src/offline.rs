@@ -40,7 +40,11 @@ pub(crate) struct OfflineTickReport {
     pub tickled: Vec<String>,
     pub reachable_silent: Vec<String>,
     pub offline: Vec<String>,
+    /// Silent nodes heard again: the view holds them live.
     pub returned: Vec<String>,
+    /// Silent nodes the view no longer holds (deleted, or recovered under a new node.id at their
+    /// path.name): not heard again, gone.
+    pub gone: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -74,17 +78,20 @@ impl OfflineTickle {
     }
 
     /// One tick. `holds_seat` is this node-admin's primary seat, sampled once for the tick;
-    /// `silent` is this tick's silent set (every `PendingReconnect` node it watches); `probe_delay_ms`
+    /// `silent` is this tick's silent set (every `PendingReconnect` node it watches); `in_view` says
+    /// whether the view still holds a node id at all (a node that left the silent set is heard
+    /// again only if it does); `probe_delay_ms`
     /// is how long a node stays silent before its one tickle; `staleness_floor_ms` is the minimum
     /// delay between round 1 and round 2; `tickle` makes the direct connect and `via_peer` the
     /// via-peer step. `observe` reads iroh's local view of a node once for the answered and the
     /// failed span (`rafka_mesh_transport::iroh_obs`); it decides nothing.
     #[allow(clippy::too_many_arguments)]
-    pub async fn tick<T, TF, V, VF, O, OF>(
+    pub async fn tick<P, T, TF, V, VF, O, OF>(
         &mut self,
         now_ms: u64,
         holds_seat: bool,
         silent: Vec<SilentNode>,
+        in_view: P,
         probe_delay_ms: u64,
         staleness_floor_ms: u64,
         tickle: T,
@@ -92,6 +99,7 @@ impl OfflineTickle {
         observe: O,
     ) -> OfflineTickReport
     where
+        P: Fn(&str) -> bool,
         T: Fn(String) -> TF,
         TF: std::future::Future<Output = Result<(), String>>,
         V: Fn(String) -> VF,
@@ -241,6 +249,7 @@ mod tests {
             now,
             seat,
             set,
+            |_| true,
             PROBE_DELAY,
             FLOOR,
             |_| async move { if direct { Ok(()) } else { Err("no answer".to_string()) } },
@@ -343,7 +352,46 @@ mod tests {
         assert!(t.is_offline("a"));
         let r = tick(&mut t, PROBE_DELAY + FLOOR + 1, true, vec![], false, no_path()).await;
         assert_eq!(r.returned, vec!["a".to_string()]);
+        assert!(r.gone.is_empty());
         assert!(!t.is_offline("a"));
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof": the tickle and the TRUE OFFLINE mark are
+    /// the mesh-primary's own observations of a member): a TRUE OFFLINE node whose node id leaves
+    /// the view (node.deleted, or a recovery that created a new node.id at its path.name) ends its
+    /// tickle and its status as GONE, named apart from a node heard again.
+    /// Must NOT happen: a deleted birth reported and spanned `via-offline-returned` ("heard again").
+    #[tokio::test]
+    async fn a_silent_node_that_left_the_view_is_gone_never_heard_again() {
+        let mut t = OfflineTickle::new();
+        tick(&mut t, 0, true, silent("a"), false, no_path()).await;
+        tick(&mut t, PROBE_DELAY, true, silent("a"), false, no_path()).await;
+        tick(&mut t, PROBE_DELAY + FLOOR, true, silent("a"), false, no_path()).await;
+        assert!(t.is_offline("a"));
+        let capture = crate::span_capture::Capture::new("i143-3051-offline-gone");
+        let r = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            t.tick(
+                PROBE_DELAY + FLOOR + 1,
+                true,
+                vec![],
+                |id: &str| id != "a",
+                PROBE_DELAY,
+                FLOOR,
+                |_| async { Err("no answer".to_string()) },
+                |_| async { no_path() },
+                |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+            )
+            .await
+        };
+        assert!(r.returned.is_empty(), "a node the view no longer holds was not heard again: {r:?}");
+        assert_eq!(r.gone, vec!["a".to_string()], "it is gone");
+        assert!(!t.is_offline("a"));
+        assert!(capture.named("rdm.node_admin.node.update.via-offline-returned").is_empty(), "no heard-again span for a gone node");
+        let gone = capture.named("rdm.node_admin.node.remove.via-offline-gone");
+        assert_eq!(gone.len(), 1, "one gone span");
+        assert_eq!(gone[0].attributes.get("node_id").map(String::as_str), Some("a"));
+        eprintln!("span rdm.node_admin.node.remove.via-offline-gone trace_id={} {:?}", gone[0].trace_id, gone[0].attributes);
     }
 
     /// A status store counting every read of any of its rows.
