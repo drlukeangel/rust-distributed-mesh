@@ -939,6 +939,9 @@ impl crate::build_drive::Gate for SeatGate {
     async fn fence(&self) -> Result<(), crate::build_state::BuildStateError> {
         self.builds.fence_check().await
     }
+    async fn fence_set(&self) {
+        self.builds.fence_set().await
+    }
     fn frozen(&self) -> Option<String> {
         self.shutdown.held().map(|_| "a fabric shutdown froze reconciliation: no claim and no dispatch from here on".to_string())
     }

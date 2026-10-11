@@ -175,6 +175,8 @@ pub struct FabricBuildStateAdapter {
 pub struct Authority {
     node: String,
     fenced: tokio::sync::Mutex<Option<SeatFence>>,
+    /// Set with the fence: a drive waiting on an executor's run ends at the fence.
+    set: tokio::sync::watch::Sender<bool>,
 }
 
 /// The sticky fence of a Build log: why it was set, and the admin a committed seat transfer named as
@@ -190,7 +192,12 @@ pub struct SeatFence {
 impl Authority {
     /// A gate for `node`'s Build log, open.
     pub fn new(node: String) -> Self {
-        Self { node, fenced: tokio::sync::Mutex::new(None) }
+        Self { node, fenced: tokio::sync::Mutex::new(None), set: tokio::sync::watch::channel(false).0 }
+    }
+
+    /// Resolves once the fence is set (at once when it is already set).
+    pub async fn fence_set(&self) {
+        let _ = self.set.subscribe().wait_for(|f| *f).await;
     }
 
     /// Enter the gate for one mutation: refused by name once the fence is set.
@@ -210,6 +217,7 @@ impl Authority {
             return false;
         }
         *held = Some(SeatFence { by: by.to_string(), to });
+        self.set.send_replace(true);
         true
     }
 }
@@ -381,6 +389,12 @@ impl FabricBuildStateAdapter {
     /// for the check, because an attempt lasts as long as its steps and the fence is sticky.
     pub async fn fence_check(&self) -> Result<(), BuildStateError> {
         self.authority.enter().await.map(|_| ())
+    }
+
+    /// Resolves once this admin's Build log is fenced: the drive's wait on an executor's run ends
+    /// there.
+    pub async fn fence_set(&self) {
+        self.authority.fence_set().await
     }
 
     /// The committed seat transfer fenced this admin's Build log: set the sticky fence naming the
