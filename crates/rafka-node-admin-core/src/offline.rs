@@ -170,7 +170,7 @@ struct Round {
 /// The exact birth a round runs for: node id and incarnation.
 type Birth = (String, Option<crate::model::IncarnationId>);
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct OfflineTickle {
     /// Every node held as silent: node id -> the instant (ms) it was first seen silent. Kept
     /// whether or not this node-admin holds the seat.
@@ -188,6 +188,8 @@ pub(crate) struct OfflineTickle {
     /// This node-admin's path.name, named on every span it emits: a seat handed over mid-window is
     /// read from which admin ran each round.
     observer: String,
+    /// The admin's park gate: a stop's park retires the rounds in flight.
+    gate: crate::park_gate::ParkGate,
 }
 
 impl Drop for OfflineTickle {
@@ -205,10 +207,11 @@ impl OfflineTickle {
         Self::default()
     }
 
-    /// The tickle of node-admin `observer` (its path.name).
-    pub fn observed_by(observer: String) -> Self {
+    /// The tickle of node-admin `observer` (its path.name), whose rounds a park of `gate` retires.
+    pub fn observed_by(observer: String, gate: crate::park_gate::ParkGate) -> Self {
         let mut tickle = Self::default();
         tickle.observer = observer;
+        tickle.gate = gate;
         tickle
     }
 
@@ -422,6 +425,20 @@ impl OfflineTickle {
         }
         report
     }
+}
+
+/// The recovery of a TRUE OFFLINE birth (`follow`: the provider's proof, the submit, and the Build
+/// followed to its end, `RecoverySubmitter::recover_if_proven`), run beside the mesh-primary's loop.
+/// The birth leaves `in_flight` when it ends, so a later tick submits it again.
+pub(crate) fn spawn_recovery_follower<F>(gate: &crate::park_gate::ParkGate, in_flight: std::sync::Arc<std::sync::Mutex<HashSet<(crate::model::NodeId, crate::model::IncarnationId)>>>, birth: (crate::model::NodeId, crate::model::IncarnationId), follow: F) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let _ = gate;
+    tokio::spawn(async move {
+        follow.await;
+        in_flight.lock().unwrap().remove(&birth);
+    })
 }
 
 /// Write the status the mesh primary holds for a silent birth (`PendingReconnect`, `Dead`, or
@@ -684,6 +701,78 @@ pub(crate) mod tests {
             let folded = tick(&mut t, PROBE_DELAY + (DIAL + INTERVAL).as_millis() as u64).await;
             assert!(folded.tickled.is_empty(), "a birth whose round was folded with no path waits out its hold-down");
             assert!(t.is_in_hold_down("a") && t.is_in_hold_down("b"), "both rounds ended with no path: both hold-downs are open");
+        }
+
+        /// CONTRACT (node-stop retires the work the loop runs beside it; the lead's decision: "a stop
+        /// cancels it as part of retiring the birth, and does not wait for it"): a stop's park while a
+        /// tickle round and a recovery follower are in flight ends both at the park, with no time
+        /// passing. The follower, queued on the view lock a handler holds, leaves that queue, and its
+        /// birth leaves `in_flight`, so the first tick after a start submits again; neither goes on
+        /// when the gate opens again, and the next tick folds nothing of the cancelled round and starts
+        /// it again. Must NOT happen: a round's probe or a follower running on past the park, one held
+        /// at the gate while it waits on the view lock, or one resumed by the start.
+        #[tokio::test(start_paused = true)]
+        async fn a_stops_park_cancels_the_tickle_round_and_the_recovery_follower_in_flight() {
+            use crate::model::{IncarnationId, NodeId};
+            use std::collections::HashSet;
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            let gate = crate::park_gate::ParkGate::new();
+            let ended = Arc::new(AtomicUsize::new(0));
+            let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), gate.clone());
+            let tick = async |t: &mut OfflineTickle, now: u64| {
+                t.tick(
+                    now,
+                    true,
+                    vec![marked("a")],
+                    |_| true,
+                    PROBE_DELAY,
+                    FLOOR,
+                    |_| {
+                        let ended = ended.clone();
+                        async move {
+                            sleep(DIAL).await;
+                            ended.fetch_add(1, Ordering::SeqCst);
+                            Err::<(), String>("the dial to the exited runtime ended at the idle timeout".into())
+                        }
+                    },
+                    |_| async { no_path() },
+                    |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                )
+                .await
+            };
+            assert_eq!(tick(&mut t, PROBE_DELAY).await.tickled, vec!["a".to_string()]);
+            // The follower, queued on the view lock, which a handler holds for write.
+            let view = Arc::new(tokio::sync::RwLock::new(()));
+            let held = view.clone().write_owned().await;
+            let read = Arc::new(AtomicBool::new(false));
+            let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
+            let birth = (NodeId::mint(), IncarnationId("inc-of-b".into()));
+            in_flight.lock().unwrap().insert(birth.clone());
+            let follower = {
+                let (view, read) = (view.clone(), read.clone());
+                spawn_recovery_follower(&gate, in_flight.clone(), birth, async move {
+                    let _view = view.read().await;
+                    read.store(true, Ordering::SeqCst);
+                })
+            };
+            tokio::task::yield_now().await;
+            assert_eq!(t.rounds(), (1, 0), "the round runs, at its direct connect");
+            assert!(!follower.is_finished(), "the follower runs, queued on the view lock");
+            let at = Instant::now();
+            gate.park();
+            tokio::task::yield_now().await;
+            assert_eq!(t.rounds(), (1, 1), "the round ended at the park");
+            assert!(follower.is_finished(), "the follower ended at the park");
+            assert!(in_flight.lock().unwrap().is_empty(), "its birth left in_flight: a tick after the start submits again");
+            assert_eq!(at.elapsed(), Duration::ZERO, "the park waited on neither");
+            gate.resume();
+            drop(held);
+            sleep(DIAL + INTERVAL).await;
+            assert_eq!(ended.load(Ordering::SeqCst), 0, "the round's probe never ran on to its end");
+            assert!(!read.load(Ordering::SeqCst), "the follower never took the view lock: cancelled, not held");
+            let again = tick(&mut t, PROBE_DELAY + (DIAL + INTERVAL).as_millis() as u64).await;
+            assert_eq!(again.tickled, vec!["a".to_string()], "nothing is folded of the cancelled round: a's round starts again");
+            assert!(!t.is_in_hold_down("a"), "a cancelled round opens no hold-down");
         }
 
         /// CONTRACT (at most one ladder in flight per exact birth; step 2: an answer "cancels the

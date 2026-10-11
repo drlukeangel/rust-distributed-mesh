@@ -5007,7 +5007,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             // named per birth. The tick never waits on either.
             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
             let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
-            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string());
+            let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), park.clone());
             let floor = rafka_mesh_transport::membership::staleness_floor();
             let mut written: WrittenSilence = HashMap::new();
             loop {
@@ -5160,10 +5160,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         if !in_flight.lock().unwrap().insert(birth.clone()) {
                             continue;
                         }
-                        let (recovery, n, in_flight, verdicts) = (recovery.clone(), n.clone(), in_flight.clone(), verdicts.clone());
-                        tokio::spawn(async move {
+                        let (recovery, n, verdicts) = (recovery.clone(), n.clone(), verdicts.clone());
+                        crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
                             recovery.recover_if_proven(&n, &verdicts).await;
-                            in_flight.lock().unwrap().remove(&birth);
                         });
                     }
                 }
@@ -6308,7 +6307,7 @@ mod tests {
             t
         };
         let floor = book.staleness_floor().as_millis() as u64;
-        let mut tickle = OfflineTickle::observed_by(me.to_string());
+        let mut tickle = OfflineTickle::observed_by(me.to_string(), crate::park_gate::ParkGate::new());
         let mut offline: HashSet<(NodeId, IncarnationId)> = HashSet::new();
         let pass = async |now: u64, tickle: &mut OfflineTickle, offline: &mut HashSet<(NodeId, IncarnationId)>| {
             // The rounds the last pass started run beside the loop until this one (each probe here
