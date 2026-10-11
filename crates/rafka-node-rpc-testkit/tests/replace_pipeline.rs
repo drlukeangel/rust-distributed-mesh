@@ -25,10 +25,13 @@ use std::time::Duration;
 
 type Log = Arc<Mutex<Vec<String>>>;
 
-/// The live observer, logging every drain it sends and every readiness it proves, in order.
+/// The live observer, logging every drain it sends and every readiness it proves, in order. With
+/// `stop_not_sent`, a `stop-node` never reaches the birth (`NotSent`): the birth keeps running,
+/// as a predecessor that never admits its stop does.
 struct Logged<'a> {
     inner: &'a LiveMesh,
     log: Log,
+    stop_not_sent: bool,
 }
 
 #[async_trait::async_trait]
@@ -45,6 +48,9 @@ impl NodeObserver for Logged<'_> {
     }
     async fn send_command(&self, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
         self.log.lock().unwrap().push(format!("{}:{}", cmd.operation_prefix(), node.node_id));
+        if self.stop_not_sent && cmd == NodeCommand::Stop {
+            return CommandAdmission::NotSent { reason: format!("the cell holds back stop-node to {}: the birth never admits it", node.name) };
+        }
         self.inner.send_command(node, cmd, ctx).await
     }
     async fn await_completion(&self, node: &Node, cmd: NodeCommand, ctx: &CommandContext, within: Duration) -> Completion {
@@ -198,7 +204,7 @@ fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let rig = rig().await;
-        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
+        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: false };
         let recorder = Recorder { log: rig.log.clone(), peer: Some(&rig.admin.observer.membership) };
         let pipeline = rig.pipeline(&observer, &recorder);
 
@@ -294,16 +300,81 @@ fn replace_admits_the_successor_before_the_old_identity_is_deleted() {
     })
 }
 
+/// CONTRACT: a replace whose predecessor never admits stop-node (`NotSent`: the birth runs on,
+/// drained, never stopped) renames it `<path>.old` only once the provider's exact terminal proof
+/// says its runtime exited (node-update.md, "Rename precondition": the node is not
+/// ready-for-traffic and holds no connection; node-replace.md: the predecessor is stopped, then
+/// renamed `<name>.old`, or deleted). The run is NodeDeleting, the drain, stop-node and its wait
+/// (not awaited), TerminateRuntime, then RenamePredecessor (its span names `proof = exited`), the
+/// successor's identity and storage, the handoff, the successor's start and readiness, NodeDeleted,
+/// with TerminateRuntime once. No `NodeStopped` is published: nothing parked. What must NOT happen:
+/// the predecessor's path.name given up while its process still runs (RenamePredecessor before
+/// TerminateRuntime), or a second TerminateRuntime.
+#[test]
+fn a_predecessor_that_never_admits_its_stop_is_renamed_only_after_its_exit_proof() {
+    if crate::own_process::delegated(module_path!(), "a_predecessor_that_never_admits_its_stop_is_renamed_only_after_its_exit_proof") {
+        return;
+    }
+    let cap = crate::common::capture("a_predecessor_that_never_admits_its_stop_is_renamed_only_after_its_exit_proof");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let rig = rig().await;
+        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: true };
+        let recorder = Recorder { log: rig.log.clone(), peer: None };
+        let pipeline = rig.pipeline(&observer, &recorder);
+
+        let birth_build = publish_build(&rig.builds, persistent(true)).await;
+        let first = pipeline
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
+            .await
+            .unwrap_or_else(|e| panic!("create: {e}"));
+        rig.log.lock().unwrap().clear();
+
+        let replace_build = publish_build(&rig.builds, persistent(true)).await;
+        let second = pipeline
+            .replace(&ReplaceRequest { build_id: replace_build.clone(), attempt: 1, predecessor: first.node.clone(), handle: first.handle.clone(), spec: &RPC_NODE, held_runtimes: Vec::new() }, None, |_| async { Ok(()) })
+            .await
+            .unwrap_or_else(|e| panic!("replace: {e}"));
+
+        // The exit proof comes before the predecessor gives up its path.name, and once.
+        let view = rig.builds.read_build(&replace_build).await.unwrap();
+        let operation = format!("replace-node:{}", path());
+        let mut want: Vec<String> = REPLACE_ORDER.iter().filter(|s| **s != "TerminateRuntime").map(|s| s.to_string()).collect();
+        let rename = want.iter().position(|s| s == "RenamePredecessor").unwrap();
+        want.insert(rename, "TerminateRuntime".to_string());
+        assert_eq!(receipts(&view.steps, &operation), want, "TerminateRuntime, then RenamePredecessor: a predecessor that never admitted its stop is renamed only on its exit proof");
+        let log = rig.log.lock().unwrap().clone();
+        let old = first.node.node_id.to_string();
+        assert!(log.iter().any(|l| l == &format!("stop-node:{old}")), "stop-node was asked: {log:?}");
+        assert!(!log.iter().any(|l| l.starts_with("NodeStopped")), "nothing parked, so no NodeStopped: {log:?}");
+        assert!(matches!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the predecessor exited");
+
+        // The rename's span names what it rests on.
+        let all = spans.0.lock().unwrap().clone();
+        let (_, _, renamed) = all
+            .values()
+            .find(|(n, _, f)| n == "rdm.node_admin.node.update.via-replace-rename" && f.get("build_id") == Some(&replace_build.0))
+            .expect("the rename is spanned");
+        assert_eq!(renamed.get("proof").map(String::as_str), Some("exited"), "the rename rests on the exit proof: {renamed:?}");
+
+        rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+        assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the successor was stopped");
+        let _ = std::fs::remove_dir_all(&rig.template.data_root);
+    })
+}
+
 /// CONTRACT: a replace of a birth the provider already proves terminal sends it nothing: no drain, no
-/// Leaving, no admission wait (node-recovery.md). The sequence is NodeDeleting, rename, the successor's
-/// identity, the terminal proof and handoff, the successor's start and readiness, NodeDeleted. With
-/// ephemeral storage nothing is handed over and the predecessor's directory is released after the departure.
+/// Leaving, no admission wait (node-recovery.md). The sequence is NodeDeleting, the terminal proof,
+/// rename (a predecessor that was never stopped is renamed only on its exit proof, node-update.md
+/// "Rename precondition"), the successor's identity, the handoff, the successor's start and
+/// readiness, NodeDeleted. With ephemeral storage nothing is handed over and the predecessor's
+/// directory is released after the departure.
 #[test]
 fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage() {
     let cap = crate::common::capture("recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage");
     cap.run(crate::common::Threads::Workers(4), async move {
         let rig = rig().await;
-        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
+        let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: false };
         let recorder = Recorder { log: rig.log.clone(), peer: None };
         let pipeline = rig.pipeline(&observer, &recorder);
 
@@ -327,7 +398,9 @@ fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephem
 
         let view = rig.builds.read_build(&replace_build).await.unwrap();
         let operation = format!("replace-node:{}", path());
-        let want: Vec<String> = REPLACE_ORDER.iter().filter(|s| !["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"].contains(s)).map(|s| s.to_string()).collect();
+        let mut want: Vec<String> = REPLACE_ORDER.iter().filter(|s| !["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime"].contains(s)).map(|s| s.to_string()).collect();
+        let rename = want.iter().position(|s| s == "RenamePredecessor").unwrap();
+        want.insert(rename, "TerminateRuntime".to_string());
         assert_eq!(receipts(&view.steps, &operation), want);
         let log = rig.log.lock().unwrap().clone();
         assert!(!log.iter().any(|l| l.starts_with("drain-node:") || l.starts_with("stop-node:")), "nothing is sent to a proven-terminal birth: {log:?}");
