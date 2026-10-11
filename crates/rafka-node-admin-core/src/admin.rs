@@ -1310,10 +1310,10 @@ pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[No
 /// The watched births the tick inspects for recovery (node-recovery.md): none unless this admin
 /// holds its mesh's primary seat; else every watched birth of its own mesh (its secondary
 /// node-admins included, mesh-recovery.md:8-9) held TRUE OFFLINE at its exact incarnation.
-/// `frozen` is a fabric shutdown held by this admin (fabric-mesh-lifecycle.md §11.1).
+/// None while this admin holds a fabric shutdown (`frozen`): the shutdown froze drift recovery, and
+/// the mesh-primary that drains its mesh recreates nothing (fabric-mesh-lifecycle.md §11.1).
 pub fn recovery_due(holds_seat: bool, frozen: bool, mesh: &str, watched: &BTreeMap<String, Node>, offline: &HashSet<(NodeId, IncarnationId)>) -> Vec<Node> {
-    let _ = frozen;
-    if !holds_seat {
+    if !holds_seat || frozen {
         return Vec::new();
     }
     watched.values().filter(|n| n.mesh == mesh && n.incarnation_id.as_ref().is_some_and(|i| offline.contains(&(n.node_id.clone(), i.clone())))).cloned().collect()
