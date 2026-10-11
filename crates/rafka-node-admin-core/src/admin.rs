@@ -280,6 +280,9 @@ pub struct Records {
     heard_ready: Mutex<BTreeSet<String>>,
     /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
     view_tick: tokio::sync::watch::Sender<u64>,
+    /// The fabric-primary's writer of node rows: a birth its view holds for the first time claims
+    /// its row at its `path.name` (`crate::node_rows`). Set once at start.
+    rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -317,6 +320,11 @@ impl Records {
             self.wake.poke();
         }
         changed
+    }
+
+    /// The writer of node rows the installed views feed (set once, at start).
+    pub fn set_rows(&self, rows: Arc<crate::node_rows::NodeRows>) {
+        let _ = self.rows.set(rows);
     }
 
     /// The tick a waiter arms on to see the view change.
@@ -3459,7 +3467,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 },
                 book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
             verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
-            rows: Arc::new(crate::node_rows::NodeRows::new(nodes_storage.clone())),
+            rows: {
+                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), nodes_storage.clone()));
+                records.set_rows(rows.clone());
+                rows
+            },
         });
         let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door }));
         env
