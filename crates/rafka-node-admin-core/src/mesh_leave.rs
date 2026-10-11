@@ -357,8 +357,14 @@ impl LeaveRuns {
     pub fn admit(&self, key: &LeaveKey, sender: &NodeId) -> LeaveAdmission {
         let mut runs = self.0.lock().unwrap();
         match runs.get(key).cloned() {
-            Some(LeaveRun::Running(_)) => LeaveAdmission::Running,
-            Some(LeaveRun::Exited(_, manifest)) => LeaveAdmission::Resend(manifest),
+            Some(LeaveRun::Running(_)) => {
+                runs.insert(key.clone(), LeaveRun::Running(sender.clone()));
+                LeaveAdmission::Running
+            }
+            Some(LeaveRun::Exited(_, manifest)) => {
+                runs.insert(key.clone(), LeaveRun::Exited(sender.clone(), manifest.clone()));
+                LeaveAdmission::Resend(manifest)
+            }
             None => {
                 runs.insert(key.clone(), LeaveRun::Running(sender.clone()));
                 LeaveAdmission::Start
