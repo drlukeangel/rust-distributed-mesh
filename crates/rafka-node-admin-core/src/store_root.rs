@@ -2,8 +2,9 @@
 //! of the fabric reaches on the same backing namespace.
 //!
 //! Layout: `fabric/` (the fabric-primary's), `meshes/<mesh>` (each mesh's primary's Mesh row),
-//! `nodes/<mesh>/` (each mesh's primary's members' Node rows and contacts), `connections/<node>/`
-//! (each node its own) and `status/<mesh>/`. The writers are exactly the writer ladder
+//! `nodes/<mesh>/` (each mesh's primary's members' Node rows and contacts) and `connections/<node>/`
+//! (each node its own). The status rows stay in each admin's data dir: each is what one authority
+//! applied and is folded by that admin alone. The writers are exactly the writer ladder
 //! (fabric-node-lifecycle.md §4.3), so no two writers share a key. A node's data dir keeps only its
 //! own runtime material. A `store_dir` that is missing or unreadable fails the boot by name; nothing
 //! falls back to the data dir and nothing creates the `store_dir` (the provider supplies it).
@@ -58,10 +59,6 @@ impl StoreRoot {
         self.dir.join("connections").join(node.to_string())
     }
 
-    /// `status/<mesh>/`.
-    pub fn status(&self, mesh: &str) -> PathBuf {
-        self.dir.join("status").join(mesh)
-    }
 }
 
 /// Whether `provider` may back the store root: the process provider hands every node of an estate
@@ -104,6 +101,5 @@ mod tests {
         assert_eq!(root.dir(), store.join(fabric.to_string()));
         assert!(root.dir().is_dir());
         assert_eq!(root.connections(&"mesh1.rpc.1".parse().unwrap()), store.join(fabric.to_string()).join("connections").join("mesh1.rpc.1"));
-        assert_eq!(root.status("mesh2"), store.join(fabric.to_string()).join("status").join("mesh2"));
     }
 }
