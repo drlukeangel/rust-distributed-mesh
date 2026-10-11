@@ -103,7 +103,10 @@ impl AdminRunner {
         // was handed over first (fabric-primary-handover.md): the leave opens only on the confirmed
         // transfer, and an unconfirmed one is reconciled here before anything is dismantled.
         self.handover.confirmed(mesh_id).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric-primary handover is not confirmed: {e}"))?;
-        let primary = match view.cohort_primary(mesh, NodeKind::NodeAdmin).cloned() {
+        // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
+        // but cannot take the workflow: it goes to the lost-final-primary path below, which proves
+        // its exit before anything is amended (R11).
+        let primary = match view.cohort_primary(mesh, NodeKind::NodeAdmin).filter(|p| p.status.is_live()).cloned() {
             Some(p) => p,
             None => self.admin_for_leaving_mesh(build_id, attempt, mesh, &key, &steps, &view).await?,
         };

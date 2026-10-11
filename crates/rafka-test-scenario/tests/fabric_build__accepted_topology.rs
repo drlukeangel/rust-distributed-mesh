@@ -6,10 +6,12 @@
 //! 2. A change compiles to the next complete Build and moves the pointer; a second change while
 //!    it reconciles is refused `409 build-in-progress`, naming it.
 //! 3. The Build the pointer names cannot be forgotten; older Builds are history and can.
-//! 4. An admin born later hydrates `Fabric.build_id` and the Build it names before Ready, and
-//!    none of the history.
+//! 4. An admin born later holds `Fabric.build_id` and the Build it names before Ready, and
+//!    none of the history: the pointer is the fabric-primary's row on the fabric's store root
+//!    (R14: the fabric-primary is the one writer of `fabric/`), the Build its own Build log's copy.
 //! 5. A birth stopped (silent, its runtime alive) is held: nothing is reopened.
-//! 6. An admin that missed a Build while stopped catches up to the pointer.
+//! 6. An admin that missed a Build while stopped catches up to the pointer: it reads the row the
+//!    fabric-primary wrote while it was stopped and holds the Build it names.
 //! 7. A member killed (its exact runtime exited) is node recovery (node-recovery.md): its
 //!    mesh-primary proves the exit and submits the recovery, which is the next attempt of the same
 //!    Build, once: node.delete of the exited birth, then node.create at the same path.name with a new
@@ -125,7 +127,10 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     assert_eq!(pointer(&estate).await, r4);
     let resumed_at = now_ns();
     signal(stopped, "-CONT");
-    wait_for("the paused admin holds the pointer", Duration::from_secs(30), || async { (pointer_at(&estate, &quiet_base).await == r4.as_str()).then_some(()) }).await;
+    wait_for("the paused admin holds the pointer and the Build it names", Duration::from_secs(30), || async {
+        (pointer_at(&estate, &quiet_base).await == r4.as_str() && estate.http_get(&quiet_base, &format!("/api/builds?id={r4}")).await.0 == 200).then_some(())
+    })
+    .await;
     estate.settled_shape(&[("mesh1", 3, 4)], Duration::from_secs(30)).await;
 
     // 7. A killed member is its mesh-primary's node recovery: the next attempt of the same Build, once.
@@ -217,9 +222,23 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
         .expect("the restart call's request span");
     assert_eq!(restart["parent_span_id"], rest["span_id"], "the restart's reconcile is the child of the restart call's request span: {restart}");
     assert_eq!(restart["trace_id"], rest["trace_id"]);
-    // 4 and 6: the pointer moved on every admin by the fabric control topic.
+    // 4 and 6: the fabric-primary moves the pointer on the fabric's store root; the late admin
+    // committed Ready holding it, and the paused admin caught up to the row written while it was
+    // stopped (R14: the fabric-primary writes `fabric/`, the shared store is authoritative).
     let moved = named(&spans, "rdm.node_admin.fabric.update.via-build-accepted");
-    assert!(moved.iter().any(|sp| sp["attributes"]["node"] == "mesh1.admin.3" && sp["attributes"]["build_id"] == c.as_str()), "the late admin took the pointer: {moved:?}");
-    assert!(moved.iter().any(|sp| sp["attributes"]["node"] == quiet_name.as_str() && sp["attributes"]["build_id"] == r4.as_str() && at(sp) > resumed_at), "{quiet_name} caught up after it resumed: {moved:?}");
+    let late_ready = named(&spans, "rdm.mesh.node.update.via-ready")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node"] == "mesh1.admin.3" && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
+        .cloned()
+        .expect("the late admin is ready");
+    assert_eq!(late_ready["attributes"]["build_id"], c.as_str(), "the late admin held the pointer when it committed Ready: {late_ready}");
+    assert!(
+        moved.iter().any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == c.as_str() && at(sp) < at(&late_ready)),
+        "the fabric-primary moved the pointer to {c} before the late admin was ready: {moved:?}"
+    );
+    assert!(
+        moved.iter().any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == r4.as_str() && at(sp) < resumed_at),
+        "the fabric-primary moved the pointer to {r4} while {quiet_name} was stopped: {moved:?}"
+    );
     assert!(named(&spans, "rdm.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
 }

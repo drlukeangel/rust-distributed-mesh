@@ -291,7 +291,7 @@ pub(crate) enum WireOutput {
 pub(crate) enum WireSeatTransfer {
     NotAHolder,
     Committed { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
-    HeldRecords { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
+    CommittedRow { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
     NoTransfer,
     OtherMesh { holder_mesh: String },
 }
@@ -302,7 +302,7 @@ impl From<&crate::fabric_handover::SeatTransferOutcome> for WireSeatTransfer {
         match o {
             O::NotAHolder => Self::NotAHolder,
             O::Committed { seats } => Self::Committed { seats: seats.clone() },
-            O::HeldRecords { seats } => Self::HeldRecords { seats: seats.clone() },
+            O::CommittedRow { seats } => Self::CommittedRow { seats: seats.clone() },
             O::NoTransfer => Self::NoTransfer,
             O::OtherMesh { holder_mesh } => Self::OtherMesh { holder_mesh: holder_mesh.clone() },
         }
@@ -314,7 +314,7 @@ impl From<WireSeatTransfer> for crate::fabric_handover::SeatTransferOutcome {
         match o {
             WireSeatTransfer::NotAHolder => Self::NotAHolder,
             WireSeatTransfer::Committed { seats } => Self::Committed { seats },
-            WireSeatTransfer::HeldRecords { seats } => Self::HeldRecords { seats },
+            WireSeatTransfer::CommittedRow { seats } => Self::CommittedRow { seats },
             WireSeatTransfer::NoTransfer => Self::NoTransfer,
             WireSeatTransfer::OtherMesh { holder_mesh } => Self::OtherMesh { holder_mesh },
         }

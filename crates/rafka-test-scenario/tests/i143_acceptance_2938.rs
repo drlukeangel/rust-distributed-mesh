@@ -69,6 +69,12 @@ async fn born(cell: &str) -> Estate {
     estate.await_build(accepted["build_id"].as_str().expect("build_id"), SETTLE).await;
     let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", SOURCE, CARRIER, DEST].iter().map(|n| n.to_string()).collect();
     estate.settled(&names, SETTLE).await;
+    // The settled view is the admin's. The source records a Proxy to the destination through the
+    // carrier, so its own resolver must hold both births first: a node learns a peer's birth by
+    // gossip, and a source that has not heard the destination yet refuses it Unknown by name.
+    for peer in [CARRIER, DEST] {
+        estate.witness_holds(&format!("path:{SOURCE}"), peer).await;
+    }
     estate
 }
 
@@ -89,10 +95,10 @@ fn originate(estate: &Estate, from: &str, to: &str, key: &str) -> (Value, u64, u
     probe(estate, &["originate", "--target", &format!("path:{from}"), "--destination", &format!("path:{to}"), "--key", key])
 }
 
-/// The source's durable raw log: every fact it wrote, in order.
+/// The source's durable raw log on the fabric's store root: every fact it wrote, in order.
 async fn history(estate: &Estate, node: &str) -> Vec<Value> {
-    let dir = estate.data_dir_of(node).await;
-    std::fs::read_to_string(format!("{dir}/connections/history.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    let dir = estate.connections_dir_of(node);
+    std::fs::read_to_string(dir.join("history.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
 /// Seed the Proxy `SOURCE -> CARRIER -> DEST` after `failed` Direct Failed observations.
@@ -110,14 +116,17 @@ fn route_span<'a>(spans: &'a [Value], own: &str, from: u64, to: u64) -> Option<&
     named(spans, "rdm.node_rpc.route.resolve.via-held-projection").into_iter().find(|sp| sp["attributes"]["own"] == own && start(sp) >= from && start(sp) <= to)
 }
 
-/// CONN-B: the source restarts; the first call after its hydration uses the Proxy it wrote before,
-/// through the same carrier, with no Direct dial toward the destination.
+/// CONN-B: the source's runtime is killed and its mesh-primary recovers it (node-recovery.md): a
+/// new node at the same path.name over the inherited data dir and its endpoint key. The first call
+/// after its hydration uses the Proxy written before, through the same carrier, with no Direct dial
+/// toward the destination.
 ///
-/// CONTRACT: a source's latest indexed Proxy survives a restart and is the route of the first call
-/// after it. The destination and carrier births it names are the ones membership holds, so it is
-/// valid; the carrier's own edge to the destination is not read from anywhere but the carried call.
-/// The source dials the carrier and never the destination, and writes no Direct fact toward the
-/// destination.
+/// CONTRACT: a source's latest indexed Proxy survives its process and is the route of the first
+/// call from the node that comes back at its path.name (connections.md section 13 B: the Proxy is
+/// hydrated from storage and the first call uses it). The destination and carrier births it names
+/// are the ones membership holds, so it is valid; the carrier's own edge to the destination is not
+/// read from anywhere but the carried call. The source dials the carrier and never the
+/// destination, and writes no Direct fact toward the destination.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     let cell = "source_restart_hydrates_proxy_routes_first_call_without_rediscovery";
@@ -136,30 +145,37 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     assert!(durable_before.iter().any(|r| r["kind"] == "Direct" && r["state"] == "Failed" && r["recovery"]["recovery_epoch"] == 1), "the Direct Failed row is durable: {durable_before:?}");
     assert!(durable_before.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Connected" && r["carrier"]["name"] == CARRIER), "the Proxy row is durable: {durable_before:?}");
 
-    // 2. The source restarts through a Build (same node, new incarnation).
-    let (status, restart) = estate.post(&format!("/api/nodes/{SOURCE}/restart"), &json!({})).await;
-    assert_eq!(status, 202, "restart route: {restart}");
-    let build = s(&restart["build_id"]);
-    estate.await_attempt(&build, Estate::attempt_of(&restart), SETTLE).await;
+    // 2. The source's runtime is killed; its mesh-primary recovers it: a new node at the same
+    // path.name over the inherited data dir (new node.id and incarnation, the same endpoint key).
     let old_inc = s(&source["incarnation_id"]);
-    let after = wait_for("the source is ready under a new incarnation", SETTLE, || async {
+    let killed_at = now_ns();
+    estate.kill_node(SOURCE).await;
+    let after = wait_for("the source is recovered as a new node at its path.name", crate::node_recovery_due(), || async {
         let n = estate.node_opt(SOURCE).await?;
-        (ready(&n) && s(&n["incarnation_id"]) != old_inc).then_some(n)
+        (ready(&n) && n["node_id"] != source["node_id"]).then_some(n)
     })
     .await;
-    assert_eq!(after["node_id"], source["node_id"], "the same logical node");
+    assert_ne!(s(&after["incarnation_id"]), old_inc, "a new incarnation");
+    assert_eq!(after["endpoint_id"], source["endpoint_id"], "the same path.name and endpoint key, loaded from the inherited data dir");
+    let recovery = wait_for("the mesh-primary's recovery submit for the source is exported", Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| sp["attributes"]["node"] == SOURCE && sp["attributes"]["node_id"] == source["node_id"]).cloned()
+    })
+    .await;
+    assert_eq!(recovery["attributes"]["incarnation_id"], source["incarnation_id"], "the recovery is keyed on the exact killed birth: {recovery}");
+    assert_eq!(s(&recovery["attributes"]["disposition"]), "created", "{recovery}");
 
     // 3. Hydrated before any call: the held projection holds the Proxy and the Failed Direct.
     let hydrated = snapshot(&estate, SOURCE);
     let proxies = hydrated["own_active_proxies"].as_array().cloned().unwrap_or_default();
-    assert_eq!(proxies.len(), 1, "the restarted source holds its latest Proxy: {hydrated}");
+    assert_eq!(proxies.len(), 1, "the recovered source holds its latest Proxy: {hydrated}");
     assert_eq!((s(&proxies[0]["carrier"]["name"]), s(&proxies[0]["destination"]["name"])), (CARRIER.to_string(), DEST.to_string()));
     let directs = hydrated["own_latest_directs"].as_array().cloned().unwrap_or_default();
     assert!(directs.iter().any(|d| d["destination"]["name"] == DEST && d["state"] == "Failed"), "the backoff series continues from the latest Failed Direct: {hydrated}");
     assert_eq!(hydrated["owed"].as_array().map(Vec::len), Some(0), "{hydrated}");
 
-    // 4. The first call after the restart.
-    let (first, t0, t1) = originate(&estate, SOURCE, DEST, "after-restart");
+    // 4. The first call after the recovery.
+    let (first, t0, t1) = originate(&estate, SOURCE, DEST, "after-recovery");
     assert_eq!(first["call_outcome"], "reply", "{first}");
     assert_eq!((first["route"].as_str(), first["carrier"].as_str()), (Some("via-peer"), Some(CARRIER)), "{first}");
     assert!(first["retired"].is_null(), "the hydrated Proxy is valid, not retired: {first}");
@@ -171,7 +187,7 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     let durable_after = history(&estate, SOURCE).await;
     assert!(
         !durable_after[durable_before.len()..].iter().any(|r| r["kind"] == "Direct" && r["destination"]["name"] == DEST),
-        "the source wrote no Direct fact toward the destination after the restart: {:?}",
+        "the source wrote no Direct fact toward the destination after the recovery: {:?}",
         &durable_after[durable_before.len()..]
     );
 
@@ -193,7 +209,8 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == SOURCE && end(sp) < start(route))
         .max_by_key(|sp| start(sp))
-        .expect("the restarted source's hydrate span");
+        .expect("the recovered source's hydrate span");
+    assert!(start(hydrate) > killed_at, "the hydrate is the recovered node's, after the kill: {hydrate}");
     assert!(hydrate["attributes"]["applied"].as_str().and_then(|a| a.parse::<u32>().ok()).unwrap_or(0) >= 2, "the hydrate applied the Direct Failed and the Proxy rows: {hydrate}");
     let hop = named(&spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().find(|sp| sp["trace_id"] == trace).unwrap();
     assert_eq!(hop["attributes"]["outcome"], "Reply");
@@ -209,9 +226,9 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     let result = json!({
         "cell": cell,
         "seeded": seeded,
-        "source": { "node_id": source["node_id"], "incarnation_before": old_inc, "incarnation_after": after["incarnation_id"] },
-        "restart_build_id": build,
-        "durable_rows_before_restart": durable_before.len(),
+        "source": { "node_id_before": source["node_id"], "node_id_after": after["node_id"], "endpoint_id": after["endpoint_id"], "incarnation_before": old_inc, "incarnation_after": after["incarnation_id"] },
+        "recovery": { "trace_id": recovery["trace_id"], "span_id": recovery["span_id"], "build_id": recovery["attributes"]["build_id"], "attempt": recovery["attributes"]["attempt"] },
+        "durable_rows_before_recovery": durable_before.len(),
         "hydrated_snapshot": hydrated,
         "first_call": first,
         "pooled_after_first_call": pooled,

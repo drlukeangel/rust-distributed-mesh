@@ -4405,8 +4405,8 @@ async fn mock_routes_survive_connection_and_birth_supersession() {
 
 /// The source's durable raw connection log: every fact it wrote, in order.
 async fn durable_history(f: &Formed, node: &str) -> Vec<Value> {
-    let dir = f.estate.data_dir_of(node).await;
-    std::fs::read_to_string(format!("{dir}/connections/history.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    let dir = f.estate.connections_dir_of(node);
+    std::fs::read_to_string(dir.join("history.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
 async fn proxy_run(cell: &str, shape: Shape) {

@@ -32,7 +32,7 @@ fn evidence_dir(cell: &str) -> PathBuf {
 fn day0_config(dir: &std::path::Path) -> AdminConfig {
     let dir = dir.display().to_string();
     AdminConfig::from_env(|k| match k {
-        "RDM_DATA_DIR" => Some(dir.clone()),
+        "RDM_DATA_DIR" | "RDM_STORE_DIR" => Some(dir.clone()),
         "RDM_BIN_DIR" => Some(dir.clone()),
         "RDM_NODE_ADMIN_API_BIND" => Some("127.0.0.1:0".into()),
         "MESH_SPAWN_TYPE" => Some("process".into()),

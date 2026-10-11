@@ -37,6 +37,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
             seeds: vec![admin.seed.clone()],
             launcher: Some(admin.launcher.clone()),
             data_dir: dir.clone(),
+            store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
         };

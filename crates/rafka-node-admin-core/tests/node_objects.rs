@@ -326,6 +326,7 @@ impl Rig {
             launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
+            store_dir: data_root.clone(),
             mesh_issuer: None,
         };
         let runs = Arc::new(AttemptRuns::default());

@@ -333,7 +333,8 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     drop(step);
     // The process's one client, made before the server seals: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
-    // This node's own connections: hydrated from its data dir, then kept by what its client
+    // This node's own connections: hydrated from `connections/<its path.name>/` of the fabric's
+    // store root (R14), then kept by what its client
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
     // The storage fault the originate door arms (testkit only): the product's file storage,
     // decorated.
@@ -342,7 +343,15 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
         rafka_mesh_entity::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         Arc::new(crate::faults::FaultedConnectionsStorage::new(
-            Arc::new(rafka_node_admin_core::storage::FileConnectionsStorage::open(&launch.data_dir).await.map_err(|e| anyhow!("connections storage: {e}"))?),
+            Arc::new(
+                rafka_node_admin_core::storage::FileConnectionsStorage::open(
+                    &rafka_node_admin_core::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| anyhow!("refusing to start: {e}"))?,
+                    &launch.name,
+                    &launch.incarnation,
+                )
+                .await
+                .map_err(|e| anyhow!("connections storage: {e}"))?,
+            ),
             fault.clone(),
         )),
         Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),

@@ -58,6 +58,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
             seeds: vec![admin.seed.clone()],
             launcher: Some(admin.launcher.clone()),
             data_dir: dir.clone(),
+            store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
         };
@@ -133,6 +134,7 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
             seeds: vec![admin.seed.clone()],
             launcher: Some(admin.launcher.clone()),
             data_dir: dir.clone(),
+            store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
         };

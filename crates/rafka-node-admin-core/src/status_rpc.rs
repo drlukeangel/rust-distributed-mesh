@@ -53,18 +53,106 @@ impl Declared {
 }
 
 impl Declared {
-    /// What an admin applied before it last stopped, folded from the rows it put: the greatest
-    /// state per Mesh, each Fabric event once, and the greatest declared state per birth. A reader
-    /// folds; nothing is written back.
-    pub async fn rehydrate(status: &dyn crate::status_storage::StatusStorage) -> Result<Self, String> {
-        let mut declared = Self { meshes: status.mesh_statuses().await.map_err(|e| format!("status.storage: {e}"))?, ..Self::default() };
-        for e in status.fabric_events().await.map_err(|e| format!("status.storage: {e}"))? {
-            declared.fabric.entry(e.fabric_id).or_default().push(e.event);
+    /// Fold status rows into what this admin applied: the greatest state per Mesh and per birth,
+    /// each Fabric event once, and the path.name each birth declared at. What this admin already
+    /// holds stands where it is the greater; nothing is written back.
+    pub fn fold_rows(&mut self, meshes: std::collections::HashMap<MeshId, MeshState>, events: Vec<crate::status_storage::FabricEventRow>, rows: Vec<crate::status_storage::NodeDeclaredRow>) {
+        for (mesh, state) in meshes {
+            let held = self.meshes.entry(mesh).or_insert(state);
+            *held = (*held).max(state);
         }
+        for e in events {
+            let held = self.fabric.entry(e.fabric_id).or_default();
+            if !held.contains(&e.event) {
+                held.push(e.event);
+            }
+        }
+        for (birth, name) in crate::status_storage::declared_names(&rows) {
+            self.names.entry(birth).or_insert(name);
+        }
+        for (birth, state) in crate::status_storage::fold_declared(rows) {
+            let held = self.nodes.entry(birth).or_insert(state);
+            *held = (*held).max(state);
+        }
+    }
+
+    /// The rows `status` holds, folded ([`Declared::fold_rows`]): what a seat holder rebuilds from.
+    pub async fn rehydrate(status: &dyn crate::status_storage::StatusStorage) -> Result<Self, String> {
+        let meshes = status.mesh_statuses().await.map_err(|e| format!("status.storage: {e}"))?;
+        let events = status.fabric_events().await.map_err(|e| format!("status.storage: {e}"))?;
         let rows = status.node_declared().await.map_err(|e| format!("status.storage: {e}"))?;
-        declared.names = crate::status_storage::declared_names(&rows);
-        declared.nodes = crate::status_storage::fold_declared(rows);
+        let mut declared = Self::default();
+        declared.fold_rows(meshes, events, rows);
         Ok(declared)
+    }
+}
+
+/// The status rows of this admin's own mesh, which it folds into what it applied when it takes
+/// the mesh's seat.
+pub struct SeatFold {
+    storage: Arc<dyn crate::status_storage::StatusStorage>,
+    mesh: String,
+    /// This admin's `path.name`: what the fold span names it by, as every status span does.
+    name: crate::model::PathName,
+    me: NodeId,
+    /// Whether this admin holds the seat with the rows folded: cleared when a view names another
+    /// holder, so each tenure folds once, at its start.
+    folded: Mutex<bool>,
+}
+
+impl SeatFold {
+    /// The rows of `mesh` in `storage`, folded by the admin `name` born as `me`.
+    pub fn new(storage: Arc<dyn crate::status_storage::StatusStorage>, mesh: String, name: crate::model::PathName, me: NodeId) -> Self {
+        Self { storage, mesh, name, me, folded: Mutex::new(false) }
+    }
+
+    /// The view `now` is being installed: when it names this admin its mesh's primary and this
+    /// tenure has not folded the mesh's rows, fold them into `declared` (R14 item 7: the rebuild on
+    /// a seat change reads the shared root). Every other admin of the mesh folds none of them: what
+    /// it holds is only what it applied itself. Called under the view's write lock, so two installs
+    /// never fold at once. A read that fails leaves the tenure unfolded, named in the span.
+    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>) {
+        let holds = now.holds_mesh_seat(&self.mesh, &self.me);
+        {
+            let mut folded = self.folded.lock().unwrap();
+            if !holds {
+                *folded = false;
+                return;
+            }
+            if *folded {
+                return;
+            }
+        }
+        let span = tracing::info_span!(
+            "rdm.node_admin.status.resolve.via-seat-taken",
+            node = %self.name,
+            node_id = %self.me,
+            mesh = %self.mesh,
+            node_declared_rows = tracing::field::Empty,
+            mesh_status_rows = tracing::field::Empty,
+            fabric_event_rows = tracing::field::Empty,
+            error = tracing::field::Empty,
+        );
+        let read = async {
+            let meshes = self.storage.mesh_statuses().await.map_err(|e| format!("Mesh status rows of {}: {e}", self.mesh))?;
+            let events = self.storage.fabric_events().await.map_err(|e| format!("Fabric event rows of {}: {e}", self.mesh))?;
+            let rows = self.storage.node_declared().await.map_err(|e| format!("node declared-state rows of {}: {e}", self.mesh))?;
+            Ok::<_, String>((meshes, events, rows))
+        };
+        match tracing::Instrument::instrument(read, span.clone()).await {
+            Ok((meshes, events, rows)) => {
+                span.record("node_declared_rows", rows.len());
+                span.record("mesh_status_rows", meshes.len());
+                span.record("fabric_event_rows", events.len());
+                declared.lock().unwrap().fold_rows(meshes, events, rows);
+                *self.folded.lock().unwrap() = true;
+                span.in_scope(|| tracing::info!("this admin took its mesh's seat: the mesh's status rows are folded into what it applied"));
+            }
+            Err(e) => {
+                span.record("error", e.as_str());
+                span.in_scope(|| tracing::info!("this admin took its mesh's seat and could not read the mesh's status rows: it holds only what it applied"));
+            }
+        }
     }
 }
 
@@ -204,6 +292,12 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
             }
             if me.mesh != *mesh_name {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("an admin of {mesh_name}") } }, None);
+            }
+            // The mesh's primary writes its status (fabric-node-lifecycle.md 4.3): an admin whose view
+            // names another admin the mesh's primary is not the receiver. One whose view names none
+            // yet is the admin the hand-off created, before its own seat shows in its view.
+            if let Some(primary) = view.cohort_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != auth.node_id) {
+                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) } }, None);
             }
             // Never a replacement mesh id to satisfy the operation.
             if let Some(held) = (auth.mesh_ids)().get(mesh_name) {
@@ -925,6 +1019,50 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
         }
+    }
+
+    /// CONTRACT (fabric-node-lifecycle.md 4.3: "Once a node-admin is created in a mesh it is that
+    /// mesh's primary ... and writes every status from then on"): the fabric-primary's
+    /// ApplyMeshState is applied by the mesh's primary. A receiver whose view names ANOTHER admin
+    /// its mesh's primary refuses it naming that holder, and applies nothing; the admin the view
+    /// names applies it, and so does an admin of the mesh whose view names no primary of it yet
+    /// (the bootstrap admin at the hand-off, before its own seat shows in its view).
+    #[test]
+    fn an_apply_mesh_state_at_an_admin_whose_view_names_another_primary_is_refused_naming_it() {
+        let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {
+            let mut n = node(name);
+            n.kind = NodeKind::NodeAdmin;
+            n.mesh = mesh.into();
+            n.status = crate::model::NodeStatus::ReadyForTraffic;
+            n.is_primary = primary;
+            n.is_fabric_primary = fabric_primary;
+            n
+        };
+        let fp = admin("mesh1.admin.1", "mesh1", true, true);
+        let first = admin("mesh2.admin.1", "mesh2", true, false);
+        let second = admin("mesh2.admin.2", "mesh2", false, false);
+        let view = |nodes: Vec<crate::model::Node>| Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes,
+        };
+        let seated = view(vec![fp.clone(), first.clone(), second.clone()]);
+        let pending = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending };
+
+        let (reply, effect) = decide(&authority_of(&second, seated.clone()), &seated, &Declared::default(), Some(&fp), &pending);
+        assert!(
+            matches!(&reply, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed.contains("mesh2.admin.1")) && effect.is_none(),
+            "an admin whose view names mesh2.admin.1 mesh2's primary applies no Mesh status of mesh2: {reply:?}"
+        );
+
+        let (reply, effect) = decide(&authority_of(&first, seated.clone()), &seated, &Declared::default(), Some(&fp), &pending);
+        assert!(matches!(reply, R::Applied) && effect.is_some(), "the primary its view names applies it: {reply:?}");
+
+        let mut unseated_first = first.clone();
+        unseated_first.is_primary = false;
+        let unseated = view(vec![fp.clone(), unseated_first.clone(), second.clone()]);
+        let (reply, effect) = decide(&authority_of(&unseated_first, unseated.clone()), &unseated, &Declared::default(), Some(&fp), &pending);
+        assert!(matches!(reply, R::Applied) && effect.is_some(), "an admin of the mesh whose view names no primary of it applies it: {reply:?}");
     }
 
     /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): a replace or a recovery keeps the

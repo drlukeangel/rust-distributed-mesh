@@ -378,6 +378,91 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
     assert_eq!(outcome("mesh1.admin.2"), vec!["row-written"], "{spans:#?}");
 }
 
+type Rebuilt = (BTreeMap<String, Option<NodeRow>>, Option<NodeStatus>, NodeId, NodeId, NodeId, NodeId, String);
+
+/// The rebuild cell's story: P's writes, then N's seat taken over one shared root.
+async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
+        let d = std::env::temp_dir().join(format!("node-rows-shared-root-{}", NodeId::mint()));
+        let root = rafka_node_admin_core::store_root::StoreRoot::at(&d.join("store"));
+        let open = |data: &str| {
+            let (data, root) = (d.join(data), root.clone());
+            async move { Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&data, &root, "mesh1", &IncarnationId::mint()).await.unwrap()) as Arc<dyn NodesStorage> }
+        };
+        let (p_store, n_store) = (open("mesh1.admin.2").await, open("mesh1.admin.1").await);
+        let mut before = view();
+        for n in before.nodes.iter_mut() {
+            n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";
+        }
+        let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        let (old_pred, deleted_pred) = (NodeId::mint(), NodeId::mint());
+        // P's writes, as its seat made them.
+        for row in [
+            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum") },
+            NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze") },
+            NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver") },
+        ] {
+            p_store.put_node_row(&row).await.unwrap().unwrap();
+        }
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let records = Records::default();
+        let me_id = before.node(&me).unwrap().node_id.clone();
+        let topology = Arc::new(RwLock::new(before));
+        records.set_rows(Arc::new(NodeRows::new(me.clone(), me_id, topology.clone(), n_store.clone())));
+        let (successor, fresh) = (node("mesh1.rpc.2", false, false), node("mesh1.rpc.3", false, false));
+        let (succ, fresh_id) = (successor.node_id.clone(), fresh.node_id.clone());
+        let after = {
+            let mut t = topology.read().await.clone();
+            for n in t.nodes.iter_mut() {
+                n.is_fabric_primary = n.name == me;
+            }
+            t.nodes.push(successor);
+            t.nodes.push(fresh);
+            t
+        };
+        records.install_projected(&topology, || after).await;
+        let mut rows = BTreeMap::new();
+        for name in ["mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.2.old", "mesh1.rpc.3"] {
+            rows.insert(name.to_string(), n_store.node_row_at(&name.parse().unwrap()).await.unwrap());
+        }
+        let view_status = topology.read().await.node(&rpc1.name).map(|n| n.status);
+        let _ = std::fs::remove_dir_all(&d);
+        (rows, view_status, succ, fresh_id, old_pred, deleted_pred, trace_id)
+}
+
+/// CONTRACT (R14 item 7 and acceptance "a mesh seat change: the successor rebuilds and holds the
+/// predecessor's rows (Node rows, `.old`, Deleted, config)"): the predecessor P and the successor N
+/// are two admins with their own data dirs and their own store instances over one shared root. P
+/// held the seat and wrote the rows: a live member's row (status Draining, config platinum), a
+/// replaced predecessor's row moved to `mesh1.rpc.2.old` (Deleted, config bronze) and a deleted
+/// node's row at `mesh1.rpc.3` (Deleted, config silver). N takes the seat over a view whose live
+/// digests hold mesh1.rpc.1 ready, a successor at mesh1.rpc.2 and a new node at mesh1.rpc.3. N's
+/// rebuild reads P's rows from the shared root: the live member's row stands untouched, the new
+/// node at the Deleted row's name is seeded silver, the successor is seeded bronze from the `.old`
+/// row, and N holds every one of P's rows. A row never overrides a live digest's status: N's view
+/// holds mesh1.rpc.1 ready-for-traffic while its row says Draining.
+#[test]
+fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
+    let cap = crate::mesh_leave_resume::capture();
+    let (rows, view_status, succ, fresh, old_pred, deleted_pred, trace_id) = cap.run(async {
+        let root_span = tracing::info_span!("rdm.test.node.create.via-shared-root-rebuild");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root_span);
+        tracing::Instrument::instrument(rebuild_over_one_root(trace_id), root_span).await
+    });
+    println!("trace_id={trace_id}");
+    let row = |name: &str| rows[name].clone().unwrap_or_else(|| panic!("the successor holds no row at {name}: {rows:#?}"));
+    assert_eq!((row("mesh1.rpc.1").status, row("mesh1.rpc.1").config), (NodeStatus::Draining, tier("platinum")), "the live member's row stands as P wrote it");
+    assert_eq!((row("mesh1.rpc.2.old").node_id, row("mesh1.rpc.2.old").status), (old_pred.clone(), NodeStatus::Deleted), "N holds P's .old row");
+    assert_eq!((row("mesh1.rpc.2").node_id, row("mesh1.rpc.2").config), (succ.clone(), tier("bronze")), "the successor is seeded from the .old row");
+    assert_eq!((row("mesh1.rpc.3").node_id, row("mesh1.rpc.3").config), (fresh.clone(), tier("silver")), "the node created at the Deleted row's name is seeded from it, its row overwritten at that key");
+    assert_eq!(view_status, Some(NodeStatus::ReadyForTraffic), "a row never overrides a live digest's status");
+    let spans: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row").collect();
+    assert!(spans.iter().all(|s| s["trace_id"] == trace_id.as_str()), "every rebuild claim is the cell's own story: {spans:#?}");
+    let outcome = |name: &str| spans.iter().filter(|s| s["attributes"]["subject"] == name).map(|s| (s["attributes"]["outcome"].as_str().unwrap_or("").to_string(), s["attributes"]["seeded_from"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>();
+    assert_eq!(outcome("mesh1.rpc.1"), vec![("row-held-by-node".to_string(), String::new())], "{spans:#?}");
+    assert_eq!(outcome("mesh1.rpc.2"), vec![("row-seeded".to_string(), old_pred.to_string())], "{spans:#?}");
+    assert_eq!(outcome("mesh1.rpc.3"), vec![("row-seeded".to_string(), deleted_pred.to_string())], "{spans:#?}");
+}
+
 /// CONTRACT: a node lets go only of its own row: a release of a `path.name` by another node leaves
 /// the row there exactly as it is, and the holder's release frees the key, in every nodes store.
 #[test]
@@ -385,7 +470,7 @@ fn a_node_lets_go_only_of_its_own_row() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("node-rows-claim-{}", NodeId::mint()));
-        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir).await.unwrap()))];
+        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir, &rafka_node_admin_core::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
             let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum") };
@@ -760,6 +845,7 @@ mod writer {
             launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
+            store_dir: data_root.join("store"),
             mesh_issuer: None,
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());

@@ -830,6 +830,9 @@ pub struct LaunchTemplate {
     pub env: BTreeMap<String, String>,
     /// The root of every node's data directory.
     pub data_root: PathBuf,
+    /// The fabric's shared store root every launch carries (R14): the estate's one directory,
+    /// handed on unchanged.
+    pub store_dir: PathBuf,
     /// The issuing material a new mesh's first node-admin is launched with: set on the template of
     /// that launch alone, from the signer's `issue_mesh_issuer`. `None` for every other launch.
     pub mesh_issuer: Option<Vec<u8>>,
@@ -1364,9 +1367,8 @@ impl DeploymentPipeline<'_> {
                 EndpointId(crate::admin::load_or_mint_key(&data_dir).await?.public().to_string())
             };
             if !req.held_runtimes.is_empty() {
-                let store = crate::storage::FileNodesStorage::open(&data_dir).await.map_err(|e| e.to_string())?;
                 for row in &req.held_runtimes {
-                    crate::storage::NodesStorage::put_runtime(&store, row).await.map_err(|e| e.to_string())?;
+                    crate::storage::FileNodesStorage::put_runtime_in(&data_dir, &self.template.launcher.incarnation, row).await.map_err(|e| e.to_string())?;
                 }
             }
             Ok(key)
@@ -1393,6 +1395,7 @@ impl DeploymentPipeline<'_> {
             launcher: Some(self.template.launcher.clone()),
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
+            store_dir: self.template.store_dir.clone(),
             mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
             mesh_issuer: self.template.mesh_issuer.clone(),
         };

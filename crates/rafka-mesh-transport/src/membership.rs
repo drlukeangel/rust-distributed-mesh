@@ -3280,11 +3280,22 @@ impl Backbone {
     /// backbone, its own mesh channel and its own view, before it answers SeatsCommitted.
     pub async fn announce_seats_together(&self, op: LifecycleOp, successor: SeatHolder, seats: Vec<CommittedSeat>) {
         let named: Vec<String> = seats.iter().map(|c| format!("{}={}", c.seat.name(), c.record())).collect();
-        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-seated-together", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, successor = %successor, seats = %named.join(","));
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-seated-together", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, successor = %successor, seats = %named.join(","), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
         let frame = Frame::SeatedTogether { op, successor, seats };
         let send = async {
-            let _ = self.channel.broadcast(&frame).await;
-            let _ = self.membership.forward(&frame).await;
+            // Each send's outcome is recorded where it happens: `sent` is the frame handed to that
+            // channel's gossip topic (Plumtree delivers it from there), else the channel's error.
+            let outcome = |channel: &'static str, r: Result<()>| match r {
+                Ok(()) => "sent".to_string(),
+                Err(e) => {
+                    tracing::info!(channel, error = %e, "SeatedTogether not sent on the {channel}");
+                    format!("failed: {e}")
+                }
+            };
+            let backbone = outcome("backbone", self.channel.broadcast(&frame).await);
+            tracing::Span::current().record("backbone", backbone.as_str());
+            let mesh_channel = outcome("mesh channel", self.membership.forward(&frame).await);
+            tracing::Span::current().record("mesh_channel", mesh_channel.as_str());
             let _ = self.membership.view.take(&frame, &self.fabric, "own");
         };
         tracing::Instrument::instrument(send, span).await

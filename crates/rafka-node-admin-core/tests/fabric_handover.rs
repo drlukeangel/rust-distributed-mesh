@@ -9,7 +9,7 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolde
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::election::{resolve_with, Incumbency};
-use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, Stage, WonClaims};
+use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, Stage, WonClaims, WriteCutOff};
 use rafka_node_admin_core::fabric_storage::{FabricStorage, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
@@ -75,6 +75,10 @@ struct Admin {
     resolved: ResolvedNode,
     storage: Arc<dyn FabricStorage>,
     claims: Arc<TestClaims>,
+    /// Every write cut-off the holder's SeatTransfer step applied, in order.
+    cut_offs: Arc<Mutex<Vec<WriteCutOff>>>,
+    /// Holds the cut-off's drain open while `false`: a write still issued when the step cuts off.
+    drained: tokio::sync::watch::Sender<bool>,
     /// The admin's Node RPC server: a cell drains it as the admin's DrainNode does.
     server: rafka_node_rpc::NodeRpcServer,
     _router: Router,
@@ -120,6 +124,8 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let claims = Arc::new(TestClaims::default());
     let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
+    let cut_offs: Arc<Mutex<Vec<WriteCutOff>>> = Arc::default();
+    let (drained, drain_gate) = tokio::sync::watch::channel(true);
     // The cell's view is set by hand, not projected from digests: the projection re-runs the one
     // election over its members with the seat records this admin holds now, as the admin's own
     // projection does (`admin::view_projector`).
@@ -150,11 +156,21 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         decisions: Arc::default(),
         claims: claims.clone(),
         project_view,
+        cut_off_writes: {
+            let cut_offs = cut_offs.clone();
+            Arc::new(move |c: WriteCutOff| {
+                cut_offs.lock().unwrap().push(c);
+                let mut gate = drain_gate.clone();
+                Box::pin(async move {
+                    let _ = gate.wait_for(|open| *open).await;
+                })
+            })
+        },
     });
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, slot, client, resolver, resolved, storage, claims, server, _router: router }, ep)
+    (Admin { door, slot, client, resolver, resolved, storage, claims, cut_offs, drained, server, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -504,14 +520,14 @@ async fn each_stage_of_the_handover_is_a_durable_row_on_both_admins() {
     let _spans = capture();
     let (incumbent_dir, successor_dir) = (DataDir::new("handover-incumbent"), DataDir::new("handover-successor"));
     let fabric_id = FabricId::mint();
-    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&incumbent_dir.0).await.unwrap())).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&successor_dir.0).await.unwrap())).await;
+    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
     let f = join(incumbent, successor).await;
     let op = operation_of(&f);
     f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("confirmed");
     until("the successor holds the confirmation", || matches!(f.successor.door.handovers.get(&op), Some((_, Stage::Confirmed(8))))).await;
-    let successor_rows = FileFabricStorage::open(&successor_dir.0).await.unwrap().handovers().await.unwrap();
-    let incumbent_rows = FileFabricStorage::open(&incumbent_dir.0).await.unwrap().handovers().await.unwrap();
+    let successor_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap().handovers().await.unwrap();
+    let incumbent_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap().handovers().await.unwrap();
     let expect = |rows: &[HandoverRow], stage: HandoverStage| {
         assert_eq!(rows.len(), 1, "one handover: {rows:?}");
         let r = &rows[0];
@@ -551,7 +567,7 @@ async fn a_successor_restarted_between_commit_and_confirmation_keeps_the_leave_c
     let dir = DataDir::new("handover-restart");
     let fabric_id = FabricId::mint();
     let (incumbent, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", false).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&dir.0).await.unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
     let f = join(incumbent, successor).await;
     let op = operation_of(&f);
     // The incumbent's door is not serving: the commit happens and its completion is not acknowledged.
@@ -561,7 +577,7 @@ async fn a_successor_restarted_between_commit_and_confirmation_keeps_the_leave_c
     // The successor exits and is born again over its data dir.
     let committed_birth = birth(&f.successor);
     drop(f.successor);
-    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&dir.0).await.unwrap())).await;
+    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
     assert_ne!(birth(&reborn).incarnation, committed_birth.incarnation, "a restart is a new birth");
     assert!(reborn.door.handovers.get(&op).is_none(), "nothing is held before the admin reads its storage");
     assert_eq!(reborn.door.restore().await.unwrap(), 1);
@@ -686,11 +702,16 @@ struct Seats {
 }
 
 async fn seats_fabric() -> Seats {
+    seats_fabric_with(|| async { Arc::new(MemoryFabricStorage::new()) as Arc<dyn FabricStorage> }).await
+}
+
+/// The seats fabric with each admin's fabric.storage given by `storage` (one per admin).
+async fn seats_fabric_with<F: std::future::Future<Output = Arc<dyn FabricStorage>>>(storage: impl Fn() -> F) -> Seats {
     let fabric_id = FabricId::mint();
-    let (p, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true).await;
-    let (n, _) = admin(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true).await;
-    let (m, _) = admin(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true).await;
-    let (x, _) = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true).await;
+    let (p, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, storage().await).await;
+    let (n, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true, storage().await).await;
+    let (m, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, storage().await).await;
+    let (x, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, storage().await).await;
     let mut pn = node_of(&p, NodeStatus::ReadyForTraffic, true);
     pn.is_primary = true;
     let mut nn = node_of(&n, NodeStatus::ReadyForTraffic, false);
@@ -769,6 +790,59 @@ async fn a_seat_holder_commits_both_seats_to_the_executor_in_one_row() {
     let _ = (&f.m, &f.x);
 }
 
+/// CONTRACT (R14 item 4; node-rpc-envelope.md "TakeSeats"): the holder's SeatTransfer step cuts
+/// off the writes its moving seats authorize (both seats here, so the fabric record's too) and
+/// waits for every issued write to drain BEFORE it writes the seat row. While the drain is held
+/// open (a write still on the disk) no seat row exists and the call is unanswered; once it
+/// drains, the one row is written and SeatsCommitted answered. What must NOT happen: the seat row
+/// written while an old-seat write is still issued, or a commit with no cut-off.
+#[test]
+fn the_holder_drains_its_seat_writes_before_it_writes_the_seat_row() {
+    let cap = crate::mesh_leave_resume::capture();
+    let op = "drain-node:mesh1.admin.1";
+    let trace_id = cap.run(async {
+        let root = tracing::info_span!("rdm.test.seat.update.via-take-seats-drain");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        tracing::Instrument::instrument(the_holder_drains(op), root).await;
+        trace_id
+    });
+    println!("trace_id={trace_id}");
+    let spans = cap.spans();
+    let ours = |name: &str| spans.iter().filter(|s| s["name"] == name && s["attributes"]["operation"] == op).collect::<Vec<_>>();
+    let drained = ours("rdm.node_admin.seat.update.via-writes-drained");
+    assert_eq!(drained.len(), 1, "one drain span for the transfer: {:?}", spans.iter().map(|s| s["name"].clone()).collect::<Vec<_>>());
+    assert_eq!(drained[0]["attributes"]["fabric_seat"], "true");
+    let committed = ours("rdm.node_admin.seat.update.via-seats-committed");
+    assert_eq!(committed.len(), 1, "one commit span for the transfer");
+    assert_eq!((drained[0]["trace_id"].as_str(), committed[0]["trace_id"].as_str()), (Some(trace_id.as_str()), Some(trace_id.as_str())), "the holder's drain and commit are the cell's own story");
+}
+
+async fn the_holder_drains(op: &'static str) {
+    let f = seats_fabric().await;
+    f.p.drained.send_replace(false);
+    let call = tokio::spawn({
+        let (n, p) = (f.n.client.clone(), f.p.resolved.node_id.clone());
+        let req = take_seats(&f.p, &f.n, 3, 7, "b1", op);
+        tracing::Instrument::in_current_span(async move {
+            let (out, _) = n.call::<FabricPrimaryHandover>(&NodeTarget::ExactNode(p), &req, &CallOptions::default()).await;
+            out.reply().map(|r| r.value().clone())
+        })
+    });
+    until("P cuts off its seat writes", || !f.p.cut_offs.lock().unwrap().is_empty()).await;
+    assert!(
+        matches!(&f.p.cut_offs.lock().unwrap()[..], [WriteCutOff::Set { reason, fabric_seat: true }] if reason.contains(op) && reason.contains("mesh1")),
+        "one cut-off naming the transfer, the fabric seat included: {:?}",
+        f.p.cut_offs.lock().unwrap()
+    );
+    assert!(f.p.storage.seat_transfers().await.unwrap().is_empty(), "the seat row was written while a write of the old seat was still issued");
+    assert!(!call.is_finished(), "P answered before its writes drained");
+    f.p.drained.send_replace(true);
+    let reply = call.await.unwrap();
+    assert!(matches!(&reply, Some(Reply::SeatsCommitted { seats }) if *seats == committed_to(&f.n, 4, 8)), "{reply:?}");
+    assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "one row, written after the drain");
+    let _ = (&f.m, &f.x);
+}
+
 /// CONTRACT: a lost reply is retried with the identical call and answered with the same committed
 /// seats before any stale-seat check (P's seats are already at 4 and 8); the same operation with a
 /// different payload is RejectedConflict. Nothing commits twice.
@@ -839,43 +913,83 @@ async fn a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_b
     assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.p, 7)), "P still holds the fabric seat");
 }
 
-/// CONTRACT: an executor that cannot reach the holder never moves past the transfer on silence; once
-/// the holder's birth is proven gone it reads the seat records it holds: a SeatedTogether naming it
-/// is the committed result; none means no transfer happened (the ordinary election seats it).
+/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer": "once P's birth is proven
+/// lost it reads the committed seat row. A row naming N is the committed result and N installs it;
+/// no row means the transfer never happened"; R-SR1=A): every admin's fabric.storage is on the
+/// fabric's one store root. P commits the transfer as ONE row under its own mesh's directory
+/// (`meshes/mesh1/seat-transfers/`) and its reply is lost; no SeatedTogether reaches N. N never
+/// moves on silence; once P's birth is proven gone it point-reads P's committed row on the root and
+/// installs the seats it names. M, executing another operation of P's that no row records, finds
+/// none: no transfer happened (the ordinary election seats the successor). M, asked for P's committed
+/// operation, finds the row naming N and refuses by name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_records() {
-    if crate::own_process::delegated(module_path!(), "an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_records") {
+async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_seat_row() {
+    if crate::own_process::delegated(module_path!(), "an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_seat_row") {
         return;
     }
-    let spans = capture();
-    let f = seats_fabric().await;
+    // The cell's spans: the in-memory names the waits read, and the product span pipeline
+    // (`rafka_mesh_telemetry::span_capture`) stamping the trace ids the proof names.
+    let spans = Spans::default();
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("mesh1.admin.2", exporter.clone());
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(spans.clone()).with(layer)).expect("this cell owns its process");
+    let story = tracing::info_span!("rdm.test.seat.update.via-lost-holder-row");
+    let trace_id = story.in_scope(rafka_mesh_telemetry::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
+    let root = DataDir::new("seat-transfer-root");
+    let f = seats_fabric_with(|| {
+        let at = rafka_node_admin_core::store_root::StoreRoot::at(&root.0);
+        async move { Arc::new(FileFabricStorage::open(&at, &rafka_node_admin_core::model::IncarnationId::mint()).await.unwrap()) as Arc<dyn FabricStorage> }
+    })
+    .await;
     let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
     let p_inc = f.p.resolved.incarnation.clone();
     let op_key = "drain-node:mesh1.admin.1";
     // The transfer committed at P (its reply is lost to N's step), then P's process is gone.
-    let Reply::SeatsCommitted { seats } = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op_key)).await else { panic!("committed") };
+    let Reply::SeatsCommitted { seats } = tracing::Instrument::instrument(send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op_key)), story.clone()).await else { panic!("committed") };
+    assert_eq!(seats, committed_to(&f.n, 4, 8));
+    let row_file = root.0.join("meshes").join("mesh1").join("seat-transfers").join("drain-node_mesh1_admin_1.json");
+    assert!(row_file.exists(), "P's seat-transfer row is not under its own mesh's directory on the root: {}", row_file.display());
+    assert!(!root.0.join("fabric").join("seat-transfers").exists(), "a seat-transfer row was written under fabric/, the fabric-primary's");
     let Seats { p, n, m, x } = f;
     let _ = p._router.shutdown().await;
     // N's step sends the identical call, which nothing answers: it waits, never moving on silence.
     let step = tokio::spawn({
         let door = n.door.clone();
         let p_node = p_node.clone();
-        async move { door.take_seats(&p_node, "b1", 1, op_key).await }
+        tracing::Instrument::instrument(async move { door.take_seats(&p_node, "b1", 1, op_key).await }, story.clone())
     });
     until("N's call to the gone holder is uncertain", || spans.named(SEATS_REJECTED).iter().any(|f| f["side"] == "executor" && f["reason"] == "uncertain")).await;
     assert!(!step.is_finished(), "an uncertain call is never the end of the step");
-    // P's SeatedTogether reaches N, and P's birth is proven gone.
-    let op = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: op_key.into(), node_id: p_node.node_id.clone(), incarnation: p_inc.clone(), name: "mesh1.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
-    n.door.membership.seats().take_together(&op, &holder_of(&n, 4), &seats, false);
+    // No SeatedTogether reaches N; P's birth is proven gone.
     n.door.membership.seats().mark_gone(p_inc.clone());
     let out = tokio::time::timeout(std::time::Duration::from_secs(30), step).await.expect("a proven-lost holder ends the wait").unwrap();
-    assert_eq!(out, Ok(SeatTransferOutcome::HeldRecords { seats: committed_to(&n, 4, 8) }));
-    // M, which heard no transfer, holds none: the ordinary election applies.
+    assert_eq!(out, Ok(SeatTransferOutcome::CommittedRow { seats: committed_to(&n, 4, 8) }));
+    let book = n.door.membership.seats();
+    assert!(book.mesh("mesh1").is_some_and(|h| h.is_birth(&n.resolved.node_id, &n.resolved.incarnation) && h.epoch == 4), "N did not install the mesh seat the row names");
+    assert!(book.fabric().is_some_and(|h| h.is_birth(&n.resolved.node_id, &n.resolved.incarnation) && h.epoch == 8), "N did not install the fabric seat the row names");
+    // M: an operation of P's that no row records is no transfer.
     m.door.membership.seats().mark_gone(p_inc);
     m.claims.0.lock().unwrap().insert(("b9".into(), 1), "mesh1.admin.3".into());
-    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, op_key)).await.expect("a proven-lost holder ends the wait");
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, "stop-node:mesh1.admin.1")).await.expect("a proven-lost holder ends the wait");
     assert_eq!(out, Ok(SeatTransferOutcome::NoTransfer));
+    // M asked for the operation P committed to N: the row names N, refused by name.
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, op_key)).await.expect("a proven-lost holder ends the wait");
+    let e = out.expect_err("M took seats P's committed row gives N");
+    assert!(e.contains(op_key) && e.contains(&n.resolved.node_id.to_string()), "{e}");
     let _ = x;
+    // The proof: N's read of P's committed row is the cell's own story.
+    drop(story);
+    pipeline.flush(std::time::Duration::from_secs(10)).expect("the cell's spans reach its exporter");
+    let finished = exporter.get_finished_spans().unwrap();
+    let attr = |s: &opentelemetry_sdk::export::trace::SpanData, k: &str| s.attributes.iter().find(|kv| kv.key.as_str() == k).map(|kv| kv.value.to_string());
+    let read = finished.iter().find(|s| s.name == "rdm.node_admin.seat.update.via-committed-row").expect("N's committed-row read left no span");
+    println!("trace_id={trace_id}");
+    for s in finished.iter().filter(|s| s.span_context.trace_id().to_string() == trace_id) {
+        println!("span {} {:?}", s.name, attr(s, "outcome").or_else(|| attr(s, "reason")));
+    }
+    assert_eq!(read.span_context.trace_id().to_string(), trace_id, "the committed-row read is the cell's own story");
+    assert_eq!(attr(read, "outcome").as_deref(), Some("held"));
+    assert_eq!(attr(read, "successor").as_deref(), Some(format!("mesh1:{}:{}", n.resolved.node_id, n.resolved.incarnation.0).as_str()));
 }
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary): TakeSeats moves
@@ -907,4 +1021,36 @@ async fn an_executor_of_another_mesh_refuses_to_take_the_fabric_seat_by_name() {
     let x_node = member("mesh2.admin.1");
     assert_eq!(f.p.door.take_seats(&x_node, "b2", 1, "restart-node:mesh2.admin.1").await, Ok(SeatTransferOutcome::OtherMesh { holder_mesh: "mesh2".into() }), "a mesh seat alone stays with its holder");
     let _ = (&f.m, &f.n);
+}
+
+/// CONTRACT (R14 item 4: "the holder cuts off its writes to the stores its moving seats authorize,
+/// drains them, then writes the seat row"; fabric-node-lifecycle.md §4.3: the mesh-primary writes
+/// every status of its mesh): a moving mesh seat cuts off the mesh's status rows on the fabric's
+/// store root with its Mesh row, Node rows and contacts: a status write after the cut-off is refused
+/// by name, naming the transfer; a lift gives the writes back.
+#[test]
+fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
+    use rafka_node_admin_core::fabric_handover::{SeatStores, WriteCutOff};
+    use rafka_node_admin_core::status_storage::{MeshStatusRow, StatusStorage};
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let d = std::env::temp_dir().join(format!("seat-stores-{}", rafka_node_admin_core::model::NodeId::mint()));
+        let root = rafka_node_admin_core::store_root::StoreRoot::at(&d.join("store"));
+        let inc = rafka_node_admin_core::model::IncarnationId::mint();
+        let stores = SeatStores {
+            mesh: std::sync::Arc::new(rafka_node_admin_core::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
+            nodes: std::sync::Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
+            fabric: std::sync::Arc::new(rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &inc).await.unwrap()),
+            status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
+        };
+        let row = MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic };
+        stores.apply(WriteCutOff::Set { reason: "take-seats:mesh1.admin.2".into(), fabric_seat: false }).await;
+        match stores.status.put_mesh_status(&row).await {
+            Err(rafka_node_admin_core::record_store::StorageError::CutOff { reason, .. }) => assert!(reason.contains("take-seats:mesh1.admin.2"), "{reason}"),
+            other => panic!("a status write after the moving seat's cut-off: {other:?}"),
+        }
+        stores.apply(WriteCutOff::Lift).await;
+        stores.status.put_mesh_status(&row).await.expect("a lift gives the status writes back");
+        let _ = std::fs::remove_dir_all(&d);
+    });
 }
