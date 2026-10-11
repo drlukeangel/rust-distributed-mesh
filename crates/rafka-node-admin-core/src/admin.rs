@@ -4045,6 +4045,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         tasks.push(park_gate.spawn(async move {
             let mut tickle = crate::offline::OfflineTickle::new();
             let floor = rafka_mesh_transport::membership::staleness_floor();
+            let mut written = HashMap::new();
             loop {
                 let view = topology.read().await.clone();
                 let holds_seat = view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me);
@@ -4133,16 +4134,27 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         },
                     )
                     .await;
-                let write = async |id: &str, status: Option<NodeStatus>| {
-                    let Some(node) = watched.get(id).cloned().or_else(|| view.births().find(|n| n.node_id.as_str() == id).cloned()) else { return };
-                    if let Err(e) = crate::offline::put_silence_status(&*nodes_storage, &node, status).await {
-                        tracing::info!(node = %node.name, error = %e, "the node's status could not be written to nodes.storage");
+                // The row is put from the record this admin holds now (the topology, with the
+                // authority's declared state), never read back from nodes.storage and changed. What
+                // this loop last put is held here, so an unchanged status is not put again.
+                let write = async |id: &str, status: Option<NodeStatus>, written: &mut HashMap<NodeId, (Option<crate::model::IncarnationId>, Option<NodeStatus>)>| {
+                    let held = topology.read().await.births().find(|n| n.node_id.as_str() == id).cloned();
+                    let Some(node) = held.or_else(|| watched.get(id).cloned()) else { return };
+                    let fact = (node.incarnation_id.clone(), status);
+                    if written.get(&node.node_id) == Some(&fact) {
+                        return;
+                    }
+                    match crate::offline::put_silence_status(&*nodes_storage, &node, status).await {
+                        Ok(_) => {
+                            written.insert(node.node_id.clone(), fact);
+                        }
+                        Err(e) => tracing::info!(node = %node.name, error = %e, "the node's status could not be written to nodes.storage"),
                     }
                 };
                 if holds_seat {
                     for (id, n) in &watched {
                         if n.status == NodeStatus::PendingReconnect {
-                            write(id, Some(NodeStatus::PendingReconnect)).await;
+                            write(id, Some(NodeStatus::PendingReconnect), &mut written).await;
                         }
                     }
                 }
@@ -4152,11 +4164,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             records.offline.lock().unwrap().insert((n.node_id.clone(), inc));
                         }
                     }
-                    write(id, Some(NodeStatus::Dead)).await;
+                    write(id, Some(NodeStatus::Dead), &mut written).await;
                 }
                 for id in &report.returned {
                     records.offline.lock().unwrap().retain(|(n, _)| n.as_str() != id);
-                    write(id, None).await;
+                    write(id, None, &mut written).await;
                 }
                 tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
             }
