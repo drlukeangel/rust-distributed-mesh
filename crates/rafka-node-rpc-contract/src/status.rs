@@ -343,6 +343,21 @@ pub enum StatusRequest {
         /// The `path.name` the row now holds.
         name: String,
     },
+    /// Upward: a caller asks the node's mesh-primary, the only writer of its mesh's rows, to put
+    /// the exact birth's record with `name` (`node.update`; node-rpc-envelope.md "Meta and
+    /// config", R13). The mesh-primary validates against the record it holds
+    /// ([`StatusReply::RejectedMetaFieldIsRdmOwned`]), claims a changed name by insert-and-fail in
+    /// its store adapter ([`StatusReply::NameHeld`]), puts the row, sends a live birth
+    /// `ApplyNodeName` (a stopped one nothing) and answers [`StatusReply::NodeUpdated`]
+    /// (`node.updated`) only after the apply answered. A single call, never a Build.
+    UpdateNode {
+        /// The birth whose record is put.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The `path.name` the record is put with.
+        name: String,
+    },
 }
 
 /// The longest `receipt_manifest` reference a `MeshLeave` carries.
@@ -386,6 +401,7 @@ impl StatusRequest {
             Self::UpdateNodeConfig { .. } => "update-node-config",
             Self::ApplyNodeConfig { .. } => "apply-node-config",
             Self::ApplyNodeName { .. } => "apply-node-name",
+            Self::UpdateNode { .. } => "update-node",
         }
     }
 }
@@ -607,6 +623,46 @@ pub enum StatusReply {
         /// The event the hook runs again on.
         retry_on: RetryOn,
     },
+    /// The reply of an `UpdateNode`: the mesh-primary wrote the node's row, and the exact birth
+    /// holds the name, or is stopped and reads it in its next join answer (`node.updated`).
+    NodeUpdated {
+        /// The birth whose record was put.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+    },
+    /// The `UpdateNode` was not made: it changes a field RDM owns, or a name it may not change now
+    /// (`MetaFieldIsRdmOwned { field }`). Nothing was written.
+    RejectedMetaFieldIsRdmOwned {
+        /// The field, by name.
+        field: String,
+    },
+    /// The `UpdateNode` was not made: another node holds the name (insert-and-fail on its key in
+    /// the store adapter). Nothing was written.
+    NameHeld {
+        /// The name claimed.
+        name: String,
+        /// The node that holds it.
+        by: NodeId,
+    },
+    /// The `UpdateNode` was not made: the nodes store refused the claim or the put, so nothing was
+    /// told to the birth.
+    NodeRowRefused {
+        /// The node's `path.name`, the row the store refused.
+        node: String,
+        /// The store's refusal.
+        reason: String,
+    },
+    /// The mesh-primary wrote the renamed row, and the live birth did not apply the name: the
+    /// record holds the new name, the birth does not.
+    NameNotApplied {
+        /// The node's `path.name` the row now holds.
+        node: String,
+        /// The birth's reply to `apply-node-name` by name, or the call's end by name.
+        answered: String,
+        /// Its detail.
+        reason: String,
+    },
 }
 
 /// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -684,6 +740,16 @@ impl StatusReply {
         Self::Blocked { node_id, incarnation, reason: within(reason, MAX_BLOCKED_REASON_BYTES), retry_on }
     }
 
+    /// `NodeRowRefused` for `node`, each field within its budget (as [`Self::config_row_refused`]).
+    pub fn node_row_refused(node: &str, reason: &str) -> Self {
+        Self::NodeRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
+    }
+
+    /// `NameNotApplied` for `node`, each field within its budget (as [`Self::config_not_applied`]).
+    pub fn name_not_applied(node: &str, answered: &str, reason: &str) -> Self {
+        Self::NameNotApplied { node: within(node, MAX_REFUSAL_NODE_BYTES), answered: within(answered, MAX_REFUSAL_ANSWERED_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
+    }
+
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -713,6 +779,11 @@ impl StatusReply {
             Self::ConfigRowRefused { .. } => "config-row-refused",
             Self::ConfigNotApplied { .. } => "config-not-applied",
             Self::Blocked { .. } => "blocked",
+            Self::NodeUpdated { .. } => "node-updated",
+            Self::RejectedMetaFieldIsRdmOwned { .. } => "rejected-meta-field-is-rdm-owned",
+            Self::NameHeld { .. } => "name-held",
+            Self::NodeRowRefused { .. } => "node-row-refused",
+            Self::NameNotApplied { .. } => "name-not-applied",
         }
     }
 }
@@ -727,8 +798,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 20;
-    const REPLY_VARIANTS: u32 = 26;
+    const REQUEST_VARIANTS: u32 = 21;
+    const REPLY_VARIANTS: u32 = 31;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -742,6 +813,7 @@ impl NodeProtocol for Status {
             | StatusReply::CurrentParked { .. }
             | StatusReply::ConfigUpdated { .. }
             | StatusReply::Blocked { .. }
+            | StatusReply::NodeUpdated { .. }
             | StatusReply::Stopped { .. }
             | StatusReply::Started => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
@@ -754,7 +826,11 @@ impl NodeProtocol for Status {
             | StatusReply::StartFailed { .. }
             | StatusReply::RejectedConfig { .. }
             | StatusReply::ConfigRowRefused { .. }
-            | StatusReply::ConfigNotApplied { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::ConfigNotApplied { .. }
+            | StatusReply::RejectedMetaFieldIsRdmOwned { .. }
+            | StatusReply::NameHeld { .. }
+            | StatusReply::NodeRowRefused { .. }
+            | StatusReply::NameNotApplied { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -841,6 +917,11 @@ mod tests {
             (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
+            (StatusReply::NodeUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
+            (StatusReply::RejectedMetaFieldIsRdmOwned { field: "name".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: NodeId::mint() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -878,6 +959,7 @@ mod tests {
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
+            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
