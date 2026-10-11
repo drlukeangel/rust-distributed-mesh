@@ -5,7 +5,8 @@
 //! it holds (its topology), a blind put of the `path.name` key, and never reads the store on that
 //! write. A row is written at two moments:
 //!
-//! - `node.delete` (`retire-node:<path>`), read off the live `Step` frame the executor streams: at
+//! - `node.delete` (`retire-node:<path>`), read off the step's `Step` frame (the one the executor
+//!   streams, or its receipt read back by a fabric-primary that took the seat since): at
 //!   `NodeDeleted` the row is written with status `Deleted`, the record and its config kept. The
 //!   record is the one held when the executor announced the removal (`NodeDeleting`): the node is
 //!   still found and live in every view then, while by `NodeDeleted` its departure may already
@@ -64,21 +65,31 @@ impl NodeRows {
         &self.storage
     }
 
-    /// A live `Step` frame of a Build the fabric-primary `me` drives, over its held view.
-    pub async fn on_step(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, step: &str) {
+    /// A completed step of a Build the fabric-primary `me` drives, over its held view, handled once
+    /// per drive: its live `Step` frame, or its receipt read back (a fabric-primary that took the
+    /// seat mid-Build). `subject` is the node a receipt names (the lifecycle op `NodeDeleting` and
+    /// `NodeDeleted` decided); a live frame names none, and the node is the one the view holds at
+    /// the operation's `path.name` as the executor runs the step.
+    pub async fn on_step(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, step: &str, subject: Option<&NodeId>) {
         let Some((verb, path)) = operation.split_once(':') else { return };
         let Ok(name) = path.parse::<PathName>() else { return };
         match (verb, step) {
             ("retire-node" | "replace-node", "NodeDeleting") => {
-                if let Some(n) = held_at(view, &name).await {
+                // A receipt read after the step names its node by id: by then the view may hold a
+                // replace's successor at the path.name.
+                let held = match subject {
+                    Some(id) => held_by(view, id).await,
+                    None => held_at(view, &name).await,
+                };
+                if let Some(n) = held {
                     self.announced.lock().unwrap().insert(operation.to_string(), n);
                 }
             }
-            ("retire-node", "NodeDeleted") => self.deleted(me, view, operation, &name).await,
+            ("retire-node", "NodeDeleted") => self.deleted(me, view, operation, &name, subject).await,
             // A replace: the predecessor gives up its path.name (its row moves to `<path>.old`), and
             // its departure is written there.
             ("replace-node", "RenamePredecessor") => self.moved_to_old(me, view, operation, &name).await,
-            ("replace-node", "NodeDeleted") => self.deleted(me, view, operation, &name.renamed()).await,
+            ("replace-node", "NodeDeleted") => self.deleted(me, view, operation, &name.renamed(), subject).await,
             _ => {}
         }
     }
@@ -118,7 +129,8 @@ impl NodeRows {
         span.record("node_id", record.node_id.as_str());
         let r = tracing::Instrument::instrument(self.move_row(me, &record, name, &to), span.clone()).await;
         let (outcome, detail) = match &r {
-            Ok(()) => ("renamed", None),
+            Ok(Moved::Renamed) => ("renamed", None),
+            Ok(Moved::AlreadyMoved) => ("already-moved", Some(format!("{me}: the replace of {name} ({}) reached RenamePredecessor again: the predecessor holds {to} and no longer holds {name}; nothing is written", record.node_id))),
             Err(RenameRefused::NameHeld(e)) => ("name-held", Some(format!("{me}: the replace of {name} ({}) to {to}: {e}", record.node_id))),
             Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
             Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
@@ -128,7 +140,7 @@ impl NodeRows {
             span.record("detail", d.as_str());
         }
         span.in_scope(|| tracing::info!("node.replace: the predecessor's row moved"));
-        if r.is_ok() {
+        if r == Ok(Moved::Renamed) {
             tracing::Instrument::instrument(self.successor_at(view, name, &record), span).await;
         }
     }
@@ -143,7 +155,7 @@ impl NodeRows {
     }
 
     /// `NodeDeleted`: the row with status `Deleted`, the record and config kept, a blind put.
-    async fn deleted(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName) {
+    async fn deleted(&self, me: &PathName, view: &RwLock<Topology>, operation: &str, name: &PathName, subject: Option<&NodeId>) {
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
             node = %me,
@@ -160,8 +172,11 @@ impl NodeRows {
         let (held, from) = match announced {
             Some(n) => (Some(n), "node-deleting"),
             // A fabric-primary that took the seat after the announcement holds no record of it:
-            // the view as it is now, while it still holds the node.
-            None => (held_at(view, name).await, "view-at-node-deleted"),
+            // the view as it is now, while it still holds the node (the node the receipt names).
+            None => match subject {
+                Some(id) => (held_by(view, id).await, "view-at-node-deleted"),
+                None => (held_at(view, name).await, "view-at-node-deleted"),
+            },
         };
         let Some(n) = held else {
             let detail = format!("{me}: the removal of {name} reached NodeDeleted and this fabric-primary holds no record of the node, neither from its NodeDeleting nor in its view now; no row is written");
@@ -375,25 +390,41 @@ impl NodeRows {
             return Err(RenameRefused::Unwritten(format!("{me}: node {} is not in the fabric-primary's view; its name cannot be changed", held.node_id)));
         };
         body.check_put(held, record.parked).map_err(RenameRefused::RdmOwned)?;
-        self.move_row(me, &record, &held.name, &body.name).await
+        self.move_row(me, &record, &held.name, &body.name).await.map(|_| ())
     }
 
     /// The node's row moves from `from` to `to`: the new name is claimed for the node from its held
-    /// `record` (insert-and-fail, `NameHeld` naming another holder), then the old key is released.
-    /// The one writer of a rename: `node.update` and a replace's `RenamePredecessor` both move here.
-    async fn move_row(&self, me: &PathName, record: &Node, from: &PathName, to: &PathName) -> Result<(), RenameRefused> {
+    /// `record` (insert-and-fail, `NameHeld` naming another holder), then the node lets go of the old
+    /// key (only its own row there goes). The one writer of a rename: `node.update` and a replace's
+    /// `RenamePredecessor` both move here.
+    async fn move_row(&self, me: &PathName, record: &Node, from: &PathName, to: &PathName) -> Result<Moved, RenameRefused> {
         if from == to {
-            return Ok(());
+            return Ok(Moved::Renamed);
         }
         let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
-        match self.storage.claim_node_row(&row).await {
-            Ok(Ok(_)) => {}
+        let claimed = match self.storage.claim_node_row(&row).await {
+            Ok(Ok(c)) => c,
             Ok(Err(name_held)) => return Err(RenameRefused::NameHeld(name_held)),
             Err(e) => return Err(RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {to} for {}: {e}", record.node_id))),
-        }
-        // The new name is the node's: the old key is let go.
-        self.storage.remove_node_row(from).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))
+        };
+        // The new name is the node's: it lets go of the old key.
+        let released = self.storage.release_node_row(from, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))?;
+        Ok(if claimed == Claimed::HeldByNode && !released { Moved::AlreadyMoved } else { Moved::Renamed })
     }
+}
+
+/// What a move of a node's row did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moved {
+    /// The node holds the new name now and let go of the old one.
+    Renamed,
+    /// The node held the new name already and not the old one: the move was made before.
+    AlreadyMoved,
+}
+
+/// The record the view holds of the node `id`.
+async fn held_by(view: &RwLock<Topology>, id: &NodeId) -> Option<Node> {
+    view.read().await.nodes.iter().find(|n| &n.node_id == id).cloned()
 }
 
 /// The record the view holds at `name`.

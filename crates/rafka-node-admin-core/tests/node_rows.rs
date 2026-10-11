@@ -392,6 +392,10 @@ fn a_claim_of_a_name_its_own_node_holds_writes_nothing() {
             let again = NodeRow { status: NodeStatus::ReadyForTraffic, config: tier("gold"), ..held.clone() };
             assert!(matches!(store.claim_node_row(&again).await, Ok(Ok(_))), "{kind}: the node's own name is never refused");
             assert_eq!(store.node_row_at(&held.name).await.unwrap(), Some(held.clone()), "{kind}: the claim wrote nothing over the node's own row");
+            assert!(!store.release_node_row(&held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
+            assert_eq!(store.node_row_at(&held.name).await.unwrap(), Some(held.clone()), "{kind}: a release by another node leaves the row");
+            assert!(store.release_node_row(&held.name, &id).await.unwrap(), "{kind}: the holder lets go of its key");
+            assert_eq!(store.node_row_at(&held.name).await.unwrap(), None, "{kind}: the holder's release frees the key");
         }
         let _ = std::fs::remove_dir_all(&dir);
     });
@@ -646,7 +650,6 @@ fn a_rename_handled_again_after_the_successor_took_the_name_leaves_its_row() {
         .await;
         let held_old = NodeRow { name: pred.name.renamed(), node_id: pred.node_id.clone(), status: pred.status, config: tier("gold") };
         let held = NodeRow { name: pred.name.clone(), node_id: successor.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("platinum") };
-        r.storage.remove_node_row(&pred.name).await.unwrap();
         r.storage.put_node_row(&held_old).await.unwrap();
         r.storage.put_node_row(&held).await.unwrap();
         earlier_attempt_renamed(&r, &pred).await;
