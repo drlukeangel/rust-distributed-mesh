@@ -222,8 +222,9 @@ pub struct MemoryStatusStorage {
     declared: Mutex<std::collections::BTreeMap<String, NodeDeclaredRow>>,
     silences: Mutex<std::collections::BTreeMap<String, NodeSilenceRow>>,
     exits: Mutex<std::collections::BTreeMap<String, NodeExitRow>>,
-    /// The Mesh status rows of each mesh named through the `_of` reads and puts: a store held in
-    /// memory names no mesh of its own, so every named mesh keeps its own rows.
+    /// The Mesh status rows of each mesh named through the `_of` puts: a store held in memory names
+    /// no mesh of its own, so every named mesh keeps its own rows, and a read of a named mesh's rows
+    /// also finds this store's own (their keys, a mesh id or an exact birth, are fabric-unique).
     meshes_named: Mutex<std::collections::BTreeMap<String, Vec<MeshStatusRow>>>,
     /// The exit-proof rows of each mesh named through the `_of` reads and puts, by row key.
     exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
@@ -280,7 +281,7 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(self.exits.lock().unwrap().get(&NodeExitRow::key_of(node_id, incarnation_id)).cloned())
     }
     async fn mesh_status_held_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError> {
-        Ok(self.meshes_named.lock().unwrap().get(mesh).is_some_and(|rows| rows.contains(row)))
+        Ok(self.meshes_named.lock().unwrap().get(mesh).is_some_and(|rows| rows.contains(row)) || self.meshes.lock().unwrap().contains(row))
     }
     async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError> {
         let mut named = self.meshes_named.lock().unwrap();
@@ -291,7 +292,9 @@ impl StatusStorage for MemoryStatusStorage {
         Ok(())
     }
     async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
-        Ok(self.exits_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&NodeExitRow::key_of(node_id, incarnation_id)).cloned()))
+        let key = NodeExitRow::key_of(node_id, incarnation_id);
+        let named = self.exits_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned());
+        Ok(named.or_else(|| self.exits.lock().unwrap().get(&key).cloned()))
     }
     async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
         self.exits_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());

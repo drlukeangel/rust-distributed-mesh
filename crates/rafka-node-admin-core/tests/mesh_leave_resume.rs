@@ -1020,6 +1020,9 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
     let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[FINAL].fact().unwrap()), RuntimeProof::of(&handles[OTHER_ADMIN].fact().unwrap()));
     let lost_node = records.iter().find(|n| n.name.to_string() == FINAL).unwrap();
     let row = rafka_node_admin_core::storage::RuntimeRow { node_id: lost_node.node_id.clone(), name: lost_node.name.clone(), incarnation_id: lost_node.incarnation_id.clone().unwrap(), runtime: handles[FINAL].fact().unwrap(), data_dir: None };
+    // Where the proven exit is recorded: the fabric-primary's status store, held in memory.
+    let exit_records = rafka_node_admin_core::admin::Records::default();
+    exit_records.set_status(Arc::new(MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
     let (without_row, with_row, before, after, trace_id) = cap.run(async {
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
@@ -1033,9 +1036,9 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
         let _in_root = root.enter();
         let admitted = |steps: &[BuildStepReceipt]| admitted_of(steps, &outer).unwrap().unwrap();
         let adm = admitted(&builds.read_build(&build_id).await.unwrap().steps);
-        let without_row = resume_after_loss(&builds, &fleet, None, &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
+        let without_row = resume_after_loss(&builds, &fleet, &exit_records, None, &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
         let before = admitted(&builds.read_build(&build_id).await.unwrap().steps);
-        let with_row = resume_after_loss(&builds, &fleet, Some(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
+        let with_row = resume_after_loss(&builds, &fleet, &exit_records, Some(&row), &key(2), "mesh1.admin.1", &adm, &survivor, &survivor_runtime).await;
         let after = admitted(&builds.read_build(&build_id).await.unwrap().steps);
         (without_row, with_row, before, after, trace_id)
     });

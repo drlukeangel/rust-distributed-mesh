@@ -106,6 +106,12 @@ impl SeatFold {
         Self { storage, mesh, name, me, folded: Mutex::new(false) }
     }
 
+    /// The status store this fold reads: this admin's own mesh's rows, and another mesh's through
+    /// its `_of` reads.
+    pub fn storage(&self) -> &Arc<dyn crate::status_storage::StatusStorage> {
+        &self.storage
+    }
+
     /// The view `now` is being installed: when it names this admin its mesh's primary and this
     /// tenure has not folded the mesh's rows, fold them into `declared` (R14 item 7: the rebuild on
     /// a seat change reads the shared root). Every other admin of the mesh folds none of them: what

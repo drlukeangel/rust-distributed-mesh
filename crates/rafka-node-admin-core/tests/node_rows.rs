@@ -151,7 +151,7 @@ struct Rig {
 async fn install(records: &Records, view: &RwLock<Topology>, f: impl FnOnce(&mut Topology)) {
     let mut t = view.read().await.clone();
     f(&mut t);
-    records.install_projected(view, || t).await;
+    records.install_projected(view, || t.clone()).await;
 }
 
 async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesStorage>) -> Rig {
@@ -422,7 +422,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
             t.nodes.push(fresh);
             t
         };
-        records.install_projected(&topology, || after).await;
+        records.install_projected(&topology, || after.clone()).await;
         let mut rows = BTreeMap::new();
         for name in ["mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.2.old", "mesh1.rpc.3"] {
             rows.insert(name.to_string(), n_store.node_row_at(&name.parse().unwrap()).await.unwrap());

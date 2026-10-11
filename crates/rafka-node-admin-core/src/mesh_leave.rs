@@ -189,37 +189,6 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[Rost
     held
 }
 
-/// R-EL1 (a seat moves only by explicit yield or proven loss) and R11 (the lost predecessor's exact
-/// Exited is recorded first): each exact Exited receipt of `exits` is held by `records` as that
-/// birth's proven loss, the lost set every election of this admin takes (`incumbency_of`). A seat the
-/// birth held is then vacant in this admin's view: the fabric-primary is the acting primary of a
-/// leaving mesh whose final primary exited (mesh-leave.md step 7), claims the name of the admin it
-/// creates for a mesh with none left, and reads a surviving admin seated (mesh-leave.md, "Resume
-/// after the primary's loss"). Returns each birth held, as `<path.name> <incarnation>`.
-pub fn hold_exits<'a>(records: &crate::admin::Records, exits: impl IntoIterator<Item = &'a TerminalReceipt>) -> Result<Vec<String>, String> {
-    let mut held = Vec::new();
-    for t in exits {
-        let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("the Exited receipt of {} {} names no node id ({:?}): {e}", t.node, t.incarnation_id, t.node_id))?;
-        records.mark_exited(&node_id, &crate::model::IncarnationId(t.incarnation_id.clone()));
-        held.push(format!("{} {}", t.node, t.incarnation_id));
-    }
-    Ok(held)
-}
-
-/// Every birth an admitted leave names: its accepted roster and, per roster amendment, the
-/// predecessor and the final primary it admitted.
-pub fn leave_births(adm: &Admitted) -> Vec<RosterBirth> {
-    let mut births = adm.roster.clone();
-    for a in &adm.amendments {
-        for b in [&a.predecessor, &a.final_primary] {
-            if !births.contains(b) {
-                births.push(b.clone());
-            }
-        }
-    }
-    births
-}
-
 /// Where the fabric-primary's outer workflow `operation` resumes, read from its own Build facts
 /// (`steps`) before it calls anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -511,7 +480,7 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
 /// then `RosterAmended` admits `held`. A lost primary not proven exited refuses the resume by name
 /// and nothing is amended (R-D1).
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
+pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, records: &crate::admin::Records, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
     let operation = key.operation.as_str();
     let lost = &admitted.final_primary;
     let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
@@ -520,6 +489,9 @@ pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn cr
             span_unproven(key, lost, &reason);
             format!("{operation} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost.node, lost.incarnation_id, held.node, held.incarnation_id)
         })?;
+        // Recorded durably before its receipt: the exit-proof row is the proven loss every
+        // projection reads.
+        records.put_exit_of_receipt(&terminal).await.map_err(|e| format!("{operation} is refused: the lost final primary's proven exit is not recorded: {e}"))?;
         record_predecessor_exit(builds, key, executor, &terminal).await?;
     }
     amend_roster(builds, key, executor, &RosterAmended { predecessor: lost.clone(), final_primary: held.clone(), final_runtime: held_runtime.clone() }).await

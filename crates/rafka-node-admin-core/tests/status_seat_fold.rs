@@ -79,7 +79,7 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
             n.is_fabric_primary = true;
         }
     }
-    records.install_projected(&topology, || after_view).await;
+    records.install_projected(&topology, || after_view.clone()).await;
     let after = records.declared.lock().unwrap().clone();
     let _ = std::fs::remove_dir_all(&dir);
     Taken { before, after, rpc: rpc_birth, other, mesh_id, fabric_id, trace_id }

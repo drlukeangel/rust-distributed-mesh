@@ -13,7 +13,7 @@
 //!   live members of its mesh at once, and last the provider's inspection of the birth's exact
 //!   runtime (node-recovery.md step 2, ruling R-SW1). An answer from the exact birth (`Current`,
 //!   `CurrentParked`, `Blocked`), or a runtime that still runs, ends it: the seat stays. Only a
-//!   runtime found exited is a verified loss (`Records::mark_exited`); a failed ping, `NotSent`,
+//!   runtime found exited is a verified loss, its exit-proof row put (`Records::put_exit`); a failed ping, `NotSent`,
 //!   a deadline, silence and the observer-inferred `Dead` are not.
 //!
 //! [`plan`] decides what a pass owes, from the view and what was already said; [`run`] drives it.
@@ -423,6 +423,7 @@ pub async fn run(w: Watch) {
                 detail = tracing::field::Empty,
                 iroh_known_addrs = tracing::field::Empty,
                 iroh_active_addrs = tracing::field::Empty,
+                exit_proof_row = tracing::field::Empty,
             );
             // One read of iroh's local view of the suspect, recorded beside the investigation;
             // the finding is the provider's and the Node RPC's, never this.
@@ -433,8 +434,11 @@ pub async fn run(w: Watch) {
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());
-            if let (Finding::Exited { .. }, Some(inc)) = (&finding, node.incarnation_id.as_ref()) {
-                w.records.mark_exited(&node.node_id, inc);
+            if let Finding::Exited { code } = &finding {
+                // The verified loss is recorded durably: the holder's exit-proof row is what every
+                // projection reads as its proven loss.
+                let recorded = w.records.put_exit(&node, *code, "provider").await;
+                span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
             }
             span.in_scope(|| tracing::info!("a silent seat holder was looked at"));
         }

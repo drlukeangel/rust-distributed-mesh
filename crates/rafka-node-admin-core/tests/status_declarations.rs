@@ -876,7 +876,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone()).with_configs(configs)));
         let mut t = rig.topology.read().await.clone();
         t.nodes.push(newcomer.node.clone());
-        records.install_projected(&rig.topology, || t).await;
+        records.install_projected(&rig.topology, || t.clone()).await;
         tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("the fabric-primary told the birth its seeded config");
         assert_eq!(
             node.seen.lock().unwrap().clone(),
@@ -926,7 +926,7 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(m2admin.node.name.clone(), m2admin.node.node_id.clone(), rig.topology.clone(), mp_rows.clone()).with_configs(configs)));
         let mut t = rig.topology.read().await.clone();
         t.nodes.push(newcomer.node.clone());
-        records.install_projected(&rig.topology, || t).await;
+        records.install_projected(&rig.topology, || t.clone()).await;
         tokio::time::timeout(Duration::from_secs(10), node.heard.notified()).await.expect("mesh2's primary told the birth its seeded config");
         // The birth hears the call before mesh2's primary reads its answer: the door's tell runs on
         // its own task, so the cell keeps its runtime until that door's span has ended with the
