@@ -1456,6 +1456,13 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         (self.refresh)().await;
         Ok(())
     }
+
+    async fn recorded(&self, executor: &PathName) -> bool {
+        let Some(n) = self.topology.read().await.node(executor).cloned() else {
+            return false;
+        };
+        n.incarnation_id.as_ref().is_some_and(|incarnation| self.records.is_exited(&n.node_id, incarnation))
+    }
 }
 
 /// What a drift opening decides on, as one comparable string: for a repair, the exited birth and
