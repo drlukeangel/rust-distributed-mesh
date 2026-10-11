@@ -3619,8 +3619,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         // owes no clean data dir.
         refuse_contradictory_start(&cfg, holds.filter(|_| cfg.launch.is_none())).map_err(|e| format!("refusing to start: {e}"))?;
     }
-    crate::investigate::check_idle_below_probe2(rafka_mesh_entity::cadence::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval())
-        .map_err(|e| format!("refusing to start: {e}"))?;
     drop(storage_step);
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
     // or (a restart) its own row, under a new incarnation that supersedes the one it last ran.

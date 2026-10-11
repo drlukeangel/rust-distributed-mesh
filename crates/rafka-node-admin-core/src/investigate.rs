@@ -1,22 +1,24 @@
-//! The peer-mesh investigation (rafka-v2 fabric-node-lifecycle-events-ops-gossip.md, "Mesh
-//! Recovery" -> "Detection: the peer-mesh investigation"; Luke 2026-10-08).
+//! The peer-mesh investigation (rafka-v2 lifecycles/mesh-investigation.md; fabric-node-lifecycle.md
+//! §7.3; ruling R-CK1).
 //!
-//! The fabric primary hears a peer mesh on the backbone. When it stops hearing it, it asks the
-//! mesh's own members whether the mesh's node-admin is there, and rebirths the mesh's node-admins
-//! only when a member says it cannot reach its own node-admin (`carrier-edge-lost`). Time is
-//! counted in backbone rounds, so a cell at 500 ms rounds runs the same ladder as production at
-//! 2 s:
+//! One investigation per peer mesh, owned by the fabric primary. t is the elapsed monotonic time
+//! since the fabric primary's last valid direct backbone receipt from the mesh; only that receipt
+//! starts or resets it, forwarded topology never does, and neither the backbone interval nor a
+//! delayed tick moves a rung. The silent mark is the shared staleness mark, so the rungs are taken
+//! from the staleness floor (`Rungs::at`):
 //!
 //! ```text
-//! unheard rounds   10   probe 1   Ping members, Forward{ProbeNodeState} to the node-admin
-//!                  15   mark      the mesh is silent (nothing is sent)
-//!                  20   probe 2   the same, another carrier preferred
-//!                  30   decision  rebirth only if the latest probe answered carrier-edge-lost
+//! unheard t   20 s   probe 1    the exact mesh-primary first, then the other node-admins,
+//!                               each direct, then Forward{ProbeNodeState} through a member
+//!             30 s   mark       the mesh is silent (nothing is sent)
+//!             40 s   probe 2    the same, another carrier preferred
+//!             60 s   decision   opens once the probes finished; rebirth only if the latest
+//!                               probe answered carrier-edge-lost
 //! ```
 //!
-//! An answer from the node-admin stops it (`admin-alive`); a backbone receipt cancels it
-//! (`heard-again`); no member answering holds. The state machine here is pure over the unheard
-//! rounds and the probe results; [`run`] drives it from the fabric primary's view.
+//! An answer from a node-admin stops it (`admin-alive`); a backbone receipt cancels it
+//! (`heard-again`); no member answering holds. The state machine here is pure over the elapsed
+//! time and the probe results; [`run`] drives it from the fabric primary's view.
 
 use crate::admin::Records;
 use crate::model::{Node, NodeId, NodeKind, NodeStatus, PathName};
@@ -47,32 +49,20 @@ pub struct Rungs {
 }
 
 impl Rungs {
-    /// The rungs at the staleness floor `floor` and the backbone gossip interval `backbone`.
+    /// The rungs at the staleness floor `floor` (`RDM_STALENESS_MS`) and the backbone gossip interval
+    /// `backbone`: the silent mark is the shared staleness mark (mesh-investigation.md step 2), and
+    /// probe 1, probe 2 and the decision stand at two thirds, four thirds and twice it: 20 s, 30 s,
+    /// 40 s and 60 s at the 30 s default floor. The backbone interval sets only when tracking begins
+    /// (one publication missed beyond its jitter, never after probe 1), a span and no threshold.
     pub fn at(floor: Duration, backbone: Duration) -> Rungs {
-        let _ = floor;
-        Rungs { track: backbone * 2, probe1: backbone * 10, mark: backbone * 15, probe2: backbone * 20, decide: backbone * 30 }
+        let probe1 = floor * 2 / 3;
+        Rungs { track: (backbone * 2).min(probe1), probe1, mark: floor, probe2: floor * 4 / 3, decide: floor * 2 }
     }
 
     /// The rungs at the configured cadences.
     pub fn configured() -> Rungs {
         Self::at(rafka_mesh_entity::cadence::staleness_floor(), rafka_mesh_entity::cadence::backbone_gossip_interval())
     }
-}
-
-/// Every node's pooled connection idles out after the staleness floor; that closes a connection
-/// to a dead peer before the second probe only if the floor is shorter than the probe's wait
-/// (`probe2` unheard). A floor at or past it refuses the start by name.
-pub fn check_idle_below_probe2(staleness_floor: std::time::Duration, backbone_round: std::time::Duration) -> Result<(), String> {
-    let probe2 = Rungs::at(staleness_floor, backbone_round).probe2;
-    if staleness_floor >= probe2 {
-        return Err(format!(
-            "the staleness floor RDM_STALENESS_MS ({} ms) is not below the second probe (RDM_BACKBONE_INTERVAL_MS = {} ms, {} ms): a pooled connection to a dead peer would still be open when the second probe dials",
-            staleness_floor.as_millis(),
-            backbone_round.as_millis(),
-            probe2.as_millis()
-        ));
-    }
-    Ok(())
 }
 
 /// What a probe found.
@@ -212,6 +202,16 @@ impl Ladder {
         Some(PeerMesh { unheard_ms: st.tracked.then(|| st.unheard.as_millis() as u64), rebirth_decided: st.verdict == Some(true) })
     }
 
+    /// How long after `unheard` the next rung of `mesh` falls due: the driver wakes then, so a tick
+    /// never moves a rung. `None` once nothing of the mesh is left to step.
+    pub fn next_due(&self, mesh: &str, unheard: Duration) -> Option<Duration> {
+        let (r, st) = (self.rungs, self.meshes.get(mesh)?);
+        if st.stopped || st.verdict.is_some() {
+            return (!st.marked).then(|| r.mark.saturating_sub(unheard));
+        }
+        [r.track, r.probe1, r.mark, r.probe2, r.decide].into_iter().find(|rung| *rung > unheard).map(|rung| rung - unheard)
+    }
+
     /// What `mesh` being unheard for `unheard` asks next. One probe or the decision per call; the
     /// driver makes the probe, records it with [`Self::probed`], and asks again.
     pub fn step(&mut self, mesh: &str, unheard: Duration) -> Vec<Step> {
@@ -322,8 +322,10 @@ fn local_now_ms() -> u64 {
 pub async fn run(w: Watch) {
     // When this admin took the fabric-primary seat: a peer mesh it has never heard is unheard from then.
     let mut seat_since: Option<Instant> = None;
+    let mut wait = w.round;
     loop {
-        tokio::time::sleep(w.round).await;
+        tokio::time::sleep(wait).await;
+        wait = w.round;
         let view = w.topology.read().await.clone();
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
         if !(fabric_primary && w.membership.authorizes()) {
@@ -343,15 +345,31 @@ pub async fn run(w: Watch) {
         let never = if seat_since.is_some() { never_heard(&view, &w.me.mesh, &heard) } else { BTreeSet::new() };
         forget_unheard_meshes(&w.ladder, &heard.union(&never).cloned().collect());
         let mut tasks = Vec::new();
+        let mut unheard_now = Vec::new();
         for mesh in heard.into_iter().filter(|m| *m != w.me.mesh) {
             let Some(unheard) = book.mesh_unheard(&mesh, Instant::now()) else { continue };
+            unheard_now.push(mesh.clone());
             tasks.push(investigate(&w, &view, mesh, unheard));
         }
-        for mesh in never {
+        for mesh in never.iter().cloned() {
             let unheard = seat_since.expect("never is empty without it").elapsed();
             tasks.push(investigate(&w, &view, mesh, unheard));
         }
         futures_util::future::join_all(tasks).await;
+        // The next wake: a receipt is looked for every round, and a rung is stepped when it falls
+        // due, not on the round after it.
+        for mesh in unheard_now {
+            if let Some(due) = book.mesh_unheard(&mesh, Instant::now()).and_then(|u| w.ladder.lock().unwrap().next_due(&mesh, u)) {
+                wait = wait.min(due);
+            }
+        }
+        if let Some(since) = seat_since {
+            for mesh in &never {
+                if let Some(due) = w.ladder.lock().unwrap().next_due(mesh, since.elapsed()) {
+                    wait = wait.min(due);
+                }
+            }
+        }
         restore(&w, &view);
     }
 }
@@ -496,19 +514,66 @@ pub(crate) fn fold_admin_outcomes(outcomes: &[ProbeOutcome]) -> ProbeOutcome {
     }
 }
 
-/// Probe `mesh`'s node-admins: Ping its members, then Forward `ProbeNodeState` through one that
-/// answered, to the mesh's primary node-admin and then to each other one (`admins_in_probe_order`). Active connections are asked first, then path order; probe 2 prefers a member probe 1
+/// Probe `mesh`'s node-admins (mesh-investigation.md steps 1 and 3): `ProbeNodeState` to the exact
+/// mesh-primary first, then to each other node-admin (`admins_in_probe_order`), each direct and,
+/// when that fails, Forwarded through a member that answered a Ping. Active connections are asked first, then path order; probe 2 prefers a member probe 1
 /// did not use.
 async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
     let admins = admins_in_probe_order(view, mesh);
-    let Some(primary) = admins.first() else {
+    if admins.is_empty() {
         return Found { outcome: ProbeOutcome::Unreachable, target: String::new(), members: String::new(), carrier: String::new(), detail: format!("the view holds no node-admin of {mesh}") };
-    };
+    }
+    // Each node-admin in turn, the exact mesh-primary first: direct, then through a carrier member
+    // (found once per probe, on the first direct contact that fails). The first node-admin that
+    // answers ends the probe.
+    let direct = CallOptions { budget: Budget::Overall(ping_budget(w.round)), ..CallOptions::default() };
+    let carried = CallOptions { budget: carried_budget(w.round), ..CallOptions::default() };
+    let mut carrier: Option<Option<Node>> = None;
+    let (mut members_asked, mut carrier_why) = (String::new(), String::new());
+    let (mut outcomes, mut asked_admins, mut details) = (Vec::new(), Vec::new(), Vec::new());
+    for admin in &admins {
+        let req = StatusRequest::ProbeNodeState { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().expect("filtered on it") };
+        let (out, _) = w.client.call::<Status>(&NodeTarget::ExactNode(admin.node_id.clone()), &req, &direct).await;
+        let (outcome, detail) = classify(&out, &admin.name);
+        if outcome == ProbeOutcome::AdminAlive {
+            outcomes.push(outcome);
+            asked_admins.push(format!("{}={}(direct)", admin.name, outcome.as_str()));
+            details.push(detail);
+            break;
+        }
+        let direct_failed = format!("direct: {}", out.name());
+        if carrier.is_none() {
+            let (found, asked, why) = find_carrier(w, view, mesh, n).await;
+            (members_asked, carrier_why) = (asked, why);
+            carrier = Some(found);
+        }
+        let Some(Some(c)) = &carrier else {
+            outcomes.push(ProbeOutcome::Unreachable);
+            asked_admins.push(format!("{}=unreachable", admin.name));
+            details.push(format!("{direct_failed}; no member answered the Ping ({carrier_why})"));
+            continue;
+        };
+        let (out, _) = w.client.call_via::<Status>(&NodeTarget::ExactNode(c.node_id.clone()), &admin.node_id, &req, &carried).await;
+        let (outcome, detail) = classify(&out, &admin.name);
+        outcomes.push(outcome);
+        asked_admins.push(format!("{}={}(via {})", admin.name, outcome.as_str(), c.name));
+        details.push(format!("{direct_failed}; {detail}"));
+        if outcome == ProbeOutcome::AdminAlive {
+            break;
+        }
+    }
+    let carrier = carrier.flatten().map(|c| c.name.to_string()).unwrap_or_default();
+    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier, detail: details.join("; ") }
+}
+
+/// The carrier of a probe: a few of `mesh`'s ordinary members Pinged in parallel, active
+/// connections first, then path order; probe 2 prefers a member probe 1 did not carry through.
+/// Answers the member that ponged (`None`: none did), the members asked, and why each failed.
+async fn find_carrier(w: &Watch, view: &Topology, mesh: &str, n: u8) -> (Option<Node>, String, String) {
     let mut members: Vec<Node> = view.members().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving && m.status != NodeStatus::Restarting).cloned().collect();
     members.sort_by_key(|m| (!(w.connected)(&m.node_id), m.name.to_string()));
     let used = w.ladder_last_carrier(mesh, n);
     if n > 1 {
-        // Probe 2 prefers a member probe 1 did not carry through.
         members.sort_by_key(|m| used.as_ref() == Some(&m.name));
     }
     let asked: Vec<Node> = members.into_iter().take(PROBE_FANOUT).collect();
@@ -520,27 +585,12 @@ async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
     }))
     .await;
     let members_asked = asked.iter().map(|m| m.name.to_string()).collect::<Vec<_>>().join(",");
-    let Some((carrier, _, _)) = pings.iter().find(|(_, ponged, _)| *ponged) else {
-        let why = pings.iter().map(|(m, _, o)| format!("{}: {o}", m.name)).collect::<Vec<_>>().join("; ");
-        return Found { outcome: ProbeOutcome::Unreachable, target: primary.name.to_string(), members: members_asked, carrier: String::new(), detail: format!("no member answered the Ping ({why})") };
-    };
-    w.note_carrier(mesh, carrier.name.clone());
-    // The mesh's primary node-admin first, then each other node-admin, through the one carrier; the
-    // first node-admin that answers ends the probe.
-    let opts = CallOptions { budget: carried_budget(w.round), ..CallOptions::default() };
-    let (mut outcomes, mut asked_admins, mut details) = (Vec::new(), Vec::new(), Vec::new());
-    for admin in &admins {
-        let req = StatusRequest::ProbeNodeState { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().expect("filtered on it") };
-        let (out, _) = w.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, &req, &opts).await;
-        let (outcome, detail) = classify(&out, &admin.name);
-        outcomes.push(outcome);
-        asked_admins.push(format!("{}={}", admin.name, outcome.as_str()));
-        details.push(detail);
-        if outcome == ProbeOutcome::AdminAlive {
-            break;
-        }
+    let why = pings.iter().map(|(m, _, o)| format!("{}: {o}", m.name)).collect::<Vec<_>>().join("; ");
+    let carrier = pings.iter().find(|(_, ponged, _)| *ponged).map(|(m, _, _)| (*m).clone());
+    if let Some(c) = &carrier {
+        w.note_carrier(mesh, c.name.clone());
     }
-    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked, carrier: carrier.name.to_string(), detail: details.join("; ") }
+    (carrier, members_asked, why)
 }
 
 impl Watch {
@@ -558,22 +608,6 @@ mod tests {
     use super::*;
     use ProbeOutcome::*;
     use std::time::Duration;
-
-    #[test]
-    fn a_staleness_floor_below_the_second_probe_starts() {
-        // production: 30 s floor, 2 s round, probe 2 at 40 s; gate: 3 s floor, 0.5 s round, probe 2 at 10 s.
-        assert!(check_idle_below_probe2(Duration::from_secs(30), Duration::from_secs(2)).is_ok());
-        assert!(check_idle_below_probe2(Duration::from_secs(3), Duration::from_millis(500)).is_ok());
-        assert!(check_idle_below_probe2(Duration::from_millis(39_999), Duration::from_secs(2)).is_ok());
-    }
-
-    #[test]
-    fn a_staleness_floor_at_or_past_the_second_probe_refuses_by_name() {
-        for floor_ms in [40_000, 40_001, 90_000] {
-            let e = check_idle_below_probe2(Duration::from_millis(floor_ms), Duration::from_secs(2)).unwrap_err();
-            assert!(e.contains("RDM_STALENESS_MS") && e.contains("RDM_BACKBONE_INTERVAL_MS") && e.contains("40000 ms"), "{e}");
-        }
-    }
 
     /// The ladder at the production cadences: a 30 s staleness floor, 2 s backbone rounds.
     fn ladder() -> Ladder {
