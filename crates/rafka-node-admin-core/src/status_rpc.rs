@@ -615,6 +615,98 @@ mod tests {
         assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "a cycle begin erased the mesh primary's silence status");
     }
 
+    /// A status store whose `Leaving` declared-state put returns only once the `ReadyForTraffic`
+    /// put for the same birth has landed: two declarations decided against the same held state,
+    /// their puts landing Leaving then ReadyForTraffic.
+    #[derive(Default)]
+    struct RacingPuts {
+        inner: crate::status_storage::MemoryStatusStorage,
+        ready_landed: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::status_storage::StatusStorage for RacingPuts {
+        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status(row).await
+        }
+        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, crate::record_store::StorageError> {
+            self.inner.mesh_statuses().await
+        }
+        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_fabric_event(row).await
+        }
+        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events().await
+        }
+        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_declared(row).await?;
+            match row.state {
+                NodeState::Leaving => self.ready_landed.notified().await,
+                NodeState::ReadyForTraffic => self.ready_landed.notify_one(),
+                _ => {}
+            }
+            Ok(())
+        }
+        async fn remove_node_declared(&self, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_node_declared(node_id).await
+        }
+        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::record_store::StorageError> {
+            self.inner.node_declared().await
+        }
+        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_silence(row).await
+        }
+        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::record_store::StorageError> {
+            self.inner.node_silences().await
+        }
+    }
+
+    /// CONTRACT (#3051, CLAUDE.md read-modify-write ban): two declarations of one birth decided
+    /// against the same held state both put their row before either is committed. Whatever order
+    /// the puts land in, what a restarted authority folds from the rows is the state it held in
+    /// memory: a node's declared state never goes backward across a restart.
+    #[tokio::test]
+    async fn two_racing_declarations_rehydrate_to_the_state_held_and_never_backward() {
+        let mut admin = node("mesh1.admin.1");
+        admin.mesh = "mesh1".into();
+        admin.kind = NodeKind::NodeAdmin;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let mut rpc = node("mesh1.rpc.1");
+        rpc.mesh = "mesh1".into();
+        rpc.kind = NodeKind::RpcNode;
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![admin.clone(), rpc.clone()],
+        }));
+        let status: Arc<RacingPuts> = Arc::new(Default::default());
+        let authority = StatusAuthority {
+            me: admin.name.clone(),
+            fabric_id: topology.read().await.fabric.id.clone(),
+            topology: topology.clone(),
+            declared: Arc::new(Mutex::new(Declared::default())),
+            status_storage: status.clone(),
+            mesh_ids: Arc::new(BTreeMap::new),
+            republish: Arc::new(OnceLock::new()),
+            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            own: Arc::new(OnceLock::new()),
+            leaver: Arc::new(OnceLock::new()),
+            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake: Default::default(),
+            rounds: Default::default(),
+        };
+        let birth = rpc.incarnation_id.clone().unwrap();
+        let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
+        let (leaving, ready) = (declare(NodeState::Leaving), declare(NodeState::ReadyForTraffic));
+        let (a, b) = tokio::join!(authority.apply(Some(rpc.clone()), &leaving), authority.apply(Some(rpc.clone()), &ready));
+        assert_eq!((a, b), (R::Applied, R::Applied), "both decided forward from the same held state");
+        let held = authority.declared.lock().unwrap().node(&rpc.node_id);
+        assert_eq!(held, Some((birth.clone(), NodeState::Leaving)), "memory holds the greater state");
+        let rehydrated = Declared::rehydrate(&*status).await.unwrap();
+        assert_eq!(rehydrated.node(&rpc.node_id), held, "a restarted authority folds the rows back to a state behind the one it held");
+    }
+
     /// CONTRACT (#2803 detection): a fabric primary probes ANOTHER mesh's node-admin through a
     /// member of that mesh (Forward carries no origin identity, so the node-admin authenticates the
     /// member). The probe is answered with the node-admin's current state; the same sender cannot
