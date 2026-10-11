@@ -989,7 +989,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
             let from_admin = sender.as_ref().is_some_and(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin);
-            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default();
+            // A sender this node holds no digest of is named by the one fact it holds of it: its endpoint.
+            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
                 me.addressed.note(&from.node.node_id);
             }
