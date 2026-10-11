@@ -205,7 +205,8 @@ async fn recovery_deletes_the_exited_instance_then_creates_a_new_node_over_its_d
     assert!(at(&format!("NodeDeleted:{old}:{operation}")) < at(&format!("fenced:{old}")) && at(&format!("fenced:{old}")) < at(&format!("ready:{new}")), "node.deleted, the fence, then the new node: {log:?}");
     assert_eq!(log.iter().filter(|l| l.starts_with("NodeDeleted")).count(), 1, "{log:?}");
     assert!(rig.sink.renamed.lock().unwrap().is_empty(), "no rename: the exited instance is deleted, never renamed");
-    assert_eq!(*rig.sink.removed.lock().unwrap(), vec![path()], "the exited instance leaves the path once");
+    assert!(rig.sink.removed.lock().unwrap().is_empty(), "no path-keyed removal: only the exact exited birth leaves");
+    assert_eq!(*rig.sink.removed_births.lock().unwrap(), vec![(path(), first.node.node_id.clone(), old_inc.clone())], "the exited instance leaves the path once");
 
     // Spans: the operation's pipeline, and node.deleted published from the exit proof.
     let all = spans.0.lock().unwrap().clone();
@@ -275,7 +276,7 @@ async fn a_recovery_whose_inherited_data_dir_has_no_endpoint_key_fails_by_name_a
     assert!(view.steps.iter().all(|r| r.outcome != StepOutcome::Complete), "no step of the recovery completed: {:?}", view.steps.iter().map(|r| (r.step.as_str(), &r.outcome)).collect::<Vec<_>>());
     let log = rig.log.lock().unwrap().clone();
     assert!(!log.iter().any(|l| l.starts_with("NodeDeleting") || l.starts_with("NodeDeleted")), "nothing of the exited birth was deleted: {log:?}");
-    assert!(rig.sink.removed.lock().unwrap().is_empty(), "the path was not removed");
+    assert!(rig.sink.removed.lock().unwrap().is_empty() && rig.sink.removed_births.lock().unwrap().is_empty(), "the path was not removed");
     let all = spans.0.lock().unwrap().clone();
     assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("recover") && f.get("build_id") == Some(&recover_build.0)), "the recovery ran as its pipeline");
     assert!(!all.values().any(|(n, _, _)| n == "rdm.node_admin.node.delete.via-exit-proof"), "no node.deleted is published");
