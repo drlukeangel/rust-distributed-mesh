@@ -991,7 +991,9 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 
 /// Serve `Status` on an rpc node: the downward exact-node operations, answered once this node
 /// has joined (until then `NotReady`). An rpc node is never an authority: every upward
-/// declaration and every mesh or fabric operation is refused by name.
+/// declaration, every mesh or fabric operation and every view read (`node.get`, `mesh.get`,
+/// `fabric.get`, which a node-admin answers from its view) is refused by name. `node.connections.get`
+/// of this exact birth is answered with the connections it holds.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// hands its peers to its mesh channel again, publishes its digest, and answers its current
@@ -1036,7 +1038,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(reply);
             }
             let (node_id, incarnation) = match &req {
-                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } => (node_id, incarnation),
+                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } | StatusRequest::GetConnections { node_id, incarnation } => (node_id, incarnation),
                 _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             };
             if *node_id != me.digest.node.node_id {
@@ -1046,6 +1048,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(StatusReply::RejectedStaleIncarnation { held: me.digest.node.incarnation.clone() });
             }
             match req {
+                // node.connections.get: what this birth holds, under the name it holds; a read.
+                StatusRequest::GetConnections { .. } => Ok(me.own.connections_get().await),
                 StatusRequest::ProbeNodeState { .. } => {
                     // A parked node is Leaving with a live process: it says so and presents nothing.
                     if me.own.is_parked() {

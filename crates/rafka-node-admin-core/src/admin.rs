@@ -4336,6 +4336,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         }));
                                         moved
                                     },
+                                    loads: control.loads.get().cloned(),
                                 }));
                             }
                             // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of

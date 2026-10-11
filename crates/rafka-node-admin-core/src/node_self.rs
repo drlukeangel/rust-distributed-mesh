@@ -341,6 +341,17 @@ impl NodeSelf {
         }
     }
 
+    /// `node.connections.get` at this birth (fabric-mesh-node-lifecycles.md: "Reading or cutting a
+    /// node's held connections"): the connections it holds now, under the name it holds, once every
+    /// observation handed to its writer has landed; the ids are those `node.connections.delete` names.
+    pub async fn connections_get(&self) -> StatusReply {
+        let writer = self.connections.lock().unwrap().clone();
+        match writer {
+            Some(w) => crate::views::connections_answer(&w.held_connections().await),
+            None => StatusReply::NotReady { reason: format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name()) },
+        }
+    }
+
     /// `node.connections.delete` at this birth (R-CR3; node-stop.md step 3 is its `All`). `All` is
     /// the stop's cut through the [`Session`] (gossip neighbours, pooled and accepted peer
     /// connections, sparing `spare`, the commander whose call is in flight); `Connections` cuts the
