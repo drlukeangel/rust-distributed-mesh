@@ -375,7 +375,6 @@ impl StatusAuthority {
         let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. } | StatusRequest::StartNode { node_id, incarnation, .. }) = req else { unreachable!("serve_command is called for commands only") };
         let me = view.own(&self.node_id);
         let reply = match (me, sender, self.own.get()) {
-            (None, _, _) => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } },
             (Some(me), _, _) if me.node_id != *node_id => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } },
             (Some(me), _, _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().expect("checked") },
             (_, Some(from), Some(own)) if from.kind == NodeKind::NodeAdmin && from.node_id != self.node_id => {
@@ -669,9 +668,11 @@ mod tests {
     /// keys it by `PathName`), so until the retired birth's digest goes non-live or departs, the row
     /// at this admin's path can be the retired birth's, live and seated, and this admin's own row is
     /// absent. The authority finds itself by the node id it was born with: it decides nothing from
-    /// the retired birth's seat and refuses naming the true reason, "a view holding this admin".
-    /// What must NOT happen: a member's declaration `Applied` on the retired birth's mesh-primary
-    /// seat, or a drain-node naming this admin refused as "not the subject node itself".
+    /// the retired birth's seat and refuses naming the true reason, "a view holding this admin"; a
+    /// drain-node naming its node id goes on to the subject's own door (`NodeSelf::serve`, which
+    /// checks the exact birth itself), here not yet filled. What must NOT happen: a member's
+    /// declaration `Applied` on the retired birth's mesh-primary seat, or a drain-node naming this
+    /// admin refused as "not the subject node itself".
     #[tokio::test]
     async fn an_authority_whose_view_holds_its_retired_birth_at_its_path_answers_as_itself() {
         let mut retired = node("mesh1.admin.1");
@@ -707,6 +708,6 @@ mod tests {
 
         let drain = StatusRequest::DrainNode { node_id: reborn.node_id.clone(), incarnation: reborn.incarnation_id.clone().unwrap(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.admin.1".into() };
         let reply = auth.apply(Some(owner.clone()), &drain).await;
-        assert!(holding_me(&reply), "a drain-node naming this admin's node id is refused for the true reason: {reply:?}");
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a drain-node naming this admin's node id reaches the subject's own door: {reply:?}");
     }
 }
