@@ -30,6 +30,12 @@ impl NodeConfigs {
         Self { client, one_at_a_time: tokio::sync::Mutex::new(()) }
     }
 
+    /// The client this door tells births through: the mesh-primary's node.update tells a birth its
+    /// name through it as well (`crate::node_update`).
+    pub fn client(&self) -> &NodeRpcClient {
+        &self.client
+    }
+
     /// Serve an `UpdateNodeConfig` at the admin `me` (born as `me_id`) deciding over `view`, writing to `storage`. One
     /// span, opened first, holds the whole put: the row write and the call that tells the birth are
     /// inside it, and its outcome is the reply's name. A refusal's reply carries its detail cut to the

@@ -305,6 +305,12 @@ impl StatusAuthority {
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
                 };
             }
+            StatusRequest::UpdateNode { .. } => {
+                return match self.configs.get() {
+                    Some(configs) => crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, configs.client(), req).await,
+                    None => StatusReply::NotReady { reason: format!("{} has no node-RPC client yet; {} is refused", self.me, req.op()) },
+                };
+            }
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {
                     Some(configs) => configs.update(&self.me, &self.node_id, &view, &*self.nodes_storage, req).await,
