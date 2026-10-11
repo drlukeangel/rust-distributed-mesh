@@ -1683,7 +1683,10 @@ impl View {
                 Vec::new()
             }
             Frame::NodeStopped { op, .. } => {
-                self.book.stopped(op.clone());
+                let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
+                if self.book.stopped(op.clone()) {
+                    self.note_member_parked(op, prior, via);
+                }
                 Vec::new()
             }
             Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeDrained { op, forwarded_by } => {
@@ -2024,7 +2027,10 @@ impl View {
             if op.is_restart() {
                 self.book.restarting(op);
             } else if op.is_stop() {
-                self.book.stopped(op);
+                let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
+                if self.book.stopped(op.clone()) {
+                    self.note_member_parked(&op, prior, side.name());
+                }
             } else {
                 self.book.deleting(op);
             }
@@ -2081,6 +2087,30 @@ impl View {
             routable = self.book.routable(d.node.node_id.as_str()),
         )
         .in_scope(|| tracing::info!("a peer mesh's member state held from what this node installed: routing follows it"));
+    }
+
+    /// A peer mesh's member this node now holds parked, from its mesh primary's `NodeStopped` overlay
+    /// (gossip.md, node-stopped lifecycle overlay): Leaving and parked, not routable. `channel` is
+    /// where the overlay arrived: the frame itself, or the aggregate's `in_flight`.
+    fn note_member_parked(&self, op: &rafka_mesh_entity::LifecycleOp, prior: Option<rafka_mesh_entity::MemberStatus>, channel: &str) {
+        if op.name.mesh == self.mesh {
+            return;
+        }
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-member-state",
+            node = %self.node,
+            member = %op.name,
+            member_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            status = ?rafka_mesh_entity::MemberStatus::Leaving,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+            channel,
+            routable = self.book.routable(op.node_id.as_str()),
+            parked = true,
+            operation = %op.operation,
+            build_id = %op.build_id,
+        )
+        .in_scope(|| tracing::info!("a peer mesh's member is parked by its mesh primary's NodeStopped: Leaving, not routable"));
     }
 
     fn note(&self, d: &MeshDigest, via: &'static str) {
