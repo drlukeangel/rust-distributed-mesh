@@ -963,8 +963,17 @@ async fn a_birth_whose_retirement_the_build_receipted_is_not_surplus() {
 /// attempt of the same Build, with no action, and that attempt's plan is the mesh's shutdown again; once `MeshLeft` is recorded it opens
 /// nothing (mesh-leave.md, "Failure/certainty behavior": the workflow stays incomplete, resumed
 /// from its receipts).
-#[tokio::test]
-async fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again() {
+#[test]
+fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again() {
+    let cap = crate::mesh_leave_resume::capture();
+    let trace_id = cap.run(async {
+    let root = tracing::info_span!("cell.mesh-leave-reopen");
+    let trace_id = {
+        use opentelemetry::trace::TraceContextExt as _;
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        root.context().span().span_context().trace_id().to_string()
+    };
+    let _in_root = root.enter();
     use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, StepOutcome};
     for left in [false, true] {
         let e = estate().await;
@@ -996,7 +1005,7 @@ async fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_
         }
         assert_eq!(opened, Some((build_id.clone(), 2)), "the removed mesh still live with no MeshLeft opens the next attempt of the same Build");
         let current = e.accepted.current(&*e.builds).await.unwrap();
-        assert_eq!(current.attempt, 2);
+        assert_eq!(current.state, rafka_node_admin_core::build_state::BuildState::Pending, "attempt 2 is open to be claimed");
         let view = e.view.read().await.clone();
         assert_eq!(
             rafka_node_admin_core::accepted::plan(&current.topology, &view, None).operations,
@@ -1004,4 +1013,13 @@ async fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_
             "the opened attempt plans {leaving}'s shutdown again"
         );
     }
+    trace_id
+    });
+    let spans = cap.spans();
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cells/mesh_leave_reopen");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    let drift: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-proven-drift" && s["trace_id"] == trace_id.as_str()).collect();
+    assert!(drift.iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["action"] == "none" && s["attributes"]["scope"].as_str().is_some_and(|x| x.contains("shutdown-mesh:"))), "the opened attempt names the incomplete shutdown: {drift:?}");
 }
