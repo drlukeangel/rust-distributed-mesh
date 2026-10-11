@@ -17,6 +17,7 @@ members = [
     "crates/test-roles/broker",
     "crates/test-roles/compute",
     "tools/mesh-audit",
+    "tools/docgen",
     "tools/test-runner",
     "crates/scratch-json-dumper",
 ]
