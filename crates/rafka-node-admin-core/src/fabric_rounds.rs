@@ -729,7 +729,7 @@ impl FabricRounds {
     }
 
     async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
-        let Some(me) = view.members().find(|n| n.name == self.env.me) else {
+        let Some(me) = own_row(view, &self.env.me, &self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
         let Some(sender) = sender else { return StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } } };
@@ -770,7 +770,7 @@ impl FabricRounds {
     }
 
     fn serve_up(&self, view: &Topology, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
-        let Some(me) = view.members().find(|n| n.name == self.env.me) else {
+        let Some(me) = own_row(view, &self.env.me, &self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
         let who = sender.map(|n| (&n.node_id, n.incarnation_id.as_ref(), n.name.to_string()));
@@ -785,6 +785,11 @@ impl FabricRounds {
             _ => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the fabric-primary, or the mesh-primary of the sender's mesh".into() } },
         }
     }
+}
+
+/// This admin's own row in `view`.
+fn own_row<'a>(view: &'a Topology, me: &PathName, _node_id: &NodeId) -> Option<&'a Node> {
+    view.members().find(|n| n.name == *me)
 }
 
 /// The meshes among `meshes` that are not ready-for-traffic in `view`, with the nodes behind each. A
@@ -868,6 +873,21 @@ mod tests {
         let not_ready = StatusReply::NotReady { reason: "authority not filled".into() };
         assert!(matches!(delivery_of(Some(&not_ready), "Reply"), Delivery::Undelivered { typed: true, .. }));
         assert!(matches!(delivery_of(None, "NotSent"), Delivery::Undelivered { typed: false, .. }), "no reply: untyped");
+    }
+
+    /// CONTRACT (R-RC1): a replace is a delete and a create at the same path.name with a new node
+    /// id, so while the retired birth's row is still in a view, two rows carry this admin's
+    /// path.name. A round op's receiver finds its own row by its node id, the identity it was born
+    /// with. What must NOT happen: the retired birth's row taken as this admin's, which refuses a
+    /// round command naming this admin "the subject node itself" and strands the round.
+    #[test]
+    fn an_admin_finds_its_own_row_by_node_id_while_its_retired_birth_is_still_in_the_view() {
+        let retired = node("mesh1.admin.1", NodeStatus::Draining, false);
+        let reborn = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, false);
+        let view = projected(vec![retired.clone(), reborn.clone(), node("mesh1.admin.2", NodeStatus::ReadyForTraffic, true)]);
+        assert_eq!(view.members().filter(|n| n.name == reborn.name).count(), 2, "both births of mesh1.admin.1 are in the view");
+        let me = own_row(&view, &reborn.name, &reborn.node_id).expect("this admin is in its view");
+        assert_eq!(me.node_id, reborn.node_id, "the reborn admin's own row, not the retired birth's {}", retired.node_id);
     }
 
     /// CONTRACT (R-H1): the fabric enters state-sync only when every mesh is ready-for-traffic, and a
