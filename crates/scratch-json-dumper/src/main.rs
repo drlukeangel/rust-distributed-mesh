@@ -97,7 +97,7 @@ fn main() {
         data_dir: None,
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
-        extra: std::collections::BTreeMap::new(),
+        config: std::collections::BTreeMap::new(),
         load: None,
         gossip: None,
     };

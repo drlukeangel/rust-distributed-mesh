@@ -358,7 +358,7 @@ mod tests {
             data_dir: None,
             mesh_id: None,
             in_flight: None,
-            extra: Default::default(),
+            config: Default::default(),
             load: None,
             gossip: None,
         }
