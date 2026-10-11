@@ -121,26 +121,22 @@ pub fn first_mismatch(manifest: &ExitManifest, roster: &[RosterBirth], final_pri
     None
 }
 
-/// The roster a leave's admission accepted, as its step receipt records it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcceptedRoster {
-    /// Every accepted birth of the mesh, the final primary included.
-    pub roster: Vec<RosterBirth>,
-}
-
 /// The accepted roster of the leave `key` (mesh-leave.md step 1): captured once, at the first
 /// admission of the operation in its Build, and kept as its own step receipt under `step`
-/// (`AcceptedRoster` at the fabric-primary, `LeavingRoster` at the leaving mesh-primary). A resumed
-/// attempt reads that receipt and never recaptures: a birth that exited is no longer live, and the
-/// proof set must still cover it. With no receipt recorded, `capture()` (the roster as this admin's
-/// view holds it now) is recorded with one blind append and returned.
-pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, step: &str, executor: &str, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
+/// (`AcceptedRoster` at the fabric-primary, `LeavingRoster` at the leaving mesh-primary). The row
+/// is an [`ExitManifest`] with no receipts yet: the roster, the final primary and its exact runtime
+/// as this admin holds them at admission (the Build-fact codec carries it as the exit-manifest
+/// output, `crate::wire`). A resumed attempt reads that receipt and never recaptures: a birth that
+/// exited is no longer live, and the proof set must still cover it. With no receipt recorded,
+/// `capture()` (the roster as this admin's view holds it now) is recorded with one blind append and
+/// returned.
+pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, step: &str, executor: &str, final_primary: &RosterBirth, final_runtime: &RuntimeProof, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
     let build_id = BuildId(key.build_id.clone());
     let view = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the {step} receipt of {}: {e}", key.operation))?;
     let recorded = view.steps.iter().filter(|r| r.operation == key.operation && r.step == step && r.outcome == StepOutcome::Complete).min_by_key(|r| r.attempt);
     let (roster, source, accepted_in) = match recorded {
         Some(r) => {
-            let row: AcceptedRoster = r
+            let row: ExitManifest = r
                 .output
                 .clone()
                 .and_then(|v| serde_json::from_value(v).ok())
@@ -149,6 +145,7 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, ste
         }
         None => {
             let roster = capture()?;
+            let row = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.clone(), final_primary: final_primary.clone(), final_runtime: Some(final_runtime.clone()), receipts: Vec::new() };
             builds
                 .append_step_receipt(&BuildStepReceipt {
                     build_id: build_id.clone(),
@@ -156,7 +153,7 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, ste
                     operation: key.operation.clone(),
                     step: step.to_string(),
                     outcome: StepOutcome::Complete,
-                    output: serde_json::to_value(AcceptedRoster { roster: roster.clone() }).ok(),
+                    output: serde_json::to_value(&row).ok(),
                     executor: Some(executor.to_string()),
                 })
                 .await

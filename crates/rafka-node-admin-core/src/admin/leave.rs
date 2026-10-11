@@ -69,8 +69,9 @@ impl AdminRunner {
         let (final_record, final_handle) = self.handle_for(&primary).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: no provider proof path for its final primary: {e}"))?;
         let final_fact = final_handle.fact().ok_or_else(|| format!("{outer} is refused before {mesh} is dismantled: the final primary {} has no exact runtime handle", primary.name))?;
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
-        let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.me.to_string(), || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
-        let admitted = Admitted { roster, final_primary: RosterBirth::of(&primary)?, final_runtime: RuntimeProof::of(&final_fact) };
+        let (final_primary, final_runtime) = (RosterBirth::of(&primary)?, RuntimeProof::of(&final_fact));
+        let roster = accepted_roster(&*self.builds, &key, STEP_ACCEPTED_ROSTER, &self.me.to_string(), &final_primary, &final_runtime, || view.members().filter(|n| n.mesh == mesh && n.status.is_live()).map(RosterBirth::of).collect()).await?;
+        let admitted = Admitted { roster, final_primary, final_runtime };
         if !admitted.roster.contains(&admitted.final_primary) {
             return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id));
         }
@@ -236,14 +237,15 @@ impl AdminRunner {
         let me = view.nodes.iter().find(|n| n.name == self.me).cloned().ok_or_else(|| format!("{} holds no view of itself", self.me))?;
         let my_fact = self.held_runtime(&me).ok_or_else(|| format!("{} publishes no runtime fact: its own exact runtime cannot be named", me.name))?;
         let me_birth = RosterBirth::of(&me)?;
-        let roster = accepted_roster(&*self.builds, key, STEP_LEAVING_ROSTER, &self.me.to_string(), || {
+        let my_runtime = RuntimeProof::of(&my_fact);
+        let roster = accepted_roster(&*self.builds, key, STEP_LEAVING_ROSTER, &self.me.to_string(), &me_birth, &my_runtime, || {
             let mut roster = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.name != me.name).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
             roster.push(me_birth.clone());
             Ok(roster)
         })
         .await?;
         let records: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
-        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, RuntimeProof::of(&my_fact), &records, |n| async move { self.shutdown_one(key, &n).await }).await
+        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, &records, |n| async move { self.shutdown_one(key, &n).await }).await
     }
 
     /// One member's drain and stop and the provider's terminal receipt of its exact runtime.
