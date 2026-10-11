@@ -210,6 +210,9 @@ impl NodeProtocol for FabricPrimaryHandover {
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// A handover is decided by the two exact births themselves; a carried call is decided by no one.
     const FORWARDABLE: bool = false;
+    /// The holder keeps serving TakeSeats after its seat row, through its own drain: a lost reply's
+    /// identical retry is answered from the row.
+    const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 3;
     const REPLY_VARIANTS: u32 = 15;
 
