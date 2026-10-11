@@ -92,13 +92,17 @@ impl FileRecords {
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
             .collect();
         paths.sort();
-        paths
-            .into_iter()
-            .map(|p| {
-                let b = std::fs::read(&p).map_err(|e| StorageError::Io { file: p.display().to_string(), reason: e.to_string() })?;
-                Self::decode(&p, &b, format)
-            })
-            .collect()
+        // A file listed and then removed before it is read is a record that is gone: the list
+        // answers the records that remain.
+        let mut records = Vec::with_capacity(paths.len());
+        for p in paths {
+            match std::fs::read(&p) {
+                Ok(b) => records.push(Self::decode(&p, &b, format)?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(StorageError::Io { file: p.display().to_string(), reason: e.to_string() }),
+            }
+        }
+        Ok(records)
     }
 
     /// Store `record` under `key`, replacing what was there: temp file, fsync, rename, directory
