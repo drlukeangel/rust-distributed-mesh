@@ -9,8 +9,9 @@ use std::net::SocketAddr;
 /// probe, role binaries): a connection idles out after `staleness_floor()` (`RDM_STALENESS_MS`,
 /// 30 s by default) and is kept alive every `gossip_interval() / 2` (`RDM_GOSSIP_INTERVAL_MS`,
 /// 2 s by default, so 1 s). A pooled connection to a dead peer therefore closes within the
-/// staleness floor, which the node-admin holds below the investigation's second probe
-/// (`check_idle_below_probe2`), so the second probe's dial fails before writing.
+/// staleness floor, before the peer-mesh investigation's second probe (four thirds of the floor
+/// unheard, `rafka_node_admin_core::investigate::Rungs::at`), so the second probe's dial fails
+/// before writing.
 pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
     let idle = rafka_mesh_entity::cadence::staleness_floor();
     let keep_alive = rafka_mesh_entity::cadence::gossip_interval() / 2;
