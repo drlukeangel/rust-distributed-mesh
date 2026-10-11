@@ -697,6 +697,38 @@ async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_l
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.2".to_string(), 2)], "the hand-back is claimed for mesh2's seated admin");
 }
 
+/// CONTRACT (node-rpc-envelope.md, Build op `0x20`: "An executor that cannot be reached is replaced
+/// only on proof of its departure"; the successor re-checks the world for what the lost executor's run
+/// left): what counts as done is what an executor reported, by its run's verdict (`HandedOff` or
+/// `Converged`). `mesh1.admin.2` wrote the `Complete` receipt of `mesh1.rpc.2` in attempt 1 and was
+/// lost before its run ended: no verdict, and the view never held the node. Its departure is proven,
+/// mesh1 seats the fabric-primary, and attempt 2 creates `mesh1.rpc.2` with the rest of the plan: a lost run's
+/// receipt does not make its node done.
+#[tokio::test]
+async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() {
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) };
+    let r = rig_for(view(), change, |ran, _| ran).await;
+    assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, 1).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
+    let receipt = BuildStepReceipt { build_id: r.build.clone(), attempt: 1, operation: "create-node:mesh1.rpc.2".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+    r.builds.append_step_receipt(&receipt).await.unwrap();
+    r.dispatch.lose("mesh1.admin.2");
+    r.proofs.exited.lock().unwrap().insert("mesh1.admin.2".into());
+    for n in r.env.topology.write().await.nodes.iter_mut() {
+        match n.name.to_string().as_str() {
+            "mesh1.admin.2" => {
+                n.status = NodeStatus::Dead;
+                n.is_primary = false;
+            }
+            "mesh1.admin.1" => n.is_primary = true,
+            _ => {}
+        }
+    }
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.admin.2".to_string(), "create-node:mesh1.rpc.2".to_string(), "create-node:mesh1.rpc.3".to_string()], "the lost run's node is created again");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 2)]);
+}
+
 /// CONTRACT: an executor runs the first operation of the attempt the fabric-primary claimed for it
 /// whatever its own view says. The fabric-primary's view named `mesh1.admin.2` the executor; the view
 /// of `mesh1.admin.2` holds no mesh primary yet (it has not elected itself since the old one was
