@@ -930,16 +930,13 @@ impl RecoverySubmitter {
             disposition = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
-        let r = self.submit_in(&span, node, &incarnation).instrument(span.clone()).await;
-        span.record("outcome", match &r {
-            Ok(()) => "submitted".to_string(),
-            Err(e) => e.clone(),
-        });
+        let (outcome, r) = settle(self.submit_in(&span, node, &incarnation).instrument(span.clone()).await);
+        span.record("outcome", outcome.as_str());
         span.in_scope(|| tracing::info!("the mesh primary submits the recovery of its proven-exited member to the fabric-primary"));
         r
     }
 
-    async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<(), String> {
+    async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<RecoveryEnd, String> {
         let fp = self.topology.read().await.fabric_primary().map(|n| n.name.clone()).ok_or_else(|| format!("{}'s view names no fabric-primary to submit the recovery of {} to", self.me, node.name))?;
         span.record("fabric_primary", fp.to_string().as_str());
         if fp == self.me {
@@ -952,14 +949,13 @@ impl RecoverySubmitter {
                     span.record("disposition", "created");
                     let drive = door.drives.ensure(&door.env, &o.build_id);
                     let mut reader = drive.reader(o.attempt);
-                    while reader.next().await.is_some() {}
-                    Ok(())
+                    follow(&mut reader).await
                 }
                 Ok(crate::http::Recovery::AlreadyApplied(o)) => {
                     span.record("build_id", o.build_id.0.as_str());
                     span.record("attempt", o.attempt);
                     span.record("disposition", "already-applied");
-                    Ok(())
+                    Ok(RecoveryEnd::Complete { attempt: o.attempt })
                 }
                 Err(r) => {
                     let reply = crate::build_op::refusal_reply(r);
@@ -974,12 +970,91 @@ impl RecoverySubmitter {
         span.record("build_id", stream.build_id().0.as_str());
         span.record("attempt", stream.attempt());
         span.record("disposition", format!("{:?}", stream.disposition()).as_str());
-        while let Some(frame) = stream.next().await {
-            if let Err(e) = frame {
-                return Err(format!("the recovery of {} ended: {e}", node.name));
-            }
+        follow(&mut (node.name.clone(), stream)).await
+    }
+}
+
+/// How a followed recovery Build ended: its terminal frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecoveryEnd {
+    /// The Build converged at this attempt.
+    Complete { attempt: u32 },
+    /// A step of the attempt failed (node-recovery.md "Failure and receipts": `Failed { step, reason }`).
+    Failed { attempt: u32, operation: String, step: String, reason: String },
+}
+
+/// One frame of a followed recovery, from either door: progress, a terminal, or the call's end
+/// without a terminal (named).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecoveryFrame {
+    Progress,
+    End(RecoveryEnd),
+    Broken(String),
+}
+
+impl RecoveryFrame {
+    /// A frame of the in-process drive.
+    fn of_drive(read: crate::build_drive::Read) -> Self {
+        use rafka_node_rpc_contract::build::BuildReply;
+        match read {
+            crate::build_drive::Read::Frame(_) => Self::Progress,
+            crate::build_drive::Read::Terminal(BuildReply::Complete { attempt, .. }) => Self::End(RecoveryEnd::Complete { attempt }),
+            crate::build_drive::Read::Terminal(BuildReply::Failed { attempt, operation, step, reason, .. }) => Self::End(RecoveryEnd::Failed { attempt, operation, step, reason }),
+            crate::build_drive::Read::Terminal(other) => Self::Broken(format!("the recovery's drive ended on {}: {other:?}", other.name())),
+            crate::build_drive::Read::SeatLost(why) => Self::Broken(format!("the fabric-primary seat moved while the recovery ran: {why}")),
         }
-        Ok(())
+    }
+
+    /// A frame of the `build.create` stream on op `0x20`.
+    fn of_carrier(node: &PathName, frame: Result<rafka_node_admin_client::BuildFrame, rafka_node_admin_client::CallEnd>) -> Self {
+        use rafka_node_admin_client::BuildFrame;
+        match frame {
+            Ok(BuildFrame::Complete { attempt }) => Self::End(RecoveryEnd::Complete { attempt }),
+            Ok(BuildFrame::Failed { attempt, operation, step, reason }) => Self::End(RecoveryEnd::Failed { attempt, operation, step, reason }),
+            Ok(_) => Self::Progress,
+            Err(e) => Self::Broken(format!("the recovery of {node} ended: {e}")),
+        }
+    }
+}
+
+/// Where a followed recovery's frames come from.
+#[async_trait::async_trait]
+pub(crate) trait RecoveryFrames: Send {
+    async fn next_frame(&mut self) -> Option<RecoveryFrame>;
+}
+
+#[async_trait::async_trait]
+impl RecoveryFrames for crate::build_drive::DriveReader {
+    async fn next_frame(&mut self) -> Option<RecoveryFrame> {
+        self.next().await.map(RecoveryFrame::of_drive)
+    }
+}
+
+#[async_trait::async_trait]
+impl RecoveryFrames for (PathName, rafka_node_admin_client::BuildStream) {
+    async fn next_frame(&mut self) -> Option<RecoveryFrame> {
+        let frame = self.1.next().await?;
+        Some(RecoveryFrame::of_carrier(&self.0, frame))
+    }
+}
+
+/// Follows a recovery's frames to its terminal; a stream that ends without one is named.
+async fn follow(frames: &mut dyn RecoveryFrames) -> Result<RecoveryEnd, String> {
+    loop {
+        match frames.next_frame().await {
+            Some(RecoveryFrame::Progress) => continue,
+            Some(RecoveryFrame::End(end)) => return Ok(end),
+            Some(RecoveryFrame::Broken(why)) => return Err(why),
+            None => return Ok(RecoveryEnd::Complete { attempt: 0 }),
+        }
+    }
+}
+
+/// The submit span's `outcome` and the submit's result, from how the followed recovery ended.
+fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), String>) {
+    match end {
+        Ok(_) => ("submitted".to_string(), Ok(())),
+        Err(e) => (e.clone(), Err(e)),
     }
 }
 
@@ -4789,6 +4864,31 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CONTRACT (node-recovery.md "Failure and receipts"): a recovery Build that ends `Failed { step,
+    /// reason }` is recorded as that failure on the submit span's outcome, and the submit ends in an
+    /// error so the mesh-primary's next tick finds the member still proven exited and submits again.
+    /// A Complete terminal is recorded as complete, and a stream that ends with no terminal is named.
+    #[tokio::test]
+    async fn a_recovery_that_ends_failed_is_recorded_as_its_failed_step_never_as_submitted() {
+        struct Queued(std::collections::VecDeque<RecoveryFrame>);
+        #[async_trait::async_trait]
+        impl RecoveryFrames for Queued {
+            async fn next_frame(&mut self) -> Option<RecoveryFrame> {
+                self.0.pop_front()
+            }
+        }
+        let frames = |v: Vec<RecoveryFrame>| Queued(v.into());
+        let failed = RecoveryEnd::Failed { attempt: 3, operation: "recover-node:mesh2.rpc.1".into(), step: "NodeDeleted".into(), reason: "the exit-proof row is missing".into() };
+        let (outcome, r) = settle(follow(&mut frames(vec![RecoveryFrame::Progress, RecoveryFrame::End(failed)])).await);
+        assert_eq!(outcome, "failed: attempt 3 recover-node:mesh2.rpc.1 step NodeDeleted: the exit-proof row is missing");
+        assert_eq!(r, Err(outcome.clone()), "a failed recovery is not a submitted one: the next tick submits again");
+        let (outcome, r) = settle(follow(&mut frames(vec![RecoveryFrame::Progress, RecoveryFrame::End(RecoveryEnd::Complete { attempt: 3 })])).await);
+        assert_eq!((outcome.as_str(), r), ("complete: attempt 3", Ok(())));
+        let (outcome, r) = settle(follow(&mut frames(vec![RecoveryFrame::Progress])).await);
+        assert_eq!(outcome, "the recovery's stream ended before its terminal frame");
+        assert!(r.is_err());
+    }
 
     fn fabric1() -> FabricId {
         FabricId::parse("fab000000001").unwrap()
