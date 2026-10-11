@@ -42,3 +42,4 @@ mod gossip_shutdown_once;
 mod mesh_leave_member;
 mod apply_node_name;
 mod rejoin_name;
+mod transport_diag;
