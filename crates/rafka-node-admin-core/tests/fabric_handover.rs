@@ -75,6 +75,8 @@ struct Admin {
     storage: Arc<dyn FabricStorage>,
     claims: Arc<TestClaims>,
     fenced: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    /// The admin's Node RPC server: a cell drains it as the admin's DrainNode does.
+    server: rafka_node_rpc::NodeRpcServer,
     _router: Router,
 }
 
@@ -113,7 +115,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: HandoverSlot = Arc::new(OnceLock::new());
     let server = rafka_node_admin_core::fabric_handover::serve(ServerBuilder::new(), slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).expect("the catalog seals");
-    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let claims = Arc::new(TestClaims::default());
@@ -144,7 +146,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, slot, client, resolver, resolved, storage, claims, fenced, _router: router }, ep)
+    (Admin { door, slot, client, resolver, resolved, storage, claims, fenced, server, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -731,6 +733,21 @@ async fn an_identical_retry_answers_the_same_seats_and_another_payload_is_refuse
     assert_eq!(send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 6, "b1", op)).await, Reply::RejectedConflict { operation: op.into() });
     assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1);
     assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.n, 8)), "one epoch committed");
+}
+
+/// CONTRACT (node-rpc-envelope.md "TakeSeats", lost replies): P keeps serving TakeSeats after the
+/// row. The reply was lost and P has since been drained (its Node RPC server refuses new calls
+/// typed Draining, as its DrainNode makes it): the executor's identical retry is still answered
+/// from the row with the same committed seats, never refused Draining, and nothing commits twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retry_after_the_holder_drained_is_answered_from_the_row() {
+    let f = seats_fabric().await;
+    let op = "replace-node:mesh1.admin.1";
+    let first = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op)).await;
+    assert_eq!(first, Reply::SeatsCommitted { seats: committed_to(&f.n, 4, 8) });
+    f.p.server.drain();
+    assert_eq!(send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op)).await, first, "a drained holder answers the identical retry from the row");
+    assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "nothing committed twice");
 }
 
 /// CONTRACT: P validates the executor before anything moves, each refusal by name: an admin the
