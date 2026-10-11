@@ -21,7 +21,7 @@
 use crate::admin::Records;
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rafka_mesh_entity::Seat;
+use rafka_mesh_entity::{Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Backbone, ConcernHeard, Membership};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::HashSet;
@@ -70,6 +70,25 @@ pub struct Said {
 
 fn birth(n: &Node) -> Option<Birth> {
     n.incarnation_id.clone().map(|i| (n.node_id.clone(), i))
+}
+
+/// The fence a pass owes this birth's Build log when the fabric seat record it held names another
+/// birth now, the move planned or not (the handover door's commit, or the record heard on the
+/// backbone first): why, and the admin the seat moved to. `held` carries whether this birth held
+/// the record on an earlier pass.
+pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view: &Topology) -> Option<(String, Option<String>)> {
+    let _ = view;
+    match record {
+        Some(h) if h.is_birth(&me.0, &me.1) => {
+            *held = true;
+            None
+        }
+        Some(h) if *held => {
+            *held = false;
+            Some((format!("the seat is now {} {}", h.mesh, h.node_id), None))
+        }
+        _ => None,
+    }
 }
 
 /// The pass: `me` is this admin's exact birth, `heard` the Concerns drained since the last pass.
@@ -307,14 +326,10 @@ pub async fn run(w: Watch) {
     loop {
         // A fabric seat this birth held, now recorded to another birth: it yielded (planned or
         // not), and its Build log is fenced before the new holder acts.
-        match w.membership.seats().fabric() {
-            Some(h) if h.is_birth(&me_birth.0, &me_birth.1) => held_the_fabric_seat = true,
-            Some(h) if held_the_fabric_seat => {
-                let by = format!("the seat is now {} {}", h.mesh, h.node_id);
-                w.builds.yield_seat(&by).await;
-                held_the_fabric_seat = false;
-            }
-            _ => {}
+        let record = w.membership.seats().fabric();
+        let owed = seat_yield(record.as_ref(), &me_birth, &mut held_the_fabric_seat, &*w.topology.read().await);
+        if let Some((by, _to)) = owed {
+            w.builds.yield_seat(&by).await;
         }
         tokio::select! {
             _ = seats_changed.changed() => {}
@@ -418,6 +433,26 @@ mod tests {
         let mut outsider = admin("mesh2.admin.1", "100000000000", "o1", NodeStatus::ReadyForTraffic);
         outsider.is_primary = true;
         (view(vec![holder.clone(), standby.clone(), outsider.clone()]), holder, standby, outsider)
+    }
+
+    /// CONTRACT (fabric-primary-handover.md step 3, "Its fabric writes are fenced by the committed
+    /// transfer"; node-rpc-envelope.md "Build carrier": "A committed seat move ends the outer stream
+    /// with the typed new-seat frame", which names the new fabric-primary seat): a birth that held the
+    /// fabric seat record and finds it naming another birth fences its Build log naming that birth's
+    /// path.name, resolved from the view by the node id the record names, whether the record moved by
+    /// the handover door's commit or was heard on the backbone first. Once per move; a birth that
+    /// never held the record owes nothing. What must NOT happen: a fence naming no admin while the
+    /// record names the holder, which ends the caller's stream with a new-seat frame naming none.
+    #[test]
+    fn a_held_fabric_seat_record_that_moves_fences_the_build_log_naming_the_new_holder() {
+        let (t, holder, standby, outsider) = world();
+        let record = |n: &Node, epoch: u64| SeatHolder { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), epoch };
+        let (me, mut held) = (me_of(&holder), false);
+        assert_eq!(seat_yield(Some(&record(&holder, 1)), &me, &mut held, &t), None, "the record names this birth: nothing yields");
+        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), Some(("the seat is now mesh2 100000000000".to_string(), Some("mesh2.admin.1".to_string()))), "the fence names the holder the record names");
+        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), None, "once per move");
+        let mut never = false;
+        assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me_of(&standby), &mut never, &t), None, "a birth that never held the record owes nothing");
     }
 
     /// CONTRACT (R-A2 item 3): a mesh primary says the fabric primary's exact birth is silent once
