@@ -750,6 +750,13 @@ mod tests {
             vec![(Key::Mesh(mesh2.to_string(), MeshState::Leaving), StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Leaving })],
             "the leaving mesh's primary owes its committed Leaving to the fabric-primary"
         );
+        // A primary holding its mesh's Leaving whose round is done (the admin created for a leaving
+        // mesh, handed Leaving) reports the state it holds, never ready-for-traffic: a backward
+        // declaration the fabric-primary can only refuse.
+        let d = Declarer::new();
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", false, true, Some(MeshState::Leaving), &v, &ids);
+        let keys: Vec<Key> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, _)| p.key).collect();
+        assert_eq!(keys, vec![Key::Mesh(mesh2.to_string(), MeshState::Leaving)], "a primary holding Leaving owes no ready-for-traffic declaration");
         let other: PathName = "mesh1.admin.2".parse().unwrap();
         let d = Declarer::new();
         owed_from_view(&d, &other, &id_of(&other.to_string()), "inc", false, false, Some(MeshState::Leaving), &v, &ids);
