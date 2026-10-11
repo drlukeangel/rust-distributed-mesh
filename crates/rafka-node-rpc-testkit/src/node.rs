@@ -740,7 +740,7 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         // topic or says anything: a node renamed while stopped publishes its row's name (R-JN1).
         install_handed(&self.membership, &joined.control);
         // 2. The mesh channel and the topology: rafka-time again last, so both are current the moment the node re-enters.
-        let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %self.name, launcher = %authority);
+        let topology = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-topology-taken", node = %name, launcher = %authority);
         self.membership.unpark().await;
         self.membership.learn_statuses(&joined.statuses);
         let read = rafka_node_admin_core::topology_read::get_topology(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(authority.clone()), &auth.node.name.mesh, &self.membership, None, None)
@@ -910,7 +910,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_nod
             },
             other => (format!("{}: {other:?}", other.name()), false),
         };
-        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %me.name, state = ?state, to = %a.node.name, outcome = %outcome, definitive)
+        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %membership.held_name(&me.name), state = ?state, to = %a.node.name, outcome = %outcome, definitive)
             .in_scope(|| tracing::info!("declared own state to an admin of the mesh"));
         last = Some(outcome.clone());
         if definitive {
@@ -983,7 +983,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender_name } });
                 };
                 let reply = me.own.serve(&from.node.node_id, Some(peer.endpoint_id), &req).await.expect("a command");
-                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.digest.node.name, op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a node command naming this node was decided"));
                 return Ok(reply);
             }
@@ -1000,7 +1000,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     }
                     Some(_) => me.own.serve(&from.node.node_id, None, &req).await.expect("a round op"),
                 };
-                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.digest.node.name, op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %from.node.name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a round command naming this node was decided"));
                 return Ok(reply);
             }
@@ -1039,7 +1039,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
                         "rdm.node_admin.status.update.via-probe",
-                        node = %me.digest.node.name,
+                        node = %me.membership.held_name(&me.digest.node.name),
                         sender = %sender_name,
                         state = ?node_state_of(status),
                     )
@@ -1049,7 +1049,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::ApplyNodeState { state, .. } => {
                     // Not a drain command and not a stop: the only drain path is drain-node.
                     let current = node_state_of(*me.status.lock().unwrap());
-                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.digest.node.name, sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state")
+                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(StatusReply::RejectedInvalidNodeTransition { current })
                 }
@@ -1068,7 +1068,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             Err(_) => "publish-failed",
                         }
                     };
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.name, sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the fabric-primary's config is held and rides this birth's digest"));
                     Ok(StatusReply::Applied)
                 }
