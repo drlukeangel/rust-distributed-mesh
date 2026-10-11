@@ -35,22 +35,11 @@ const HELD: &[u8] = b"rdm-cell/held";
 /// remote's state (iroh `endpoint/connection.rs` `conn_from_noq_conn`). The cell holds the handle,
 /// so the connection stays open.
 #[derive(Debug, Clone)]
-struct HandOver {
-    to: tokio::sync::mpsc::UnboundedSender<iroh::endpoint::Connection>,
-    /// RED: the admin's registration of the old birth's connection waits here.
-    park: Option<std::sync::Arc<tokio::sync::Notify>>,
-}
+struct HandOver(tokio::sync::mpsc::UnboundedSender<iroh::endpoint::Connection>);
 
 impl iroh::protocol::ProtocolHandler for HandOver {
-    async fn on_accepting(&self, accepting: iroh::endpoint::Accepting) -> Result<iroh::endpoint::Connection, iroh::protocol::AcceptError> {
-        if let Some(park) = &self.park {
-            park.notified().await;
-        }
-        Ok(accepting.await?)
-    }
-
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), iroh::protocol::AcceptError> {
-        let _ = self.to.send(connection);
+        let _ = self.0.send(connection);
         Ok(())
     }
 }
@@ -179,8 +168,7 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rafka_mesh_transport::clock::os_clock;
     let (held_tx, mut held_at_admin) = tokio::sync::mpsc::unbounded_channel();
-    let park = std::sync::Arc::new(tokio::sync::Notify::new());
-    let admin = node_with(iroh::SecretKey::generate(), Some(HandOver { to: held_tx, park: Some(park.clone()) })).await;
+    let admin = node_with(iroh::SecretKey::generate(), Some(HandOver(held_tx))).await;
     let member = node_with(iroh::SecretKey::generate(), None).await;
     let m_admin = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
     let backbone = Backbone::join(&admin.gossip, &admin.ep, &m_admin, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
@@ -191,7 +179,7 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
     let key = iroh::SecretKey::generate();
     let peer = key.public();
     let (dialed_tx, mut dialed_at_old) = tokio::sync::mpsc::unbounded_channel();
-    let old = first_birth_at(key.clone(), HandOver { to: dialed_tx, park: None }).await;
+    let old = first_birth_at(key.clone(), HandOver(dialed_tx)).await;
     let x = socket_of(&old.0);
     let node_id = NodeId::mint();
     let first_birth = IncarnationId::mint();
@@ -204,8 +192,11 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
     // registered the connection.
     let dialed = dialed_at_old.recv().await.unwrap();
     let first_frames = dialed.accept_uni().await.unwrap();
-    // The old birth's own connection to the admin.
+    // The old birth's own connection to the admin, registered at the admin: its connect returning
+    // says only that the old side completed the handshake.
     let held = old.0.connect(iroh::EndpointAddr::new(admin.ep.id()).with_ip_addr(socket_of(&admin.ep)), HELD).await.unwrap();
+    let held_by_admin = held_at_admin.recv().await.unwrap();
+    assert_eq!(held_by_admin.remote_id(), peer);
     assert!(paths(&admin.ep, peer).await.contains(&x), "the old birth is connected to the admin at {x}");
 
     // The key re-binds: the old process dies without a word (no close reaches the admin, which keeps
@@ -220,18 +211,6 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
     m_admin.learn(second.clone(), "join");
     m_member.learn(second, "join");
 
-    // RED (forced): the admin registers the old birth's connection only once it has retired X for
-    // the newer birth, as the land gate's run did when the dead birth's last handshake packet reached
-    // the admin after the retire.
-    let retire_by = Instant::now() + Duration::from_secs(10);
-    while paths(&admin.ep, peer).await.contains(&x) {
-        assert!(Instant::now() < retire_by, "the admin never retired X");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    park.notify_one();
-    let held_by_admin = held_at_admin.recv().await.unwrap();
-    assert_eq!(held_by_admin.remote_id(), peer);
-
     let (at_admin, at_member) = (looked_up(&admin.ep, peer).await, looked_up(&member.ep, peer).await);
     assert!(
         at_admin == BTreeSet::from([y]) && at_member == BTreeSet::from([y]),
@@ -244,6 +223,11 @@ async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_a
         assert!(Instant::now() < deadline, "the admin still holds a path to the old socket {x}: {:?}", paths(&admin.ep, peer).await);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert_eq!(
+        held_by_admin.close_reason(),
+        Some(iroh::endpoint::ConnectionError::LocallyClosed),
+        "the retire closed the admin's open connection from the old birth, whose last path X was"
+    );
     let _dialed = admin.ep.connect(iroh::EndpointAddr::new(peer), iroh_gossip::ALPN).await.unwrap();
     let after = paths(&admin.ep, peer).await;
     assert!(!after.contains(&x), "a dial of the key by its id reached for the old socket {x} again: {after:?}");
