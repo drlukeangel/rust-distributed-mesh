@@ -229,18 +229,38 @@ impl Looker {
 }
 
 /// The provider's inspection of the exact runtime of `n`'s birth (node-recovery.md step 3: "the
-/// exact runtime recorded at launch"): the runtime fact its digest carries in `book`.
-pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rafka_mesh_transport::membership::DigestBook, _nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
+/// exact runtime recorded at launch"): the runtime fact its digest carries in `book`, or else the
+/// runtime row `nodes` holds for the exact birth (recorded at its launch, or handed into this
+/// admin's nodes.storage at its own create). A birth lost before this admin heard it has no digest
+/// here; its row is still the runtime recorded at launch. Neither held: unproven, naming both.
+pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rafka_mesh_transport::membership::DigestBook, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
     let Some(inc) = n.incarnation_id.clone() else { return Finding::Unproven { reason: "the view holds no incarnation for it".into() } };
     let held = book.get(n.node_id.as_str()).filter(|(d, _)| d.node.incarnation == inc);
-    let Some((digest, _)) = held else { return Finding::Unproven { reason: "this admin holds no digest of this exact birth, so no runtime fact".into() } };
-    let Some(fact) = digest.node.runtime.clone() else { return Finding::Unproven { reason: "its digest carries no runtime fact".into() } };
+    let (fact, data_dir) = match held {
+        Some((digest, _)) => match digest.node.runtime.clone() {
+            Some(fact) => (fact, digest.data_dir.clone()),
+            None => return Finding::Unproven { reason: "its digest carries no runtime fact".into() },
+        },
+        None => {
+            let row = match nodes {
+                Some(nodes) => match nodes.runtime(&n.node_id, &inc).await {
+                    Ok(row) => row,
+                    Err(e) => return Finding::Unproven { reason: format!("this admin holds no digest of this exact birth, and its nodes.storage runtime row could not be read: {e}") },
+                },
+                None => None,
+            };
+            match row {
+                Some(r) => (r.runtime, r.data_dir),
+                None => return Finding::Unproven { reason: "this admin holds no digest of this exact birth and no runtime row of it, so no runtime fact".into() },
+            }
+        }
+    };
     let handle = match crate::deployment::provider::adopt(provider, &fact) {
         Ok(h) => h,
         Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
     };
     let inspected = provider.inspect(&handle).await;
-    match crate::deployment::provider::exit_proof(inspected, &fact, digest.data_dir.as_deref().map(std::path::Path::new), &inc.0) {
+    match crate::deployment::provider::exit_proof(inspected, &fact, data_dir.as_deref().map(std::path::Path::new), &inc.0) {
         crate::deployment::provider::DeploymentStatus::Exited { code } => Finding::Exited { code },
         crate::deployment::provider::DeploymentStatus::Running => Finding::Running,
         other => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
