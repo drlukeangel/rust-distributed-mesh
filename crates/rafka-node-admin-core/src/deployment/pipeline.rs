@@ -986,28 +986,6 @@ pub(crate) struct Identity {
     deployment_id: DeploymentId,
 }
 
-/// Write (if absent) and read back the node's transport key in its data dir;
-/// a restart reuses it, a fresh data dir gets a new one.
-fn ensure_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
-    std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
-    let path = data_dir.join("node-key");
-    let key = match std::fs::read_to_string(&path) {
-        Ok(h) => {
-            let bytes: [u8; 32] = hex::decode(h.trim())
-                .map_err(|e| format!("{}: {e}", path.display()))?
-                .try_into()
-                .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
-            iroh::SecretKey::from_bytes(&bytes)
-        }
-        Err(_) => {
-            let k = iroh::SecretKey::generate();
-            std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
-            k
-        }
-    };
-    Ok(EndpointId(key.public().to_string()))
-}
-
 async fn poll<F, Fut>(within: Duration, mut f: F) -> bool
 where
     F: FnMut() -> Fut,
@@ -1212,9 +1190,9 @@ impl DeploymentPipeline<'_> {
             None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
-            let key = ensure_transport_key(&data_dir)?;
+            let key = EndpointId(crate::admin::load_or_mint_key(&data_dir).await?.public().to_string());
             if !req.held_runtimes.is_empty() {
-                let store = crate::storage::FileNodesStorage::open(&data_dir).map_err(|e| e.to_string())?;
+                let store = crate::storage::FileNodesStorage::open(&data_dir).await.map_err(|e| e.to_string())?;
                 for row in &req.held_runtimes {
                     crate::storage::NodesStorage::put_runtime(&store, row).await.map_err(|e| e.to_string())?;
                 }

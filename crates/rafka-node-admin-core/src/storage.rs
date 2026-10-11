@@ -74,8 +74,8 @@ pub struct FileMeshStorage(FileRecords);
 
 impl FileMeshStorage {
     /// Open the store under the admin's own data directory.
-    pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self(FileRecords::open(own_data_dir, "meshes")?))
+    pub async fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
+        Ok(Self(FileRecords::open(own_data_dir, "meshes").await?))
     }
 }
 
@@ -301,8 +301,14 @@ pub struct FileNodesStorage {
 
 impl FileNodesStorage {
     /// Open the store under the admin's own data directory.
-    pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")?, rows: FileRecords::open(own_data_dir, "nodes/rows")?, row_writes: tokio::sync::Mutex::new(()) })
+    pub async fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
+        Ok(Self {
+            own: FileRecords::open(own_data_dir, "nodes").await?,
+            contacts: FileRecords::open(own_data_dir, "nodes/contacts").await?,
+            runtimes: FileRecords::open(own_data_dir, "nodes/runtimes").await?,
+            rows: FileRecords::open(own_data_dir, "nodes/rows").await?,
+            row_writes: tokio::sync::Mutex::new(()),
+        })
     }
 }
 
@@ -417,8 +423,8 @@ pub struct FileConnectionsStorage(FileRecords, std::path::PathBuf, tokio::sync::
 
 impl FileConnectionsStorage {
     /// Open the store under the admin's own data directory.
-    pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        let records = FileRecords::open(own_data_dir, "connections")?;
+    pub async fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
+        let records = FileRecords::open(own_data_dir, "connections").await?;
         Ok(Self(records, own_data_dir.join("connections").join("history.jsonl"), tokio::sync::Mutex::new(())))
     }
 
@@ -454,7 +460,8 @@ impl ConnectionsStorage for FileConnectionsStorage {
         self.append_history_line(fact).await
     }
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {
-        match std::fs::read_to_string(&self.1) {
+        let path = self.1.clone();
+        match crate::record_store::blocking_io(move || std::fs::read_to_string(&path)).await {
             Ok(text) => text
                 .lines()
                 .filter(|l| !l.trim().is_empty())
@@ -526,8 +533,8 @@ mod tests {
         };
         let mem = (MemoryMeshStorage::default(), MemoryNodesStorage::default(), MemoryConnectionsStorage::default());
         check(&mem.0, &mem.1, &mem.2, true).await;
-        check(&FileMeshStorage::open(&d).unwrap(), &FileNodesStorage::open(&d).unwrap(), &FileConnectionsStorage::open(&d).unwrap(), true).await;
-        let (m, n, c) = (FileMeshStorage::open(&d).unwrap(), FileNodesStorage::open(&d).unwrap(), FileConnectionsStorage::open(&d).unwrap());
+        check(&FileMeshStorage::open(&d).await.unwrap(), &FileNodesStorage::open(&d).await.unwrap(), &FileConnectionsStorage::open(&d).await.unwrap(), true).await;
+        let (m, n, c) = (FileMeshStorage::open(&d).await.unwrap(), FileNodesStorage::open(&d).await.unwrap(), FileConnectionsStorage::open(&d).await.unwrap());
         check(&m, &n, &c, false).await;
         n.remove_contact(&peer.node_id).await.unwrap();
         c.remove_connection(&down.index()).await.unwrap();
@@ -548,11 +555,11 @@ mod tests {
             data_dir: Some("/tmp/x".into()),
         };
         let (a, b) = (row("i1"), row("i2"));
-        let n = FileNodesStorage::open(&d).unwrap();
+        let n = FileNodesStorage::open(&d).await.unwrap();
         n.put_runtime(&a).await.unwrap();
         n.put_runtime(&b).await.unwrap();
         n.put_runtime(&a).await.unwrap();
-        let mut held = FileNodesStorage::open(&d).unwrap().runtimes().await.unwrap();
+        let mut held = FileNodesStorage::open(&d).await.unwrap().runtimes().await.unwrap();
         held.sort_by_key(|r| r.incarnation_id.0.clone());
         assert_eq!(held, [a.clone(), b.clone()], "two births, two rows; a repeated put is the same row");
         std::fs::write(d.join("nodes/runtimes").join(format!("{}.json", a.key())), br#"{"format":"node-runtime/9","record":{}}"#).unwrap();
@@ -572,7 +579,7 @@ mod tests {
     fn runtime_runs_while_a_file_is_read<T: Send + 'static>(dir: &str, key: &str, bytes: Vec<u8>, op: impl FnOnce(std::sync::Arc<FileNodesStorage>) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static) -> (bool, T) {
         let d = crate::record_store::tempdir("rows-offload");
         let fifo = d.join(dir).join(format!("{key}.json"));
-        crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { op(std::sync::Arc::new(FileNodesStorage::open(&d).unwrap())).await }))
+        crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { op(std::sync::Arc::new(FileNodesStorage::open(&d).await.unwrap())).await }))
     }
 
     /// CONTRACT: a point read of a node row never waits on the disk on a runtime worker (the
@@ -626,7 +633,7 @@ mod tests {
         let mut line = serde_json::to_vec(&logged).unwrap();
         line.push(b'\n');
         let fifo = d.join("connections").join("history.jsonl");
-        let (ran, history) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { FileConnectionsStorage::open(&d).unwrap().history().await }));
+        let (ran, history) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { FileConnectionsStorage::open(&d).await.unwrap().history().await }));
         assert!(ran, "the runtime thread ran while the history read waited on the disk");
         assert_eq!(history, Ok(vec![logged]));
     }

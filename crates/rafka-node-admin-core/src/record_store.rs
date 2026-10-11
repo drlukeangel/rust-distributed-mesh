@@ -53,10 +53,12 @@ pub struct FileRecords {
 }
 
 impl FileRecords {
-    /// Open (creating) the directory `dir` under the admin's data directory.
-    pub fn open(own_data_dir: &Path, dir: &str) -> Result<Self, StorageError> {
+    /// Open (creating) the directory `dir` under the admin's data directory: the directory made on
+    /// the blocking pool, as every read and write is, so no worker thread waits on the disk.
+    pub async fn open(own_data_dir: &Path, dir: &str) -> Result<Self, StorageError> {
         let dir = own_data_dir.join(dir);
-        std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
+        let made = dir.clone();
+        blocking_io(move || std::fs::create_dir_all(&made)).await.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
         Ok(Self { dir, write: tokio::sync::Mutex::new(()) })
     }
 
@@ -133,9 +135,13 @@ impl FileRecords {
         blocking_io(move || insert_file(&dir, &tmp, &path, &bytes)).await
     }
 
-    /// Whether a file under `key` exists, whatever it holds.
-    pub fn holds(&self, key: &str) -> bool {
-        self.path(key).exists()
+    /// Whether a file under `key` exists, whatever it holds: a look at the disk on the blocking
+    /// pool, as a point read is. A look that cannot be answered (the directory unreadable) is an
+    /// error naming the file, never an answer of "not held".
+    pub async fn holds(&self, key: &str) -> Result<bool, StorageError> {
+        let path = self.path(key);
+        let file = path.clone();
+        blocking_io(move || file.try_exists()).await.map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })
     }
 
     /// Remove the record under `key`, if any.
@@ -184,7 +190,8 @@ fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool
     }
 }
 
-/// Run `f`, a blocking disk call (a write that ends in an fsync), on tokio's blocking pool. No
+/// Run `f`, a blocking disk call (a write that ends in an fsync, a read, a directory made or looked
+/// at), on tokio's blocking pool. No
 /// worker thread waits on the disk, and no lock a worker could block on is held across it: a
 /// journal commit that takes seconds delays only the caller awaiting it.
 pub(crate) async fn blocking_io<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -287,11 +294,11 @@ mod tests {
     #[tokio::test]
     async fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
         let d = tempdir("records");
-        let r = FileRecords::open(&d, "things").unwrap();
+        let r = FileRecords::open(&d, "things").await.unwrap();
         assert_eq!(r.read::<String>("a", "thing/1").await.unwrap(), None);
         r.write("a", "thing/1", &"one".to_string()).await.unwrap();
         r.write("b", "thing/1", &"two".to_string()).await.unwrap();
-        let again = FileRecords::open(&d, "things").unwrap();
+        let again = FileRecords::open(&d, "things").await.unwrap();
         assert_eq!(again.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"));
         assert_eq!(again.list::<String>("thing/1").await.unwrap(), ["one", "two"]);
         assert!(matches!(again.read::<String>("a", "thing/2").await, Err(StorageError::Unrecognised { .. })));
@@ -307,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn a_list_racing_a_removal_answers_the_records_that_remain() {
         let d = tempdir("records-race");
-        let r = std::sync::Arc::new(FileRecords::open(&d, "things").unwrap());
+        let r = std::sync::Arc::new(FileRecords::open(&d, "things").await.unwrap());
         for round in 0..20 {
             for k in 0..200 {
                 r.write(&format!("k{k:03}"), "thing/1", &k).await.unwrap();
@@ -334,7 +341,7 @@ mod tests {
     #[test]
     fn opening_a_store_waits_on_the_disk_off_the_runtime_thread() {
         let d = tempdir("records-open");
-        let (waited, opened) = op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { FileRecords::open(&d, "things").map(|_| ()) }));
+        let (waited, opened) = op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { FileRecords::open(&d, "things").await.map(|_| ()) }));
         assert!(waited, "the open's mkdir ran on the blocking pool, not the runtime's thread");
         assert_eq!(opened, Ok(()));
     }
@@ -346,12 +353,12 @@ mod tests {
     fn a_look_at_whether_a_key_is_held_waits_on_the_disk_off_the_runtime_thread() {
         let d = tempdir("records-holds");
         let setup = Box::pin(async move {
-            let r = FileRecords::open(&d, "things").unwrap();
+            let r = FileRecords::open(&d, "things").await.unwrap();
             r.write("a", "thing/1", &"one".to_string()).await.unwrap();
             r
         });
-        let (waited, held) = op_waits_on_the_blocking_pool(setup, |r| Box::pin(async move { (r.holds("a"), r.holds("b")) }));
+        let (waited, held) = op_waits_on_the_blocking_pool(setup, |r| Box::pin(async move { (r.holds("a").await, r.holds("b").await) }));
         assert!(waited, "the look ran on the blocking pool, not the runtime's thread");
-        assert_eq!(held, (true, false));
+        assert_eq!(held, (Ok(true), Ok(false)));
     }
 }

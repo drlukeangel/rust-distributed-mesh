@@ -334,7 +334,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
         rafka_mesh_entity::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         Arc::new(crate::faults::FaultedConnectionsStorage::new(
-            Arc::new(rafka_node_admin_core::storage::FileConnectionsStorage::open(&launch.data_dir).map_err(|e| anyhow!("connections storage: {e}"))?),
+            Arc::new(rafka_node_admin_core::storage::FileConnectionsStorage::open(&launch.data_dir).await.map_err(|e| anyhow!("connections storage: {e}"))?),
             fault.clone(),
         )),
         Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),

@@ -187,19 +187,30 @@ impl AdminConfig {
 }
 
 /// The node's transport key in its data dir (minted on first use).
-fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey, String> {
-    std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
-    let path = data_dir.join("node-key");
-    if let Ok(h) = std::fs::read_to_string(&path) {
-        let bytes: [u8; 32] = hex::decode(h.trim())
-            .map_err(|e| format!("{}: {e}", path.display()))?
-            .try_into()
-            .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
-        return Ok(SecretKey::from_bytes(&bytes));
-    }
-    let k = SecretKey::generate();
-    std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(k)
+/// The node key in `data_dir`, minted and written there when none is: read and written on the
+/// blocking pool (`record_store::blocking_io`), so no worker thread waits on the disk.
+pub(crate) async fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey, String> {
+    let data_dir = data_dir.to_path_buf();
+    crate::record_store::blocking_io(move || {
+        std::fs::create_dir_all(&data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
+        let path = data_dir.join("node-key");
+        // A key never written is minted; one that cannot be read is an error, never replaced.
+        match std::fs::read_to_string(&path) {
+            Ok(h) => {
+                let bytes: [u8; 32] = hex::decode(h.trim())
+                    .map_err(|e| format!("{}: {e}", path.display()))?
+                    .try_into()
+                    .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
+                return Ok(SecretKey::from_bytes(&bytes));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+        let k = SecretKey::generate();
+        std::fs::write(&path, hex::encode(k.to_bytes())).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(k)
+    })
+    .await
 }
 
 /// The local OS clock, for a read that measures time elapsed since a local event (a tickle
@@ -2748,12 +2759,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // refused here, by name, before it touches anything.
     let signer = std::mem::take(&mut wiring.certs).resolve().map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?;
     let issuer = Arc::new(crate::certs::CertIssuer::new(signer, rafka_time.clone()));
-    let step = if cfg.data_dir.join("node-key").exists() {
+    let key_file = cfg.data_dir.join("node-key");
+    let key_held = crate::record_store::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
+    let step = if key_held {
         tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-identity-loaded")
     } else {
         tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-identity-minted")
     };
-    let key = load_or_mint_key(&cfg.data_dir)?;
+    let key = load_or_mint_key(&cfg.data_dir).await?;
     drop(step);
     let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display());
     // The node-admin storage boundaries, in its own data dir. An admin that finds its own row in
@@ -2762,14 +2775,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let storage_err = |e: crate::record_store::StorageError| e.to_string();
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(
         wiring.fabric_storage.take(),
-        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?),
+        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).await.map_err(storage_err)?),
     );
-    let mesh_storage: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).map_err(storage_err)?);
-    let nodes_storage: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let mesh_storage: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
+    let nodes_storage: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
     let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
-        Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).map_err(storage_err)?);
-    let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).map_err(|e| e.to_string())?);
-    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir).map_err(storage_err)?);
+        Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
+    let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).await.map_err(|e| e.to_string())?);
+    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir).await.map_err(storage_err)?);
     let restart = match (&cfg.launch, nodes_storage.own().await.map_err(storage_err)?) {
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
@@ -3318,7 +3331,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
     let configs_slot: crate::node_config::NodeConfigsSlot = Arc::new(std::sync::OnceLock::new());
     let _ = configs_slot.set(Arc::new(crate::node_config::NodeConfigs::new(node_rpc.client.clone())));
-    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).await.map_err(storage_err)?);
     *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage, &*nodes_storage).await?;
     {
         let records_for_ids = records.clone();
@@ -4561,7 +4574,7 @@ mod tests {
         let key = SecretKey::generate();
         let fifo = d.join("node-key");
         let dir = d.clone();
-        let (ran, loaded) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, hex::encode(key.to_bytes()).into_bytes(), Box::pin(async move { load_or_mint_key(&dir).map(|k| k.to_bytes()) }));
+        let (ran, loaded) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, hex::encode(key.to_bytes()).into_bytes(), Box::pin(async move { load_or_mint_key(&dir).await.map(|k| k.to_bytes()) }));
         assert!(ran, "the runtime thread ran while the key's read waited on the disk");
         assert_eq!(loaded, Ok(key.to_bytes()));
     }

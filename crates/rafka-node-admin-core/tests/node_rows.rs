@@ -384,7 +384,7 @@ fn a_claim_of_a_name_its_own_node_holds_writes_nothing() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("node-rows-claim-{}", NodeId::mint()));
-        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir).unwrap()))];
+        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
             let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum") };
