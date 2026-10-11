@@ -7,8 +7,8 @@
 //! length as a varint then its bytes; a u64 is a varint; a NodeId and an IncarnationId are strings.
 //! A birth is `mesh | node_id | incarnation`.
 
-use rafka_mesh_entity::{CommittedSeat, IncarnationId, NodeId, Seat, SeatHolder};
-use rafka_node_rpc_contract::handover::{FabricPrimaryHandover, FabricPrimaryHandoverReply, FabricPrimaryHandoverRequest, HandoverBirth, SeatEpoch};
+use rafka_mesh_entity::{IncarnationId, NodeId};
+use rafka_node_rpc_contract::handover::{CommittedSeat, FabricPrimaryHandover, FabricPrimaryHandoverReply, FabricPrimaryHandoverRequest, HandoverBirth, Seat, SeatEpoch};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::{DecodeFailure, NodeProtocol};
 
@@ -30,18 +30,16 @@ fn take_seats() -> FabricPrimaryHandoverRequest {
         fabric: "f".into(),
         holder: incumbent(),
         successor: successor(),
-        seats: vec![SeatEpoch { seat: Seat::MeshPrimary, expected_epoch: 3 }, SeatEpoch { seat: Seat::FabricPrimary, expected_epoch: 7 }],
+        seats: vec![SeatEpoch { seat: Seat::MeshPrimary { mesh: "m".into() }, expected_epoch: 3 }, SeatEpoch { seat: Seat::FabricPrimary, expected_epoch: 7 }],
         build_id: "b".into(),
         attempt: 2,
         operation: "o".into(),
     }
 }
 
-/// The successor holding the fabric seat at epoch 8. Its bytes are the doc's
-/// `CommittedSeat { seat, holder: HandoverBirth, epoch }` exactly: postcard is positional, so a
-/// `SeatHolder` (`mesh | node_id | incarnation | epoch`) is a birth followed by its epoch.
+/// The successor holding the fabric seat at epoch 8.
 fn committed() -> CommittedSeat {
-    CommittedSeat { seat: Seat::FabricPrimary, holder: SeatHolder { mesh: "n".into(), node_id: NodeId::parse("0123456789cd").unwrap(), incarnation: IncarnationId("j".into()), epoch: 8 } }
+    CommittedSeat { seat: Seat::FabricPrimary, holder: successor(), epoch: 8 }
 }
 
 /// `m`, `0123456789ab`, `i`.
@@ -60,9 +58,9 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
         (take(300), format!("00 0166 {INCUMBENT} {SUCCESSOR} ac02 016f")),
         // variant 1 | fabric | incumbent | successor | expected_epoch | committed_epoch | operation
         (taken, format!("01 0166 {INCUMBENT} {SUCCESSOR} 07 08 016f")),
-        // variant 2 | fabric | holder | successor | seats (len 2: MeshPrimary=0 epoch 3, FabricPrimary=1
-        // epoch 7) | build_id | attempt | operation
-        (take_seats(), format!("02 0166 {INCUMBENT} {SUCCESSOR} 02 00 03 01 07 0162 02 016f")),
+        // variant 2 | fabric | holder | successor | seats (len 2: MeshPrimary=1 { mesh "m" } epoch 3,
+        // FabricPrimary=0 epoch 7) | build_id | attempt | operation
+        (take_seats(), format!("02 0166 {INCUMBENT} {SUCCESSOR} 02 01 016d 03 00 07 0162 02 016f")),
     ];
     for (q, hex) in fixtures {
         assert_eq!(FabricPrimaryHandover::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
@@ -89,9 +87,10 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (Busy { reason: "b".into() }, "0a 01 62"),
         (Draining { reason: "d".into() }, "0b 01 64"),
         (Unauthorized { reason: "u".into() }, "0c 01 75"),
-        // seats (len 1) | seat FabricPrimary=1 | holder birth | epoch 8
-        (SeatsCommitted { seats: vec![committed()] }, "0d 01 01  01 6e  0c 303132333435363738396364  01 6a  08"),
-        (RejectedStaleSeat { seat: Seat::MeshPrimary, expected: 3, current: 4 }, "0e 00 03 04"),
+        // seats (len 1) | seat FabricPrimary=0 | holder birth | epoch 8
+        (SeatsCommitted { seats: vec![committed()] }, "0d 01 00  01 6e  0c 303132333435363738396364  01 6a  08"),
+        // seat MeshPrimary=1 { mesh "m" } | expected | current
+        (RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 3, current: 4 }, "0e 01 016d 03 04"),
     ];
     for (r, hex) in fixtures {
         assert_eq!(FabricPrimaryHandover::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
@@ -120,10 +119,9 @@ fn the_largest_request_fits_the_frame_ceiling() {
     let b = || HandoverBirth { mesh: long.clone(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId(long.clone()) };
     let q = FabricPrimaryHandoverRequest::FabricPrimaryTaken { fabric: long.clone(), incumbent: b(), successor: b(), expected_epoch: u64::MAX, committed_epoch: u64::MAX, operation: long.clone() };
     assert!(FabricPrimaryHandover::encode_request(&q).unwrap().len() <= FabricPrimaryHandover::MAX_REQUEST_FRAME_BYTES);
-    let seats = vec![SeatEpoch { seat: Seat::MeshPrimary, expected_epoch: u64::MAX }, SeatEpoch { seat: Seat::FabricPrimary, expected_epoch: u64::MAX }];
+    let seats = vec![SeatEpoch { seat: Seat::MeshPrimary { mesh: long.clone() }, expected_epoch: u64::MAX }, SeatEpoch { seat: Seat::FabricPrimary, expected_epoch: u64::MAX }];
     let q = FabricPrimaryHandoverRequest::TakeSeats { fabric: long.clone(), holder: b(), successor: b(), seats, build_id: long.clone(), attempt: u32::MAX, operation: long.clone() };
     assert!(FabricPrimaryHandover::encode_request(&q).unwrap().len() <= FabricPrimaryHandover::MAX_REQUEST_FRAME_BYTES);
-    let h = SeatHolder { mesh: long.clone(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId(long.clone()), epoch: u64::MAX };
-    let r = FabricPrimaryHandoverReply::SeatsCommitted { seats: vec![CommittedSeat { seat: Seat::MeshPrimary, holder: h.clone() }, CommittedSeat { seat: Seat::FabricPrimary, holder: h }] };
+    let r = FabricPrimaryHandoverReply::SeatsCommitted { seats: vec![CommittedSeat { seat: Seat::MeshPrimary { mesh: long.clone() }, holder: b(), epoch: u64::MAX }, CommittedSeat { seat: Seat::FabricPrimary, holder: b(), epoch: u64::MAX }] };
     assert!(FabricPrimaryHandover::encode_reply(&r).unwrap().len() <= FabricPrimaryHandover::MAX_REPLY_FRAME_BYTES);
 }

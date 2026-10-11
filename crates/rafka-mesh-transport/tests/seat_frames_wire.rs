@@ -93,12 +93,14 @@ fn a_new_fabric_primarys_contacts_attach_only_to_the_holder_the_book_holds() {
 }
 
 fn seated_together(mesh_epoch: u64, fabric_epoch: u64) -> Frame {
-    use rafka_mesh_entity::{CommittedSeat, LifecycleOp};
+    use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
+    use rafka_mesh_entity::LifecycleOp;
     let op = LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId("i".into()), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
+    let birth = HandoverBirth { mesh: "m".into(), node_id: node(), incarnation: IncarnationId("i".into()) };
     Frame::SeatedTogether {
         op,
         successor: holder(mesh_epoch),
-        seats: vec![CommittedSeat { seat: Seat::MeshPrimary, holder: holder(mesh_epoch) }, CommittedSeat { seat: Seat::FabricPrimary, holder: holder(fabric_epoch) }],
+        seats: vec![CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: "m".into() }, holder: birth.clone(), epoch: mesh_epoch }, CommittedSeat { seat: TransferSeat::FabricPrimary, holder: birth, epoch: fabric_epoch }],
     }
 }
 
@@ -110,8 +112,9 @@ fn seated_together(mesh_epoch: u64, fabric_epoch: u64) -> Frame {
 fn seated_together_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     // 17 = variant 23; op: 0162 01 016f {node} 0169 09"m.admin.1" 01; successor 016d {node} 0169 04;
-    // seats: 02 | 00 016d {node} 0169 04 | 01 016d {node} 0169 09.
-    let hex = format!("17 0162 01 016f {node_hex} 0169 09 6d2e61646d696e2e31 01  016d {node_hex} 0169 04  02 00 016d {node_hex} 0169 04 01 016d {node_hex} 0169 09");
+    // seats (node-rpc-envelope.md CommittedSeat): 02 | MeshPrimary=1 { 016d } birth 016d {node} 0169
+    // epoch 04 | FabricPrimary=0 birth 016d {node} 0169 epoch 09.
+    let hex = format!("17 0162 01 016f {node_hex} 0169 09 6d2e61646d696e2e31 01  016d {node_hex} 0169 04  02 01 016d 016d {node_hex} 0169 04 00 016d {node_hex} 0169 09");
     assert_eq!(seated_together(4, 9).encode(), bytes(&hex));
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
 }
