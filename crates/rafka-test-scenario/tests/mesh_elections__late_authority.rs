@@ -151,18 +151,20 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     estate.stop().await;
     let spans = estate.spans();
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap();
-    // Before Ready: Fabric.build_id (taken from the fabric control topic) and every held birth's
-    // runtime.
+    // Before Ready: Fabric.build_id (the fabric-primary's row on the fabric's store root, R14) and
+    // every held birth's runtime.
     let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["node"] == late_name.as_str() && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
         .cloned()
         .expect("the late admin is ready");
+    let pointer = ready["attributes"]["build_id"].as_str().unwrap_or_default().to_string();
     assert!(
-        named(&spans, "rdm.node_admin.fabric.update.via-build-accepted")
-            .into_iter()
-            .any(|sp| sp["attributes"]["node"] == late_name.as_str() && sp["attributes"]["via"].as_str().is_some_and(|v| v != "day-0" && v != "accepted") && at(sp) < at(&ready)),
-        "it held Fabric.build_id before Ready"
+        !pointer.is_empty()
+            && named(&spans, "rdm.node_admin.fabric.update.via-build-accepted")
+                .into_iter()
+                .any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == pointer.as_str() && at(sp) < at(&ready)),
+        "it held Fabric.build_id before Ready: {ready}"
     );
     let held = ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     assert!(held >= 4, "it held the incumbent's and A's three births' runtimes before Ready: {held}");

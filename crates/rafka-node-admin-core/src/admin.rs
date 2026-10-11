@@ -4725,6 +4725,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     },
                 }
                 if blocked.is_empty() {
+                    // The pointer the hydration gate above found held: the Ready span names it, so
+                    // "it held Fabric.build_id before Ready" is read off the Ready itself.
+                    let held_pointer = hydrated.build_id().await.map(|b| b.0).unwrap_or_default();
                     let mut d = digest.lock().unwrap();
                     if d.status != MemberStatus::Pending {
                         break;
@@ -4749,6 +4752,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         runtime_locator_fingerprint = %runtime.locator_fingerprint(),
                         source = "self-published-membership",
                         runtime_facts_held = held.len(),
+                        build_id = %held_pointer,
                     )
                     .in_scope(|| tracing::info!("ready for traffic: every held birth's runtime is adoptable"));
                     break;
