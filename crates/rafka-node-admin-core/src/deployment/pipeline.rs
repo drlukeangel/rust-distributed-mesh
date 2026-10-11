@@ -874,11 +874,8 @@ pub(crate) enum StopProof {
     /// Whatever the birth answered: the shutdown leg of a restart, a retire or a mesh leave member,
     /// which the provider's terminal proof judges.
     Lenient,
-    /// `stopped` received once stop-node was admitted; a predecessor that never admitted it is
-    /// retired by its exact runtime (a replace of a birth that does not answer).
-    StoppedIfAdmitted,
-    /// stop-node admitted and `stopped` received, or the step fails by name: a standalone stop,
-    /// whose only proof is that reply (node-stop.md).
+    /// stop-node admitted and `stopped` received, or the step fails by name: a standalone stop and
+    /// a replace's predecessor, whose only proof is that reply (node-stop.md; node-replace.md step 1).
     Stopped,
 }
 
@@ -1881,7 +1878,8 @@ impl DeploymentPipeline<'_> {
     }
 
     /// [`Self::stop_steps`]; `proof` says what the wait step must have seen to complete (a standalone
-    /// stop fails it by name unless stop-node was admitted and the birth's `stopped` reply received).
+    /// stop and a replace's predecessor stop fail it by name unless stop-node was admitted and the
+    /// birth's `stopped` reply received).
     /// `end` says what follows: the process parks, or the provider ends it.
     async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
@@ -1902,7 +1900,7 @@ impl DeploymentPipeline<'_> {
             .step(run, RetireStep::AwaitNodeLeft.name(), async {
                 if !admission.admitted() {
                     // A command the birth never held has no left reply to follow (node-stop.md): a
-                    // standalone stop is not complete.
+                    // standalone stop and a replace's predecessor stop are not complete.
                     if proof == StopProof::Stopped {
                         return Err(format!("{}: stop-node was not admitted ({admission:?}); no left reply can follow, the stop is not complete", node.name));
                     }
@@ -2081,10 +2079,10 @@ impl DeploymentPipeline<'_> {
         if !matches!(self.provider.inspect(&req.handle).await, DeploymentStatus::Exited { .. }) {
             self.seat_transfer_step(&mut run, &old).await?;
             self.drain_steps(&mut run, &mut old, &req.handle).await?;
-            // The complete stop (node-stop.md): once stop-node is admitted, `stopped` received or the
-            // step fails by name; a predecessor that never admitted it parked nothing, published no
-            // departure, and is retired by its exact runtime after the successor is ready.
-            self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::StoppedIfAdmitted, StopEnd::Park { publish_stopped: true }).await?;
+            // The complete stop (node-stop.md): stop-node admitted and `stopped` received, or the
+            // step fails by name; a predecessor that is not stopped keeps its path.name, and a birth
+            // that does not answer goes to node recovery (node-recovery.md).
+            self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
         }
         let to = format!("{name}.old");
         self.step(&mut run, ReplaceStep::RenamePredecessor.name(), async {
