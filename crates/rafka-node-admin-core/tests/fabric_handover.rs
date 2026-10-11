@@ -8,7 +8,8 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
-use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, SeatTransferOutcome, Stage, WonClaims};
+use rafka_node_admin_core::election::{resolve_with, Incumbency};
+use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, Stage, WonClaims};
 use rafka_node_admin_core::fabric_storage::{FabricStorage, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
@@ -120,12 +121,26 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let claims = Arc::new(TestClaims::default());
     let fenced: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::default();
+    let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
+    // The cell's view is set by hand, not projected from digests: the projection re-runs the one
+    // election over its members with the seat records this admin holds now, as the admin's own
+    // projection does (`admin::view_projector`).
+    let project_view: ProjectView = {
+        let (topology, seats) = (topology.clone(), membership.seats().clone());
+        Arc::new(move || {
+            let (topology, seats) = (topology.clone(), seats.clone());
+            Box::pin(async move {
+                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), lost: Default::default() };
+                resolve_with(&mut topology.write().await.nodes, &inc);
+            })
+        })
+    };
     let door = Arc::new(HandoverDoor {
         fabric: "fabric1".into(),
         me: path.parse().unwrap(),
         node_id,
         incarnation,
-        topology: Arc::new(tokio::sync::RwLock::new(view(vec![]))),
+        topology,
         book: membership.book.clone(),
         membership,
         backbone,
@@ -142,6 +157,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
             })
         },
         claims: claims.clone(),
+        project_view,
     });
     if fill_slot {
         let _ = slot.set(door.clone());
@@ -291,6 +307,44 @@ async fn a_duplicate_command_or_completion_commits_one_epoch() {
         assert_eq!(a.door.membership.seats().fabric().map(|h| h.epoch), Some(8), "{}: one committed epoch", a.resolved.name);
     }
     assert_eq!(f.successor.storage.seats().await.unwrap().iter().filter(|r| r.seat == Seat::FabricPrimary && r.holder.epoch == 8).count(), 1);
+}
+
+fn fabric_primary_of(t: &Topology) -> Option<String> {
+    t.fabric_primary().map(|n| n.name.to_string())
+}
+
+/// CONTRACT (fabric-node-lifecycle-elections.md §4.4: "The committed next-epoch seat record is
+/// authoritative input to the resolver"): the successor answers the command only once its view
+/// names it the fabric-primary, so a Build resubmitted to it right after the commit is admitted by
+/// its Build door and driven from the committed seat; once the handover is confirmed, the
+/// incumbent's view names the successor. What must NOT happen: the successor answering Applied
+/// while its view still names the incumbent (its Build door then refuses the resubmit
+/// not-fabric-primary, naming the admin that yielded).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_successor_answers_the_command_with_its_view_naming_it_the_fabric_primary() {
+    let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
+    let op = format!("fabric-primary-handover:{}", f.mesh1_id);
+    assert_eq!(send(&f.incumbent, &f.successor, take(&f, 7, &op)).await, Reply::Applied);
+    assert_eq!(fabric_primary_of(&*f.successor.door.topology.read().await).as_deref(), Some("mesh2.admin.1"), "the successor's view names it once it answered the command");
+    f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("the handover is confirmed");
+    assert_eq!(fabric_primary_of(&*f.incumbent.door.topology.read().await).as_deref(), Some("mesh2.admin.1"), "the incumbent's view names the successor once it holds the committed record");
+}
+
+/// CONTRACT (node-rpc-envelope.md "TakeSeats"; elections §4.4): the seat row is the resolver's
+/// input on both sides. When P answers SeatsCommitted its view names N as mesh1's primary and the
+/// fabric-primary, and when N's SeatTransfer step returns, N's view names N: N's Build door admits
+/// the caller's resubmit of the same Build as the new fabric-primary. What must NOT happen: either
+/// view still naming P after the row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn both_views_name_the_executor_once_the_seat_row_is_committed() {
+    let f = seats_fabric().await;
+    let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
+    f.n.door.take_seats(&p_node, "b1", 1, "replace-node:mesh1.admin.1").await.expect("the transfer commits");
+    for a in [&f.p, &f.n] {
+        let t = a.door.topology.read().await;
+        assert_eq!(fabric_primary_of(&t).as_deref(), Some("mesh1.admin.2"), "{}: the fabric-primary is N", a.resolved.name);
+        assert_eq!(t.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"), "{}: mesh1's primary is N", a.resolved.name);
+    }
 }
 
 /// CONTRACT: a wrong birth, a stale epoch, a conflicting payload and an authority that is not the

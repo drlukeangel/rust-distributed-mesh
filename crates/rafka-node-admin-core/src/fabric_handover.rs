@@ -248,7 +248,15 @@ pub struct HandoverDoor {
     pub fence_builds: FenceBuilds,
     /// The executors the fabric-primary's claims name: what a TakeSeats caller is checked against.
     pub claims: Arc<dyn WonClaims>,
+    /// Projects this admin's view from the records it holds now. Run once a committed seat record is
+    /// held, before the call that depends on it is answered: the committed record is the resolver's
+    /// authoritative input (fabric-node-lifecycle-elections.md §4.4), and every reader of the view
+    /// (the Build door, the claim door, the drive, the executor plan) decides from it.
+    pub project_view: ProjectView,
 }
+
+/// What projects an admin's view from its held records now (`crate::admin::view_projector`).
+pub type ProjectView = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Sets the sticky fence of this admin's Build log: why, and the admin (path.name) the seat moved to.
 pub type FenceBuilds = Arc<dyn Fn(String, Option<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
