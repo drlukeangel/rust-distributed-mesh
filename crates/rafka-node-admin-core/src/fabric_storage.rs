@@ -331,7 +331,7 @@ impl FileFabricStorage {
 impl FabricStorage for FileFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
         let identity = self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?;
-        let pointer = newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT)?);
+        let pointer = newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT).await?);
         Ok(folded(identity, pointer))
     }
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
@@ -352,13 +352,13 @@ impl FabricStorage for FileFabricStorage {
         self.seats.write(&row.key(), SEAT_FORMAT, row).await
     }
     async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
-        Ok(standing(self.seats.list::<SeatRow>(SEAT_FORMAT)?))
+        Ok(standing(self.seats.list::<SeatRow>(SEAT_FORMAT).await?))
     }
     async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
         self.handovers.write(&row.key(), HANDOVER_FORMAT, row).await
     }
     async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
-        Ok(furthest(self.handovers.list::<HandoverRow>(HANDOVER_FORMAT)?))
+        Ok(furthest(self.handovers.list::<HandoverRow>(HANDOVER_FORMAT).await?))
     }
 }
 

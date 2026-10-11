@@ -128,13 +128,13 @@ impl StatusStorage for FileStatusStorage {
         self.meshes.write(&row.key(), MESH_STATUS_FORMAT, row).await
     }
     async fn mesh_statuses(&self) -> Result<HashMap<MeshId, MeshState>, StorageError> {
-        Ok(fold_meshes(self.meshes.list::<MeshStatusRow>(MESH_STATUS_FORMAT)?))
+        Ok(fold_meshes(self.meshes.list::<MeshStatusRow>(MESH_STATUS_FORMAT).await?))
     }
     async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError> {
         self.fabric.write(&row.key(), FABRIC_EVENT_FORMAT, row).await
     }
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
-        self.fabric.list(FABRIC_EVENT_FORMAT)
+        self.fabric.list(FABRIC_EVENT_FORMAT).await
     }
 }
 
