@@ -4,7 +4,7 @@
 //! RemoveTopologyMembership, Complete — each with a receipt and a step span,
 //! and a retire then create on the same node succeeds.
 //!
-//! Its own test binary: it asserts spans (see `process_pipeline_failure.rs`).
+//! The span-asserting cell runs in its own process (`own_process`).
 
 use crate::common;
 
@@ -21,6 +21,11 @@ use tracing_subscriber::layer::SubscriberExt;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "retire_runs_every_step_in_order_and_the_ports_it_held_are_released") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
 

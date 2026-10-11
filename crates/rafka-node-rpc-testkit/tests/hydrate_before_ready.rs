@@ -169,6 +169,11 @@ fn tracing_to(spans: &Spans) -> tracing::subscriber::DefaultGuard {
 /// ReadyForTraffic (`via-ready`). What must NOT happen: the node Ready before its hook passed.
 #[tokio::test]
 async fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing_to(&spans);
     let b = birth(MemberStatus::Pending).await;
@@ -210,6 +215,11 @@ async fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is()
 /// What must NOT happen: the node waits for an event that already went by.
 #[tokio::test]
 async fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_retry_armed_after_the_authority_was_already_ready_still_completes") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing_to(&spans);
     let b = birth(MemberStatus::Pending).await;
@@ -241,6 +251,11 @@ async fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
 /// ReadyForTraffic. What must NOT happen: `NotReady` for a lifecycle command (s15).
 #[tokio::test]
 async fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_blocked_node_answers_status_and_drain_node_and_its_hook_ends") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing_to(&spans);
     let b = birth(MemberStatus::Pending).await;
@@ -269,6 +284,11 @@ async fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
 /// pull answering into a node that was retired, or the node going Ready afterwards.
 #[tokio::test]
 async fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_retire_during_the_pull_cancels_it_and_orphans_no_call") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing_to(&spans);
     let b = birth(MemberStatus::ReadyForTraffic).await;
@@ -302,6 +322,11 @@ async fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
 /// emitted three effects. What must NOT happen: a version applied twice.
 #[tokio::test]
 async fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "rows_gossiped_during_the_pull_change_the_state_once_per_version") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing_to(&spans);
     let b = birth(MemberStatus::ReadyForTraffic).await;
@@ -330,6 +355,11 @@ async fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
 /// node staying up Pending, or going Ready.
 #[tokio::test]
 async fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_node_whose_hook_fails_ends_by_name_and_is_never_ready") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing_to(&spans);
     let b = birth(MemberStatus::ReadyForTraffic).await;

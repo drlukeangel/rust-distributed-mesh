@@ -15,6 +15,11 @@ use tracing_subscriber::layer::SubscriberExt;
 /// traffic. What must NOT happen: the node comes up on a "view fills from gossip" fallback.
 #[tokio::test]
 async fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready") {
+        return;
+    }
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
