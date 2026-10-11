@@ -632,10 +632,13 @@ async fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
     }));
     let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
     let me = &rig.admin.node;
+    // One endpoint per sender for the whole cell, as a node has one: its key is bound once.
+    let fp = NodeTarget::ExactNode(me.node_id.clone());
+    let (from_admin2, from_rpc1) = (client_of(&rig, admin2).await, client_of(&rig, rpc1).await);
     let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation, config };
-    assert_eq!(reply(&call(&rig, admin2, &told(me.incarnation_id.clone().unwrap(), config.clone())).await), StatusReply::Applied);
+    assert_eq!(reply(&from_admin2.call::<Status>(&fp, &told(me.incarnation_id.clone().unwrap(), config.clone()), &CallOptions::default()).await.0), StatusReply::Applied);
     assert_eq!(held.lock().unwrap().clone(), vec![config.clone()], "the admin holds the whole config it was told");
-    assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), config.clone())).await), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
-    assert!(matches!(reply(&call(&rig, rpc1, &told(me.incarnation_id.clone().unwrap(), config)).await), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its config");
+    assert_eq!(reply(&from_admin2.call::<Status>(&fp, &told(IncarnationId::mint(), config.clone()), &CallOptions::default()).await.0), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
+    assert!(matches!(reply(&from_rpc1.call::<Status>(&fp, &told(me.incarnation_id.clone().unwrap(), config), &CallOptions::default()).await.0), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its config");
     assert_eq!(held.lock().unwrap().len(), 1, "neither refusal held anything");
 }
