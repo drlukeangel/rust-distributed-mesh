@@ -107,7 +107,20 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
             assert!(std::time::Instant::now() < deadline, "the started node never reported ready");
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let (after, _) = book.get(launch.node_id.as_str()).unwrap();
+        // The admin holds the started birth again from the digests the node publishes once it is back
+        // on its topic (its Pending, then its beats), delivered by gossip; the node's own probe
+        // answer does not order them, and the join's digest is the birth's held one, not newer than
+        // what the admin holds. The cell awaits that fact, inside the same deadline.
+        let mut digests = book.digest_changes();
+        let after = loop {
+            if let Some((d, _)) = book.get(launch.node_id.as_str()).filter(|(d, _)| d.digest_seq > seq_at_stop) {
+                break d;
+            }
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), digests.changed())
+                .await
+                .expect("the admin never took a digest of the started birth newer than the one it held at the stop: its digest sequence did not continue across the cycle")
+                .unwrap();
+        };
         assert_eq!((after.node.node_id.clone(), after.node.incarnation.clone(), after.node.endpoint_id.clone(), after.node.transport_addr), (born.node.node_id.clone(), born.node.incarnation.clone(), born.node.endpoint_id.clone(), born.node.transport_addr), "the same birth at the same endpoint and port");
         assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
         assert!(!node::stop_commanded(), "the process is live again");

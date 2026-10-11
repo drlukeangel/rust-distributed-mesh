@@ -92,7 +92,13 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             // Runs 0-19 call the node directly; runs 20-39 are carried through the gateway.
             let via: Vec<String> = if run >= 20 { vec!["--via".into(), "path:mesh1.gateway.1".into()] } else { vec![] };
             let (admin, evidence_dir, id) = (admin.clone(), evidence.clone(), launch.node_id.to_string());
-            let before: std::collections::BTreeSet<_> = std::fs::read_dir(&evidence).into_iter().flatten().flatten().map(|e| e.path()).collect();
+            // CONTRACT: the cell counts span files (`*.spans.jsonl`) only. The evidence dir is the
+            // probe's one log location, so it also holds the probe's transport diagnostic file
+            // (R-QH1), which is not a span file.
+            let span_files = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
+                std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with(".spans.jsonl")).collect()
+            };
+            let before: std::collections::BTreeSet<_> = span_files(&evidence).into_iter().collect();
             let out = tokio::task::spawn_blocking(move || {
                 std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
                     .args(["--admin", &admin, "get", "--target", &format!("exact:{id}"), "--key", "k"])
@@ -105,7 +111,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             .unwrap();
             let v: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap_or_else(|e| panic!("run {run}: no JSON ({e}): {}", String::from_utf8_lossy(&out.stderr)));
             assert_eq!(v["outcome"], "Reply", "run {run}: the call reaches the live node: {v}");
-            let fresh: Vec<_> = std::fs::read_dir(&evidence).unwrap().flatten().map(|e| e.path()).filter(|p| !before.contains(p)).collect();
+            let fresh: Vec<_> = span_files(&evidence).into_iter().filter(|p| !before.contains(p)).collect();
             assert_eq!(fresh.len(), 1, "run {run}: one invocation leaves one span file");
             let spans = std::fs::read_to_string(&fresh[0]).unwrap();
             if !spans.contains("rdm.node_rpc.proof_store.resolve.via-probe") {
