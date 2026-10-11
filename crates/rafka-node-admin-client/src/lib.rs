@@ -18,9 +18,9 @@ mod workflow;
 
 pub use build_stream::{BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, MeshCounts, StartDisposition};
 pub use calls::{CallEnd, DrainContext, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
-pub use names::{BuildOp, NodeEvent, NodeOp, NodeStep};
+pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
-    BuildPreset, BuildSpec, Builds, MetaField, MetaFieldIsRdmOwned, NameHeld, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
+    BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, MetaField, MetaFieldIsRdmOwned, NameHeld, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
 };
 pub use peers::Peers;
 pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};

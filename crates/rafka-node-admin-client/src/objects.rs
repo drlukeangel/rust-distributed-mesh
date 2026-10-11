@@ -8,9 +8,9 @@
 //! them.
 
 use crate::build_stream::{BuildCarrier, BuildReceipts, BuildStream};
-use crate::names::{BuildOp, NodeOp};
+use crate::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
-use crate::{Accepted, BuildId, CallEnd, ConnectionsView, FabricDesired, MeshDesired, NodeAdminClient, NodeStatus, NodeView};
+use crate::{Accepted, BuildId, CallEnd, ConnectionsView, FabricDesired, FabricView, MeshDesired, MeshView, NodeAdminClient, NodeStatus, NodeView};
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 use rafka_node_rpc_contract::build::{BuildChange, MeshCounts};
 use std::collections::BTreeSet;
@@ -414,6 +414,72 @@ impl Nodes {
     }
 }
 
+/// What `mesh.get` selects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeshSelector {
+    /// The mesh with this minted id or this name.
+    Mesh(String),
+    /// Every mesh of the fabric.
+    Fabric,
+}
+
+/// The `mesh` objects: reads over one admin's control API.
+#[derive(Debug, Clone)]
+pub struct Meshes {
+    admin: NodeAdminClient,
+}
+
+impl Meshes {
+    /// The objects over `admin`.
+    pub fn new(admin: NodeAdminClient) -> Self {
+        Self { admin }
+    }
+
+    /// `mesh.get`: the meshes `selector` selects.
+    pub async fn get(&self, selector: &MeshSelector) -> Result<Vec<MeshView>, CallEnd> {
+        let span = MeshOp::Get.span();
+        let read = async {
+            let views: Result<Vec<MeshView>, crate::ClientError> = match selector {
+                MeshSelector::Mesh(m) => Ok(vec![self.admin.mesh(m).await?]),
+                MeshSelector::Fabric => Ok(self.admin.fabric().await?.meshes),
+            };
+            views
+        };
+        let r = tracing::Instrument::instrument(read, span.clone()).await.map_err(CallEnd::from);
+        span.record("outcome", match &r {
+            Ok(_) => "read",
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = MeshOp::Get.name(), "an object call ended"));
+        r
+    }
+}
+
+/// The `fabric` objects: reads over one admin's control API.
+#[derive(Debug, Clone)]
+pub struct Fabrics {
+    admin: NodeAdminClient,
+}
+
+impl Fabrics {
+    /// The objects over `admin`.
+    pub fn new(admin: NodeAdminClient) -> Self {
+        Self { admin }
+    }
+
+    /// `fabric.get`: the fabric as the answering admin holds it.
+    pub async fn get(&self) -> Result<FabricView, CallEnd> {
+        let span = FabricOp::Get.span();
+        let r = tracing::Instrument::instrument(self.admin.fabric(), span.clone()).await.map_err(CallEnd::from);
+        span.record("outcome", match &r {
+            Ok(_) => "read",
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = FabricOp::Get.name(), "an object call ended"));
+        r
+    }
+}
+
 /// The `build` objects: the calls of the fabric-primary's Build family.
 #[derive(Debug, Clone)]
 pub struct Builds {
@@ -560,6 +626,8 @@ mod tests {
         for b in [BuildOp::Create, BuildOp::Get, BuildOp::Delete] {
             drop(b.span());
         }
+        drop(MeshOp::Get.span());
+        drop(FabricOp::Get.span());
         let names = spans.lock().unwrap().clone();
         for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Drain, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
             let via = if op.is_workflow() { "via-workflow" } else { "via-call" };
@@ -572,6 +640,9 @@ mod tests {
         }
         for b in [BuildOp::Create, BuildOp::Get, BuildOp::Delete] {
             let want = format!("rdm.node_admin.{}.via-call", b.name());
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        for want in [format!("rdm.node_admin.{}.via-call", MeshOp::Get.name()), format!("rdm.node_admin.{}.via-call", FabricOp::Get.name())] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
     }
