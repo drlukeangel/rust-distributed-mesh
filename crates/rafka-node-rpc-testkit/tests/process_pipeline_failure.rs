@@ -22,6 +22,7 @@ struct Discard;
 impl TopologySink for Discard {
     fn publish(&self, _: Node) {}
     fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
+    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

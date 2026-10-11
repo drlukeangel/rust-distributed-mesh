@@ -137,6 +137,7 @@ impl TopologySink for Published {
         self.0.lock().unwrap().push(n);
     }
     fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
+    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
 }
 
 fn node(name: &str, primary: bool) -> Node {

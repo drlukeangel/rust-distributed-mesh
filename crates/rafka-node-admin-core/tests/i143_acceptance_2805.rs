@@ -416,6 +416,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     impl TopologySink for Discard {
         fn publish(&self, _: Node) {}
         fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
+        fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
     }
 
     // The drawing's first box: the operation is claimed under an accepted Build.

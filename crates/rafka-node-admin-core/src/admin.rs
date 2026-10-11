@@ -503,7 +503,11 @@ impl TopologySink for Records {
     fn remove(&self, name: &PathName) {
         let gone = self.nodes.lock().unwrap().remove(name);
         self.removed.lock().unwrap().insert((name.clone(), gone.and_then(|n| n.incarnation_id)));
-    }    fn rename_predecessor(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
+    }
+    fn remove_birth(&self, name: &PathName, _node_id: &NodeId, _incarnation: &IncarnationId) {
+        self.remove(name);
+    }
+    fn rename_predecessor(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
         let mut nodes = self.nodes.lock().unwrap();
         if nodes.get(name).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
             nodes.remove(name);
@@ -5203,6 +5207,33 @@ mod tests {
         book.record(newer.clone());
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(t.node(&old.node.name).unwrap().incarnation_id.as_ref(), Some(&newer.node.incarnation));
+    }
+
+    /// CONTRACT (node-recovery.md, sequence step 3): the recovery's delete removes exactly the exited
+    /// birth. A rerun of the recovery after the new node already holds the path removes nothing of the
+    /// new node, and the exited birth stays out of the view even when the records never held it.
+    /// Must NOT happen: the new node's record removed, or its birth filtered from the view.
+    #[test]
+    fn a_recovery_removes_exactly_the_exited_birth_and_never_the_new_node_at_its_path() {
+        let book = DigestBook::default();
+        let old = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(old.clone());
+        let mut new = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        new.node.node_id = NodeId::mint();
+        book.record(new.clone());
+        let records = Records::default();
+        let mut n = Node::allocated(new.node.name.clone());
+        n.node_id = new.node.node_id.clone();
+        n.incarnation_id = Some(new.node.incarnation.clone());
+        records.publish(n);
+        // The rerun: the new node holds the path, the exited birth is removed again.
+        records.remove_birth(&old.node.name, &old.node.node_id, &old.node.incarnation);
+        assert_eq!(records.nodes.lock().unwrap().get(&new.node.name).map(|n| n.node_id.clone()), Some(new.node.node_id.clone()), "the new node's record stays");
+        let removed = records.removed.lock().unwrap().clone();
+        assert!(removed.contains(&(old.node.name.clone(), Some(old.node.incarnation.clone()))), "the exited birth is the one removed: {removed:?}");
+        assert!(!removed.contains(&(new.node.name.clone(), Some(new.node.incarnation.clone()))), "the new birth is not removed: {removed:?}");
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.node(&new.node.name).map(|n| n.node_id.clone()), Some(new.node.node_id.clone()), "the view holds the new node at the path");
     }
 
     /// CONTRACT: a view installed by a writer that had to wait for the view lock reflects the
