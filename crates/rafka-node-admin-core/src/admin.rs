@@ -2634,9 +2634,10 @@ impl Running {
                 let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
                 let outcome = if withheld("backbone") {
                     "withheld"
-                } else {
-                    bb.publish(&m, mine).instrument(bb_span.clone()).await;
+                } else if bb.publish(&m, mine).instrument(bb_span.clone()).await {
                     "sent"
+                } else {
+                    "not-mesh-primary"
                 };
                 bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
                 bb_span.record("outcome", outcome);

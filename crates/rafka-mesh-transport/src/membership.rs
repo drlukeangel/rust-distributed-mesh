@@ -2839,10 +2839,12 @@ impl Backbone {
     /// republishes the same version as passive anti-entropy. The same projection is this Mesh's
     /// own source: what its members need of it goes into the Mesh as a delta or a full. A status
     /// is not part of a round: [`Backbone::announce_statuses`] sends one when it changes.
-    pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>) {
+    /// Returns whether it published: `false` when this node does not hold the publisher role, and
+    /// nothing was sent.
+    pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>) -> bool {
         let sent = membership.clock.now_rafka_ms();
         if !self.publishing.load(Ordering::Relaxed) {
-            return;
+            return false;
         }
         // This mesh's own overlays and departures only; a peer mesh's travel in that mesh's
         // aggregate.
@@ -2885,6 +2887,7 @@ impl Backbone {
         } else {
             self.membership.forward_path.source(&self.node, &self.mesh, &self.publisher, version, &overlays, sent);
         }
+        true
     }
 
     /// The forwarded full of every source this primary holds (its own Mesh and each peer Mesh),

@@ -209,6 +209,9 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "Draining" | "Leaving")).collect();
     assert!(!leaving_states.is_empty(), "a mesh2 node held a mesh1 member's own Draining or Leaving: {states:?}");
     assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying Draining or Leaving is not routable at mesh2: {leaving_states:?}");
+    // The forwarder leg: mesh2's ordinary nodes, which hear no backbone, hold it from what their
+    // mesh primary forwards onto the mesh channel.
+    assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.rpc.") && sp["attributes"]["channel"] == "mesh-channel"), "a mesh2 ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
     let left = heard("via-mesh-left");
     assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a mesh2 node held mesh1's births departed on mesh-left: {left:?}");
     let last_exit = tier2_last.max(terminal_end(&final_name));
