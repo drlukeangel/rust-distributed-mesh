@@ -214,7 +214,7 @@ async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint() })
 }
 
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
@@ -240,7 +240,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
         rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint() })
 }
 
 /// The one executor of the fixture is the fabric-primary itself.
@@ -688,7 +688,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         // The same Build log and executor under a fabric-primary that never drove this Build.
-        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone() });
+        let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), seats: before.seats.clone(), incarnation: before.incarnation.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();

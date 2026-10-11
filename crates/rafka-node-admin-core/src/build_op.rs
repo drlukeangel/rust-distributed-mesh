@@ -21,6 +21,8 @@ use crate::build_state::{AttemptReason, BuildFact, BuildState, BuildStateError, 
 use crate::http::{ActionKind, ControlPlane, Refusal};
 use crate::model::PathName;
 use crate::topology::Topology;
+use rafka_mesh_entity::IncarnationId;
+use rafka_mesh_transport::membership::SeatBook;
 use rafka_node_rpc::stream::{NotStarted, ReplySink, StreamItem};
 use rafka_node_rpc::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use rafka_node_rpc_contract::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, MeshCounts, StepReceipt, StepResult};
@@ -45,6 +47,11 @@ pub struct BuildDoor {
     pub env: Arc<DriveEnv>,
     /// The executor's door for `build.attempt.run`.
     pub run: Arc<RunDoor>,
+    /// The seat records this admin holds: a committed seat transfer installs into it before the
+    /// executor's next step runs, so it names this birth the fabric-primary before the view does.
+    pub seats: SeatBook,
+    /// This admin's exact birth (with `env.door.node_id`): what the seat book is read against.
+    pub incarnation: IncarnationId,
 }
 
 /// The door a running admin fills once it holds a view.
@@ -114,6 +121,11 @@ impl BuildDoor {
             Some((_, id)) if id == self.env.door.node_id => None,
             other => Some(BuildReply::NotFabricPrimary { fabric_primary: other.map(|(n, _)| n.to_string()) }),
         }
+    }
+
+    /// Whether the seat book names this exact birth the fabric-primary.
+    fn holds_fabric_seat(&self) -> bool {
+        self.seats.fabric().is_some_and(|h| h.is_birth(&self.env.door.node_id, &self.incarnation))
     }
 
     /// Answer one Build call.
@@ -261,6 +273,13 @@ impl BuildDoor {
 
     #[allow(clippy::too_many_arguments)]
     async fn attempt_run(&self, id: BuildId, attempt: u32, executor: String, context: CallContext, intent: Vec<Vec<u8>>, operations: Vec<Vec<u8>>, hand_off_to: Option<String>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+        // The caller of `build.attempt.run` is the fabric-primary that drives the Build. When this
+        // executor took that seat during the run (a committed seat transfer of the attempt's own
+        // SeatTransfer step), the caller is no longer the driver: its seat row fenced it and its
+        // stream ends here with the typed new-seat frame naming this admin, never with a write into
+        // a stream the old driver stopped. The run goes on in its own task; this admin's own drive
+        // reads its frames.
+        let held_at_start = self.holds_fabric_seat();
         let mut plan = RunPlan { operations: Vec::with_capacity(operations.len()), hand_off_to };
         for (i, bytes) in operations.iter().enumerate() {
             match serde_json::from_slice::<BuildOperation>(bytes) {
@@ -284,6 +303,11 @@ impl BuildDoor {
                 }
                 // A cut call ends this stream and nothing else: the run is its own task.
                 while let Some(f) = reader.next().await {
+                    if !held_at_start && self.holds_fabric_seat() {
+                        tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id, attempt, node = %self.me, to = %self.me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
+                            .in_scope(|| tracing::info!("the inner stream ends with the new seat"));
+                        return Ok(BuildReply::SeatMoved { build_id: id.0.clone(), fabric_primary: Some(self.me.to_string()) });
+                    }
                     match f {
                         BuildReply::Step { .. } | BuildReply::Blocked { .. } => sink.data(f).await.map_err(gone)?,
                         terminal => return Ok(terminal),

@@ -18,7 +18,9 @@
 //!                                                   on the executor that wrote it
 //! Blocked { build_id, attempt, operation, step, reason }   non-terminal, never durable, never a step outcome
 //! Complete | Failed { step, reason } | HandedOff { to } | SeatMoved { fabric_primary }
-//!                                                  the terminal of Create / AttemptRun (SeatMoved: Create only)
+//!                                                  the terminal of Create / AttemptRun (SeatMoved on
+//!                                                  AttemptRun: the executor took the fabric-primary
+//!                                                  seat during the run and names itself)
 //! Got | Deleted                                    the terminal of Get / Delete
 //! ```
 //!

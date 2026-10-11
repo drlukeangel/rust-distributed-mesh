@@ -794,6 +794,9 @@ impl DriveEnv {
                         drive.push(f);
                     }
                     t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),
+                    // The executor took the fabric-primary seat during the run: this admin's seat row
+                    // fenced it, and the drive ends at that fence.
+                    BuildReply::SeatMoved { .. } => return Inner::Fenced,
                     other => return Inner::Refused(other),
                 },
                 InnerItem::Ended => return Inner::Broke("the inner stream ended without its terminal".into()),
