@@ -1135,7 +1135,7 @@ impl MeshRowsWriter {
         }
         let dropped: Vec<crate::storage::NodeRecord> = dropped_contacts(written, &members, &departed).into_iter().filter_map(|id| written.get(&id).cloned()).collect();
         for r in dropped {
-            if self.nodes.remove_contact(&r).await.is_ok() {
+            if self.nodes.remove_contact(&r.name.mesh, &r.node_id).await.is_ok() {
                 written.remove(&r.node_id);
             }
         }
@@ -5807,9 +5807,9 @@ mod tests {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.put_contact(record).await
         }
-        async fn remove_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+        async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.0.remove_contact(record).await
+            self.0.remove_contact(mesh, node_id).await
         }
         async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<(), crate::storage::NameHeld>, crate::record_store::StorageError> {
             self.0.put_node_row(row).await
@@ -5950,8 +5950,8 @@ mod tests {
         async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
             self.0.put_contact(record).await
         }
-        async fn remove_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
-            self.0.remove_contact(record).await
+        async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
+            self.0.remove_contact(mesh, node_id).await
         }
         async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<(), crate::storage::NameHeld>, crate::record_store::StorageError> {
             self.0.put_node_row(row).await
@@ -6000,8 +6000,8 @@ mod tests {
         async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_contact(record).await
         }
-        async fn remove_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
-            self.inner.remove_contact(record).await
+        async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_contact(mesh, node_id).await
         }
         async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<(), crate::storage::NameHeld>, crate::record_store::StorageError> {
             self.inner.put_node_row(row).await
@@ -6716,7 +6716,7 @@ mod tests {
         let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
         let write = || async {
             let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
-            crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary).await
+            crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary, &[exited_receipt(&last)]).await
         };
         // The exit proven and not held: the election keeps the exited holder seated (R-EL1).
         let refused = write().await;
@@ -6811,7 +6811,7 @@ mod tests {
             {
                 let _g = tracing::dispatcher::set_default(&capture.dispatch);
                 for _replay in 0..2 {
-                    crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
+                    crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary, &[exited_receipt(&last)]).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
                 }
             }
             assert!(status.mesh_status_held_of("mesh2", &dead("mesh2")).await.unwrap(), "{case}: mesh2's row Dead stands among mesh2's status rows");
@@ -6858,9 +6858,18 @@ mod tests {
         let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
         let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
         let status = crate::status_storage::MemoryStatusStorage::default();
-        crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary).await.unwrap_or_else(|e| panic!("mesh-left's rows: {e}"));
+        let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-contacts");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary, &[exited_receipt(&last), exited_receipt(&member)]).await.unwrap_or_else(|e| panic!("mesh-left's rows: {e}"));
+        }
         let held: Vec<String> = storage.contacts().await.unwrap().into_iter().map(|c| c.name.to_string()).collect();
         assert_eq!(held, vec!["mesh1.admin.1".to_string()], "no contact of the removed mesh's births stands; another mesh's is untouched");
+        let spans = capture.named("rdm.node_admin.node.remove.via-mesh-left-contact");
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        let dropped = spans[0].attributes.get("dropped").cloned().unwrap_or_default();
+        assert!(dropped.contains("mesh2.admin.1") && dropped.contains("mesh2.rpc.1"), "the span names each birth whose contact is dropped: {dropped}");
+        eprintln!("span rdm.node_admin.node.remove.via-mesh-left-contact trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
     }
 
     /// CONTRACT (mesh-leave.md, "Resume after the primary's loss", steps 1-2: the lost final

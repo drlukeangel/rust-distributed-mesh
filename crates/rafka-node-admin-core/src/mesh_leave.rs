@@ -766,9 +766,37 @@ pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, execut
 /// fabric-primary's writer, `records` its view's records of the mesh, `final_primary` the exact
 /// final birth; the Dead row is committed through `status` and held in `declared`.
 #[allow(clippy::too_many_arguments)]
-pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, records: &[Node], final_primary: &RosterBirth) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, records: &[Node], final_primary: &RosterBirth, proof: &[TerminalReceipt]) -> Result<(), String> {
     birth_row_deleted(rows, executor, &key.operation, records, final_primary).await?;
+    drop_departed_contacts(rows, executor, key, mesh, proof).await?;
     ensure_mesh_dead(status, declared, executor, key, mesh).await
+}
+
+/// mesh-left drops the contact of every birth the complete proof set `proof` names from the removed
+/// mesh's contacts (R-MN1; R14 item 2: the contacts are the mesh primary's rows, written here by the
+/// fabric-primary as acting primary of a mesh with none left, mesh-leave.md step 7): a departed
+/// birth never answers, and a maker's stored map never hands it to a mesh created again under the
+/// name (`dropped_contacts`, as a seated primary drops a departed member's). A blind removal of each
+/// birth's own key; one `rdm.node_admin.node.remove.via-mesh-left-contact` span names them, and a
+/// refused removal ends mesh-left by name.
+async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &LeaveKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
+    let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to drop {mesh}'s contacts from", key.operation))?;
+    let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, dropped = tracing::field::Empty, error = tracing::field::Empty);
+    let mut dropped = Vec::new();
+    for t in proof {
+        let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("{}: the Exited receipt of {} {} names no node id ({:?}): {e}", key.operation, t.node, t.incarnation_id, t.node_id))?;
+        if let Err(e) = rows.storage().remove_contact(mesh, &node_id).await {
+            let why = format!("{}: the contact of {} ({node_id}) could not be dropped from {mesh}'s contacts: {e}", key.operation, t.node);
+            span.record("error", why.as_str());
+            span.in_scope(|| tracing::info!("mesh-left: a departed birth's contact is not dropped"));
+            return Err(why);
+        }
+        dropped.push(format!("{} {node_id}", t.node));
+    }
+    span.record("dropped", dropped.join(", ").as_str());
+    span.in_scope(|| tracing::info!("mesh-left: the removed mesh's departed births' contacts are dropped"));
+    Ok(())
 }
 
 /// mesh-left's ensure-Dead (R-MD1 = A): the mesh row Dead among the leaving mesh's own status rows

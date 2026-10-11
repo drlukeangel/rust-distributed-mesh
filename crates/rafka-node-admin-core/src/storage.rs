@@ -188,8 +188,8 @@ pub trait NodesStorage: Send + Sync {
     async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError>;
     /// Keep `record` as a contact, keyed by its node id.
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
-    /// Forget the contact `record` (keyed by its node id, under its mesh).
-    async fn remove_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
+    /// Forget the contact of the node `node_id` under `mesh` (its key).
+    async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), StorageError>;
     /// Save `row` as the record at its `path.name`. The claim of the name is here, inside the
     /// adapter, and nowhere else (R13): insert-and-fail on the `path.name` key, decided by the store
     /// in one step against every other row write. The key is free when no row is there, the row
@@ -247,8 +247,8 @@ impl NodesStorage for MemoryNodesStorage {
         self.contacts.lock().unwrap().insert(record.node_id.clone(), record.clone());
         Ok(())
     }
-    async fn remove_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        self.contacts.lock().unwrap().remove(&record.node_id);
+    async fn remove_contact(&self, _mesh: &str, node_id: &NodeId) -> Result<(), StorageError> {
+        self.contacts.lock().unwrap().remove(node_id);
         Ok(())
     }
     async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
@@ -434,8 +434,8 @@ impl NodesStorage for FileNodesStorage {
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
         self.mesh(&record.name.mesh).await?.contacts.write(record.node_id.as_str(), NODE_FORMAT, record).await
     }
-    async fn remove_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        self.mesh(&record.name.mesh).await?.contacts.remove(record.node_id.as_str()).await
+    async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), StorageError> {
+        self.mesh(mesh).await?.contacts.remove(node_id.as_str()).await
     }
     async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
         // One row write at a time: the look at the key and the write are one step against every
@@ -641,7 +641,7 @@ mod tests {
         check(&FileMeshStorage::open(&root, &w).await.unwrap(), &FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap(), &FileConnectionsStorage::open(&root, &me, &w).await.unwrap(), true).await;
         let (m, n, c) = (FileMeshStorage::open(&root, &w).await.unwrap(), FileNodesStorage::open(&d, &root, "mesh1", &w).await.unwrap(), FileConnectionsStorage::open(&root, &me, &w).await.unwrap());
         check(&m, &n, &c, false).await;
-        n.remove_contact(&peer).await.unwrap();
+        n.remove_contact(&peer.name.mesh, &peer.node_id).await.unwrap();
         c.remove_connection(&down.index()).await.unwrap();
         assert!(n.contacts().await.unwrap().is_empty() && c.connections().await.unwrap().is_empty());
         assert_eq!(peer.gossip_addr().map(|a| a.id.to_string()), Some(peer.endpoint_id.0.clone()));

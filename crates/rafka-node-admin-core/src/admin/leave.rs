@@ -325,7 +325,7 @@ impl AdminRunner {
         // (R-EL1: the exited holder's seat is vacant).
         self.refresh_view().await;
         let records: Vec<Node> = self.topology.read().await.nodes.iter().filter(|n| n.mesh == mesh).cloned().collect();
-        crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &self.records.declared, &self.me.to_string(), key, mesh, &records, &all.final_primary).await?;
+        crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &self.records.declared, &self.me.to_string(), key, mesh, &records, &all.final_primary, &all.receipts).await?;
         self.builds
             .append_step_receipt(&BuildStepReceipt {
                 build_id: build_id.clone(),
