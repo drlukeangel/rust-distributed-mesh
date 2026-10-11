@@ -6623,6 +6623,17 @@ mod tests {
         AdminConfig::from_env(|k| env.get(k).cloned()).expect("a readable environment")
     }
 
+    /// CONTRACT (R14 items 1 and 8; acceptance "a missing store_dir is refused by name at boot"):
+    /// a node-admin is given the fabric's store root (`RDM_STORE_DIR`, or its launch's); with none it
+    /// is refused by name and nothing falls back to its data dir.
+    #[test]
+    fn a_start_without_a_store_dir_is_refused_by_name() {
+        let env: std::collections::HashMap<String, String> = [("RDM_DATA_DIR", "/tmp/rdm-no-store/mesh1.admin.1")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let e = AdminConfig::from_env(|k| env.get(k).cloned()).err().expect("a start with no store_dir was accepted");
+        assert!(e.contains("RDM_STORE_DIR") && e.contains("required"), "{e}");
+        assert_eq!(cfg(&[]).store_dir, std::path::PathBuf::from(STORE_DIR));
+    }
+
     const MESH_ID: &str = "4f14h1k7m3p9";
     const SEED: &str = "5d6b3f0e1a2c4b7d8e9f00112233445566778899aabbccddeeff001122334455@127.0.0.1:41000";
 

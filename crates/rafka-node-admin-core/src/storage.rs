@@ -546,6 +546,78 @@ mod tests {
         assert!(matches!(m.mesh("mesh1").await, Err(StorageError::Unrecognised { .. })));
     }
 
+    fn row(name: &str) -> NodeRow {
+        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() }
+    }
+
+    fn keys(dir: &std::path::Path) -> Vec<String> {
+        let mut k: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".json")).collect();
+        k.sort();
+        k
+    }
+
+    /// CONTRACT (R14 items 1 and 2; acceptance "two mesh-primaries write their own meshes' rows at
+    /// once on one shared root without touching each other's keys"): each mesh-primary writes its
+    /// Mesh row under `meshes/<its mesh>` and its members' Node rows and contacts under
+    /// `nodes/<its mesh>/`, at once, on one root; neither writes a key under the other's mesh, its
+    /// own data dir holds none of them, and each reads the other's rows from the shared root.
+    #[tokio::test]
+    async fn two_mesh_primaries_write_their_own_meshes_rows_at_once_on_one_shared_root_without_touching_each_others_keys() {
+        let d = crate::record_store::tempdir("shared-root");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
+        let (data1, data2) = (d.join("mesh1.admin.1"), d.join("mesh2.admin.1"));
+        let (inc1, inc2) = (IncarnationId::mint(), IncarnationId::mint());
+        let (n1, n2) = (FileNodesStorage::open(&data1, &root, "mesh1", &inc1).unwrap(), FileNodesStorage::open(&data2, &root, "mesh2", &inc2).unwrap());
+        let (m1, m2) = (FileMeshStorage::open(&root, &inc1).unwrap(), FileMeshStorage::open(&root, &inc2).unwrap());
+        let writes = async |n: &FileNodesStorage, m: &FileMeshStorage, mesh: &str| {
+            m.put_mesh(&MeshRecord { mesh_id: MeshId::mint(), name: mesh.into() }).await.unwrap();
+            for name in [format!("{mesh}.admin.1"), format!("{mesh}.rpc.1"), format!("{mesh}.rpc.2")] {
+                n.put_node_row(&row(&name)).await.unwrap();
+                n.put_contact(&node(&name)).await.unwrap();
+            }
+        };
+        tokio::join!(writes(&n1, &m1, "mesh1"), writes(&n2, &m2, "mesh2"));
+        for (mesh, other) in [("mesh1", "mesh2"), ("mesh2", "mesh1")] {
+            let rows = keys(&root.dir().join("nodes").join(mesh).join("rows"));
+            assert_eq!(rows, [format!("{mesh}.admin.1.json"), format!("{mesh}.rpc.1.json"), format!("{mesh}.rpc.2.json")], "{mesh}'s rows");
+            assert!(!rows.iter().any(|k| k.starts_with(other)), "{mesh}'s rows hold a key of {other}");
+            assert_eq!(keys(&root.dir().join("nodes").join(mesh).join("contacts")).len(), 3, "{mesh}'s contacts");
+        }
+        assert_eq!(keys(&root.dir().join("meshes")), ["mesh1.json", "mesh2.json"]);
+        for data in [&data1, &data2] {
+            assert!(!data.join("meshes").exists() && !data.join("nodes").join("rows").exists() && !data.join("nodes").join("contacts").exists(), "{} holds a shared row", data.display());
+        }
+        assert!(n1.node_row_at(&"mesh2.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh1's primary reads mesh2's row from the shared root");
+        assert!(n2.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh2's primary reads mesh1's row from the shared root");
+        assert_eq!(n1.contacts().await.unwrap().len(), 6, "a restart reads every mesh's contacts");
+    }
+
+    /// CONTRACT (R14 item 1; acceptance "an ordinary node's connections rows land under
+    /// `connections/<node>/` in the shared root and the successor mesh-primary reads them there"):
+    /// a node writes its own connections rows and raw log under `connections/<its path.name>/`;
+    /// a second store opened there by another process (another incarnation) reads every row.
+    #[tokio::test]
+    async fn an_ordinary_nodes_connections_rows_land_under_connections_node_and_a_second_instance_reads_them() {
+        let d = crate::record_store::tempdir("shared-connections");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
+        let node: PathName = "mesh1.admin.1".parse().unwrap();
+        let writer = FileConnectionsStorage::open(&root, &node, &IncarnationId::mint()).unwrap();
+        let (up, down) = (fact(ConnectionState::Connected), fact(ConnectionState::Disconnected));
+        writer.put_connection(&up).await.unwrap();
+        writer.append_history(&up).await.unwrap();
+        writer.put_connection(&down).await.unwrap();
+        let dir = store.join(root.dir().file_name().unwrap()).join("connections").join("mesh1.admin.1");
+        assert_eq!(keys(&dir).len(), 1, "one row per (source, destination, kind): {}", dir.display());
+        assert!(dir.join("history.jsonl").exists());
+        let reader = FileConnectionsStorage::open(&root, &node, &IncarnationId::mint()).unwrap();
+        assert_eq!(reader.connections().await.unwrap(), [down]);
+        assert_eq!(reader.history().await.unwrap(), [up]);
+    }
+
     #[tokio::test]
     async fn runtime_rows_are_one_keyed_row_per_birth_and_an_unrecognised_row_is_refused_by_name() {
         let d = std::env::temp_dir().join(format!("rdm-runtime-rows-{}", rand::random::<u32>()));

@@ -387,6 +387,21 @@ mod tests {
         assert!(named(&removed), "a delete whose directory fsync failed answered {removed:?}");
     }
 
+    /// CONTRACT (R14 item 5): every writer on the shared root names its temp file by the key and its
+    /// own incarnation, `.<key>.<incarnation>.json.tmp`: two writers' temp files never share a name.
+    /// The cell leaves a write's temp file in place (its rename target is a directory) and reads its name.
+    #[tokio::test]
+    async fn a_temp_file_is_named_by_its_key_and_its_writers_incarnation() {
+        let d = tempdir("record-store-tmp");
+        let writer = crate::model::IncarnationId("inc-7".into());
+        let r = FileRecords::open(&d, "things", &writer).unwrap();
+        std::fs::create_dir_all(d.join("things").join("k.json").join("blocker")).unwrap();
+        assert!(r.write("k", "thing/1", &1u32).await.is_err(), "a rename onto a non-empty directory fails");
+        assert!(d.join("things").join(".k.inc-7.json.tmp").exists(), "{:?}", std::fs::read_dir(d.join("things")).unwrap().map(|e| e.unwrap().file_name()).collect::<Vec<_>>());
+        let other = FileRecords::open(&d, "things", &crate::model::IncarnationId("inc-8".into())).unwrap();
+        assert_ne!(r.tmp_path("k"), other.tmp_path("k"));
+    }
+
     #[tokio::test]
     async fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
         let d = tempdir("records");
