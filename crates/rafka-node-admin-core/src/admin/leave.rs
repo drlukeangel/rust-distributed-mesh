@@ -164,7 +164,7 @@ impl AdminRunner {
         let held: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
         let path = crate::mesh_leave::leaving_mesh_admin_path(mesh, &adm.roster, &held)?;
         let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node = %path, build_id = %build_id, attempt, operation = %outer, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), outcome = tracing::field::Empty);
-        let created = self.create_leaving_mesh_admin(build_id, attempt, &path).instrument(span.clone()).await;
+        let created = self.create_leaving_mesh_admin(build_id, attempt, &path, &key.mesh_id).instrument(span.clone()).await;
         span.record("outcome", if created.is_ok() { "created" } else { "failed" });
         created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
         self.refresh_view().await;
@@ -174,18 +174,25 @@ impl AdminRunner {
 
     /// node.create of `path`, the one node-admin of a leaving mesh no admin of which survives, into
     /// the EXISTING mesh (mesh-recovery.md: "it joins under the EXISTING MeshId and never mints
-    /// another"): the mesh's issuing material, as any mesh's only admin carries, and no Pending
-    /// hand-off: the mesh's state only moves forward (states.md, "pending -> ready-for-traffic ->
-    /// leaving -> dead"), and a mesh that is leaving is never told it is pending.
-    async fn create_leaving_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName) -> Result<(), String> {
+    /// another"): the mesh's issuing material, as any mesh's only admin carries, and the mesh's
+    /// CURRENT state as this fabric-primary holds it, handed before its Ready like any mesh's first
+    /// admin is handed its mesh's state. Never Pending for a mesh past it: the state only moves
+    /// forward (states.md, "pending -> ready-for-traffic -> leaving -> dead"), and a mesh that is
+    /// leaving is never told it is pending. A fabric-primary that holds no state for the mesh
+    /// creates nothing: no state is assumed.
+    async fn create_leaving_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName, mesh_id: &MeshId) -> Result<(), String> {
+        let state = self.records.declared.lock().unwrap().meshes.get(mesh_id).copied().ok_or_else(|| {
+            format!("{}: this fabric-primary holds no declared state for {} ({mesh_id}), so the admin created for it could be handed none; nothing is created under an assumed state", self.me, path.mesh)
+        })?;
         match self.fence_predecessor(path).await {
             crate::fence::FenceOutcome::Clear { gone: None } => {}
             other => return Err(format!("{path} is not a path no birth held: the create door fenced {other:?}")),
         }
+        let hand_off = self.mesh_state_hook(path, state)?;
         let template = self.with_mesh_issuer(self.template_for(NodeKind::NodeAdmin, &path.mesh).await?, &path.mesh)?;
         let held_runtimes = self.held_runtimes().await;
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: path.clone(), spec: spec_for(NodeKind::NodeAdmin), restart_of: None, held_runtimes };
-        let created = self.pipeline(&template).create_with(&req, None).await.map_err(|e| e.to_string())?;
+        let created = self.pipeline(&template).create_with(&req, Some(hand_off)).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(path.clone(), (created.node, created.handle));
         Ok(())

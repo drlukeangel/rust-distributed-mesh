@@ -830,9 +830,11 @@ pub struct CreateRequest {
 }
 
 /// Work the executor does at the birth between its mesh join and its Ready: the fabric primary's
-/// Pending hand-off at a mesh's first admin. Runs as its own receipted step (`ApplyMeshPending`);
-/// a failure fails the create, so nothing downstream starts under an assumed state.
-pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+/// hand-off of its mesh's state at a mesh's first admin (Pending for a new mesh; the mesh's current
+/// state for the admin created for an existing one). Runs as its own receipted step
+/// (`ApplyMeshPending`), which records the state applied; a failure fails the create, so nothing
+/// downstream starts under an assumed state.
+pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rafka_node_rpc_contract::status::MeshState, String>> + Send>> + Send + Sync>;
 
 /// A request to retire one node.
 #[derive(Debug, Clone)]
@@ -1487,7 +1489,7 @@ impl DeploymentPipeline<'_> {
         let _: serde_json::Value = self
             .step(run, CreateStep::ApplyMeshPending.name(), async {
                 match &before_ready {
-                    Some(hand_off) => hand_off(target).await.map(|()| serde_json::json!({"applied": "Pending"})),
+                    Some(hand_off) => hand_off(target).await.map(|state| serde_json::json!({"applied": format!("{state:?}")})),
                     None => Ok(serde_json::json!({"applied": null, "reason": "no Pending owed: not a new mesh's first admin"})),
                 }
             })

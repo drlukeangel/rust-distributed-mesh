@@ -2411,14 +2411,16 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// The fabric-primary -> mesh bootstrap Pending operation (e4.s11), as the create pipeline's
-    /// `ApplyMeshPending` step at the exact birth just joined at `admin`: a bounded reachability
-    /// wait (Ping, at most 20 s, no Status), then ONE `ApplyMeshState(Pending)` call. `Applied` or
+    /// The fabric-primary -> mesh state hand-off at a mesh's first admin, as the create pipeline's
+    /// `ApplyMeshPending` step at the exact birth just joined at `admin`: `Pending` for a new mesh's
+    /// bootstrap admin (e4.s11), the mesh's current state for the admin created for an existing
+    /// mesh. A bounded reachability wait (Ping, at most 20 s, no Status), then ONE
+    /// `ApplyMeshState(state)` call. `Applied` or
     /// `AlreadyApplied` succeed; any other outcome fails the step typed (a stale-birth answer, a
     /// backward move, an unreachable target, a lost reply), and the rectifier is the retry, so
     /// `Build(shape)` never starts under an assumed state.
-    fn pending_handoff_hook(&self, admin: &PathName) -> Result<crate::deployment::pipeline::BeforeReady, String> {
-        let Some(node_rpc) = &self.node_rpc else { return Err(format!("{admin}: this admin has no Node RPC client for the Pending hand-off")) };
+    fn mesh_state_hook(&self, admin: &PathName, state: rafka_node_rpc_contract::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
+        let Some(node_rpc) = &self.node_rpc else { return Err(format!("{admin}: this admin has no Node RPC client for the {state:?} hand-off")) };
         let (client, resolver, me, me_id, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
         Ok(Arc::new(move |target: Node| {
             let (client, resolver, me, me_id, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone());
@@ -2427,9 +2429,9 @@ impl AdminRunner {
                 // what its view holds from the mesh's members (a recovery never mints one).
                 let known = topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
                 let Some(mesh_id) = records.meshes.lock().unwrap().get(&mesh).cloned().or(known).map(|m| m.to_string()) else {
-                    return Err(format!("{}: neither this admin's records nor its view hold a mesh id for {mesh}, so no Pending can be applied", target.name));
+                    return Err(format!("{}: neither this admin's records nor its view hold a mesh id for {mesh}, so no {state:?} can be applied", target.name));
                 };
-                apply_mesh_pending(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, &target).await
+                apply_mesh_state(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, state, &target).await.map(|()| state)
             })
         }))
     }
@@ -2442,7 +2444,7 @@ impl AdminRunner {
         // A mesh's only admin replaced leaves the mesh without a live admin: its successor is that
         // mesh's first admin and receives the fabric primary's Pending hand-off (e4.s11).
         let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live());
-        let before_ready = if first_admin { Some(self.pending_handoff_hook(node)?) } else { None };
+        let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
         let mut template = self.template_for(node.kind, &node.mesh).await?;
         if node.kind == NodeKind::NodeAdmin && first_admin {
             template = self.with_mesh_issuer(template, &node.mesh)?;
@@ -2882,7 +2884,7 @@ impl AdminRunner {
                     // birth, before it is asked to be Ready; only with that certainty does the shape
                     // proceed (e4.s11).
                     let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).all(|n| !n.status.is_live());
-                    let before_ready = if first_admin { Some(self.pending_handoff_hook(node)?) } else { None };
+                    let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
                     self.create(build_id, attempt, node, None, before_ready).await
                 }
                 .instrument(span)
@@ -2928,7 +2930,8 @@ impl AdminRunner {
 /// `ApplyMeshState(Pending)` at `target` (a mesh's first admin, just joined), from `me` (born as `me_id`).
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, target: &Node) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_mesh_state(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, state: rafka_node_rpc_contract::status::MeshState, target: &Node) -> Result<(), String> {
     use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
     use rafka_node_rpc_contract::status::{MeshState, Status, StatusReply, StatusRequest};
     // The target is not heard yet (a peer mesh's admin reaches the backbone only as its mesh's
@@ -2939,7 +2942,7 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
     };
     let endpoint_id = endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| format!("{}: its endpoint id is not an iroh key: {e}", target.name))?;
     let fed = resolver.apply(rafka_node_rpc::ResolvedNode { node_id: target.node_id.clone(), name: target.name.clone(), endpoint_id, transport_addr, incarnation }, None);
-    tracing::info!(target = %target.name, applied = ?fed, "the resolver holds the launched birth for the Pending hand-off");
+    tracing::info!(target = %target.name, applied = ?fed, "the resolver holds the launched birth for the mesh-state hand-off");
     let (me_id, me_inc) = {
         let v = topology.read().await;
         (me_id.to_string(), v.own(me_id).and_then(|n| n.incarnation_id.clone()).map(|i| i.0).unwrap_or_default())
@@ -2947,9 +2950,9 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
     let request = StatusRequest::ApplyMeshState {
         mesh_id: crate::model::MeshId::parse(mesh_id).map_err(|e| format!("{mesh}: its mesh id {mesh_id:?} is not a MeshId: {e}"))?,
         mesh_name: mesh.to_string(),
-        state: MeshState::Pending,
+        state,
     };
-    let key = format!("mesh:{mesh_id}:Pending");
+    let key = format!("mesh:{mesh_id}:{state:?}");
     // A bounded reachability wait on the exact launched birth, a Ping and no Status: the target
     // answers `Pong` once its router serves with its authority filled (until then every op,
     // ping included, is a typed NotReady). Then exactly one Status call.
@@ -2985,9 +2988,9 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
         reachable = reach.is_ok(),
         last = %match &reach { Ok(s) | Err(s) => s.as_str() },
     )
-    .in_scope(|| tracing::info!("the launched birth was waited for before the Pending hand-off"));
+    .in_scope(|| tracing::info!("the launched birth was waited for before the mesh-state hand-off"));
     if let Err(last) = reach {
-        return Err(format!("{}: unreachable for 20 s before the Pending hand-off ({pings} pings, last: {last}); nothing was sent, and Build(shape) does not start under an assumed state", target.name));
+        return Err(format!("{}: unreachable for 20 s before the {state:?} hand-off ({pings} pings, last: {last}); nothing was sent, and Build(shape) does not start under an assumed state", target.name));
     }
     // The one call. Applied and AlreadyApplied succeed; every other outcome fails the step typed,
     // and the rectifier is the retry.
@@ -2996,28 +2999,35 @@ pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver
         rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => ("applied".to_string(), Ok(())),
             StatusReply::AlreadyApplied => ("already-applied".to_string(), Ok(())),
-            StatusReply::RejectedStaleMesh { held } => (format!("rejected-stale-mesh: the target holds mesh id {held}"), Err(format!("{} holds mesh id {held}, not {mesh_id}: no replacement id is minted; the Pending hand-off is refused", target.name))),
-            StatusReply::RejectedInvalidMeshTransition { current } => (format!("rejected-invalid-mesh-transition: {current:?}"), Err(format!("{} already holds its Mesh at {current:?}: Pending is a backward move", target.name))),
-            other => (format!("{other:?}"), Err(format!("{}: the Pending hand-off was answered {other:?}; Pending is not certain and Build(shape) does not start under an assumed state", target.name))),
+            StatusReply::RejectedStaleMesh { held } => (format!("rejected-stale-mesh: the target holds mesh id {held}"), Err(format!("{} holds mesh id {held}, not {mesh_id}: no replacement id is minted; the {state:?} hand-off is refused", target.name))),
+            StatusReply::RejectedInvalidMeshTransition { current } => (format!("rejected-invalid-mesh-transition: {current:?}"), Err(format!("{} already holds its Mesh at {current:?}: {state:?} is a backward move", target.name))),
+            other => (format!("{other:?}"), Err(format!("{}: the {state:?} hand-off was answered {other:?}; {state:?} is not certain and Build(shape) does not start under an assumed state", target.name))),
         },
-        other => (format!("{}: {other:?}", other.name()), Err(format!("{}: the Pending hand-off call ended {}: Pending is not certain and Build(shape) does not start under an assumed state ({other:?})", target.name, other.name()))),
+        other => (format!("{}: {other:?}", other.name()), Err(format!("{}: the {state:?} hand-off call ended {}: {state:?} is not certain and Build(shape) does not start under an assumed state ({other:?})", target.name, other.name()))),
     };
-    tracing::info_span!(
-        "rdm.node_admin.mesh.update.via-pending-handoff",
-        node = %me,
-        node_id = %me_id,
-        incarnation = %me_inc,
-        target = %target.name,
-        target_node_id = %target.node_id,
-        target_incarnation = %target.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(),
-        mesh = %mesh,
-        mesh_id = %mesh_id,
-        key = %key,
-        state = "Pending",
-        attempt = 1u32,
-        outcome = %outcome,
-    )
-    .in_scope(|| tracing::info!("the fabric primary applies Pending at the mesh's bootstrap admin"));
+    // A new mesh's bootstrap admin is handed Pending; the admin created for an existing mesh is
+    // handed the mesh's current state (states.md: a mesh's state only moves forward).
+    macro_rules! handoff_span {
+        ($name:literal) => {
+            tracing::info_span!(
+                $name,
+                node = %me,
+                node_id = %me_id,
+                incarnation = %me_inc,
+                target = %target.name,
+                target_node_id = %target.node_id,
+                target_incarnation = %target.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(),
+                mesh = %mesh,
+                mesh_id = %mesh_id,
+                key = %key,
+                state = ?state,
+                attempt = 1u32,
+                outcome = %outcome,
+            )
+        };
+    }
+    let span = if state == MeshState::Pending { handoff_span!("rdm.node_admin.mesh.update.via-pending-handoff") } else { handoff_span!("rdm.node_admin.mesh.update.via-state-handoff") };
+    span.in_scope(|| tracing::info!("the fabric primary applies its mesh's state at the mesh's first admin"));
     verdict
 }
 
