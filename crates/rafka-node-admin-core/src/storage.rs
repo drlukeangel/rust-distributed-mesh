@@ -18,6 +18,7 @@
 
 use async_trait::async_trait;
 use crate::model::{IncarnationId, MeshId, NodeId, PathName, EndpointId};
+pub use rafka_node_admin_client::NameHeld;
 use crate::record_store::{FileRecords, StorageError};
 use rafka_mesh_entity::connections::{ConnectionIndex, NodeConnection};
 use serde::{Deserialize, Serialize};
@@ -187,14 +188,26 @@ pub trait NodesStorage: Send + Sync {
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
     /// Forget the contact `node_id`.
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError>;
-    /// Keep `row` as the record at its `path.name` (a blind put of its own key).
-    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError>;
+    /// Save `row` as the record at its `path.name`. The claim of the name is here, inside the
+    /// adapter, and nowhere else (R13): insert-and-fail on the `path.name` key, decided by the store
+    /// in one step against every other row write. The key is free when no row is there, the row
+    /// there is the same node's, or it is another node's `Deleted` row: `row` is put (a blind put of
+    /// the whole row). Any other row holds the name: `NameHeld` naming its node, and nothing is written.
+    async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError>;
     /// The record at `name`: a point read through the `path.name` key; `None` when none was ever written.
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
     /// `holder` lets go of the key `name`: its row goes when it is `holder`'s, decided by the store
     /// in one step against every other row write; a row of another node there (the name was
     /// released before and claimed since) is left as it is. Returns whether `holder`'s row went.
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError>;
+}
+
+/// What a save of `row` meets in `held`, the row at its key: free, or held by another node.
+fn claim_against(held: Option<&NodeRow>, row: &NodeRow) -> Result<(), NameHeld> {
+    match held {
+        Some(h) if h.node_id != row.node_id && h.status != crate::model::NodeStatus::Deleted => Err(NameHeld { name: row.name.clone(), by: h.node_id.clone() }),
+        _ => Ok(()),
+    }
 }
 
 /// A nodes store held in memory.
@@ -233,9 +246,14 @@ impl NodesStorage for MemoryNodesStorage {
         self.contacts.lock().unwrap().remove(node_id);
         Ok(())
     }
-    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
-        self.rows.lock().unwrap().insert(row.name.to_string(), row.clone());
-        Ok(())
+    async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
+        // The internal index is the map's key: the look and the insert are one step under its lock.
+        let mut rows = self.rows.lock().unwrap();
+        let claimed = claim_against(rows.get(&row.name.to_string()), row);
+        if claimed.is_ok() {
+            rows.insert(row.name.to_string(), row.clone());
+        }
+        Ok(claimed)
     }
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         Ok(self.rows.lock().unwrap().get(&name.to_string()).cloned())
@@ -262,8 +280,8 @@ pub struct FileNodesStorage {
     contacts: FileRecords,
     runtimes: FileRecords,
     rows: FileRecords,
-    /// Every write of a row is one at a time, so a release's look at the key and its removal are
-    /// one step against every other write of this store (the fabric-primary is the rows' one writer).
+    /// Every write of a row is one at a time, so a save's or a release's look at the key and its
+    /// write are one step against every other write of this store.
     row_writes: tokio::sync::Mutex<()>,
 }
 
@@ -303,9 +321,16 @@ impl NodesStorage for FileNodesStorage {
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError> {
         self.contacts.remove(node_id.as_str()).await
     }
-    async fn put_node_row(&self, row: &NodeRow) -> Result<(), StorageError> {
+    async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
+        // One row write at a time: the look at the key and the write are one step against every
+        // other write of this store.
         let _one = self.row_writes.lock().await;
-        self.rows.write(&row.name.to_string(), ROW_FORMAT, row).await
+        let key = row.name.to_string();
+        let claimed = claim_against(self.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.as_ref(), row);
+        if claimed.is_ok() {
+            self.rows.write(&key, ROW_FORMAT, row).await?;
+        }
+        Ok(claimed)
     }
     async fn node_row_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         self.rows.read(&name.to_string(), ROW_FORMAT).await
@@ -600,13 +625,14 @@ mod tests {
         let check = async |n: &dyn NodesStorage, store: &str| {
             let (first, second) = (NodeId::mint(), NodeId::mint());
             let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");
-            n.put_node_row(&held).await.unwrap();
-            let _ = n.put_node_row(&row(&second, crate::model::NodeStatus::Pending, "silver")).await;
+            assert_eq!(n.put_node_row(&held).await, Ok(Ok(())), "{store}: a free key takes the row");
+            let refused = n.put_node_row(&row(&second, crate::model::NodeStatus::Pending, "silver")).await;
+            assert_eq!(refused, Ok(Err(NameHeld { name: name.clone(), by: first.clone() })), "{store}: another node's live row holds {name}");
             assert_eq!(n.node_row_at(&name).await.unwrap(), Some(held.clone()), "{store}: nothing is written by a refused save");
             let deleted = row(&first, crate::model::NodeStatus::Deleted, "gold");
-            n.put_node_row(&deleted).await.unwrap();
+            assert_eq!(n.put_node_row(&deleted).await, Ok(Ok(())), "{store}: the holder's own row is a put");
             let next = row(&second, crate::model::NodeStatus::Pending, "gold");
-            n.put_node_row(&next).await.unwrap();
+            assert_eq!(n.put_node_row(&next).await, Ok(Ok(())), "{store}: a Deleted row holds no name");
             assert_eq!(n.node_row_at(&name).await.unwrap(), Some(next), "{store}: the save over a Deleted row is written");
         };
         check(&MemoryNodesStorage::default(), "memory").await;

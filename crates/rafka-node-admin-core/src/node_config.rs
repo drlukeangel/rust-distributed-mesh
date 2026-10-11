@@ -84,8 +84,12 @@ impl NodeConfigs {
         span.record("route", route.token());
         let _one = self.one_at_a_time.lock().await;
         let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
-        if let Err(e) = storage.put_node_row(&row).await {
-            let detail = format!("{me}: nodes.storage refused the row of {node_id}: {e}");
+        let refused = match storage.put_node_row(&row).await {
+            Ok(Ok(())) => None,
+            Ok(Err(held)) => Some(format!("{me}: nodes.storage refused the row of {node_id}: {held}")),
+            Err(e) => Some(format!("{me}: nodes.storage refused the row of {node_id}: {e}")),
+        };
+        if let Some(detail) = refused {
             span.record("detail", detail.as_str());
             return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
         }

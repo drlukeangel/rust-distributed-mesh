@@ -169,6 +169,7 @@ impl NodeRows {
             Ok(Moved::Renamed) => ("renamed", None),
             Ok(Moved::AlreadyMoved) => ("already-moved", Some(format!("{me}: the replace of {name} ({}) reached RenamePredecessor again: the predecessor holds {to} and no longer holds {name}; nothing is written", record.node_id))),
             Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
+            Err(RenameRefused::NameHeld(e)) => ("name-held", Some(e.to_string())),
             Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
         };
         span.record("outcome", outcome);
@@ -217,9 +218,14 @@ impl NodeRows {
         span.record("node_id", n.node_id.as_str()).record("keys", n.config.len() as u64).record("held_from", from);
         let row = NodeRow { name: name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Deleted, config: n.config.clone() };
         match self.storage.put_node_row(&row).await {
-            Ok(()) => {
+            Ok(Ok(())) => {
                 span.record("outcome", "row-deleted");
                 span.in_scope(|| tracing::info!("node.delete: the row says Deleted; the record and its config stay"));
+            }
+            Ok(Err(held)) => {
+                let detail = format!("{me}: the Deleted row of {name} ({}) is not written: {held}", n.node_id);
+                span.record("outcome", "name-held").record("detail", detail.as_str());
+                span.in_scope(|| tracing::info!("node.delete: the name is held by another node; nothing is written"));
             }
             Err(e) => {
                 let detail = format!("{me}: nodes.storage refused the Deleted row of {name} ({}): {e}", n.node_id);
@@ -342,10 +348,16 @@ impl NodeRows {
         span.record("keys", config.len() as u64);
         let row = NodeRow { name: name.clone(), node_id: birth.node_id.clone(), status: birth.status, config };
         match self.storage.put_node_row(&row).await {
-            Ok(()) => {
+            Ok(Ok(())) => {
                 span.record("outcome", if seed.is_some() { "row-seeded" } else { "row-written" });
                 span.in_scope(|| tracing::info!("node.create: the birth's row is at its path.name"));
                 seed.map(|_| row)
+            }
+            Ok(Err(held)) => {
+                let detail = format!("{me}: the row of {name} ({}) is not written: {held}", birth.node_id);
+                span.record("outcome", "name-held").record("detail", detail.as_str());
+                span.in_scope(|| tracing::info!("node.create: the name is held by another node; nothing is written"));
+                None
             }
             Err(e) => {
                 let detail = format!("{me}: nodes.storage refused the row of {name} ({}): {e}", birth.node_id);
@@ -362,6 +374,9 @@ impl NodeRows {
 pub enum RenameRefused {
     /// The body differs from what RDM holds in a field RDM owns (a live node's name among them).
     RdmOwned(rafka_node_admin_client::MetaFieldIsRdmOwned),
+    /// The new name is held by another node: the store adapter's insert-and-fail refused it and
+    /// nothing was written.
+    NameHeld(crate::storage::NameHeld),
     /// The rename could not be decided or written: why, whole.
     Unwritten(String),
 }
@@ -386,6 +401,7 @@ impl NodeRows {
         let (outcome, detail) = match &r {
             Ok(()) => ("renamed", None),
             Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
+            Err(RenameRefused::NameHeld(e)) => ("name-held", Some(e.to_string())),
             Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
         };
         span.record("outcome", outcome);
@@ -418,7 +434,7 @@ impl NodeRows {
         let held_there = there.is_some_and(|r| r.node_id == record.node_id);
         if !held_there {
             let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
-            self.storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?;
+            self.storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
         }
         // The new name is the node's: it lets go of the old key.
         let released = self.storage.release_node_row(from, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))?;

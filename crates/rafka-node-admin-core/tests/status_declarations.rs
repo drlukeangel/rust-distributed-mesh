@@ -449,7 +449,7 @@ impl NodesStorage for RefusingRows {
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.0.remove_contact(node_id).await
     }
-    async fn put_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+    async fn put_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<(), rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the write".into() })
     }
     async fn node_row_at(&self, name: &rafka_node_admin_core::model::PathName) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
@@ -747,6 +747,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         rig.storage
             .put_node_row(&rafka_node_admin_core::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone() })
             .await
+            .unwrap()
             .unwrap();
         let node = serve_node(&newcomer).await;
         let resolver = Arc::new(StaticResolver::new());

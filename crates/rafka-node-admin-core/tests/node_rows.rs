@@ -219,7 +219,7 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver") }).await.unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver") }).await.unwrap().unwrap();
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         let op = "create-node:mesh1.rpc.2";
@@ -281,7 +281,7 @@ fn a_rename_into_a_name_another_row_holds_is_written_never_refused_name_held() {
         let me_id = t.node(&me).expect("the fabric-primary is in the view").node_id.clone();
         let view = RwLock::new(t);
         for n in [&holder, &renaming] {
-            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone() }).await.unwrap();
+            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone() }).await.unwrap().unwrap();
         }
         let rows = NodeRows::new(me.clone(), me_id, storage.clone());
         let held = meta_of(&renaming);
@@ -318,7 +318,7 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_gets_its_row_at_once() {
         let me_id = topology.try_read().expect("the view is free").node(&me).expect("the admin is in the view").node_id.clone();
         records.set_rows(Arc::new(NodeRows::new(me, me_id, storage.clone())));
         let other = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: other.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver") }).await.unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: other.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver") }).await.unwrap().unwrap();
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         install(&records, &topology, move |v| v.nodes.push(birth)).await;
@@ -345,7 +345,7 @@ fn a_birth_the_view_holds_only_after_the_create_completed_gets_its_row_seeded() 
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver") }).await.unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver") }).await.unwrap().unwrap();
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         let op = "create-node:mesh1.rpc.2";
@@ -384,7 +384,7 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         let topology = RwLock::new(before);
         let rpc1 = view().nodes.into_iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap();
         let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum") };
-        storage.put_node_row(&written).await.unwrap();
+        storage.put_node_row(&written).await.unwrap().unwrap();
         let after = {
             let mut t = topology.read().await.clone();
             for n in t.nodes.iter_mut() {
@@ -416,7 +416,7 @@ fn a_node_lets_go_only_of_its_own_row() {
         for (kind, store) in stores {
             let id = NodeId::mint();
             let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum") };
-            store.put_node_row(&held).await.unwrap();
+            store.put_node_row(&held).await.unwrap().unwrap();
             assert!(!store.release_node_row(&held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
             assert_eq!(store.node_row_at(&held.name).await.unwrap(), Some(held.clone()), "{kind}: a release by another node leaves the row");
             assert!(store.release_node_row(&held.name, &id).await.unwrap(), "{kind}: the holder lets go of its key");
@@ -462,7 +462,7 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
         ];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
         let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap().unwrap();
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ, pred.status)
     });
@@ -515,7 +515,7 @@ fn a_recovered_nodes_row_moves_to_old_ends_deleted_and_its_successor_is_seeded_f
         ];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
         let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap().unwrap();
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ)
     });
@@ -568,7 +568,7 @@ fn a_successor_heard_before_the_predecessor_lets_go_gets_its_row_at_once() {
         ];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
         let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap().unwrap();
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ, pred.status)
     });
@@ -605,7 +605,7 @@ fn a_rename_the_seat_holder_never_saw_announced_moves_the_row_from_the_old_name_
         let acts = vec![renamed, Act::Frame(op, "RenamePredecessor"), Act::Frame(op, "Complete")];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
         let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap().unwrap();
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone())
     });
@@ -687,7 +687,7 @@ fn a_seat_taken_mid_replace_moves_the_row_from_the_rename_receipt() {
         let acts = vec![Act::Frame(op, "AllocateIdentity"), heard, Act::Frame(op, "WaitForNodeReady"), Act::Frame(op, "Complete")];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
         let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap().unwrap();
         earlier_attempt_renamed(&r, &pred).await;
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), pred.node_id.clone(), succ, pred.status)
@@ -726,8 +726,8 @@ fn a_rename_handled_again_after_the_successor_took_the_name_leaves_its_row() {
         .await;
         let held_old = NodeRow { name: pred.name.renamed(), node_id: pred.node_id.clone(), status: pred.status, config: tier("gold") };
         let held = NodeRow { name: pred.name.clone(), node_id: successor.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("platinum") };
-        r.storage.put_node_row(&held_old).await.unwrap();
-        r.storage.put_node_row(&held).await.unwrap();
+        r.storage.put_node_row(&held_old).await.unwrap().unwrap();
+        r.storage.put_node_row(&held).await.unwrap().unwrap();
         earlier_attempt_renamed(&r, &pred).await;
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         (r.storage.node_row_at(&pred.name.renamed()).await.unwrap(), r.storage.node_row_at(&pred.name).await.unwrap(), held_old, held)
@@ -772,7 +772,7 @@ fn a_fabric_primary_whose_view_never_names_the_old_path_admits_and_writes_the_pa
         ];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
         let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap().unwrap();
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         let old: PathName = "mesh1.rpc.1.old".parse().unwrap();
         assert!(r.env.topology.read().await.node(&old).is_none(), "the view never names {old}");
