@@ -18,6 +18,12 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     let created: Vec<&Value> = named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").into_iter().filter(|sp| sp["attributes"]["outcome"] == "created").collect();
     assert_eq!(created.len(), 1, "the fabric-primary created one admin for mesh2: {created:?}");
     assert_eq!(s(&created[0]["attributes"]["node"]), "mesh2.admin.2", "{}", created[0]);
+    // The created admin is handed the mesh's current state before its Ready, never Pending: a
+    // mesh's state only moves forward (states.md), and mesh2 is past Pending.
+    let handed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.update.via-state-handoff").into_iter().filter(|sp| sp["attributes"]["target"] == "mesh2.admin.2" && sp["attributes"]["outcome"] == "applied").collect();
+    assert!(handed.iter().any(|sp| sp["attributes"]["state"] != "Pending"), "the created admin is handed mesh2's current state: {handed:?}");
+    let pending: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|sp| sp["attributes"]["target"] == "mesh2.admin.2").collect();
+    assert!(pending.is_empty(), "the created admin is never handed Pending: {pending:?}");
     let amended = assert_resumed(&run, "mesh2.admin.2", 4);
     assert!(start_ns(created[0]) < start_ns(&amended), "the admin is created before the amendment admits it");
     let outer = format!("shutdown-mesh:{}", run.mesh2_id);
@@ -32,5 +38,12 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     let captured: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-accepted-roster").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2 && sp["attributes"]["source"] == "captured").collect();
     assert!(captured.is_empty(), "the resumed attempt captures no roster: {captured:?}");
     let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2).collect();
-    assert!(resumed.iter().any(|sp| attr_u(sp, "roster") == 4 && attr_u(sp, "remaining") == 1), "the created admin runs only the birth with no terminal receipt over the roster plus the amendment: {resumed:?}");
+    // Which ordinary member exited before the kill is the run's own timing (the tier runs in
+    // parallel and the door holds only rpc.2's drain): the lost primary's recorded exit is always
+    // retained, and every tier member is either retained or run, never both, never re-run. The
+    // final primary itself is no tier member.
+    assert!(
+        resumed.iter().any(|sp| attr_u(sp, "roster") == 4 && s(&sp["attributes"]["retained_births"]).split(',').any(|b| b == "mesh2.admin.1") && attr_u(sp, "retained") + attr_u(sp, "remaining") == 3),
+        "the created admin runs only the members with no terminal receipt over the roster plus the amendment, the lost primary's exit retained: {resumed:?}"
+    );
 }
