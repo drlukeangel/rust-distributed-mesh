@@ -110,6 +110,8 @@ struct Membership {
     joined: AtomicBool,
     /// While set, the node is not ready and this is what its Ready check names.
     not_ready: Mutex<Option<String>>,
+    /// While set, the node reports Pending with no blocker: its Ready check fails with this and names nothing.
+    pending: Mutex<Option<String>>,
 }
 
 #[async_trait::async_trait]
@@ -118,10 +120,13 @@ impl NodeObserver for Membership {
         self.joined.load(Ordering::SeqCst).then(|| self.published.lock().unwrap().clone()).flatten()
     }
     async fn ready(&self, _: &Node) -> Result<(), String> {
-        match self.not_ready.lock().unwrap().clone() {
+        match self.not_ready.lock().unwrap().clone().or_else(|| self.pending.lock().unwrap().clone()) {
             Some(why) => Err(why),
             None => Ok(()),
         }
+    }
+    async fn ready_blocker(&self, _: &Node) -> Option<String> {
+        self.not_ready.lock().unwrap().clone()
     }
 }
 
@@ -283,7 +288,7 @@ impl Rig {
         };
         let runs = Arc::new(AttemptRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), membership: Arc::new(Membership { published: Mutex::new(None), joined: AtomicBool::new(false), not_ready: Mutex::new(None) }), sink: Arc::default(), template, data_root }
+        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), membership: Arc::new(Membership { published: Mutex::new(None), joined: AtomicBool::new(false), not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root }
     }
 
     /// Run the create pipeline for `name` in `attempt` of `build`, as the executing admin does once
@@ -471,6 +476,33 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         }
     );
     assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
+}
+
+/// CONTRACT: a create whose node has joined but only reports Pending (no hook has named a blocker)
+/// streams no `Blocked` frame however long the Ready check fails; when the node is ready the stream
+/// emits `node.ready` and `Complete`.
+#[test]
+fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
+    let cap = capture();
+    let (frames, end) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        *rig.membership.pending.lock().unwrap() = Some("mesh1.rpc.3 reports Pending".to_string());
+        rig.membership.joined.store(true, Ordering::SeqCst);
+        let served = serve(door(&rig, Duration::from_secs(30)).await).await;
+        let nodes = nodes_over(&served.carrier);
+        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let build = BuildId(stream.accepted().build_id.0.clone());
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
+        });
+        tokio::time::sleep(Duration::from_millis(450)).await;
+        *rig.membership.pending.lock().unwrap() = None;
+        drain(&mut stream, Duration::from_secs(10)).await
+    });
+    assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
+    assert!(!frames.iter().any(|f| matches!(f, Frame::Blocked { .. })), "a Pending node with no named blocker is not a Blocked frame: {frames:?}");
+    assert_eq!(frames[frames.len() - 2..], [Frame::Event(NodeEvent::Ready), Frame::Complete], "the ready node ends the stream: {frames:?}");
 }
 
 /// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
