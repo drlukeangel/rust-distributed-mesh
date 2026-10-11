@@ -538,7 +538,7 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
     let named = roster.iter().filter_map(|b| b.node.parse::<crate::model::PathName>().ok());
     let top = named.chain(held.iter().cloned()).filter(|p| p.mesh == mesh && p.kind == NodeKind::NodeAdmin).map(|p| p.ordinal).max().unwrap_or(0);
     let next = top.checked_add(1).ok_or_else(|| format!("{mesh}: no admin ordinal is free above {top}"))?;
-    Ok(crate::model::PathName { mesh: mesh.to_string(), kind: NodeKind::NodeAdmin, ordinal: next, old: false })
+    Ok(crate::model::PathName::new(mesh, NodeKind::NodeAdmin, next))
 }
 
 /// The roster a leaving primary `me` runs `LeaveMesh` over, and the owner's step receipts it read
