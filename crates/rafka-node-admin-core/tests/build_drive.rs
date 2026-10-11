@@ -575,6 +575,74 @@ async fn a_run_handed_back_is_never_dispatched_again_for_an_operation_its_receip
     eprintln!("span rdm.node_admin.build.update.via-drive trace_id={} {:?}", drives[0].0, drives[0].1);
 }
 
+/// Records what ran and writes nothing: the executor's own log holds the receipts
+/// (`crate::loopback::Loopback::own_log`).
+struct Records(Arc<Creates>);
+
+#[async_trait::async_trait]
+impl OperationRunner for Records {
+    async fn run(&self, _: &BuildId, _: u32, op: &BuildOperation) -> Result<(), String> {
+        self.0 .0.lock().unwrap().push(op.key());
+        Ok(())
+    }
+}
+
+/// CONTRACT (node-rpc-envelope.md, Build op `0x20`: a `Step` frame goes out "only after the step's
+/// Complete receipt is durable on the executor that wrote it"; the stream reply is the authority and
+/// progress waits on no gossip): an executor on another host writes its receipts on its own log, and
+/// the fabric-primary's log holds them only once the Build topic carries them. mesh1's primary
+/// `mesh1.admin.2` runs mesh1's rpc node, and its run is cut before mesh2's work and handed back.
+/// Neither the fabric-primary's log nor its view holds the new node yet; the `Complete` frame on the
+/// run's stream says it completed, and the drive plans from that: the completed operation is not
+/// dispatched again, and the drive stalls naming mesh2's held admin.
+#[tokio::test]
+async fn a_remote_executors_completed_operation_is_never_dispatched_again_before_the_build_topic_carries_its_receipt() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    let mut lost = node("mesh2.admin.1", false, false);
+    lost.status = NodeStatus::Dead;
+    t.nodes.push(lost);
+    let mut held = node("mesh2.admin.2", false, false);
+    held.status = NodeStatus::PendingReconnect;
+    t.nodes.push(held);
+    t.nodes.push(node("mesh2.rpc.1", false, false));
+    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, admins), (rafka_mesh_entity::NodeKind::RpcNode, rpcs)]);
+    let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 2), counts("mesh2", 2, 1)] } };
+    let r = rig_for(t, change, |ran, _| Arc::new(Records(ran))).await;
+    let remote = r.dispatch.own_log("mesh1.admin.2");
+    // The verdict an executor reports is recorded on the fabric-primary's own log, as the product's
+    // `LocalVerdicts` does; the step receipts are not.
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        accepted: e.accepted.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: e.gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: r.builds.clone() }),
+        rows: e.rows.clone(),
+    });
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-remote-receipt");
+    let drive = Drive::detached(r.build.clone());
+    let end = tokio::time::timeout(Duration::from_secs(2), env.run(&drive)).await;
+    let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+    let ran = r.ran.0.lock().unwrap().clone();
+    assert_eq!((dispatched.len(), ran.len()), (1, 1), "the completed operation is dispatched once: dispatched {:?}, ran {:?}", &dispatched[..dispatched.len().min(4)], &ran[..ran.len().min(4)]);
+    assert!(remote.read_build(&r.build).await.unwrap().completed_in_run("create-node:mesh1.rpc.2"), "the receipt is durable on the executor");
+    assert!(!r.builds.read_build(&r.build).await.unwrap().completed_in_run("create-node:mesh1.rpc.2"), "the fabric-primary's log has not heard the receipt");
+    match end {
+        Ok(DriveEnd::Stalled(why)) => assert!(why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "{why}"),
+        other => panic!("the drive stalls naming mesh2's held admin: {other:?}"),
+    }
+    let drives = capture.spans("rdm.node_admin.build.update.via-drive");
+    assert_eq!(drives.len(), 1, "{drives:?}");
+    assert_eq!(drives[0].1.get("dispatches").map(String::as_str), Some("1"), "{:?}", drives[0].1);
+    eprintln!("span rdm.node_admin.build.update.via-drive trace_id={} {:?}", drives[0].0, drives[0].1);
+}
+
 /// CONTRACT: an executor runs the first operation of the attempt the fabric-primary claimed for it
 /// whatever its own view says. The fabric-primary's view named `mesh1.admin.2` the executor; the view
 /// of `mesh1.admin.2` holds no mesh primary yet (it has not elected itself since the old one was

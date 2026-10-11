@@ -1385,9 +1385,33 @@ mod unheard_mesh_hold {
         assert_eq!(path.to_string(), admins[0], "the first admin in path order");
         let first = e.node_id(&admins[0]).await;
         assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
-        // The decision released one node-admin: that release is spent until the mesh is heard again, so
-        // the second node-admin's exit is evidence, not an attempt.
-        assert!(started.iter().any(|k| k.2 == vec!["recovery".to_string(), peer_mesh.clone()]), "the release is recorded: {started:?}");
+        // The restore runs on the same Build (mesh-investigation.md step 6): its attempt is claimed for the
+        // fabric-primary, its receipt written and the Build settled; the view holds the restored admin's
+        // new birth, which the fabric-primary has not heard on the backbone yet.
+        use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter as _, BuildStepReceipt, ClaimOutcome, StepOutcome};
+        let restore = before.attempt + 1;
+        let fp = e.fabric_primary().await;
+        assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { build_id: before.build_id.clone(), attempt: restore, executor: fp }).await.unwrap(), ClaimOutcome::Won);
+        e.builds
+            .append_step_receipt(&BuildStepReceipt { build_id: before.build_id.clone(), attempt: restore, operation: format!("replace-node:{}", admins[0]), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None })
+            .await
+            .unwrap();
+        e.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: before.build_id.clone(), attempt: restore, outcome: AttemptOutcome::Converged }).await.unwrap();
+        {
+            let fabric_id = e.view.read().await.fabric.id.clone();
+            let reborn = birth(&e.world, &e.book, &fabric_id, &admins[0], None);
+            let mut v = e.view.write().await;
+            v.nodes.retain(|n| n.name.to_string() != admins[0]);
+            v.nodes.push(reborn);
+        }
+        // The decision released one node-admin, and the Build says which: a reconcile pass that holds
+        // nothing of the earlier passes (a fresh `started`) reads it there, so the second node-admin's exit
+        // is evidence, not an attempt, until the mesh is heard again.
+        let mut fresh = HashSet::new();
+        assert_eq!(pass(&e, &mut fresh, &mut held, &decided).await, None, "no second node-admin of the reborn mesh is replaced from here");
+        let second = e.node_id(&admins[1]).await;
+        assert!(held.iter().any(|(n, _)| n.as_str() == second), "the second node-admin's exit is held as evidence: {held:?}");
+        assert_eq!(e.accepted.current(&*e.builds).await.unwrap().attempt, restore, "no attempt was opened after the restore");
     }
 }
 
