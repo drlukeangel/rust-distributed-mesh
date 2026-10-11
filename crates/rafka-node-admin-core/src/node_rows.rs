@@ -223,14 +223,92 @@ impl NodeRows {
     /// the same MeshId's re-claim is accepted and writes nothing; a name whose holder's row folds
     /// `Dead` is released to the claimant. One `via-mesh-row` span.
     pub async fn claim_mesh(&self, mesh: &str, mesh_id: &MeshId, operation: &str, moment: &'static str) -> Result<crate::storage::MeshClaimed, MeshRowRefused> {
-        let _ = (mesh, mesh_id, operation, moment);
-        Ok(crate::storage::MeshClaimed::Written)
+        let path = self.mesh_rows.as_ref().map(|m| m.path.clone()).unwrap_or_default();
+        let span = tracing::info_span!(
+            "rdm.node_admin.mesh.create.via-mesh-row",
+            node = %self.me,
+            mesh = %mesh,
+            mesh_id = %mesh_id,
+            path = %path,
+            operation,
+            moment,
+            outcome = tracing::field::Empty,
+            released = tracing::field::Empty,
+            held_by = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            "otel.kind" = "internal",
+        );
+        let r = tracing::Instrument::instrument(
+            async {
+                let store = self.mesh_rows.as_ref().ok_or_else(|| MeshRowRefused::Unwritten(format!("{} binds no mesh row store, so {mesh}'s name is not claimed", self.me)))?;
+                {
+                    let t = self.view.read().await;
+                    if !writes_for(&t, &self.me_id, mesh) {
+                        let writer = match (t.cohort_primary(mesh, NodeKind::NodeAdmin), t.fabric_primary()) {
+                            (Some(p), _) => format!("{mesh}'s primary node-admin {} ({}) writes it", p.name, p.node_id),
+                            (None, Some(fp)) => format!("{mesh} has no primary node-admin, and the fabric-primary {} ({}) writes it for it", fp.name, fp.node_id),
+                            (None, None) => format!("{mesh} has no primary node-admin and the view holds no fabric-primary to write it for it"),
+                        };
+                        return Err(MeshRowRefused::NotMeshPrimary(format!("{} ({}) is not the writer of {mesh}'s rows and refuses its mesh row: {writer}", self.me, self.me_id)));
+                    }
+                }
+                let dead: HashSet<MeshId> = store
+                    .status
+                    .mesh_statuses()
+                    .await
+                    .map_err(|e| MeshRowRefused::Unwritten(format!("{}: status.storage could not be read for the meshes whose row is Dead, so {mesh}'s name is not claimed: {e}", self.me)))?
+                    .into_iter()
+                    .filter(|(_, state)| *state == rafka_node_rpc_contract::status::MeshState::Dead)
+                    .map(|(id, _)| id)
+                    .collect();
+                let row = crate::storage::MeshRow { path: store.path.clone(), name: mesh.to_string(), mesh_id: mesh_id.clone() };
+                store
+                    .meshes
+                    .put_mesh_row(&row, &dead)
+                    .await
+                    .map_err(|e| MeshRowRefused::Unwritten(format!("{}: mesh.storage refused the row of {mesh} at path {:?}: {e}", self.me, store.path)))?
+                    .map_err(MeshRowRefused::NameHeld)
+            },
+            span.clone(),
+        )
+        .await;
+        match &r {
+            Ok(claimed) => {
+                // A claim at creation begins the writer's tenure of the mesh: its seat claim is this one.
+                if moment == "creation" {
+                    self.mesh_tenure.lock().unwrap().insert(mesh.to_string());
+                }
+                span.record("outcome", claimed.outcome());
+                if let crate::storage::MeshClaimed::Reclaimed { from } = claimed {
+                    span.record("released", from.to_string().as_str());
+                }
+            }
+            Err(e) => {
+                span.record("outcome", e.outcome()).record("detail", e.to_string().as_str());
+                if let MeshRowRefused::NameHeld(h) = e {
+                    span.record("held_by", h.by.to_string().as_str());
+                }
+            }
+        }
+        span.in_scope(|| tracing::info!("mesh row: the name claim decided"));
+        r
     }
 
     /// Claim the row of every mesh `now` names (with its id) that this admin writes for and has not
     /// claimed in its current tenure; a mesh it no longer writes for leaves the tenure.
     pub async fn claim_taken_meshes(&self, now: &Topology) {
-        let _ = now;
+        if self.mesh_rows.is_none() {
+            return;
+        }
+        let taken: Vec<(String, MeshId)> = {
+            let mut tenure = self.mesh_tenure.lock().unwrap();
+            tenure.retain(|mesh| writes_for(now, &self.me_id, mesh));
+            now.meshes.iter().filter_map(|m| m.id.clone().map(|id| (m.name.clone(), id))).filter(|(mesh, _)| writes_for(now, &self.me_id, mesh) && tenure.insert(mesh.clone())).collect()
+        };
+        // Once per tenure, whatever the claim decided: a refusal is its span's outcome, never retried.
+        for (mesh, id) in taken {
+            let _ = self.claim_mesh(&mesh, &id, &format!("write-for:{mesh}"), "seat").await;
+        }
     }
 
     /// Share `written`, the record the config door holds its puts in, as this writer's record.

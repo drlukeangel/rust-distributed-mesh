@@ -337,6 +337,11 @@ impl Records {
         changed
     }
 
+    /// The writer of the mesh's node rows and mesh rows, once set.
+    pub fn row_writer(&self) -> Option<Arc<crate::node_rows::NodeRows>> {
+        self.rows.get().cloned()
+    }
+
     /// The writer of node rows the installed views feed (set once, at start).
     pub fn set_rows(&self, rows: Arc<crate::node_rows::NodeRows>) {
         let _ = self.rows.set(rows);
@@ -3072,9 +3077,29 @@ impl AdminRunner {
         use tracing::Instrument;
         match op {
             BuildOperation::CreateMesh { mesh } => {
-                {
+                // The mesh's id is minted, or kept from an earlier attempt of the same create.
+                let (id, minted) = {
                     let mut meshes = self.records.meshes.lock().unwrap();
-                    meshes.entry(mesh.clone()).or_insert_with(MeshId::mint);
+                    match meshes.get(mesh) {
+                        Some(id) => (id.clone(), false),
+                        None => {
+                            let id = MeshId::mint();
+                            meshes.insert(mesh.clone(), id.clone());
+                            (id, true)
+                        }
+                    }
+                };
+                // The mesh's name is claimed for that id before anything of the mesh is created, by
+                // the writer of its rows: this fabric-primary, as acting primary of a mesh with no
+                // primary yet (fabric-node-lifecycle.md §2.7). A refused claim creates nothing, and
+                // an id minted for it is withdrawn.
+                if let Some(rows) = self.records.rows.get() {
+                    if let Err(e) = rows.claim_mesh(mesh, &id, &op.key(), "creation").await {
+                        if minted {
+                            self.records.meshes.lock().unwrap().remove(mesh);
+                        }
+                        return Err(format!("{}: the name of {mesh} is not claimed for {id}, so nothing of it is created: {e}", op.key()));
+                    }
                 }
                 self.records.wake.poke();
                 Ok(())
@@ -4299,7 +4324,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
             verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
             rows: {
-                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()).with_written(written.clone()));
+                let rows = Arc::new(
+                    crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone())
+                        .with_configs(configs_slot.clone())
+                        .with_written(written.clone())
+                        // Mesh names are claimed within the path this admin names after its fabric.
+                        .with_mesh_rows(crate::node_rows::MeshRowStore { path: cfg.fabric.clone(), meshes: mesh_storage.clone(), status: status_storage.clone() }),
+                );
                 records.set_rows(rows.clone());
                 let held = rows.clone();
                 let _ = control.parked_old.set(Arc::new(move |old: &PathName| held.parked_at(old)));

@@ -663,7 +663,18 @@ impl FabricRounds {
                 self.spawn_command(key.clone(), false, node_id, expected, event, round_span.clone());
             }
             if !own_done {
-                match run_action(&*self.env.actions, &self.env.me, key.kind).await {
+                // Commit-state: the mesh primary writes its Mesh row again, the same MeshId's
+                // re-claim of its name (fabric-node-lifecycle.md §2.7), before the embedding's own
+                // writes; a refused claim is a failed action and owes no check-in.
+                let mesh_row = match (key.kind, self.env.records.row_writer(), view.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone())) {
+                    (RoundKind::StateCommit, Some(rows), Some(id)) => rows.claim_mesh(&mesh, &id, &format!("commit-state:{}", key.fabric_id), "state-commit").await.map(|_| ()).map_err(|e| e.to_string()),
+                    _ => Ok(()),
+                };
+                let action = match mesh_row {
+                    Ok(()) => run_action(&*self.env.actions, &self.env.me, key.kind).await,
+                    Err(e) => Err(e),
+                };
+                match action {
                     Ok(()) => own_done = true,
                     Err(e) => {
                         tracing::info_span!("rdm.node_admin.fabric.update.via-round-action-failed", node = %self.env.me, round = key.kind.command(), error = %e, "otel.kind" = "internal")
