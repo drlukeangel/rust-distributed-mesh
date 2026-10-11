@@ -1106,9 +1106,13 @@ impl DeploymentPipeline<'_> {
                 executor: Some(self.template.executor()),
             })
             .await;
-        let v = r.map_err(|reason| PipelineError { step, reason })?;
-        if let Err(e) = written {
-            let reason = format!("{}: the {step} receipt of {} (Build {}, attempt {}) was not written: {e}", self.template.executor(), run.operation, run.build_id, run.attempt);
+        let unwritten = written.err().map(|e| format!("{}: the {step} receipt of {} (Build {}, attempt {}) was not written: {e}", self.template.executor(), run.operation, run.build_id, run.attempt));
+        let v = match r {
+            Ok(v) => v,
+            // The step failed; its Failed receipt not written is said with it.
+            Err(reason) => return Err(PipelineError { step, reason: match unwritten { Some(u) => format!("{reason}; and {u}"), None => reason } }),
+        };
+        if let Some(reason) = unwritten {
             span.record("outcome", "receipt-refused");
             span.in_scope(|| tracing::info!(detail = %reason, "the step's receipt was refused: the step did not complete"));
             return Err(PipelineError { step, reason });
