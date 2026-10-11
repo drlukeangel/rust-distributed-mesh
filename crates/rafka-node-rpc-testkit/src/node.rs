@@ -167,6 +167,10 @@ impl RunningNode {
     /// connections were cut and `Leaving` declared when it stopped, so nothing is announced. The
     /// tasks end and the endpoints close once every reply it owes is settled.
     pub async fn stop_commanded(self) {
+        crate::taskdump::watched("stop_commanded", self.stop_commanded_inner()).await
+    }
+
+    async fn stop_commanded_inner(self) {
         self.server.settled().await;
         self.cancel.cancel();
         self.abort_publisher();
@@ -189,6 +193,10 @@ impl RunningNode {
     /// the endpoint drops whatever is still unsent; the linger keeps the
     /// node on the fabric long enough for its own `Leaving` to go out.
     pub async fn stop(self, linger: Duration) {
+        crate::taskdump::watched("stop", self.stop_inner(linger)).await
+    }
+
+    async fn stop_inner(self, linger: Duration) {
         self.cancel.cancel();
         *self.status.lock().unwrap() = MemberStatus::Leaving;
         let _ = self.declare_own(rafka_node_rpc_contract::status::NodeState::Leaving).await;
@@ -276,7 +284,7 @@ async fn start_with_rafka_time_hydrating(launch: &Launch, rafka_time: rafka_mesh
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step below is a child that lives exactly as long as the step, and `via-ready` closes it.
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.0, kind = launch.name.kind.name());
-    let started = start_booted(launch, rafka_time, hydration, register, &boot).await;
+    let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, register, &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }

@@ -60,3 +60,7 @@ path = "src/bin/faulted_node_admin.rs"
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+# `src/taskdump.rs`: the hang-capture build passes these two cfgs in RUSTFLAGS.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(tokio_taskdump)"] }
