@@ -6710,6 +6710,53 @@ mod tests {
         assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()], "the held stopped digest keeps the name the node last published");
     }
 
+    /// CONTRACT (CLAUDE.md read rule: a kind with no projection is a point read through its store
+    /// index; R12/R13: the mesh-primary writes the row, a stopped node is told nothing): `mesh1.rpc.1`
+    /// is stopped and its mesh-primary moves its row to `mesh1.rpc.1.old` on the fabric's shared store
+    /// root. Another admin, which performed no rename and holds nothing of it, lists the parked birth
+    /// at the row's name: its view reads the name through the row's `path.name` key. What must NOT
+    /// happen: that admin listing the birth at `mesh1.rpc.1`, the name its digest last published, so a
+    /// start or a `node.get` there names a row that no longer holds it.
+    #[tokio::test]
+    async fn a_parked_birth_whose_row_another_admin_moved_is_listed_at_the_rows_name() {
+        let d = crate::record_store::tempdir("row-name-view");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).unwrap();
+        let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).unwrap());
+        let book = DigestBook::default();
+        let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(held.clone());
+        assert!(book.stopped(rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "stop-node:mesh1.rpc.1".into(),
+            node_id: held.node.node_id.clone(),
+            incarnation: held.node.incarnation.clone(),
+            name: held.node.name.clone(),
+            event_at_rafka_ms: 1,
+        }));
+        // The mesh-primary's rename on the shared root, through the one writer of a row's move.
+        let to: PathName = "mesh1.rpc.1.old".parse().unwrap();
+        let mut record = Node::allocated(held.node.name.clone());
+        record.node_id = held.node.node_id.clone();
+        record.incarnation_id = Some(held.node.incarnation.clone());
+        record.status = NodeStatus::Leaving;
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new() };
+        assert_eq!(crate::storage::NodesStorage::claim_node_row(&primary, &row).await.unwrap(), Ok(crate::storage::Claimed::Written));
+        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, &held.node.name, &to).await.unwrap();
+        // This admin: the same book, its own store on the same root, no rename of its own.
+        let records = Arc::new(Records::default());
+        let _ = records.contacts.set(mine);
+        let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
+        view_projector(topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
+        let t = topology.read().await.clone();
+        let names: Vec<String> = t.nodes.iter().map(|n| n.name.to_string()).collect();
+        let n = t.node(&to).unwrap_or_else(|| panic!("the parked birth is listed at its row's name: {names:?}"));
+        assert_eq!((n.node_id.clone(), n.incarnation_id.clone(), n.status, n.parked), (held.node.node_id.clone(), Some(held.node.incarnation.clone()), NodeStatus::Leaving, true));
+        assert!(t.node(&held.node.name).is_none(), "nothing is listed at the name the row moved from: {names:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// CONTRACT (node.stop, a successor admin): an admin that joined after the stop never held the
     /// node's digest, only the stop overlay the mesh topology carries (`Members.in_flight`, read
     /// by `GetTopology`). Its view lists the node `Leaving` and parked from that overlay.
