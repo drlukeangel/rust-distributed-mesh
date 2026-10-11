@@ -7,10 +7,10 @@
 //! and `mesh1.rpc.1`. The Build grows `mesh1` by one rpc node.
 
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
-use rafka_node_admin_core::build::{BuildId, BuildOperation, MeshDesired};
+use rafka_node_admin_core::build::{BuildId, BuildOperation, FabricDesired, MeshDesired};
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
 use rafka_node_admin_core::build_drive::{Drive, DriveEnd, DriveEnv, Gate, Read};
-use rafka_node_admin_core::build_state::{BuildStateAdapter, BuildStateError, MemoryBuildStateAdapter};
+use rafka_node_admin_core::build_state::{BuildStateAdapter, BuildStateError, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::executor::OperationRunner;
 use rafka_node_admin_core::http::ControlPlane;
 use rafka_node_admin_core::model::*;
@@ -79,13 +79,17 @@ impl Gate for Switch {
     }
 }
 
-struct Creates(Mutex<Vec<String>>);
+/// Records what ran, and commits each operation's `Complete` receipt on the executor's log (the
+/// fixture's admins share one log) as the create pipeline does: a step's receipt is its durable
+/// commit (`deployment/pipeline.rs`, `append_step_receipt` in the step runner).
+struct Creates(Mutex<Vec<String>>, Arc<MemoryBuildStateAdapter>);
 
 #[async_trait::async_trait]
 impl OperationRunner for Creates {
-    async fn run(&self, _: &BuildId, _: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         self.0.lock().unwrap().push(op.key());
-        Ok(())
+        let receipt = BuildStepReceipt { build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+        self.1.append_step_receipt(&receipt).await.map_err(|e| e.to_string())
     }
 }
 
@@ -113,7 +117,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
     cp.topology = topology.clone();
     let opened = cp.submit("test", change).await.unwrap();
-    let ran = Arc::new(Creates(Mutex::new(Vec::new())));
+    let ran = Arc::new(Creates(Mutex::new(Vec::new()), builds.clone()));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
     let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, peer: Mutex::new(Default::default()) });
@@ -429,6 +433,133 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string(), "create-node:mesh2.admin.2".to_string(), "create-node:mesh2.rpc.2".to_string()]);
     let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
     assert_eq!(dispatched.last().map(|(x, _)| x.as_str()), Some("mesh2.admin.1"), "the mesh reconciles its own nodes once heard: {dispatched:?}");
+}
+
+/// The R-D1 fixture: mesh2's only node-admin is proven exited (so the fabric-primary of mesh1 is
+/// the executor of mesh2's work in its view), mesh2 keeps its rpc node, the Build grows mesh2 to two
+/// admins and two rpc nodes, a restored `mesh2.admin.1` is seated as mesh2's primary, and the
+/// investigation holds mesh2 unheard with its rebirth decided.
+async fn rebirth_rig() -> Rig {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    let mut lost = node("mesh2.admin.1", false, false);
+    lost.status = NodeStatus::Dead;
+    t.nodes.push(lost);
+    t.nodes.push(node("mesh2.rpc.1", true, false));
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let r = rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await;
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: true });
+    r
+}
+
+/// CONTRACT (R-D1; mesh-investigation.md step 6, "A rebirth verdict starts the existing Mesh
+/// Recovery flow ... on the SAME accepted Build"; mesh-recovery.md step 2, the attempt "runs
+/// node.create for the mesh's first recovering node-admin"): which node-admin of a held mesh the
+/// rebirth already admitted is a fact of the Build (the receipts of an attempt an admin outside the
+/// mesh held), not of the drive that dispatched it. After one drive restored `mesh2.admin.1` and
+/// stopped at the fence on `mesh2.admin.2`, a second drive instance over the same Build admits no
+/// second admin, whether it finds the next attempt open or already claimed for another admin
+/// outside mesh2: nothing more runs, and it names the fence on `mesh2.admin.2`.
+#[tokio::test]
+async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of_a_held_mesh() {
+    let r = rebirth_rig().await;
+    let first = Drive::detached(r.build.clone());
+    match r.env.run(&first).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2"), "the first drive stops at mesh2's second admin: {why}"),
+        other => panic!("the first drive restores one admin and stops: {other:?}"),
+    }
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()]);
+    // A second drive instance (a drive replaced on the same fabric-primary) over the same Build.
+    let second = Drive::detached(r.build.clone());
+    match r.env.run(&second).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2") && why.contains("first recovering node-admin"), "a second drive admits no second admin: {why}"),
+        other => panic!("a second drive over the same Build admits no second recovering admin: {other:?}"),
+    }
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "no second admin of mesh2 crossed the fence");
+    // The next attempt already claimed for another admin outside mesh2 when a third drive finds it.
+    let open = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
+    assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, open).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
+    let third = Drive::detached(r.build.clone());
+    let end = r.env.run(&third).await;
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("create-node:mesh2.admin.2")), "a running attempt held by another admin admits no second admin either: {end:?}");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "no second admin of mesh2 crossed the fence");
+}
+
+/// Commits each operation's receipt and, when `lands`, puts the created node in the view live, as a
+/// create's launch and join do.
+struct Lands {
+    ran: Arc<Creates>,
+    topology: Arc<RwLock<Topology>>,
+    lands: bool,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for Lands {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        self.ran.run(build, attempt, op).await?;
+        if let (true, BuildOperation::CreateNode { node: p }) = (self.lands, op) {
+            self.topology.write().await.nodes.push(node(&p.to_string(), false, false));
+        }
+        Ok(())
+    }
+}
+
+/// Two meshes: the fabric-primary `mesh1.admin.1` is mesh1's primary too, so it executes mesh1's
+/// members; mesh2's seated admin is proven exited and its other admin is held but silent
+/// (PendingReconnect), so no admin executes mesh2's work in this view. The Build grows mesh1 by one
+/// rpc node and restores mesh2's two admins.
+async fn held_successor_rig(lands: bool) -> Rig {
+    let mut t = view();
+    for n in t.nodes.iter_mut() {
+        n.is_primary = n.name.to_string() == "mesh1.admin.1";
+    }
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    let mut lost = node("mesh2.admin.1", false, false);
+    lost.status = NodeStatus::Dead;
+    t.nodes.push(lost);
+    let mut held = node("mesh2.admin.2", false, false);
+    held.status = NodeStatus::PendingReconnect;
+    t.nodes.push(held);
+    t.nodes.push(node("mesh2.rpc.1", false, false));
+    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, admins), (rafka_mesh_entity::NodeKind::RpcNode, rpcs)]);
+    let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 2), counts("mesh2", 2, 1)] } };
+    rig_for(t, change, move |ran, topology| Arc::new(Lands { ran, topology, lands })).await
+}
+
+/// CONTRACT (node-rpc-envelope.md TakeSeats, the same-mesh successor; R-A2: cross-mesh only when
+/// the whole cohort is proven lost): a run of the fabric-primary is cut before a later operation no
+/// admin executes in its view. The fabric-primary runs mesh1's rpc node and stops there: mesh2's
+/// admins are not carried by the run, and the drive stalls naming mesh2's held admin, whose seat the
+/// rest waits for.
+#[tokio::test]
+async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_rest_waits_for_its_seat() {
+    let r = held_successor_rig(true).await;
+    let drive = Drive::detached(r.build.clone());
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "the stall names the held admin: {why}"),
+        other => panic!("mesh2's work waits for its own seat: {other:?}"),
+    }
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()], "the run was cut before mesh2's admins");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1)]);
+}
+
+/// CONTRACT (node-rpc-envelope.md "Build, op `0x20`": "no completed step runs twice"): what a run
+/// completed is read from the Build's step receipts, never from the view. The fabric-primary's run of
+/// mesh1's rpc node is cut before mesh2's work and handed back to it; its view has not heard the new
+/// node yet. The next claim does not dispatch the completed operation again: the drive dispatches
+/// once and stalls naming mesh2's held admin.
+#[tokio::test]
+async fn a_run_handed_back_is_never_dispatched_again_for_an_operation_its_receipts_completed() {
+    let r = held_successor_rig(false).await;
+    let drive = Drive::detached(r.build.clone());
+    let end = tokio::time::timeout(Duration::from_secs(2), r.env.run(&drive)).await;
+    let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+    let ran = r.ran.0.lock().unwrap().clone();
+    assert_eq!((dispatched.len(), ran.len()), (1, 1), "the completed operation is dispatched once: dispatched {} times, ran {:?}", dispatched.len(), &ran[..ran.len().min(4)]);
+    match end {
+        Ok(DriveEnd::Stalled(why)) => assert!(why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "{why}"),
+        other => panic!("the drive stalls naming mesh2's held admin: {other:?}"),
+    }
 }
 
 /// CONTRACT: an executor runs the first operation of the attempt the fabric-primary claimed for it
