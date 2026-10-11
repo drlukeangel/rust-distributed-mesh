@@ -791,18 +791,37 @@ async fn a_seat_holder_commits_both_seats_to_the_executor_in_one_row() {
 /// open (a write still on the disk) no seat row exists and the call is unanswered; once it
 /// drains, the one row is written and SeatsCommitted answered. What must NOT happen: the seat row
 /// written while an old-seat write is still issued, or a commit with no cut-off.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_holder_drains_its_seat_writes_before_it_writes_the_seat_row() {
-    let f = seats_fabric().await;
+#[test]
+fn the_holder_drains_its_seat_writes_before_it_writes_the_seat_row() {
+    let cap = crate::mesh_leave_resume::capture();
     let op = "drain-node:mesh1.admin.1";
+    let trace_id = cap.run(async {
+        let root = tracing::info_span!("rdm.test.seat.update.via-take-seats-drain");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        tracing::Instrument::instrument(the_holder_drains(op), root).await;
+        trace_id
+    });
+    println!("trace_id={trace_id}");
+    let spans = cap.spans();
+    let ours = |name: &str| spans.iter().filter(|s| s["name"] == name && s["attributes"]["operation"] == op).collect::<Vec<_>>();
+    let drained = ours("rdm.node_admin.seat.update.via-writes-drained");
+    assert_eq!(drained.len(), 1, "one drain span for the transfer: {:?}", spans.iter().map(|s| s["name"].clone()).collect::<Vec<_>>());
+    assert_eq!(drained[0]["attributes"]["fabric_seat"], "true");
+    let committed = ours("rdm.node_admin.seat.update.via-seats-committed");
+    assert_eq!(committed.len(), 1, "one commit span for the transfer");
+    assert_eq!((drained[0]["trace_id"].as_str(), committed[0]["trace_id"].as_str()), (Some(trace_id.as_str()), Some(trace_id.as_str())), "the holder's drain and commit are the cell's own story");
+}
+
+async fn the_holder_drains(op: &'static str) {
+    let f = seats_fabric().await;
     f.p.drained.send_replace(false);
     let call = tokio::spawn({
         let (n, p) = (f.n.client.clone(), f.p.resolved.node_id.clone());
         let req = take_seats(&f.p, &f.n, 3, 7, "b1", op);
-        async move {
+        tracing::Instrument::in_current_span(async move {
             let (out, _) = n.call::<FabricPrimaryHandover>(&NodeTarget::ExactNode(p), &req, &CallOptions::default()).await;
             out.reply().map(|r| r.value().clone())
-        }
+        })
     });
     until("P cuts off its seat writes", || !f.p.cut_offs.lock().unwrap().is_empty()).await;
     assert!(
