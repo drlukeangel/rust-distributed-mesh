@@ -13,8 +13,11 @@
 //! string of the messages is its reference. The fabric-primary reads it with a Build-facts read
 //! (`0x1F`) from the sender, never from a reference alone.
 
+use crate::build::BuildId;
+use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
-use crate::model::Node;
+use crate::model::{Node, NodeKind};
+use futures_util::future::join_all;
 use rafka_mesh_entity::MeshId;
 use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,11 @@ use tokio::sync::watch;
 pub const STEP_OTHER_MEMBERS_EXITED: &str = "OtherMembersExited";
 /// The step at the fabric-primary that records the complete departure.
 pub const STEP_MESH_LEFT: &str = "MeshLeft";
+/// The step at the fabric-primary that records the accepted roster it captured at admission
+/// (mesh-leave.md step 1).
+pub const STEP_ACCEPTED_ROSTER: &str = "AcceptedRoster";
+/// The step at the leaving mesh-primary that records the roster its member workflows run over.
+pub const STEP_LEAVING_ROSTER: &str = "LeavingRoster";
 
 /// The outer operation key of `mesh_id`'s shutdown.
 pub fn operation(mesh_id: &MeshId) -> String {
@@ -111,6 +119,66 @@ pub fn first_mismatch(manifest: &ExitManifest, roster: &[RosterBirth], final_pri
         return Some(("final_runtime".into(), "the final primary's exact runtime".into(), "none".into()));
     }
     None
+}
+
+/// The accepted roster of the leave `key`, as recorded under `step` (`AcceptedRoster` at the
+/// fabric-primary, `LeavingRoster` at the leaving mesh-primary): `capture()` is the roster as this
+/// admin's view holds it now.
+pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, step: &str, executor: &str, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
+    let _ = (builds, step, executor);
+    let roster = capture()?;
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-accepted-roster", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, step, source = "captured", roster = roster.len())
+        .in_scope(|| tracing::info!("the roster of the leave is the view's"));
+    Ok(roster)
+}
+
+/// The leaving mesh-primary's member workflows over `roster` (mesh-leave.md steps 3-4): every
+/// ordinary node in parallel, then, only once every one has its exact terminal receipt, every other
+/// node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited` step
+/// receipt of the accepted Build. `me` is the final primary (still running, its exact runtime
+/// `final_runtime`); `records` are the view's Node records of the mesh; `shutdown` is one member's
+/// drain/stop workflow and the provider's terminal receipt of its exact runtime.
+#[allow(clippy::too_many_arguments)]
+pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], shutdown: F) -> Result<ExitManifest, String>
+where
+    F: Fn(Node) -> Fut,
+    Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
+{
+    use tracing::Instrument;
+    let others: Vec<Node> = records.iter().filter(|n| n.status.is_live() && n.node_id.to_string() != me.node_id).cloned().collect();
+    let (admins, ordinary): (Vec<Node>, Vec<Node>) = others.into_iter().partition(|n| n.kind == NodeKind::NodeAdmin);
+    let mut receipts: Vec<TerminalReceipt> = Vec::new();
+    for (tier, members) in [("ordinary-nodes", ordinary), ("node-admins", admins)] {
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-leave-tier", tier, members = members.len(), mesh_id = %key.mesh_id, operation = %key.operation, attempt = key.attempt, outcome = tracing::field::Empty);
+        let outcomes = join_all(members.iter().cloned().map(&shutdown)).instrument(span.clone()).await;
+        let mut failed = Vec::new();
+        for (n, r) in members.iter().zip(outcomes) {
+            match r {
+                Ok(t) => receipts.push(t),
+                Err(e) => failed.push(format!("{}: {e}", n.name)),
+            }
+        }
+        span.record("outcome", if failed.is_empty() { "complete" } else { "incomplete" });
+        if !failed.is_empty() {
+            return Err(format!("tier {tier} is incomplete, the next tier does not start: {}", failed.join("; ")));
+        }
+    }
+    let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.to_vec(), final_primary: me.clone(), final_runtime: Some(final_runtime), receipts };
+    builds
+        .append_step_receipt(&BuildStepReceipt {
+            build_id: BuildId(key.build_id.clone()),
+            attempt: key.attempt,
+            operation: key.operation.clone(),
+            step: STEP_OTHER_MEMBERS_EXITED.into(),
+            outcome: StepOutcome::Complete,
+            output: serde_json::to_value(&manifest).ok(),
+            executor: Some(executor.to_string()),
+        })
+        .await
+        .map_err(|e| format!("the exit manifest could not be recorded: {e}"))?;
+    tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len())
+        .in_scope(|| tracing::info!("every other member's exact exit is proven: the exit manifest is recorded"));
+    Ok(manifest)
 }
 
 /// The key of one open mesh leave at the fabric-primary.
