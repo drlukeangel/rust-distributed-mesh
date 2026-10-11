@@ -348,6 +348,61 @@ mod tests {
         assert!(t.is_offline("a"));
     }
 
+    /// CONTRACT (node-recovery.md "Detection and proof" step 2: "No path opens a hold-down; no
+    /// path again at least one floor later is TRUE OFFLINE"): the hold-down opens at the instant
+    /// round 1 returned no path, after its probes spent their budgets, never at the instant the
+    /// tick began. Round 1 begins at PROBE_DELAY; its direct connect and its via-peer step each
+    /// spend a 10 s budget, so no path is known at PROBE_DELAY + 20 s. A tick one floor after round
+    /// 1 BEGAN is only 10 s after no path was known: it must not tickle. Round 2 runs one floor
+    /// after the no-path verdict and is TRUE OFFLINE, naming that verdict instant.
+    /// Must NOT happen: round 2 run, and TRUE OFFLINE declared, less than a floor after round 1's
+    /// no path (gate 0484f457: hold-down opened 1483.7 s, round 2 began 1485.7 s).
+    // @feature: node-lifecycle
+    #[tokio::test(start_paused = true)]
+    async fn the_hold_down_runs_one_floor_from_the_no_path_verdict_not_from_the_tick_that_probed() {
+        const BUDGET: u64 = 10_000;
+        let verdict_at = PROBE_DELAY + 2 * BUDGET;
+        let capture = crate::span_capture::Capture::new("i143-3068-hold-down-from-verdict");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let mut t = OfflineTickle::observed_by("mesh1.admin.1".into());
+        let round = async |t: &mut OfflineTickle, now: u64| {
+            t.tick(
+                now,
+                true,
+                silent("a"),
+                |_| true,
+                PROBE_DELAY,
+                FLOOR,
+                |_| async {
+                    tokio::time::sleep(std::time::Duration::from_millis(BUDGET)).await;
+                    Err::<(), String>("the direct connect spent its budget: NotSent".into())
+                },
+                |_| async {
+                    tokio::time::sleep(std::time::Duration::from_millis(BUDGET)).await;
+                    no_path()
+                },
+                |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+            )
+            .await
+        };
+        round(&mut t, 0).await;
+        let r1 = round(&mut t, PROBE_DELAY).await;
+        assert_eq!(r1.tickled, vec!["a".to_string()], "round 1 runs half a floor after the mark");
+        assert!(r1.offline.is_empty() && t.is_in_hold_down("a"), "round 1 no path opens the hold-down");
+        let early = round(&mut t, PROBE_DELAY + FLOOR).await;
+        assert!(early.tickled.is_empty() && early.offline.is_empty(), "one floor after round 1 began is {} ms after its no path: still inside the hold-down: {early:?}", PROBE_DELAY + FLOOR - verdict_at);
+        assert!(round(&mut t, verdict_at + FLOOR - 1).await.tickled.is_empty(), "one ms short of a floor after the no path: inside the hold-down");
+        let r2 = round(&mut t, verdict_at + FLOOR).await;
+        assert_eq!(r2.offline, vec!["a".to_string()], "round 2 one floor after the no path is TRUE OFFLINE");
+        let failed = capture.named("rdm.node_admin.node.resolve.via-offline-tickle-failed");
+        assert_eq!(failed.len(), 1, "one TRUE OFFLINE span");
+        assert_eq!(failed[0].attributes.get("first_no_path_ms").map(String::as_str), Some(verdict_at.to_string().as_str()), "the hold-down ran from round 1's no path: {:?}", failed[0].attributes);
+        let opened = capture.named("rdm.node_admin.node.update.via-offline-hold-down-opened");
+        assert_eq!(opened.len(), 1, "one hold-down");
+        eprintln!("span rdm.node_admin.node.update.via-offline-hold-down-opened trace_id={} {:?}", opened[0].trace_id, opened[0].attributes);
+        eprintln!("span rdm.node_admin.node.resolve.via-offline-tickle-failed trace_id={} {:?}", failed[0].trace_id, failed[0].attributes);
+    }
+
     #[tokio::test]
     async fn an_answer_via_a_peer_is_reachable_silent() {
         let mut t = OfflineTickle::new();
