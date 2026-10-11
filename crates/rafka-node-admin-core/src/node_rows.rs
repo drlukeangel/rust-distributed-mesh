@@ -172,8 +172,52 @@ impl NodeRows {
     /// key, then the old key is released. Whether the node is stopped is the held record's
     /// (`parked`), never the caller's.
     pub async fn rename(&self, me: &PathName, view: &RwLock<Topology>, held: &rafka_node_admin_client::NodeMeta, body: &rafka_node_admin_client::NodeMeta) -> Result<(), RenameRefused> {
-        let _ = (me, view, held, body);
-        Ok(())
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-rename",
+            node = %me,
+            node_id = %held.node_id,
+            from = %held.name,
+            to = %body.name,
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            "otel.kind" = "internal",
+        );
+        let r = tracing::Instrument::instrument(self.rename_steps(me, view, held, body), span.clone()).await;
+        let (outcome, detail) = match &r {
+            Ok(()) => ("renamed", None),
+            Err(RenameRefused::RdmOwned(e)) => ("meta-field-is-rdm-owned", Some(e.to_string())),
+            Err(RenameRefused::NameHeld(e)) => ("name-held", Some(format!("{me}: the rename of {} ({}) to {}: {e}", held.name, held.node_id, body.name))),
+            Err(RenameRefused::Unwritten(why)) => ("unwritten", Some(why.clone())),
+        };
+        span.record("outcome", outcome);
+        if let Some(d) = &detail {
+            span.record("detail", d.as_str());
+        }
+        span.in_scope(|| tracing::info!("node.update: the rename decided"));
+        r
+    }
+
+    async fn rename_steps(&self, me: &PathName, view: &RwLock<Topology>, held: &rafka_node_admin_client::NodeMeta, body: &rafka_node_admin_client::NodeMeta) -> Result<(), RenameRefused> {
+        // The held record: whether the node is stopped, its status and its config. It is the
+        // fabric-primary's own, never the caller's body.
+        let Some(record) = view.read().await.nodes.iter().find(|n| n.node_id == held.node_id).cloned() else {
+            return Err(RenameRefused::Unwritten(format!("{me}: node {} is not in the fabric-primary's view; its name cannot be changed", held.node_id)));
+        };
+        body.check_put(held, record.parked).map_err(RenameRefused::RdmOwned)?;
+        if body.name == held.name {
+            return Ok(());
+        }
+        let row = NodeRow { name: body.name.clone(), node_id: record.node_id.clone(), status: record.status, config: record.config.clone() };
+        match self.storage.claim_node_row(&row).await {
+            Ok(Ok(())) => {}
+            Ok(Err(name_held)) => return Err(RenameRefused::NameHeld(name_held)),
+            Err(e) => return Err(RenameRefused::Unwritten(format!("{me}: nodes.storage refused the claim of {} for {}: {e}", body.name, record.node_id))),
+        }
+        // The new name is the node's: the old key is let go.
+        self.storage
+            .remove_node_row(&held.name)
+            .await
+            .map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {} and nodes.storage refused the release of {}: {e}", record.node_id, body.name, held.name)))
     }
 }
 
