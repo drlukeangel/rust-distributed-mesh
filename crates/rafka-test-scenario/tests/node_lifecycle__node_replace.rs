@@ -120,6 +120,8 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_eq!(s(&recovery["attributes"]["exit_proof"]), "provider", "{recovery}");
     assert_eq!(s(&recovery["attributes"]["build_id"]), birth_build, "the recovery is an attempt of the accepted Build: {recovery}");
     let attempt = s(&recovery["attributes"]["attempt"]);
+    // The submit followed the recovery to its terminal frame and records it (never "submitted").
+    assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "the recovery's terminal: {recovery}");
     let build = estate.await_build(&birth_build, SETTLE).await;
     assert_eq!(build["build_id"], birth_build.as_str(), "no Build was minted: {build}");
 
