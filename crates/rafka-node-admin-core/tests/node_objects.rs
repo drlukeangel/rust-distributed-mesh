@@ -866,8 +866,9 @@ fn calls_no_op_carries_today_say_so_by_name() {
 /// CONTRACT: every step the create and retire pipelines record is one the client names. The
 /// receipts of a whole create fold to `node.joined`, `node.started`, `node.created`
 /// and `Complete`; the receipts of a whole delete fold to the draining, drained, connections-deleted, stopped and
-/// deleted events and `Complete`; the retire leg of a restart carries `node.restarting`. A step the
-/// client does not name is refused by name, never skipped.
+/// deleted events and `Complete`; the receipts of a whole restart, one `restart-node:<path>` operation,
+/// fold to `node.restarting`, the stop's events, `node.joined`, `node.started`, `node.restarted` and
+/// `Complete`. A step the client does not name is refused by name, never skipped.
 #[test]
 fn every_pipeline_step_is_named_by_the_client() {
     use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
@@ -889,10 +890,32 @@ fn every_pipeline_step_is_named_by_the_client() {
         f.frames,
         [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    let restart = vec!["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "Complete"];
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", restart), 1).unwrap();
-    assert_eq!(f.frames.first(), Some(&Frame::Event(NodeEvent::Restarting)));
-    assert!(!f.frames.contains(&Frame::Complete), "the retire leg of a restart is not the restart's end");
+    // A restart is one operation: its pre-event, the stop of the live process and the start of the
+    // same process are all `restart-node:<path>` receipts, and its one `Complete` ends it.
+    let restart = vec!["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"];
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart.clone()), 1).unwrap();
+    assert_eq!(
+        f.frames,
+        [
+            Frame::Event(NodeEvent::Restarting),
+            Frame::Event(NodeEvent::Draining),
+            Frame::Event(NodeEvent::Drained),
+            Frame::Event(NodeEvent::ConnectionsDeleted),
+            Frame::Event(NodeEvent::Stopped),
+            Frame::Event(NodeEvent::Joined),
+            Frame::Event(NodeEvent::Started),
+            Frame::Event(NodeEvent::Restarted),
+            Frame::Complete
+        ]
+    );
+    // The stop half of the restart is not done under the delete's operation: such a receipt is refused by name.
+    assert_eq!(
+        rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap_err(),
+        CallEnd::UnrecognisedReceipt { operation: "retire-node:mesh1.rpc.3".into(), step: "NodeRestarting".into() }
+    );
+    // Its stop half done, the restart is not over: the fold stands at the start.
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..5].to_vec()), 1).unwrap();
+    assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
     // The SeatTransfer step runs only for a node-admin target (it moves the seats it holds before it
     // drains or stops; the pipeline decides on the target's kind): a node-admin's workflow has the
     // row and its receipts fold to the same events; an rpc node's workflow has no such row.
