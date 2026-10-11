@@ -309,10 +309,16 @@ impl SeatStores {
                 crate::record_store::cut_off_and_drain(&seat, &reason).await;
             }
             WriteCutOff::Lift => {
+                // A lifted store writes the rows it kept at a publication made while it was cut off;
+                // one that cannot keeps holding them, and says which.
                 for s in seat.into_iter().chain(self.fabric.fabric_primary_records()) {
-                    s.lift_cut_off();
+                    if let Err(e) = s.lift_cut_off().await {
+                        tracing::info!(error = %e, "a store whose cut-off was lifted could not write the rows it kept: they stay held");
+                    }
                 }
-                self.nodes.lift_other_meshes();
+                if let Err(e) = self.nodes.lift_other_meshes().await {
+                    tracing::info!(error = %e, "another mesh's rows whose cut-off was lifted could not write the rows they kept: they stay held");
+                }
             }
         }
     }

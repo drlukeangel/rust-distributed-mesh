@@ -3633,7 +3633,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         return Err("refusing to start: no `sync_state` choice was made; pass SyncState::NoAppWork for an embedding with no application work in state-sync, or the application's sync_state hook".into());
     }
     let fabric_hooks = wiring.fabric_hooks.clone();
-    let round_actions: Arc<dyn crate::fabric_rounds::RoundActions> = wiring.round_actions.take().unwrap_or_else(|| Arc::new(crate::fabric_rounds::NoScratchpad));
+    // The embedding's own round action, if it binds one: run after this admin publishes its
+    // scratchpad at commit-state (bound once the store root is open, below).
+    let embedding_round_actions = wiring.round_actions.take();
     // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
     // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
     // reads this one reader.
@@ -3650,7 +3652,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     };
     let key = load_or_mint_key(&cfg.data_dir)?;
     drop(step);
-    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, restart = tracing::field::Empty);
+    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, restart = tracing::field::Empty, writes_to = tracing::field::Empty);
     // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
     // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
     // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage
@@ -3682,6 +3684,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     storage_step.record("fabric_id", tracing::field::display(&cfg.fabric_id));
     storage_step.record("restart", cfg.launch.is_none() && own_row.is_some());
     let store_root = crate::store_root::StoreRoot::open(&cfg.store_dir, &cfg.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
+    // Before the fabric's first state-commit every row this admin writes is held in its scratchpad;
+    // its commit-state action publishes them (states.md, Rounds).
+    storage_step.record("writes_to", store_root.writes_to());
+    let round_actions: Arc<dyn crate::fabric_rounds::RoundActions> = Arc::new(crate::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), embedding_round_actions));
     let fabric_files = Arc::new(crate::fabric_storage::FileFabricStorage::open(&store_root, &incarnation).map_err(storage_err)?);
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_files.clone());
     let mesh_files = Arc::new(crate::storage::FileMeshStorage::open(&store_root, &incarnation).map_err(storage_err)?);

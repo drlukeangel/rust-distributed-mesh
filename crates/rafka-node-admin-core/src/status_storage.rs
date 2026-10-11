@@ -291,11 +291,11 @@ impl FileStatusStorage {
     pub fn open(root: &crate::store_root::StoreRoot, mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
         let base = root.status(mesh);
         Ok(Self {
-            meshes: FileRecords::open(&base, "meshes", writer)?,
-            fabric: FileRecords::open(&base, "fabric", writer)?,
-            declared: FileRecords::open(&base, "declared", writer)?,
-            silence: FileRecords::open(&base, "silence", writer)?,
-            exits: FileRecords::open(&base, "exits", writer)?,
+            meshes: root.records(&base, "meshes", writer)?,
+            fabric: root.records(&base, "fabric", writer)?,
+            declared: root.records(&base, "declared", writer)?,
+            silence: root.records(&base, "silence", writer)?,
+            exits: root.records(&base, "exits", writer)?,
         })
     }
 

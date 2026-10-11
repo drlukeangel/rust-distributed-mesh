@@ -341,14 +341,18 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
     // The storage fault the originate door arms (testkit only): the product's file storage,
     // decorated.
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name, writes_to = tracing::field::Empty);
+    // Before the fabric's first state-commit the node holds its connections rows in its scratchpad;
+    // its commit-state action publishes them (states.md, Rounds).
+    let store_root = rafka_node_admin_core::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| anyhow!("refusing to start: {e}"))?;
+    step.record("writes_to", store_root.writes_to());
     let fault = Arc::new(crate::faults::StorageFault::default());
     let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
         rafka_mesh_entity::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         Arc::new(crate::faults::FaultedConnectionsStorage::new(
             Arc::new(
                 rafka_node_admin_core::storage::FileConnectionsStorage::open(
-                    &rafka_node_admin_core::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| anyhow!("refusing to start: {e}"))?,
+                    &store_root,
                     &launch.name,
                     &launch.incarnation,
                 )
@@ -545,7 +549,11 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                 })
             })
         };
-        Arc::new(rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), membership.clone(), set_status, current, Some(declare)).with_retire(cancel.clone()))
+        Arc::new(
+            rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), membership.clone(), set_status, current, Some(declare))
+                .with_retire(cancel.clone())
+                .with_round_actions(Arc::new(rafka_node_admin_core::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), None))),
+        )
     };
     own.set_connections(connections.clone());
     let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();

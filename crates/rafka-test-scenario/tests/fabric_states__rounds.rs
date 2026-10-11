@@ -31,6 +31,11 @@ fn flag(v: &Value) -> bool {
     v == true || v == "true"
 }
 
+/// A numeric span attribute, exported as a number or as its decimal string.
+fn num(v: &Value) -> Option<u64> {
+    v.as_u64().or_else(|| v.as_str()?.parse().ok())
+}
+
 fn start(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
@@ -416,7 +421,7 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     for name in &want {
         let a = published.get(name).unwrap_or_else(|| panic!("{name}'s commit-state action is in the first climb: {:?}", published.keys().collect::<Vec<_>>()));
         assert!(flag(&a["attributes"]["bound"]), "{name}'s commit-state action publishes its scratchpad: {a}");
-        assert!(a["attributes"]["rows"].as_u64().unwrap_or(0) > 0, "{name} published the rows it held: {a}");
+        assert!(num(&a["attributes"]["rows"]).unwrap_or(0) > 0, "{name} published the rows it held: {a}");
         let stores = s(&a["attributes"]["stores"]);
         assert!(stores.contains("connections"), "{name} published its connections rows: {stores}");
         if name.contains(".admin.") {
@@ -425,8 +430,14 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
         let check_in = named(&spans, "rdm.node_admin.fabric.update.via-round-hook")
             .into_iter()
             .find(|h| h["attributes"]["hook"] == "state-committed" && s(&h["attributes"]["subject_id"]) == id_of[name] && flag(&h["attributes"]["bound"]) && start(h) >= start(first_root));
-        if let Some(h) = check_in {
-            assert!(a["end_unix_nano"].as_u64().unwrap() <= start(h), "{name} published before it checked in: action {a}, check-in {h}");
+        let end = a["end_unix_nano"].as_u64().unwrap();
+        if name == "mesh1.admin.1" {
+            // The fabric-primary's own mesh round checks in locally: its round completes after it.
+            let complete = first_climb.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-round-complete" && sp["attributes"]["round"] == "commit-state").expect("the first commit-state round completed");
+            assert!(end <= start(complete), "the fabric-primary published before the commit-state round completed: action {a}, complete {complete}");
+        } else {
+            let h = check_in.unwrap_or_else(|| panic!("{name} announced its state-committed check-in in the first round"));
+            assert!(end <= start(h), "{name} published before it checked in: action {a}, check-in {h}");
         }
     }
     assert!(s(&published["mesh1.admin.1"]["attributes"]["stores"]).contains("fabric"), "the fabric-primary published the Fabric row: {}", published["mesh1.admin.1"]);
@@ -440,7 +451,7 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     let republished = actions(&second_climb);
     assert!(!republished.is_empty(), "the second round ran commit-state actions");
     for (name, a) in &republished {
-        assert_eq!(a["attributes"]["rows"].as_u64(), Some(0), "{name} held nothing to publish in the second round: {a}");
+        assert_eq!(num(&a["attributes"]["rows"]), Some(0), "{name} held nothing to publish in the second round: {a}");
     }
     estate.record_trace_url(&s(&first_root["trace_id"]));
 }

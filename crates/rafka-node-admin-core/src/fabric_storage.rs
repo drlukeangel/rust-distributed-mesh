@@ -385,6 +385,8 @@ pub struct FileFabricStorage {
     handovers: crate::record_store::FileRecords,
     /// `<store root>/meshes/`: each mesh's seat-transfer rows under it.
     meshes_dir: std::path::PathBuf,
+    /// The store root: the seat-transfer stores open on it as they are first used.
+    root: crate::store_root::StoreRoot,
     writer: crate::model::IncarnationId,
     /// The seat-transfer store of each mesh opened so far.
     transfers: Mutex<std::collections::BTreeMap<String, std::sync::Arc<crate::record_store::FileRecords>>>,
@@ -393,9 +395,22 @@ pub struct FileFabricStorage {
     seat: SeatSlot,
 }
 
-/// The fabric seat source a [`FileFabricStorage`] reads before it puts a pointer.
-#[derive(Default)]
-struct SeatSlot(std::sync::OnceLock<crate::fabric_builds::SeatSource>);
+/// The fabric seat source a [`FileFabricStorage`] reads before it puts a pointer on the store root.
+#[derive(Default, Clone)]
+struct SeatSlot(std::sync::Arc<std::sync::OnceLock<crate::fabric_builds::SeatSource>>);
+
+impl SeatSlot {
+    /// Whether the writer born as `writer` may write `fabric/`: the committed fabric seat record
+    /// names it, names none (Day 0, before any record) or names a birth proven gone. `Err` says why
+    /// not.
+    fn open(&self, writer: &crate::model::IncarnationId) -> Result<(), String> {
+        match self.0.get().map(|s| (s.read)()) {
+            None => Err(format!("fabric-primary seat: this writer ({}) has no fabric seat record to read, so it cannot show it holds the seat", writer.0)),
+            Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => Err(format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here"))),
+            Some(crate::fabric_builds::SeatRecord::Open { .. }) => Ok(()),
+        }
+    }
+}
 
 impl std::fmt::Debug for SeatSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -408,7 +423,7 @@ impl FileFabricStorage {
     /// directory holding a retired record is refused by name.
     pub fn open(root: &crate::store_root::StoreRoot, writer: &crate::model::IncarnationId) -> Result<Self, FabricStorageError> {
         let own_data_dir = root.dir();
-        let records = crate::record_store::FileRecords::open(own_data_dir, FABRIC_DIR, writer)?;
+        let records = root.records(own_data_dir, FABRIC_DIR, writer)?;
         if records.holds(RETIRED_RECORD_KEY) {
             return Err(FabricStorageError::Unrecognised {
                 file: own_data_dir.join(FABRIC_DIR).join("fabric.json").display().to_string(),
@@ -417,19 +432,27 @@ impl FileFabricStorage {
         }
         Ok(Self {
             records,
-            pointers: crate::record_store::FileRecords::open(own_data_dir, POINTERS_DIR, writer)?,
-            seats: crate::record_store::FileRecords::open(own_data_dir, SEATS_DIR, writer)?,
-            handovers: crate::record_store::FileRecords::open(own_data_dir, HANDOVERS_DIR, writer)?,
+            pointers: root.records(own_data_dir, POINTERS_DIR, writer)?,
+            seats: root.records(own_data_dir, SEATS_DIR, writer)?,
+            handovers: root.records(own_data_dir, HANDOVERS_DIR, writer)?,
             meshes_dir: own_data_dir.join("meshes"),
+            root: root.clone(),
             writer: writer.clone(),
             transfers: Mutex::new(Default::default()),
             seat: SeatSlot::default(),
         })
     }
 
-    /// The committed fabric seat record this writer reads before it puts a pointer (set once).
+    /// The committed fabric seat record this writer reads before it puts a pointer on the store root
+    /// (set once). The Fabric record and its pointers this writer holds in its scratchpad are
+    /// published only while the record says it holds the seat (R14 item 2); another admin's copy,
+    /// learned on the Build topic, stays its own.
     pub fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
         let _ = self.seat.0.set(seat);
+        for store in self.fabric_primary_records() {
+            let (slot, writer) = (self.seat.clone(), self.writer.clone());
+            store.set_publish_gate(std::sync::Arc::new(move || slot.open(&writer)));
+        }
     }
 
     /// The seat-transfer rows of `mesh`: `meshes/<mesh>/seat-transfers/`.
@@ -437,7 +460,7 @@ impl FileFabricStorage {
         if let Some(r) = self.transfers.lock().unwrap().get(mesh) {
             return Ok(r.clone());
         }
-        let opened = std::sync::Arc::new(crate::record_store::FileRecords::open(&self.meshes_dir.join(mesh), TRANSFERS_DIR, &self.writer)?);
+        let opened = std::sync::Arc::new(self.root.records(&self.meshes_dir.join(mesh), TRANSFERS_DIR, &self.writer)?);
         Ok(self.transfers.lock().unwrap().entry(mesh.to_string()).or_insert(opened).clone())
     }
 
@@ -477,20 +500,14 @@ impl FabricStorage for FileFabricStorage {
         self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the identity row vanished after its insert".into() })
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        // The fabric-primary alone writes `fabric/` (R14 item 2): the committed fabric seat record
-        // is read before the put. It is open to this birth when it names it, names none (Day 0,
-        // before any record) or names a birth proven gone.
-        let file = || format!("{}/{}.json", POINTERS_DIR, pointer.key());
-        match self.seat.0.get().map(|s| (s.read)()) {
-            None => {
-                return Err(FabricStorageError::NotSeatHolder { file: file(), reason: format!("fabric-primary seat: this writer ({}) has no fabric seat record to read, so it cannot show it holds the seat", self.writer.0) });
-            }
-            Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => {
-                return Err(FabricStorageError::NotSeatHolder { file: file(), reason: format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here")) });
-            }
-            Some(crate::fabric_builds::SeatRecord::Open { .. }) => {}
-        }
-        self.pointers.write(&pointer.key(), POINTER_FORMAT, pointer).await
+        // The fabric-primary alone writes `fabric/` on the store root (R14 item 2): the committed
+        // fabric seat record is read before a put that reaches it. It is open to this birth when it
+        // names it, names none (Day 0, before any record) or names a birth proven gone. A put held in
+        // this admin's scratchpad (before the fabric's first state-commit) is its own copy of the
+        // pointer, published only while it holds the seat.
+        let file = format!("{}/{}.json", POINTERS_DIR, pointer.key());
+        let seat = || self.seat.open(&self.writer).map_err(|reason| crate::record_store::StorageError::NotSeatHolder { file: file.clone(), reason });
+        self.pointers.write_gated(&pointer.key(), POINTER_FORMAT, pointer, seat).await
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT).await
