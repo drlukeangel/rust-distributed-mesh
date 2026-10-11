@@ -507,24 +507,8 @@ impl Records {
 
 impl TopologySink for Records {
     fn publish(&self, node: Node) {
-        if let (Some(store), Some(incarnation_id), Some(endpoint_id), Some(transport_addr)) = (self.contacts.get(), node.incarnation_id.clone(), node.endpoint_id.clone(), node.transport_addr) {
-            let r = crate::storage::NodeRecord {
-                node_id: node.node_id.clone(),
-                name: node.name.clone(),
-                incarnation_id,
-                endpoint_id,
-                transport_addr,
-                listeners: node.listeners.clone(),
-            };
-            // nodes.storage is async (a durable backend awaits its write); the sink is sync, so
-            // the contact is written on its own task and a refusal is named there.
-            let (store, name) = (store.clone(), node.name.clone());
-            tokio::spawn(async move {
-                if let Err(e) = store.put_contact(&r).await {
-                    tracing::info!(node = %name, error = %e, "a launched birth could not be stored as a contact");
-                }
-            });
-        }
+        // A publication writes no contact: a mesh's contacts are its primary's alone
+        // (`MeshRowsWriter`, the writer ladder).
         self.removed.lock().unwrap().remove(&(node.name.clone(), node.incarnation_id.clone()));
         self.nodes.lock().unwrap().insert(node.name.clone(), node);
     }
@@ -960,6 +944,77 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
             tracing::info_span!("rdm.node_admin.node.reject.via-runtime-row-unreadable", reader = %reader, node = %node, node_id = %node_id, incarnation_id = %incarnation.0, store = "nodes.storage", error = %e)
                 .in_scope(|| tracing::info!("the durable runtime row of this birth could not be read"));
             Err(format!("the durable runtime row of {node} ({node_id}) at {} could not be read from {reader}'s nodes.storage: {e}", incarnation.0))
+        }
+    }
+}
+
+/// A mesh's contacts and its Mesh row on the fabric's shared store root, written by that mesh's
+/// primary alone, for its own members alone (R14 item 2; the writer ladder,
+/// fabric-node-lifecycle.md §4.3: a mesh row and its members' rows are that mesh's primary's). A
+/// round that does not hold the seat writes nothing; a round that takes it reads what the shared
+/// root holds for the mesh first, then writes each member whose held birth differs and drops a
+/// contact whose path.name another node now holds. A contact is a restart's hint, never topology.
+pub(crate) struct MeshRowsWriter {
+    mesh: String,
+    mesh_id: MeshId,
+    nodes: Arc<dyn crate::storage::NodesStorage>,
+    meshes: Arc<dyn crate::storage::MeshStorage>,
+    /// What this seat tenure knows the shared root holds for the mesh's contacts; `None` outside a tenure.
+    written: Option<HashMap<NodeId, crate::storage::NodeRecord>>,
+    mesh_written: bool,
+}
+
+impl MeshRowsWriter {
+    pub(crate) fn new(mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>) -> Self {
+        Self { mesh: mesh.to_string(), mesh_id, nodes, meshes, written: None, mesh_written: false }
+    }
+
+    /// One round over the births `held` (every birth of the fabric this admin holds, itself
+    /// included), `seated` when this admin holds its mesh's primary seat now.
+    pub(crate) async fn round(&mut self, held: &[MeshDigest], seated: bool) {
+        if !seated {
+            self.written = None;
+            self.mesh_written = false;
+            return;
+        }
+        if !self.mesh_written {
+            match self.meshes.put_mesh(&crate::storage::MeshRecord { mesh_id: self.mesh_id.clone(), name: self.mesh.clone() }).await {
+                Ok(()) => self.mesh_written = true,
+                Err(e) => tracing::info!(mesh = %self.mesh, error = %e, "the mesh's row could not be stored"),
+            }
+        }
+        if self.written.is_none() {
+            match self.nodes.contacts().await {
+                Ok(rows) => self.written = Some(rows.into_iter().filter(|c| c.name.mesh == self.mesh).map(|c| (c.node_id.clone(), c)).collect()),
+                Err(e) => {
+                    tracing::info!(mesh = %self.mesh, error = %e, "the mesh's contacts could not be read; none is written this round");
+                    return;
+                }
+            }
+        }
+        let written = self.written.as_mut().expect("read above");
+        let members: Vec<&MeshDigest> = held.iter().filter(|d| d.node.name.mesh == self.mesh).collect();
+        for d in &members {
+            let r = crate::storage::NodeRecord {
+                node_id: d.node.node_id.clone(),
+                name: d.node.name.clone(),
+                incarnation_id: d.node.incarnation.clone(),
+                endpoint_id: d.node.endpoint_id.clone(),
+                transport_addr: d.node.transport_addr,
+                listeners: Vec::new(),
+            };
+            // The contact is what is held, put whole; the declared state and the silence status
+            // are their own rows in status.storage, never carried on it.
+            if written.get(&r.node_id) != Some(&r) && self.nodes.put_contact(&r).await.is_ok() {
+                written.insert(r.node_id.clone(), r);
+            }
+        }
+        let replaced: Vec<crate::storage::NodeRecord> =
+            written.values().filter(|w| !members.iter().any(|d| d.node.node_id == w.node_id) && members.iter().any(|d| d.node.name == w.name)).cloned().collect();
+        for r in replaced {
+            if self.nodes.remove_contact(&r).await.is_ok() {
+                written.remove(&r.node_id);
+            }
         }
     }
 }
@@ -4011,8 +4066,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
         }
     }
+    // The maker's stored ids are its meshes' rows on the shared root, written by each mesh's
+    // primary: held in memory here, never written again by this admin.
     for (mesh, id) in stored_mesh_ids {
-        mesh_storage.put_mesh(&crate::storage::MeshRecord { mesh_id: id.clone(), name: mesh.clone() }).await.map_err(storage_err)?;
         records.meshes.lock().unwrap().entry(mesh).or_insert(id);
     }
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
@@ -4324,65 +4380,28 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 listeners: vec![("control".into(), listener.local_addr().map_err(|e| e.to_string())?)],
             })
             .await.map_err(storage_err)?;
-        mesh_storage.put_mesh(&crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: cfg.mesh.clone() }).await.map_err(storage_err)?;
     }
-    // nodes.storage contacts: the births this admin holds, as bootstrap hints for a later restart.
+    // nodes.storage contacts and mesh.storage: this admin's mesh's members and its Mesh row on the
+    // fabric's shared root, written while this admin holds its mesh's primary seat (the writer
+    // ladder; `MeshRowsWriter`), as bootstrap hints for a later restart of any node of the fabric.
     // A birth is written the moment the book first holds it or it changes (the book's own birth
-    // watch, as the runtime rows are): a hint that waits on a timer is lost to a restart that comes
-    // first, and the staleness floor says nothing of whether a restarted admin can reach a birth.
-    // A peer mesh's ordinary members reach this admin only through an installed topology read.
-    // A contact whose birth the book no longer holds, at a path another logical node now holds, is
-    // dropped; nothing here is topology.
+    // watch, as the runtime rows are), and every member at once when the seat comes to this admin
+    // (the view install's seat watch): a hint that waits on a timer is lost to a restart that comes
+    // first. Nothing here is topology.
+    let (own_seat_tx, mut own_seat) = tokio::sync::watch::channel(false);
     let contacts_task = {
-        let (book, nodes_storage, me, fabric_id, mesh_storage) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone(), mesh_storage.clone());
+        let (book, fabric_id) = (membership.book.clone(), cfg.fabric_id.clone());
+        let mut writer = MeshRowsWriter::new(&cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone());
         park_gate.spawn(async move {
-            // Every mesh this admin hears of, by name, as its own keyed row in mesh.storage: the
-            // durable map a restart takes the existing MeshIds from (a recovery never mints one).
-            let mut meshes_written: HashMap<String, MeshId> = mesh_storage.meshes().await.unwrap_or_default().into_iter().map(|m| (m.name, m.mesh_id)).collect();
-            let mut written: HashMap<NodeId, crate::storage::NodeRecord> =
-                nodes_storage.contacts().await.unwrap_or_default().into_iter().map(|c| (c.node_id.clone(), c)).collect();
             let mut births = book.birth_changes();
             loop {
                 births.borrow_and_update();
-                let held = held_births(&book, &fabric_id, &me);
-                for d in &held {
-                    if let Some(id) = &d.mesh_id {
-                        if meshes_written.get(&d.node.name.mesh) != Some(id) {
-                            let row = crate::storage::MeshRecord { mesh_id: id.clone(), name: d.node.name.mesh.clone() };
-                            match mesh_storage.put_mesh(&row).await {
-                                Ok(()) => {
-                                    meshes_written.insert(row.name, row.mesh_id);
-                                }
-                                Err(e) => tracing::info!(mesh = %d.node.name.mesh, error = %e, "a held mesh's id could not be stored"),
-                            }
-                        }
-                    }
-                    let r = crate::storage::NodeRecord {
-                        node_id: d.node.node_id.clone(),
-                        name: d.node.name.clone(),
-                        incarnation_id: d.node.incarnation.clone(),
-                        endpoint_id: d.node.endpoint_id.clone(),
-                        transport_addr: d.node.transport_addr,
-                        listeners: Vec::new(),
-                    };
-                    // The contact is what is held, put whole; the declared state and the silence
-                    // status are their own rows in status.storage, never carried on it.
-                    if written.get(&r.node_id) != Some(&r) && nodes_storage.put_contact(&r).await.is_ok() {
-                        written.insert(r.node_id.clone(), r);
-                    }
-                }
-                let replaced: Vec<crate::storage::NodeRecord> = written
-                    .values()
-                    .filter(|w| !held.iter().any(|d| d.node.node_id == w.node_id) && held.iter().any(|d| d.node.name == w.name))
-                    .cloned()
-                    .collect();
-                for r in replaced {
-                    if nodes_storage.remove_contact(&r).await.is_ok() {
-                        written.remove(&r.node_id);
-                    }
-                }
-                if births.changed().await.is_err() {
-                    return;
+                let seated = *own_seat.borrow_and_update();
+                let held: Vec<MeshDigest> = book.all().into_iter().filter(|d| d.fabric_id == fabric_id).collect();
+                writer.round(&held, seated).await;
+                tokio::select! {
+                    changed = births.changed() => if changed.is_err() { return },
+                    changed = own_seat.changed() => if changed.is_err() { return },
                 }
             }
         })
@@ -5125,6 +5144,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // authorizes nothing: it publishes as no primary.
                 let live = membership.authorizes();
                 let mesh_primary = live && t.holds_mesh_seat(&mesh, &seat_node_id);
+                // The mesh's rows on the shared root follow this seat (`MeshRowsWriter`).
+                own_seat_tx.send_if_modified(|held| std::mem::replace(held, mesh_primary) != mesh_primary);
                 let fabric_primary = live && t.holds_fabric_seat(&seat_node_id);
                 backbone.set_mesh_primary(mesh_primary);
                 backbone.set_fabric_primary(fabric_primary);
@@ -5551,7 +5572,7 @@ mod tests {
         let before = p_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
         tokio::join!(pw.round(&held, false), qw.round(&held, true));
         assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), before, "the old holder writes nothing once the seat moved");
-        let now = q_nodes.contacts().await.unwrap();
+        let now = crate::storage::NodesStorage::contacts(&*q_nodes).await.unwrap();
         assert_eq!(now.len(), 3, "{now:?}");
         assert!(now.iter().any(|c| c.node_id == reborn.node.node_id) && !now.iter().any(|c| c.node_id == rpc.node.node_id), "the new holder replaced the member's contact");
         // A launched birth's publication writes no contact.
