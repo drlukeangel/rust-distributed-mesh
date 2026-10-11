@@ -8,7 +8,7 @@
 
 use crate::common;
 
-use common::{add_node, admin_side, publish_build, template, Published, Spans};
+use common::{add_node, admin_side, publish_build, template, Published};
 use rafka_mesh_entity::{FabricId, MemberStatus};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
@@ -17,123 +17,124 @@ use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus};
 use rafka_node_admin_core::model::NodeStatus;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use tracing_subscriber::layer::SubscriberExt;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
-    let spans = Spans::default();
-    let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+#[test]
+fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
+    let cap = crate::common::capture("retire_runs_every_step_in_order_and_the_ports_it_held_are_released");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
 
-    let fabric = FabricId::mint();
-    let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    let builds = MemoryBuildStateAdapter::new();
-    let sink = Published::default();
-    let provider = ProcessDeploymentProvider::new();
-    let pipeline = DeploymentPipeline {
-        provider: &provider,
-        joins: &admin.joins,
-        observer: &admin.observer,
-        sink: &sink,
-        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
-        builds: &builds,
-        template: &template,
-        timeouts: Timeouts::default(),
-    };
-    let node: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
-    let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
+        let fabric = FabricId::mint();
+        let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
+        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+        let builds = MemoryBuildStateAdapter::new();
+        let sink = Published::default();
+        let provider = ProcessDeploymentProvider::new();
+        let pipeline = DeploymentPipeline {
+            provider: &provider,
+            joins: &admin.joins,
+            observer: &admin.observer,
+            sink: &sink,
+            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+            builds: &builds,
+            template: &template,
+            timeouts: Timeouts::default(),
+        };
+        let node: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
+        let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
 
-    let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
-    let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
+        let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
+        let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
-    let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral, so a permanent retirement releases its storage
-    pipeline
-        .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
-        .await
-        .unwrap_or_else(|e| panic!("retire: {e}"));
+        let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral, so a permanent retirement releases its storage
+        pipeline
+            .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
+            .await
+            .unwrap_or_else(|e| panic!("retire: {e}"));
 
-    // Every retire step, in order, Complete once.
-    let view = builds.read_build(&retire_build).await.unwrap();
-    let got: Vec<(&str, &StepOutcome, &str)> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, r.operation.as_str())).collect();
-    let want: Vec<(&str, &StepOutcome, &str)> =
-        RetireStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "retire-node:mesh1.rpc.1")).collect();
-    assert_eq!(got, want);
-    // DrainNode and StopNode are the directed commands: each receipt carries what the call
-    // admitted; AwaitNodeDrained and AwaitNodeLeft carry the completion call the birth made back.
-    use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion};
-    let output = |step: RetireStep| view.steps.iter().find(|r| r.step == step.name()).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{} receipted with an output", step.name()));
-    let drained: CommandAdmission = serde_json::from_value(output(RetireStep::DrainNode)).expect("a CommandAdmission");
-    assert_eq!(drained, CommandAdmission::Admitted, "DrainNode");
-    // The stop is answered `Stopped` on its own call: the receipt names what its drain established.
-    let stopped: CommandAdmission = serde_json::from_value(output(RetireStep::StopNode)).expect("a CommandAdmission");
-    assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::DrainReceipt::Established { .. } }), "StopNode: {stopped:?}");
-    for step in [RetireStep::AwaitNodeDrained, RetireStep::AwaitNodeLeft] {
-        let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
-        assert_eq!(completion, Completion::Received, "{}", step.name());
-    }
+        // Every retire step, in order, Complete once.
+        let view = builds.read_build(&retire_build).await.unwrap();
+        let got: Vec<(&str, &StepOutcome, &str)> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, r.operation.as_str())).collect();
+        let want: Vec<(&str, &StepOutcome, &str)> =
+            RetireStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "retire-node:mesh1.rpc.1")).collect();
+        assert_eq!(got, want);
+        // DrainNode and StopNode are the directed commands: each receipt carries what the call
+        // admitted; AwaitNodeDrained and AwaitNodeLeft carry the completion call the birth made back.
+        use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion};
+        let output = |step: RetireStep| view.steps.iter().find(|r| r.step == step.name()).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{} receipted with an output", step.name()));
+        let drained: CommandAdmission = serde_json::from_value(output(RetireStep::DrainNode)).expect("a CommandAdmission");
+        assert_eq!(drained, CommandAdmission::Admitted, "DrainNode");
+        // The stop is answered `Stopped` on its own call: the receipt names what its drain established.
+        let stopped: CommandAdmission = serde_json::from_value(output(RetireStep::StopNode)).expect("a CommandAdmission");
+        assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::DrainReceipt::Established { .. } }), "StopNode: {stopped:?}");
+        for step in [RetireStep::AwaitNodeDrained, RetireStep::AwaitNodeLeft] {
+            let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
+            assert_eq!(completion, Completion::Received, "{}", step.name());
+        }
 
-    // What each step did, from outside.
-    let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
-    assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic, NodeStatus::Draining, NodeStatus::Leaving]);
-    let (digest, _) = admin.observer.membership.book.get(first.node.node_id.as_str()).expect("the node's digest");
-    assert_eq!(digest.status, MemberStatus::Draining, "the node gossips nothing for its stop: its last word on the fabric is Draining");
-    assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
-    assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
-    assert!(!std::path::Path::new(first.node.data_dir.as_deref().unwrap()).exists(), "permanent: the data dir is gone");
-    assert_eq!(*sink.removed.lock().unwrap(), vec![node.clone()]);
+        // What each step did, from outside.
+        let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
+        assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic, NodeStatus::Draining, NodeStatus::Leaving]);
+        let (digest, _) = admin.observer.membership.book.get(first.node.node_id.as_str()).expect("the node's digest");
+        assert_eq!(digest.status, MemberStatus::Draining, "the node gossips nothing for its stop: its last word on the fabric is Draining");
+        assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
+        assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
+        assert!(!std::path::Path::new(first.node.data_dir.as_deref().unwrap()).exists(), "permanent: the data dir is gone");
+        assert_eq!(*sink.removed.lock().unwrap(), vec![node.clone()]);
 
-    // Each retire step ran as a child of the retire pipeline span.
-    let all = spans.0.lock().unwrap().clone();
-    for step in RetireStep::ORDER {
-        let (_, parent, f) = all
-            .values()
-            .find(|(n, _, f)| {
-                n == "rdm.node_admin.deployment.update.via-step"
-                    && f.get("step").map(String::as_str) == Some(step.name())
-                    && f.get("build_id") == Some(&retire_build.0)
-            })
-            .unwrap_or_else(|| panic!("no span for retire step {}; via-step spans held: {:?}", step.name(), all.values().filter(|(n, _, _)| n == "rdm.node_admin.deployment.update.via-step").map(|(_, _, f)| (f.get("step").cloned(), f.get("build_id").cloned(), f.get("outcome").cloned())).collect::<Vec<_>>()));
-        assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-pipeline"));
-        assert_eq!(f.get("outcome").map(String::as_str), Some("complete"), "{}", step.name());
-    }
-    assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
-        && f.get("pipeline").map(String::as_str) == Some("retire")));
-    // Each command was sent under its own operation, and the birth's completion call for that
-    // operation reached the commanding side (the server handler's own spans run on its tasks).
-    for (command, completion, operation, admission) in [("drain-node", "node-drained", "drain-node:mesh1.rpc.1", "admitted"), ("stop-node", "node-left", "stop-node:mesh1.rpc.1", "stopped")] {
-        assert!(
-            all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some(admission) && f.get("command").map(String::as_str) == Some(command)),
-            "no {admission} {command} span"
-        );
-        assert!(
-            all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-completion-awaited" && f.get("operation").map(String::as_str) == Some(operation) && f.get("received").map(String::as_str) == Some("true") && f.get("completion").map(String::as_str) == Some(completion)),
-            "no received {completion} span"
-        );
-    }
+        // Each retire step ran as a child of the retire pipeline span.
+        let all = spans.0.lock().unwrap().clone();
+        for step in RetireStep::ORDER {
+            let (_, parent, f) = all
+                .values()
+                .find(|(n, _, f)| {
+                    n == "rdm.node_admin.deployment.update.via-step"
+                        && f.get("step").map(String::as_str) == Some(step.name())
+                        && f.get("build_id") == Some(&retire_build.0)
+                })
+                .unwrap_or_else(|| panic!("no span for retire step {}; via-step spans held: {:?}", step.name(), all.values().filter(|(n, _, _)| n == "rdm.node_admin.deployment.update.via-step").map(|(_, _, f)| (f.get("step").cloned(), f.get("build_id").cloned(), f.get("outcome").cloned())).collect::<Vec<_>>()));
+            assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-pipeline"));
+            assert_eq!(f.get("outcome").map(String::as_str), Some("complete"), "{}", step.name());
+        }
+        assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
+            && f.get("pipeline").map(String::as_str) == Some("retire")));
+        // Each command was sent under its own operation, and the birth's completion call for that
+        // operation reached the commanding side (the server handler's own spans run on its tasks).
+        for (command, completion, operation, admission) in [("drain-node", "node-drained", "drain-node:mesh1.rpc.1", "admitted"), ("stop-node", "node-left", "stop-node:mesh1.rpc.1", "stopped")] {
+            assert!(
+                all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some(admission) && f.get("command").map(String::as_str) == Some(command)),
+                "no {admission} {command} span"
+            );
+            assert!(
+                all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-completion-awaited" && f.get("operation").map(String::as_str) == Some(operation) && f.get("received").map(String::as_str) == Some("true") && f.get("completion").map(String::as_str) == Some(completion)),
+                "no received {completion} span"
+            );
+        }
 
-    // Create again on the same node.
-    let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));
-    assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the retired one");
+        // Create again on the same node.
+        let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));
+        assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the retired one");
 
-    // The Build names this path's storage Persistent { on_retire: Preserve }: a permanent
-    // retirement terminates the runtime and leaves the data dir, and the receipt says so.
-    let mut keep = common::add_node();
-    let preserve = rafka_mesh_entity::meta::NodeMeta {
-        storage: rafka_mesh_entity::meta::StorageMeta::Persistent { on_retire: rafka_mesh_entity::meta::PersistentRetireDisposition::Preserve },
-        placement: Default::default(),
-    };
-    keep.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, preserve).unwrap();
-    let again_build = publish_build(&builds, keep).await;
-    pipeline
-        .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
-        .await
+        // The Build names this path's storage Persistent { on_retire: Preserve }: a permanent
+        // retirement terminates the runtime and leaves the data dir, and the receipt says so.
+        let mut keep = common::add_node();
+        let preserve = rafka_mesh_entity::meta::NodeMeta {
+            storage: rafka_mesh_entity::meta::StorageMeta::Persistent { on_retire: rafka_mesh_entity::meta::PersistentRetireDisposition::Preserve },
+            placement: Default::default(),
+        };
+        keep.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, preserve).unwrap();
+        let again_build = publish_build(&builds, keep).await;
+        pipeline
+            .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
+            .await
+            .unwrap();
+        assert!(std::path::Path::new(again.node.data_dir.as_deref().unwrap()).exists(), "Persistent/Preserve: the data dir stays on a permanent retirement");
+        let kept = builds.read_build(&again_build).await.unwrap().steps;
+        let disposition: rafka_node_admin_core::deployment::pipeline::StorageDisposition = serde_json::from_value(
+            kept.iter().find(|r| r.step == RetireStep::ReleaseStorage.name()).and_then(|r| r.output.clone()).expect("ReleaseStorage receipted"),
+        )
         .unwrap();
-    assert!(std::path::Path::new(again.node.data_dir.as_deref().unwrap()).exists(), "Persistent/Preserve: the data dir stays on a permanent retirement");
-    let kept = builds.read_build(&again_build).await.unwrap().steps;
-    let disposition: rafka_node_admin_core::deployment::pipeline::StorageDisposition = serde_json::from_value(
-        kept.iter().find(|r| r.step == RetireStep::ReleaseStorage.name()).and_then(|r| r.output.clone()).expect("ReleaseStorage receipted"),
-    )
-    .unwrap();
-    assert_eq!(disposition, rafka_node_admin_core::deployment::pipeline::StorageDisposition::Preserved);
-    let _ = std::fs::remove_dir_all(&template.data_root);
+        assert_eq!(disposition, rafka_node_admin_core::deployment::pipeline::StorageDisposition::Preserved);
+        let _ = std::fs::remove_dir_all(&template.data_root);
+    })
 }

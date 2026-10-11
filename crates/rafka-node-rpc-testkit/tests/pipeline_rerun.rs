@@ -189,12 +189,18 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let _ = std::fs::remove_dir_all(&template.data_root);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_pipeline_killed_after_spawning_reruns_without_a_second_runtime() {
-    killed_then_rerun(KillAt::AfterSpawn).await;
+#[test]
+fn a_pipeline_killed_after_spawning_reruns_without_a_second_runtime() {
+    let cap = crate::common::capture("a_pipeline_killed_after_spawning_reruns_without_a_second_runtime");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        killed_then_rerun(KillAt::AfterSpawn).await;
+    })
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_pipeline_killed_while_waiting_for_the_join_reruns_from_that_step() {
-    killed_then_rerun(KillAt::InWaitForMeshJoin).await;
+#[test]
+fn a_pipeline_killed_while_waiting_for_the_join_reruns_from_that_step() {
+    let cap = crate::common::capture("a_pipeline_killed_while_waiting_for_the_join_reruns_from_that_step");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        killed_then_rerun(KillAt::InWaitForMeshJoin).await;
+    })
 }

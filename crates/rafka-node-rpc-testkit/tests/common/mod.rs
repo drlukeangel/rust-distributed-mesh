@@ -259,9 +259,8 @@ impl Drop for ContainerFabricCleanup {
     }
 }
 
-pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
-    let spans = Spans::default();
-    let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+/// `spans` is the cell's own capture ([`Capture::spans`]): the smoke runs inside its [`Capture::run`].
+pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke {
 
     let fabric_id = FabricId::mint();
     let fabric = format!("fab-{fabric_id}");
