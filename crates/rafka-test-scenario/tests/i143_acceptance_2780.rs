@@ -9,7 +9,7 @@
 //! released through that admin's door; the Builds that trigger them are the ones an operator makes
 //! (REST accept -> executor reconcile -> node operation -> deployment pipeline).
 
-use rafka_node_admin_core::deployment::pipeline::{AdoptStep, CreateStep, RetireStep};
+use rafka_node_admin_core::deployment::pipeline::{AdoptStep, CreateStep, RetireStep, StartStep};
 use rafka_node_admin_core::lifecycle::HookPhase;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
@@ -108,7 +108,12 @@ impl Run {
 
     /// Runtimes of `node` the provider holds alive now (process provider: its `deployment.json`).
     fn runtimes(&self, node: &str) -> usize {
-        self.estate.live_runtimes().iter().filter(|(dir, _)| dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{node}-")))).count()
+        self.processes(node).len()
+    }
+
+    /// The pids of `node`'s live runtimes.
+    fn processes(&self, node: &str) -> Vec<u32> {
+        self.estate.live_runtimes().into_iter().filter(|(dir, _)| dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{node}-")))).map(|(_, pid)| pid).collect()
     }
 
     async fn spawn(&self, mesh: &str, kind: &str) -> String {
@@ -384,9 +389,9 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // pre-event's publish.
     run.plain_create("rpc_node", node).await;
     let receipt = json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "retire-node", "node": node});
-    restart_cut(&run, &create_order, &retire_order, "restart:NodeRestarting", receipt, "restart-step", 0, node, 2).await;
+    restart_cut(&run, &retire_order, "restart:NodeRestarting", receipt, "restart-step", 0, node, 2).await;
     let event = json!({"kind": "event", "event": "restarting", "node": node});
-    restart_cut(&run, &create_order, &retire_order, "event:restarting", event, "lifecycle-event", 1, node, 3).await;
+    restart_cut(&run, &retire_order, "event:restarting", event, "lifecycle-event", 1, node, 3).await;
     run.plain_delete(node).await;
 
     // Each reachable phase of the Node Pending -> ReadyForTraffic transition's hooks.
@@ -623,19 +628,29 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
     run.push(row(h, "lifecycle-event", &id, &spec, rel, after));
 }
 
-/// The retire half of a restart, in order.
+/// The retire half of a restart, in order: the pre-event, the drain and the stop, and the birth
+/// parks with its process alive (node-restart.md: restart is stop then start on the parked
+/// process), so no runtime is terminated and no membership is removed.
 fn restart_retire_order(retire_order: &[String]) -> Vec<String> {
     let mut o: Vec<String> = vec![RetireStep::NodeRestarting.name().to_string()];
-    o.extend(retire_order.iter().filter(|s| ![RetireStep::NodeDeleting.name(), RetireStep::NodeDeleted.name(), RetireStep::ReleaseStorage.name()].contains(&s.as_str())).cloned());
+    let parked = [RetireStep::DrainNode, RetireStep::AwaitNodeDrained, RetireStep::StopNode, RetireStep::AwaitNodeLeft, RetireStep::Complete].map(RetireStep::name);
+    o.extend(retire_order.iter().filter(|s| parked.contains(&s.as_str())).cloned());
     o
+}
+
+/// The start half of a restart, in order: `start-node` to the parked birth, its ready, `Complete`.
+fn restart_start_order() -> Vec<String> {
+    [StartStep::StartNode.name(), CreateStep::WaitForNodeReady.name(), CreateStep::Complete.name()].map(String::from).to_vec()
 }
 
 /// A restart (an attempt of the accepted Build, never a new Build) stalled at `spec`.
 #[allow(clippy::too_many_arguments)]
-async fn restart_cut(run: &Run, create_order: &[String], retire_order: &[String], id: &str, spec: Value, group: &str, receipts_before: usize, node: &str, attempt: u64) {
+async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, group: &str, receipts_before: usize, node: &str, attempt: u64) {
     let rr = restart_retire_order(retire_order);
+    let start_order = restart_start_order();
     let door = run.member_door("mesh1").await;
     let before = run.node_ready(node).await;
+    let process_before = run.processes(node);
     let pointer_before = run.fabric_build_id().await;
     let ack = door.arm(id, spec.clone()).await;
     let (status, a) = run.estate.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
@@ -650,16 +665,18 @@ async fn restart_cut(run: &Run, create_order: &[String], retire_order: &[String]
     let rop = format!("retire-node:{node}");
     let cop = format!("restart-node:{node}");
     assert_eq!(done_steps(&b, &rop, Some(attempt)), rr, "the restart's retire half runs every step once, in order: {b}");
-    assert_eq!(done_steps(&b, &cop, Some(attempt)), create_order, "the restart's create half runs every step once, in order: {b}");
-    for (op, n) in [(&rop, rr.len()), (&cop, create_order.len())] {
+    assert_eq!(done_steps(&b, &cop, Some(attempt)), start_order, "the restart's start half runs every step once, in order: {b}");
+    for (op, n) in [(&rop, rr.len()), (&cop, start_order.len())] {
         let counts = step_counts(&b, op, attempt);
         assert!(counts.values().all(|c| *c == 1) && counts.len() == n, "no step receipt twice in {op}: {counts:?}");
     }
-    let after_node = wait_for(&format!("{node} reborn ready under a new incarnation"), Duration::from_secs(60), || async {
-        run.estate.node_opt(node).await.filter(|n| n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"])
+    let after_node = wait_for(&format!("{node} ready again and no longer parked"), Duration::from_secs(60), || async {
+        run.estate.node_opt(node).await.filter(|n| n["status"] == "ready-for-traffic" && n["parked"] == false)
     })
     .await;
     assert_eq!(after_node["node_id"], before["node_id"], "a restart keeps the NodeId");
+    assert_eq!(after_node["incarnation_id"], before["incarnation_id"], "a restart keeps the incarnation: it is stop then start on the parked birth");
+    assert_eq!(run.processes(node), process_before, "a restart is stop then start on the same process");
     assert_eq!(run.runtimes(node), 1, "exactly one runtime serves {node} after the restart");
     assert_eq!(run.fabric_build_id().await, pointer_before, "Fabric.build_id is unchanged by a restart");
     run.note_build(&build_id, attempt);
@@ -669,7 +686,7 @@ async fn restart_cut(run: &Run, create_order: &[String], retire_order: &[String]
     } else {
         run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": attempt, "steps": rr, "held_step": RetireStep::NodeRestarting.name()}));
     }
-    let after = json!({"build_state": b["state"], "attempt": attempt, "retire_half": rr, "create_half": create_order.len(), "node": {"node_id": after_node["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after_node["incarnation_id"]}, "runtimes": 1, "fabric_build_id": pointer_before});
+    let after = json!({"build_state": b["state"], "attempt": attempt, "retire_half": rr, "start_half": start_order, "node": {"node_id": after_node["node_id"], "incarnation_id": after_node["incarnation_id"]}, "processes": process_before, "runtimes": 1, "fabric_build_id": pointer_before});
     run.push(row(h, group, id, &spec, rel, after));
 }
 
