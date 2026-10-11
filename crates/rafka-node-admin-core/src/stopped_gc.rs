@@ -227,7 +227,12 @@ impl crate::http::ControlPlane {
     /// The scan: every stopped birth this admin's view holds, with its verdict at `now_ms`.
     pub async fn scan_stopped(&self, ttl: Duration, now_ms: u64) -> Vec<Verdict> {
         let view = self.view().await;
-        let desired = self.accepted.current(&*self.builds).await.map(|b| b.topology);
+        // The accepted topology, or why it cannot be read: a pointer naming no Build this admin can
+        // read is not the node's absence from it.
+        let desired: Result<crate::accepted::FabricTopology, String> = match self.accepted.build_id().await {
+            None => Err("the fabric's pointer names no accepted Build".into()),
+            Some(id) => self.builds.read_build(&id).await.map(|b| b.topology).map_err(|e| format!("the accepted Build {id} cannot be read: {e}")),
+        };
         let facts = self.builds.facts().await;
         let mut stopped: Vec<&crate::model::Node> = view.members().filter(|n| n.parked).collect();
         stopped.sort_by(|a, b| a.name.to_string().cmp(&b.name.to_string()));
@@ -238,9 +243,16 @@ impl crate::http::ControlPlane {
                 out.push(Verdict::NoIncarnation { node });
                 continue;
             };
-            if !desired.as_ref().is_some_and(|t| t.contains(&node)) {
-                out.push(Verdict::Deleting { node });
-                continue;
+            match &desired {
+                Err(reason) => {
+                    out.push(Verdict::UnreadableBuildLog { node, reason: reason.clone() });
+                    continue;
+                }
+                Ok(t) if !t.contains(&node) => {
+                    out.push(Verdict::Deleting { node });
+                    continue;
+                }
+                Ok(_) => {}
             }
             match self.open_reference(&incarnation).await {
                 Ok(Some(build_id)) => {
