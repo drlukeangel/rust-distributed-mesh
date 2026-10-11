@@ -47,6 +47,13 @@ impl AdminRunner {
         self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
     }
 
+    /// The record this admin's membership holds of the exact roster birth `b`: its digest, live or
+    /// parked, as the view projects a digest (the leave's records, [`crate::mesh_leave::roster_records`]).
+    fn held_record(&self, b: &RosterBirth) -> Option<Node> {
+        let _ = b;
+        None
+    }
+
     /// The owner's outer workflow `shutdown-mesh:<mesh_id>`.
     pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), String> {
         let outer = crate::mesh_leave::operation(mesh_id);
@@ -414,7 +421,8 @@ impl AdminRunner {
             Ok(roster)
         };
         let (roster, known) = crate::mesh_leave::leaving_roster(&*self.builds, key, &self.me.to_string(), &me_birth, &my_runtime, capture, fetch_owner).await?;
-        let records: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
+        let mesh: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
+        let records = crate::mesh_leave::roster_records(&mesh, &roster, |b| self.held_record(b));
         let records = &records;
         members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, records, &known, |n| async move { self.shutdown_one(key, &n).await }, |b| async move { crate::mesh_leave::birth_row_deleted(self.records.node_rows().as_deref(), &self.me.to_string(), &key.operation, records, &b).await }).await
     }

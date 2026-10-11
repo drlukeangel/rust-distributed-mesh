@@ -14,7 +14,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{birth_row_deleted, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{birth_row_deleted, roster_records, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::node_rows::{Claimed, NodeRows, RowRefused};
@@ -1154,4 +1154,59 @@ fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row
     });
     assert!(matches!(&without_row, Finding::Unproven { reason } if reason.contains("no runtime row")), "no digest and no row: unproven, naming both: {without_row:?}");
     assert_eq!(with_row, Finding::Exited { code: Some(0) }, "the runtime row recorded at launch is what the provider inspects");
+}
+
+/// CONTRACT (R11, the leave acts on the immutable accepted roster's exact births; mesh-leave.md
+/// "Resume after the primary's loss" step 3, "Failure/certainty behavior": "No timeout or gossip
+/// absence proves exit"): the admin the fabric-primary created for a leaving mesh with no admin
+/// left works the roster, not its view's liveness. `mesh2.rpc.1` was stopped by the lost primary
+/// before its exit was proven: it sent its terminal `Leaving` and has been silent since, so the
+/// created admin's view dropped it one gossip interval after that `Leaving` (fabric-node-lifecycle.md
+/// §6). It is still a roster birth with no Exited receipt, and its record is the one this admin's
+/// membership holds of that exact birth: the record of another birth at the path is never taken.
+/// Its workflow runs, its row is written Deleted on its receipt, and the tier completes.
+#[test]
+fn a_roster_birth_the_view_dropped_after_its_leaving_is_worked_from_the_record_its_membership_holds() {
+    let cap = capture();
+    let records: Vec<Node> = [FAILING, EXITING, FINAL].iter().map(|n| node(n)).collect();
+    let birth = |name: &str| RosterBirth::of(records.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();
+    let (stopped, me) = (birth(FAILING), birth(FINAL));
+    let roster = vec![stopped.clone(), birth(EXITING), me.clone()];
+    // The created admin's view: itself and the member still heard; the stopped one is gone from it.
+    let view: Vec<Node> = records.iter().filter(|n| n.name.to_string() != FAILING).cloned().collect();
+    let mut held_stopped = records.iter().find(|n| n.name.to_string() == FAILING).unwrap().clone();
+    held_stopped.status = NodeStatus::Leaving;
+    let mut other_birth = held_stopped.clone();
+    other_birth.incarnation_id = Some(IncarnationId::mint());
+
+    let stale = roster_records(&view, &roster, |b| (b.node == FAILING).then(|| other_birth.clone()));
+    assert!(!stale.iter().any(|n| n.name.to_string() == FAILING), "a held record of another birth at the path is not the roster birth's: {stale:?}");
+    let worked = roster_records(&view, &roster, |b| (b.node == FAILING).then(|| held_stopped.clone()));
+    assert_eq!(worked.iter().find(|n| n.name.to_string() == FAILING), Some(&held_stopped), "the stopped roster birth is worked from the record its membership holds: {worked:?}");
+    assert_eq!(worked.len(), 3, "every roster birth has its record: {worked:?}");
+
+    let runtime = RuntimeProof::of(&handle(FINAL, 46_000).fact().unwrap());
+    let (manifest, deleted) = cap.run(async {
+        let builds = WireBuilds(MemoryBuildStateAdapter::new());
+        let build_id = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .await
+            .unwrap();
+        let mesh_id = MeshId::mint();
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 2, operation: operation(&mesh_id) };
+        let deleted = std::sync::Mutex::new(Vec::new());
+        let manifest = members_exited(&builds, &key, FINAL, &roster, &me, runtime.clone(), &worked, &[], |n: Node| {
+            let runtime = runtime.clone();
+            async move { Ok(exited(&RosterBirth::of(&n).unwrap(), &runtime)) }
+        }, |b: RosterBirth| {
+            deleted.lock().unwrap().push(b.node.clone());
+            std::future::ready(Ok(()))
+        })
+        .await;
+        (manifest, deleted.into_inner().unwrap())
+    });
+    let manifest = manifest.expect("the tier completes over every roster birth");
+    assert!(births(&manifest.receipts).contains(FAILING), "the stopped birth's exact Exited receipt is in the manifest: {:?}", births(&manifest.receipts));
+    assert!(deleted.iter().any(|n| n == FAILING), "its row is written Deleted on its receipt: {deleted:?}");
 }

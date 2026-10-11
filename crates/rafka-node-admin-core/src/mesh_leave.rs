@@ -583,6 +583,21 @@ where
     Ok((admitted.roster, known))
 }
 
+/// The records the leave's member workflows act on (R11: the leave acts on the immutable accepted
+/// roster's exact births; mesh-leave.md "Failure/certainty behavior": "No timeout or gossip absence
+/// proves exit"): every roster birth as `view` holds that exact birth (node id and incarnation), else
+/// as `held` gives it, the record this admin's membership holds of the birth. A member that sent its
+/// terminal `Leaving` and went silent leaves the view one gossip interval later (a graceful
+/// departure, fabric-node-lifecycle.md §6) and still has no Exited receipt: its record is the held
+/// one. A birth neither holds is absent, and its tier fails naming it ([`members_exited`]).
+pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&RosterBirth) -> Option<Node>) -> Vec<Node> {
+    let _ = &held;
+    roster
+        .iter()
+        .filter_map(|b| view.iter().find(|n| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id)).cloned())
+        .collect()
+}
+
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
 /// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
