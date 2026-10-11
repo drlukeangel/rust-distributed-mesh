@@ -1092,7 +1092,9 @@ impl DeploymentPipeline<'_> {
             Ok(v) => (StepOutcome::Complete, serde_json::to_value(v).ok().filter(|v| !v.is_null())),
             Err(reason) => (StepOutcome::Failed { reason: reason.clone() }, None),
         };
-        let _ = self
+        // The receipt is the step's commit: a step whose receipt is not written did not complete,
+        // and the run stops naming why (the next attempt reuses what the local log holds).
+        let written = self
             .builds
             .append_step_receipt(&BuildStepReceipt {
                 build_id: run.build_id.clone(),
@@ -1104,7 +1106,14 @@ impl DeploymentPipeline<'_> {
                 executor: Some(self.template.executor()),
             })
             .await;
-        r.map_err(|reason| PipelineError { step, reason })
+        let v = r.map_err(|reason| PipelineError { step, reason })?;
+        if let Err(e) = written {
+            let reason = format!("{}: the {step} receipt of {} (Build {}, attempt {}) was not written: {e}", self.template.executor(), run.operation, run.build_id, run.attempt);
+            span.record("outcome", "receipt-refused");
+            span.in_scope(|| tracing::info!(detail = %reason, "the step's receipt was refused: the step did not complete"));
+            return Err(PipelineError { step, reason });
+        }
+        Ok(v)
     }
 
     /// Create (or restart) `req.node` through every step.

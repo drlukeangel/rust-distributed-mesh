@@ -22,7 +22,7 @@ use crate::mesh_leave::ExitManifest;
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::{FabricRecord, FabricShutdown};
-use crate::model::{EndpointId, FabricId, IncarnationId, NodeKind, PathName};
+use crate::model::{EndpointId, FabricId, IncarnationId, NodeId, NodeKind, PathName};
 use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rafka_mesh_entity::LifecycleOp;
 use serde::{Deserialize, Serialize};
@@ -276,6 +276,14 @@ pub(crate) enum WireOutput {
     Storage(WireStorageDisposition),
     Terminal(TerminalReceipt),
     ExitManifest(ExitManifest),
+    Birth(WireBirth),
+}
+
+/// The exact birth a standalone operation's `Complete` receipt names (`complete_for_birth`).
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WireBirth {
+    node_id: NodeId,
+    incarnation: Option<IncarnationId>,
 }
 
 /// A runtime step's receipt: the runtime by fingerprint.
@@ -406,6 +414,7 @@ enum Produces {
     Storage,
     Terminal,
     ExitManifest,
+    Birth,
 }
 
 fn produces(step: &str) -> Option<Produces> {
@@ -427,7 +436,7 @@ fn produces(step: &str) -> Option<Produces> {
         Produces::RuntimeEvidence
     } else if is(CreateStep::ApplyMeshPending) {
         Produces::MeshPending
-    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) {
+    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) || step == crate::deployment::pipeline::ReplaceStep::RenamePredecessor.name() {
         Produces::LifecycleOp
     } else if ret(RetireStep::DrainNode) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
         Produces::CommandAdmission
@@ -437,6 +446,8 @@ fn produces(step: &str) -> Option<Produces> {
         Produces::Storage
     } else if ret(RetireStep::TerminateRuntime) {
         Produces::Terminal
+    } else if ret(RetireStep::Complete) {
+        Produces::Birth
     } else if step == crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED || step == crate::mesh_leave::STEP_MESH_LEFT {
         Produces::ExitManifest
     } else {
@@ -500,6 +511,16 @@ fn output_to_wire(step: &str, v: &serde_json::Value) -> Result<WireOutput, Strin
         Produces::Storage => WireOutput::Storage((&typed::<StorageDisposition>(v)?).into()),
         Produces::Terminal => WireOutput::Terminal(typed(v)?),
         Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
+        Produces::Birth => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Row {
+                node_id: NodeId,
+                incarnation: Option<IncarnationId>,
+            }
+            let r: Row = typed(v)?;
+            WireOutput::Birth(WireBirth { node_id: r.node_id, incarnation: r.incarnation })
+        }
     })
 }
 
@@ -535,6 +556,7 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
         WireOutput::Storage(s) => json(&StorageDisposition::from(s)),
         WireOutput::Terminal(t) => json(&t),
         WireOutput::ExitManifest(m) => json(&m),
+        WireOutput::Birth(b) => Ok(serde_json::json!({ "node_id": b.node_id, "incarnation": b.incarnation })),
     }
 }
 
