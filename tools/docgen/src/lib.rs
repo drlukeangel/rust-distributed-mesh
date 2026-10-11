@@ -157,6 +157,20 @@ mod tests {
     }
 
     #[test]
+    fn a_rustdoc_intra_doc_link_renders_as_its_text_and_a_real_link_stays() {
+        assert_eq!(render::doc("does not exceed [`FORWARD_REPLY_RESERVE`], so"), "does not exceed `FORWARD_REPLY_RESERVE`, so");
+        assert_eq!(render::doc("one postcard frame ([`crate::wire`]). A digest"), "one postcard frame (`crate::wire`). A digest");
+        assert_eq!(render::doc("the [Frame] enum"), "the Frame enum");
+        assert_eq!(render::doc("see [the doc](gossip.md) and [x][y]"), "see [the doc](gossip.md) and [x][y]");
+        assert_eq!(render::doc("a `[u8; 32]` key"), "a `[u8; 32]` key");
+        assert_eq!(render::doc("an open [`Self::X` at the line end"), "an open [`Self::X` at the line end");
+        let root = rafka_mesh_audit::workspace_root();
+        let pages = pages(&root).unwrap();
+        let wire = page(&pages, "wire.md");
+        assert!(!wire.contains("[`FORWARD_REPLY_RESERVE`]") && wire.contains("`FORWARD_REPLY_RESERVE`"), "the wire page names the const without an intra-doc link");
+    }
+
+    #[test]
     fn two_runs_over_one_tree_write_the_same_bytes() {
         let root = rafka_mesh_audit::workspace_root();
         let (a, b) = (pages(&root).unwrap(), pages(&root).unwrap());

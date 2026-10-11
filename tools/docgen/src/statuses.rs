@@ -70,7 +70,7 @@ pub fn page(ws: &Workspace) -> anyhow::Result<String> {
     consts.sort();
     out.push_str("## Status strings\n\nEvery `pub const` string in RDM's non-test source whose value is a serde name or label above.\n\n| const | value | where | doc |\n|---|---|---|---|\n");
     for (name, value, site, doc) in &consts {
-        out.push_str(&format!("| `{name}` | {} | `{site}` | {} |\n", render::code(value), render::cell(doc)));
+        out.push_str(&format!("| `{name}` | {} | `{site}` | {} |\n", render::code(value), render::doc(doc)));
     }
     Ok(out)
 }

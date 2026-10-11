@@ -26,6 +26,13 @@ pub fn cell(text: &str) -> String {
     out
 }
 
+/// A doc line for a cell: rustdoc intra-doc links (``[`Self::NodeDrained`]``, `[Frame]`) become
+/// their inner text, since the page has no target for them, then [`cell`] escaping. A bracket
+/// inside inline code, or one that opens a real link (`](` or `][`), is kept.
+pub fn doc(text: &str) -> String {
+    cell(text)
+}
+
 /// `text` as inline code, safe for a table cell.
 pub fn code(text: &str) -> String {
     let fence = if text.contains('`') { "``" } else { "`" };
@@ -155,7 +162,7 @@ pub fn type_section(out: &mut String, ws: &Workspace, decl: &Decl, cols: Columns
         _ => source::doc_line(attrs),
     };
     if !doc.is_empty() {
-        out.push_str(&format!("{}\n\n", cell(&doc)));
+        out.push_str(&format!("{}\n\n", self::doc(&doc)));
     }
     let serde = source::serde_attrs(attrs);
     if !serde.is_empty() {
@@ -200,7 +207,7 @@ fn enum_table(out: &mut String, ws: &Workspace, decl: &Decl, e: &syn::ItemEnum, 
         if !labels.is_empty() {
             row.push(labels.get(&v.ident.to_string()).map(|l| l.iter().map(|x| code(x)).collect::<Vec<_>>().join("<br>")).unwrap_or_default());
         }
-        row.push(cell(&source::doc_line(&v.attrs)));
+        row.push(doc(&source::doc_line(&v.attrs)));
         out.push_str(&format!("| {} |\n", row.join(" | ")));
         for (j, f) in v.fields.iter().enumerate() {
             let cells = field_cells(ws, decl, f, j, linked);
@@ -233,7 +240,7 @@ fn field_cells(ws: &Workspace, decl: &Decl, f: &syn::Field, j: usize, linked: &B
         ty.push_str(&format!(" → {}", links.join(", ")));
     }
     let serde = source::serde_attrs(&f.attrs).iter().map(|s| code(s)).collect::<Vec<_>>().join(", ");
-    [name, ty, serde, cell(&source::doc_line(&f.attrs))]
+    [name, ty, serde, doc(&source::doc_line(&f.attrs))]
 }
 
 /// The workspace declarations a field type written in `decl`'s file names, in mention order,
