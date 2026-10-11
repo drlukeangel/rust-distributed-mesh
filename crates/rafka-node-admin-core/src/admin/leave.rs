@@ -50,8 +50,20 @@ impl AdminRunner {
     /// The record this admin's membership holds of the exact roster birth `b`: its digest, live or
     /// parked, as the view projects a digest (the leave's records, [`crate::mesh_leave::roster_records`]).
     fn held_record(&self, b: &RosterBirth) -> Option<Node> {
-        let _ = b;
-        None
+        let d = self.book.get(&b.node_id).map(|(d, _)| d).or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.0 == b.incarnation_id)?;
+        let mut n = Node::allocated(d.node.name.clone());
+        n.node_id = d.node.node_id.clone();
+        n.endpoint_id = Some(d.node.endpoint_id.clone());
+        n.incarnation_id = Some(d.node.incarnation.clone());
+        n.provider = Some(self.provider.kind());
+        n.status = crate::admin::node_status(d.status);
+        n.routable = false;
+        n.admin_api_base = d.admin_api_base.clone();
+        n.config = d.config.clone();
+        n.transport_addr = Some(d.node.transport_addr);
+        n.data_dir = d.data_dir.clone();
+        n.deployment_id = d.node.runtime.as_ref().map(|f| DeploymentId(f.deployment_id.clone()));
+        Some(n)
     }
 
     /// The owner's outer workflow `shutdown-mesh:<mesh_id>`.

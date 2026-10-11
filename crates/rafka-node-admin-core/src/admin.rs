@@ -219,7 +219,7 @@ fn local_now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-fn node_status(s: MemberStatus) -> NodeStatus {
+pub(crate) fn node_status(s: MemberStatus) -> NodeStatus {
     match s {
         MemberStatus::Pending => NodeStatus::Pending,
         MemberStatus::ReadyForTraffic => NodeStatus::ReadyForTraffic,

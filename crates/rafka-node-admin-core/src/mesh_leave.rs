@@ -591,11 +591,8 @@ where
 /// departure, fabric-node-lifecycle.md §6) and still has no Exited receipt: its record is the held
 /// one. A birth neither holds is absent, and its tier fails naming it ([`members_exited`]).
 pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&RosterBirth) -> Option<Node>) -> Vec<Node> {
-    let _ = &held;
-    roster
-        .iter()
-        .filter_map(|b| view.iter().find(|n| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id)).cloned())
-        .collect()
+    let exact = |b: &RosterBirth, n: &Node| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
+    roster.iter().filter_map(|b| view.iter().find(|n| exact(b, n)).cloned().or_else(|| held(b).filter(|n| exact(b, n)))).collect()
 }
 
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
