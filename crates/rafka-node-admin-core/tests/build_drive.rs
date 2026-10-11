@@ -643,6 +643,60 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
     eprintln!("span rdm.node_admin.build.update.via-drive trace_id={} {:?}", drives[0].0, drives[0].1);
 }
 
+/// Commits each operation's receipt and lands the created node live; the run of `mesh1.rpc.2` also
+/// seats mesh2's held admin as mesh2's primary, as a mesh whose seat is taken while another mesh's
+/// run goes on.
+struct LandsAndSeats {
+    ran: Arc<Creates>,
+    topology: Arc<RwLock<Topology>>,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for LandsAndSeats {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        self.ran.run(build, attempt, op).await?;
+        if let BuildOperation::CreateNode { node: p } = op {
+            let mut v = self.topology.write().await;
+            v.nodes.push(node(&p.to_string(), false, false));
+            if p.to_string() == "mesh1.rpc.2" {
+                for n in v.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
+                    n.status = NodeStatus::ReadyForTraffic;
+                    n.is_primary = true;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// CONTRACT: a run handed back to the fabric-primary is claimed for the admin its view names for what
+/// is left, never for the fabric-primary to hand on unrun. The fabric-primary's run of mesh1's rpc
+/// node is cut before mesh2's admin (no admin of mesh2 is seated when it is planned) and handed back;
+/// by then mesh2's admin holds the seat. The next attempt is claimed for `mesh2.admin.2` directly: no
+/// attempt of the fabric-primary carries nothing to it.
+#[tokio::test]
+async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_left() {
+    let mut t = view();
+    for n in t.nodes.iter_mut() {
+        n.is_primary = n.name.to_string() == "mesh1.admin.1";
+    }
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    let mut lost = node("mesh2.admin.1", false, false);
+    lost.status = NodeStatus::Dead;
+    t.nodes.push(lost);
+    let mut held = node("mesh2.admin.2", false, false);
+    held.status = NodeStatus::PendingReconnect;
+    t.nodes.push(held);
+    t.nodes.push(node("mesh2.rpc.1", false, false));
+    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, admins), (rafka_mesh_entity::NodeKind::RpcNode, rpcs)]);
+    let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 2), counts("mesh2", 2, 1)] } };
+    let r = rig_for(t, change, |ran, topology| Arc::new(LandsAndSeats { ran, topology })).await;
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string(), "create-node:mesh2.admin.1".to_string()]);
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.2".to_string(), 2)], "the hand-back is claimed for mesh2's seated admin");
+}
+
 /// CONTRACT: an executor runs the first operation of the attempt the fabric-primary claimed for it
 /// whatever its own view says. The fabric-primary's view named `mesh1.admin.2` the executor; the view
 /// of `mesh1.admin.2` holds no mesh primary yet (it has not elected itself since the old one was
