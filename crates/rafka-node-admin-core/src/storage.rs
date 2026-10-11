@@ -564,12 +564,17 @@ mod tests {
     /// the runtime that it still runs (up to 5 s), then writes `row`. Whether that word came, while
     /// the read was waiting, is what this answers.
     fn runtime_runs_while_a_row_is_read<T: Send + 'static>(row: NodeRow, op: impl FnOnce(std::sync::Arc<FileNodesStorage>) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static) -> (bool, T) {
+        let bytes = serde_json::to_vec(&serde_json::json!({ "format": ROW_FORMAT, "record": row })).unwrap();
+        runtime_runs_while_a_file_is_read("nodes/rows", &row.name.to_string(), bytes, op)
+    }
+
+    /// The same, for the record file `<key>.json` under the store's `dir`, written `bytes`.
+    fn runtime_runs_while_a_file_is_read<T: Send + 'static>(dir: &str, key: &str, bytes: Vec<u8>, op: impl FnOnce(std::sync::Arc<FileNodesStorage>) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static) -> (bool, T) {
         let d = crate::record_store::tempdir("rows-offload");
         let store = std::sync::Arc::new(FileNodesStorage::open(&d).unwrap());
-        let fifo = d.join("nodes/rows").join(format!("{}.json", row.name));
+        let fifo = d.join(dir).join(format!("{key}.json"));
         let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
-        let bytes = serde_json::to_vec(&serde_json::json!({ "format": ROW_FORMAT, "record": row })).unwrap();
         let (word_tx, word_rx) = std::sync::mpsc::channel::<()>();
         let writer = std::thread::spawn(move || {
             use std::io::Write as _;
@@ -619,5 +624,18 @@ mod tests {
         let (ran, claimed) = runtime_runs_while_a_row_is_read(held.clone(), move |s| Box::pin(async move { s.claim_node_row(&claim).await }));
         assert!(ran, "the runtime thread ran while the claim's read waited on the disk");
         assert_eq!(claimed, Ok(Err(NameHeld { name: held.name.clone(), by: held.node_id.clone() })));
+    }
+
+    /// CONTRACT: a list of a store's records (`FileRecords::list`: the directory read and every
+    /// file in it) never waits on the disk on a runtime worker: it runs on the blocking pool, as a
+    /// point read and every write do. The cell lists the runtime rows while one row file holds its
+    /// read: the runtime's only thread keeps running, and the list answers the row.
+    #[test]
+    fn a_list_of_records_waits_on_the_disk_off_the_runtime_thread() {
+        let row = RuntimeRow { node_id: NodeId::mint(), name: "mesh1.admin.2".parse().unwrap(), incarnation_id: IncarnationId("i1".into()), runtime: rafka_mesh_entity::RuntimeFact::of_this_process("dep-1").unwrap(), data_dir: Some("/tmp/x".into()) };
+        let bytes = serde_json::to_vec(&serde_json::json!({ "format": RUNTIME_FORMAT, "record": row })).unwrap();
+        let (ran, listed) = runtime_runs_while_a_file_is_read("nodes/runtimes", &row.key(), bytes, move |s| Box::pin(async move { s.runtimes().await }));
+        assert!(ran, "the runtime thread ran while the list waited on the disk");
+        assert_eq!(listed, Ok(vec![row]));
     }
 }
