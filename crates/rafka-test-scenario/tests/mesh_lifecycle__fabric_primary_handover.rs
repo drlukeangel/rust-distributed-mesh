@@ -259,22 +259,40 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let mesh1_installed = |publisher: &str, members: u64| -> Vec<&Value> {
         installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "backbone" && at_other(sp, "admin") && s(&sp["attributes"]["publisher"]).starts_with(&format!("{publisher}@")) && attr_u(sp, "members") == members).collect()
     };
-    // 1. While it lives: its own aggregate, itself the only member.
-    assert!(!mesh1_installed(&final_name, 1).is_empty(), "an admin of {other_mesh} held mesh1 with its last admin {final_name} the only member, from {final_name}'s own aggregate");
+    // 1. While it lives: the last admin keeps publishing mesh1's aggregate, itself the only member once
+    // every other member stopped, and the other mesh holds mesh1 from that admin's own aggregate. Which
+    // of its last versions a peer hears before the stop's cut is gossip delivery inside a window of tens
+    // of milliseconds at this cadence, so the hold is read from any version it published.
+    let lone_published = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1);
+    assert!(lone_published, "the last admin {final_name} published mesh1's aggregate with itself the only member");
+    assert!((1..=4).any(|m| !mesh1_installed(&final_name, m).is_empty()), "an admin of {other_mesh} held mesh1 from its last admin {final_name}'s own aggregate");
     // 2. Stopped: the fabric-primary publishes mesh1's own aggregate (no digests, the stop in in_flight),
-    // and the other mesh holds the last admin parked from it: its admins from the backbone, its ordinary
-    // nodes from their mesh primary (forwarded, or the entry pull it served).
-    let acting: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-acting-primary").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == fabric_primary && attr_u(sp, "in_flight") >= 1).collect();
+    // and the other mesh holds the last admin parked from it: an admin from the backbone, an ordinary
+    // node from its mesh primary (forwarded, or the entry pull it served). The fabric-primary's MeshLeft
+    // follows within tens of milliseconds and gossip does not order the two, so a node that hears
+    // MeshLeft first refuses the later frame by name (read below) instead.
+    let acting: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-acting-primary").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == fabric_primary && attr_u(sp, "in_flight") >= 1 && attr_u(sp, "departed") == 0).collect();
     assert!(!acting.is_empty(), "the fabric-primary {fabric_primary} published mesh1's own aggregate as its publisher of record once mesh1 had no primary");
-    assert!(!mesh1_installed(&fabric_primary, 0).is_empty(), "an admin of {other_mesh} installed mesh1's aggregate published by the fabric-primary {fabric_primary}, no digests: {:?}", installed.iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && at_other(sp, "admin")).collect::<Vec<_>>());
-    assert!(final_parked.iter().any(|sp| at_other(sp, "admin") && sp["attributes"]["channel"] == "backbone"), "an admin of {other_mesh} held the final primary {final_name} parked from mesh1's aggregate on the backbone: {final_parked:?}");
-    assert!(final_parked.iter().any(|sp| at_other(sp, "rpc") && matches!(s(&sp["attributes"]["channel"]).as_str(), "mesh-channel" | "topology-read")), "an ordinary node of {other_mesh} held the final primary {final_name} parked from its own mesh primary: {final_parked:?}");
+    let from_fp: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && (at_other(sp, "admin") || at_other(sp, "rpc")) && s(&sp["attributes"]["publisher"]).starts_with(&format!("{fabric_primary}@")) && attr_u(sp, "members") == 0).collect();
+    assert!(!from_fp.is_empty(), "a node of {other_mesh} installed mesh1's aggregate published by the fabric-primary {fabric_primary}, no digests: {:?}", installed.iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && at_other(sp, "admin")).collect::<Vec<_>>());
+    let held_at_other: Vec<&Value> = final_parked.iter().copied().filter(|sp| (at_other(sp, "admin") && sp["attributes"]["channel"] == "backbone") || (at_other(sp, "rpc") && matches!(s(&sp["attributes"]["channel"]).as_str(), "mesh-channel" | "topology-read"))).collect();
+    assert!(!held_at_other.is_empty(), "a node of {other_mesh} held the final primary {final_name} parked from mesh1's aggregate the fabric-primary published: {final_parked:?}");
     // 3. Gone after delete, and 4. nothing resurrects it: once a node of the other mesh applied mesh-left,
     // no mesh1 birth is held by it again (a late frame is refused by the departed fence, by name).
     let mesh_left_at: Vec<(String, u64)> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{other_mesh}.")) && attr_u(sp, "births_departed") > 0).map(|sp| (s(&sp["attributes"]["node"]), start_ns(sp))).collect();
     assert!(mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{other_mesh}.admin."))) && mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{other_mesh}.rpc."))), "an admin and an ordinary node of {other_mesh} departed mesh1's births on mesh-left: {mesh_left_at:?}");
     let resurrected: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]).starts_with("mesh1.") && mesh_left_at.iter().any(|(n, at)| s(&sp["attributes"]["node"]) == *n && start_ns(sp) > *at)).collect();
     assert!(resurrected.is_empty(), "a mesh1 birth was held again after mesh-left: {resurrected:?}");
+    let after_left = |sp: &Value| mesh_left_at.iter().any(|(n, at)| (s(&sp["attributes"]["node"]) == *n || s(&sp["attributes"]["holder"]) == *n) && start_ns(sp) > *at);
+    let reinstalled: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && after_left(sp)).collect();
+    assert!(reinstalled.is_empty(), "a node of {other_mesh} installed a mesh1 aggregate after mesh-left: {reinstalled:?}");
+    let late_refused: Vec<String> = ["rdm.mesh.membership.reject.via-departed-birth", "rdm.mesh.membership.reject.via-mesh-not-in-build"]
+        .into_iter()
+        .flat_map(|n| named(&spans, n))
+        .filter(|sp| after_left(sp) && (sp["attributes"]["mesh"] == "mesh1" || s(&sp["attributes"]["node"]).starts_with("mesh1.")))
+        .map(|sp| format!("{}:{}", s(&sp["name"]), s(&sp["attributes"]["holder"]) + &s(&sp["attributes"]["node"])))
+        .collect();
+    eprintln!("late mesh1 frames refused by name at {other_mesh} after its mesh-left: {late_refused:?}");
     // A stopped birth gossips nothing (node-stop.md step 4): once its connections are cut, the parked
     // final primary announces no Leaving on any channel when its process is ended.
     let cut_at = named(&spans, "rdm.node_admin.node.connections.delete.via-stop-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's connections were cut by its stop");

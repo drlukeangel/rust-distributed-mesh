@@ -2228,6 +2228,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeStopped not sent on the mesh channel");
             }
+            // This admin executed the stop and holds its matching stopped reply: the overlay its own
+            // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
+            self.membership.book.executed_stop(op);
             tracing::info!("the node is parked: every mesh drops it from its book until it rejoins as itself");
         }
         .instrument(span)
@@ -2305,6 +2308,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
             }
+            // This admin executed the delete and holds the provider's exit proof: the departure its own
+            // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
+            self.membership.book.executed_delete(op);
             tracing::info!("the exact birth is proven terminal: it has left");
         }
         .instrument(span)
@@ -5131,6 +5137,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let mine: Vec<MeshDigest> = backbone.own_members(&membership);
                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 backbone.publish(&membership, mine.clone()).await;
+                // R-NS1: as fabric primary, the publisher of record of every mesh with no primary
+                // whose births it stopped or deleted.
+                backbone.publish_for_primaryless(&membership, |m| t.cohort_primary(m, NodeKind::NodeAdmin).is_none()).await;
                 // A status is sent when it changed, never per round (gossip.md §3.2).
                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                 // The fabric's status as the live records state it: a round that just cleared the adopted

@@ -1802,7 +1802,9 @@ pub type CompletionCarrier = Arc<dyn Fn(&Frame) + Send + Sync>;
 
 impl View {
     fn new(mesh: &str, node: &str) -> Self {
-        Self { mesh: mesh.to_string(), node: node.to_string(), ..Self::default() }
+        let view = Self { mesh: mesh.to_string(), node: node.to_string(), ..Self::default() };
+        *view.book.holder.lock().unwrap() = node.to_string();
+        view
     }
 
     /// Hold what `f` carries; the digests it carries (for their addresses). A snapshot frame is
@@ -2171,7 +2173,10 @@ impl View {
         .in_scope(|| tracing::debug!("a complete snapshot installed"));
         let carried = self.apply_full(&i.mesh, &i.full, fabric, side);
         let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
-        let publication = (side == Side::Backbone).then(|| Publication {
+        // The fabric primary's clock is sampled from its own mesh's aggregate, never from one it
+        // publishes as the publisher of record of a mesh with no primary (no digests, R-NS1).
+        let publishers_own = i.publisher.node.split('.').next() == Some(i.mesh.as_str());
+        let publication = (side == Side::Backbone && publishers_own).then(|| Publication {
             publisher: i.publisher.clone(),
             published_at_rafka_ms,
             publisher_digest: i.full.digests().into_iter().find(|d| d.node.incarnation == i.publisher.incarnation),
@@ -2936,6 +2941,11 @@ pub struct Backbone {
     /// This Mesh as the aggregate last published it (publisher, version, full): the forwarder's
     /// own-Mesh source.
     own: Arc<Mutex<Option<(u64, Full)>>>,
+    /// The version counter of each mesh this admin published as its publisher of record (R-NS1).
+    acting: Arc<Mutex<BTreeMap<String, SourceVersion>>>,
+    /// The stops and deletes this admin executed for each mesh beyond its own, as its last round
+    /// looked at them: the round is due at once when they move.
+    acting_seen: Arc<Mutex<BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)>>>,
 }
 
 impl Backbone {
@@ -3009,6 +3019,8 @@ impl Backbone {
             full_due: membership.forward_path.owes_full(),
             version: Arc::default(),
             own: Arc::default(),
+            acting: Arc::default(),
+            acting_seen: Arc::default(),
         };
         me.spawn_status_sender();
         Ok(me)
@@ -3175,6 +3187,56 @@ impl Backbone {
         true
     }
 
+    /// R-NS1 (gossip.md, mesh-leave section): while this admin is the fabric primary it is the
+    /// publisher of record of a mesh with no primary (`primaryless`) whose births it stopped or
+    /// deleted. For each such mesh it publishes the mesh's own Members aggregate on the backbone,
+    /// publisher itself, `digests` empty, the stops it executed in `in_flight` (each from the
+    /// matching stopped reply it holds) and the deletes in `departed` (each from the exit proof it
+    /// holds), and puts the same source into its own Mesh. A birth it did not stop or delete is never
+    /// listed; the aggregate carries no liveness. A start ends the stop and a departure past
+    /// retention lists nothing: then nothing is published for the mesh. Returns the meshes published.
+    pub async fn publish_for_primaryless(&self, membership: &Membership, primaryless: impl Fn(&str) -> bool) -> Vec<String> {
+        let executed = if self.status_publishing.load(Ordering::Relaxed) { membership.book.executed_overlays_beyond(&self.mesh) } else { BTreeMap::new() };
+        *self.acting_seen.lock().unwrap() = executed.clone();
+        let mut published = Vec::new();
+        for (mesh, (in_flight, departed)) in executed {
+            if !primaryless(&mesh) {
+                continue;
+            }
+            let sent = membership.clock.now_rafka_ms();
+            let full = Full::new(Vec::new(), in_flight, departed);
+            let (version, snapshot_id, bumped) = {
+                let mut acting = self.acting.lock().unwrap();
+                let v = acting.entry(mesh.clone()).or_default();
+                let before = v.version();
+                let version = v.observe(&full);
+                (version, v.next_snapshot_id(), version != before)
+            };
+            if bumped {
+                tracing::info_span!("rdm.mesh.backbone.update.via-acting-primary", node = %self.node, mesh = %mesh, publisher = %self.publisher, topology_version = version, in_flight = full.in_flight().len(), departed = full.departed().len())
+                    .in_scope(|| tracing::info!("a mesh with no primary: the fabric primary publishes its aggregate, the births it stopped or deleted and no digests"));
+            }
+            for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+                mesh: mesh.clone(),
+                publisher: self.publisher.clone(),
+                forwarded_by: None,
+                topology_version: version,
+                published_at_rafka_ms: sent,
+                snapshot_id,
+                chunk_index,
+                chunk_count,
+                digests,
+                in_flight,
+                departed,
+            }) {
+                let _ = self.channel.broadcast(&frame).await;
+            }
+            membership.forward_path.source(&self.node, &mesh, &self.publisher, version, &full, sent);
+            published.push(mesh);
+        }
+        published
+    }
+
     /// This Mesh's members as a publication round puts them into its aggregate: every member of
     /// this Mesh the book heard within the staleness floor.
     pub fn own_members(&self, membership: &Membership) -> Vec<MeshDigest> {
@@ -3203,6 +3265,11 @@ impl Backbone {
             heard.borrow_and_update();
             births.borrow_and_update();
             overlays.borrow_and_update();
+            // A stop or delete this fabric primary executed beyond its own mesh moved since its last
+            // round looked: the round decides at once whether it publishes for that mesh (R-NS1).
+            if self.status_publishing.load(Ordering::Relaxed) && book.executed_overlays_beyond(&self.mesh) != *self.acting_seen.lock().unwrap() {
+                return;
+            }
             if self.publishing.load(Ordering::Relaxed) {
                 let full = self.own_full(membership, self.own_members(membership));
                 let (moved, held) = {
@@ -3422,6 +3489,12 @@ pub struct DigestBook {
     /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
     ended_overlays: Arc<Mutex<BTreeSet<(String, u32, String)>>>,
+    /// The stops and deletes this node executed (R-NS1): the exact birth of each overlay it published
+    /// as `NodeStopped` from the matching stopped reply, or as `NodeDeleted` from the provider's exit
+    /// proof, by operation key. Only these ride an aggregate it publishes for a mesh with no primary.
+    executed: Arc<Mutex<Executed>>,
+    /// The path name of the node holding this book, named by the refusals it writes.
+    holder: Arc<Mutex<String>>,
     /// The mesh names the accepted Build holds, once this node holds the Build: the authority on
     /// which meshes the fabric has.
     accepted_meshes: Arc<Mutex<Option<BTreeSet<String>>>>,
@@ -3447,6 +3520,31 @@ pub struct MeshLeftApplied {
     pub name: Option<String>,
     /// How many births departed now.
     pub departed: usize,
+}
+
+/// The stops and deletes a node executed, each by (operation key, NodeId, incarnation).
+#[derive(Debug, Default)]
+struct Executed {
+    stops: BTreeSet<((String, u32, String), String, String)>,
+    deletes: BTreeSet<((String, u32, String), String, String)>,
+}
+
+/// A lifecycle overlay (`NodeStopped`, or a `NodeDeleted` other than the departure held) of a birth
+/// already held departed: it arrived after the birth left (its mesh's `MeshLeft`, or its own
+/// `NodeDeleted`) and resurrects nothing.
+fn reject_departed_overlay(holder: &str, op: &LifecycleOp, frame: &'static str) {
+    tracing::info_span!(
+        "rdm.mesh.membership.reject.via-departed-birth",
+        holder,
+        node = %op.name,
+        node_id = %op.node_id,
+        incarnation_id = %op.incarnation.0,
+        frame,
+        build_id = %op.build_id,
+        attempt = op.attempt,
+        operation = %op.operation,
+    )
+    .in_scope(|| tracing::info!("a lifecycle overlay of a departed birth: refused, the departure stands"));
 }
 
 /// Why a digest was not taken.
@@ -3513,6 +3611,8 @@ impl DigestBook {
             in_flight: Arc::default(),
             stopped_marks: Arc::default(),
             ended_overlays: Arc::default(),
+            executed: Arc::default(),
+            holder: Arc::default(),
             accepted_meshes: Arc::default(),
             retention,
             staleness_floor,
@@ -3565,7 +3665,13 @@ impl DigestBook {
         let id = op.node_id.to_string();
         {
             let mut departed = self.departed.lock().unwrap();
-            if departed.contains_key(&id) {
+            if let Some((held, _)) = departed.get(&id) {
+                // The same departure again is a copy (every aggregate carries it for the retention); a
+                // different one names a birth that already left: refused by the departed fence.
+                if held.key() != op.key() {
+                    drop(departed);
+                    reject_departed_overlay(&self.holder.lock().unwrap(), &op, "node-deleted");
+                }
                 return false;
             }
             departed.insert(id.clone(), (op.clone(), now));
@@ -3704,6 +3810,7 @@ impl DigestBook {
     /// birth of the node is held (the stop is of an older birth).
     pub fn stopped(&self, op: LifecycleOp) -> bool {
         if self.is_departed(op.node_id.as_str()) {
+            reject_departed_overlay(&self.holder.lock().unwrap(), &op, "node-stopped");
             return false;
         }
         let held_digest = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| d.clone());
@@ -3933,6 +4040,47 @@ impl DigestBook {
         let mut v: Vec<LifecycleOp> = self.departed.lock().unwrap().values().map(|(op, _)| op.clone()).collect();
         v.sort_by(|a, b| a.node_id.cmp(&b.node_id));
         v
+    }
+
+    /// This node published `op` as `NodeStopped` from the matching stopped reply of a stop it
+    /// executed: it holds that birth's stop receipt.
+    pub fn executed_stop(&self, op: &LifecycleOp) {
+        self.executed.lock().unwrap().stops.insert((op.key(), op.node_id.to_string(), op.incarnation.0.clone()));
+        // What its publications for a mesh with no primary list moved: a round looks at once.
+        self.overlays_moved();
+    }
+
+    /// This node published `op` as `NodeDeleted` from the provider's exit proof of a delete it
+    /// executed: it holds that birth's exit proof.
+    pub fn executed_delete(&self, op: &LifecycleOp) {
+        self.executed.lock().unwrap().deletes.insert((op.key(), op.node_id.to_string(), op.incarnation.0.clone()));
+        // What its publications for a mesh with no primary list moved: a round looks at once.
+        self.overlays_moved();
+    }
+
+    /// The meshes other than `own` for which this book holds an open stop overlay or a retained
+    /// departure this node executed, each with exactly those overlays and departures: what this node
+    /// publishes as that mesh's aggregate while it is the mesh's publisher of record (R-NS1). A stop
+    /// that ended (the birth rejoined, or departed) and a departure past retention list nothing; a
+    /// birth this node did not stop or delete is never listed.
+    pub fn executed_overlays_beyond(&self, own: &str) -> BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)> {
+        let (in_flight, departed) = (self.in_flight(), self.departed());
+        let mark = |op: &LifecycleOp| (op.key(), op.node_id.to_string(), op.incarnation.0.clone());
+        let (open, held): (BTreeSet<_>, BTreeSet<_>) = (in_flight.iter().map(mark).collect(), departed.iter().map(mark).collect());
+        let mut executed = self.executed.lock().unwrap();
+        // A mark whose overlay ended (a start, a departure, the retention) is never listed again.
+        executed.stops.retain(|m| open.contains(m));
+        executed.deletes.retain(|m| held.contains(m));
+        let stops: Vec<LifecycleOp> = in_flight.into_iter().filter(|op| op.is_stop() && op.name.mesh != own && executed.stops.contains(&mark(op))).collect();
+        let deletes: Vec<LifecycleOp> = departed.into_iter().filter(|op| op.name.mesh != own && executed.deletes.contains(&mark(op))).collect();
+        let mut out: BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)> = BTreeMap::new();
+        for op in stops {
+            out.entry(op.name.mesh.clone()).or_default().0.push(op);
+        }
+        for op in deletes {
+            out.entry(op.name.mesh.clone()).or_default().1.push(op);
+        }
+        out
     }
 
     /// The open overlays and retained departures of `mesh`'s own nodes: what
@@ -5294,5 +5442,97 @@ mod tests {
         assert_eq!(book.mesh_primary("mesh1").map(|d| d.node.node_id), Ok(lower.node.node_id.clone()));
         book.seats.mark_gone(held.incarnation.clone());
         assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderGone { holder: held });
+    }
+
+    /// Every span opened while the capture is the thread's subscriber: its name and its fields.
+    #[derive(Clone, Default)]
+    struct OpenedSpans(Arc<Mutex<Vec<(String, BTreeMap<String, String>)>>>);
+
+    struct SpanFields<'a>(&'a mut BTreeMap<String, String>);
+
+    impl tracing::field::Visit for SpanFields<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().to_string(), format!("{value:?}").trim_matches('"').to_string());
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OpenedSpans {
+        fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            let mut fields = BTreeMap::new();
+            attrs.record(&mut SpanFields(&mut fields));
+            self.0.lock().unwrap().push((attrs.metadata().name().to_string(), fields));
+        }
+    }
+
+    impl OpenedSpans {
+        fn named(&self, name: &str) -> Vec<BTreeMap<String, String>> {
+            self.0.lock().unwrap().iter().filter(|(n, _)| n == name).map(|(_, f)| f.clone()).collect()
+        }
+    }
+
+    fn op_at(path: &str, id: &NodeId, inc: &IncarnationId, operation: &str) -> LifecycleOp {
+        LifecycleOp { name: path.parse().unwrap(), ..op(id, inc, operation) }
+    }
+
+    /// CONTRACT (R-NS1): the fabric primary lists, for a mesh beyond its own, exactly the stops and
+    /// deletes it executed: a stop it published from the matching stopped reply while the stop is
+    /// open, a delete it published from the exit proof while the departure is retained. A stop
+    /// another admin executed, and its own mesh's overlays, are never listed; a stop that ended
+    /// lists nothing again.
+    #[test]
+    fn the_fabric_primary_lists_for_a_mesh_beyond_its_own_only_the_stops_and_deletes_it_executed() {
+        let book = DigestBook::default();
+        let (last, other, own, deleted) = ((NodeId::mint(), IncarnationId::mint()), (NodeId::mint(), IncarnationId::mint()), (NodeId::mint(), IncarnationId::mint()), (NodeId::mint(), IncarnationId::mint()));
+        let stop_last = op_at("mesh1.admin.1", &last.0, &last.1, "stop-node:mesh1.admin.1");
+        let stop_other = op_at("mesh1.rpc.1", &other.0, &other.1, "stop-node:mesh1.rpc.1");
+        let stop_own = op_at("mesh2.rpc.1", &own.0, &own.1, "stop-node:mesh2.rpc.1");
+        let delete = op_at("mesh4.admin.1", &deleted.0, &deleted.1, "retire-node:mesh4.admin.1");
+        for o in [&stop_last, &stop_other, &stop_own] {
+            assert!(book.stopped(o.clone()));
+        }
+        assert!(book.depart(delete.clone()));
+        assert!(book.executed_overlays_beyond("mesh2").is_empty(), "nothing executed, nothing listed");
+        book.executed_stop(&stop_last);
+        book.executed_stop(&stop_own);
+        book.executed_delete(&delete);
+        let listed = book.executed_overlays_beyond("mesh2");
+        assert_eq!(listed.keys().cloned().collect::<Vec<_>>(), ["mesh1", "mesh4"], "{listed:?}");
+        assert_eq!(listed["mesh1"], (vec![stop_last.clone()], vec![]), "only the stop it executed, never mesh1's other stop");
+        assert_eq!(listed["mesh4"], (vec![], vec![delete.clone()]));
+        // The last admin is started again: its stop ends and it is listed no more.
+        assert!(book.record(digest(&last.0, &last.1, None, MemberStatus::Pending, 500)));
+        assert!(!book.executed_overlays_beyond("mesh2").contains_key("mesh1"), "a start hands publishing back");
+    }
+
+    /// CONTRACT (R-NS1 change 3): a NodeStopped arriving after its birth's mesh left, and a
+    /// NodeDeleted other than the departure held, are refused by the departed fence by name and
+    /// resurrect nothing; a copy of the departure held (every aggregate carries it for the retention)
+    /// is a copy, not a refusal.
+    #[test]
+    fn a_lifecycle_overlay_arriving_after_its_mesh_left_is_refused_by_the_departed_fence_by_name() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let mesh_id = MeshId::mint();
+        let mut d = digest(&id, &inc, None, MemberStatus::Leaving, 100);
+        d.node.name = "mesh1.admin.1".parse().unwrap();
+        d.mesh_id = Some(mesh_id.clone());
+        assert!(book.record(d));
+        assert_eq!(book.mesh_left(&mesh_id, Some("mesh1"), "b1", 1, 1).departed, 1);
+        let late_stop = op_at("mesh1.admin.1", &id, &inc, "stop-node:mesh1.admin.1");
+        let late_stop = LifecycleOp { build_id: "b0".into(), ..late_stop };
+        assert!(!book.stopped(late_stop.clone()), "a late NodeStopped opens nothing");
+        assert!(book.in_flight().is_empty() && book.get(id.as_str()).is_none(), "nothing is resurrected");
+        let late_delete = op_at("mesh1.admin.1", &id, &inc, "retire-node:mesh1.admin.1");
+        assert!(!book.depart(late_delete.clone()), "a late NodeDeleted departs nothing again");
+        let held = book.departed().into_iter().next().unwrap();
+        assert!(!book.depart(held), "a copy of the departure held");
+        let refused = spans.named("rdm.mesh.membership.reject.via-departed-birth");
+        assert_eq!(refused.len(), 2, "one refusal per late frame, none for the copy: {refused:?}");
+        assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-stopped", "stop-node:mesh1.admin.1", "b0"));
+        assert_eq!((refused[1]["frame"].as_str(), refused[1]["operation"].as_str()), ("node-deleted", "retire-node:mesh1.admin.1"));
+        assert!(refused.iter().all(|f| f["node_id"] == id.to_string() && f["incarnation_id"] == inc.0));
     }
 }
