@@ -5684,8 +5684,8 @@ mod tests {
         async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
             self.0.put_contact(record).await
         }
-        async fn remove_contact(&self, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
-            self.0.remove_contact(node_id).await
+        async fn remove_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.0.remove_contact(record).await
         }
         async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::record_store::StorageError> {
             self.0.put_node_row(row).await
@@ -5737,8 +5737,8 @@ mod tests {
         async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_contact(record).await
         }
-        async fn remove_contact(&self, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
-            self.inner.remove_contact(node_id).await
+        async fn remove_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_contact(record).await
         }
         async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_row(row).await
