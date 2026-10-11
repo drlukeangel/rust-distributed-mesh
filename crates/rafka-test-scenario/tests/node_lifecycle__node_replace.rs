@@ -446,6 +446,90 @@ async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_par
     estate.shutdown().await;
 }
 
+/// The steps of `node.delete` of a parked birth (node-decommission.md: its stop steps are already done,
+/// "Stop's node.stopped is pre-exit (parked) and insufficient"): the removal is announced, the
+/// provider's exact Exited is the proof, then the executor publishes NodeDeleted and the operation's
+/// Complete names the birth. Storage is not released ("It releases node.id and name, not storage").
+const DELETE_PARKED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"];
+
+/// CONTRACT: the recipe's `node[1].delete` of the parked predecessor a replace left at `<path>.old`
+/// (node-replace.md; node-decommission.md 2-4): `DELETE /api/nodes/<path>.old` is the next attempt of
+/// the accepted Build (reason delete, action delete fenced to the exact old birth, no Build minted).
+/// One operation `delete-node:<path>.old` asks the provider to end the parked runtime and inspects
+/// it; only the provider's Exited is the proof, after which the executor publishes NodeDeleted for
+/// the exact old birth and the fabric-primary writes the Deleted row at `<path>.old`, its record
+/// kept. The predecessor's process is gone; its data dir stays; the successor at the path is
+/// untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deleting_the_parked_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row() {
+    let (estate, birth_build) = estate("deleting_the_parked_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row").await;
+    const NODE: &str = "mesh1.rpc.1";
+    let before = estate.node(NODE).await;
+    let pid = estate.pid_of(NODE).await;
+    let old_dir = std::path::PathBuf::from(estate.data_dir_of(NODE).await);
+    let (status, r) = estate.post(&format!("/api/nodes/{NODE}/replace"), &json!({})).await;
+    assert_eq!(status, 202, "{r}");
+    estate.await_attempt(&birth_build, Estate::attempt_of(&r), SETTLE).await;
+    let after = wait_for(&format!("{NODE} ready under a new NodeId"), SETTLE, || async {
+        estate.nodes().await.into_iter().find(|n| n["name"] == NODE && ready(n) && n["node_id"] != before["node_id"])
+    })
+    .await;
+    assert!(alive(pid), "the predecessor {pid} is parked, alive, before its delete");
+    let old_name = format!("{NODE}.old");
+
+    let (status, d) = estate.delete(&format!("/api/nodes/{old_name}")).await;
+    assert_eq!(status, 202, "node.delete of the parked {old_name} is accepted: {d}");
+    assert_eq!(s(&d["build_id"]), birth_build, "no Build is minted: {d}");
+    let opened = wait_for("the delete attempt is the Build's current attempt", Duration::from_secs(30), || async {
+        let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+        (b["reason"] == "delete").then_some(b)
+    })
+    .await;
+    assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("delete", old_name.as_str()), "{opened}");
+    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the exact old birth: {opened}");
+    let attempt_no = Estate::attempt_of(&d);
+    estate.await_attempt(&birth_build, attempt_no, SETTLE).await;
+    let attempt = attempt_no.to_string();
+    let spans = wait_for("the delete's last step, its reconcile span and the Deleted row are exported", Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        let row = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().any(|sp| sp["attributes"]["subject"] == old_name.as_str());
+        (step_span(&spans, &birth_build, &attempt, &old_name, "Complete").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some() && row).then_some(spans)
+    })
+    .await;
+    let reconcile = reconcile_span(&spans, &birth_build, &attempt).unwrap();
+    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("delete-node:{old_name}"), "one delete operation of the parked birth: {reconcile}");
+    let mut last = 0u64;
+    for step in DELETE_PARKED_ORDER {
+        let sp = step_span(&spans, &birth_build, &attempt, &old_name, step).unwrap_or_else(|| panic!("step {step} of the delete ran"));
+        assert!(start(sp) >= last, "step {step} starts before the step it follows: {sp}");
+        last = start(sp);
+    }
+    for step in ["DrainNode", "StopNode", "ReleaseStorage"] {
+        assert!(step_span(&spans, &birth_build, &attempt, &old_name, step).is_none(), "the parked birth's delete runs no {step}");
+    }
+    // The provider's Exited is the proof, and it precedes the NodeDeleted the executor publishes.
+    let terminate = step_span(&spans, &birth_build, &attempt, &old_name, "TerminateRuntime").unwrap();
+    assert_eq!(s(&terminate["attributes"]["outcome"]), "complete", "{terminate}");
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
+    assert_eq!(deleted.len(), 1, "NodeDeleted once for the old identity: {deleted:?}");
+    assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact old birth");
+    assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("delete-node:{old_name}"));
+    assert!(end(terminate) <= start(deleted[0]), "NodeDeleted follows the exit proof: {terminate} vs {}", deleted[0]);
+    // The fabric-primary's Deleted row at `<path>.old`, the record kept.
+    let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == old_name.as_str()).collect();
+    assert_eq!(rows.len(), 1, "one Deleted row at {old_name}: {rows:?}");
+    assert_eq!((s(&rows[0]["attributes"]["node_id"]), s(&rows[0]["attributes"]["outcome"])), (s(&before["node_id"]), "row-deleted".to_string()), "{}", rows[0]);
+    estate.artifact("deleted-row.json", &json!({"row": rows[0], "node_deleted": deleted[0], "terminate": terminate}));
+    let op = named(&spans, "rdm.node_admin.node.delete.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == old_name.as_str()).expect("the delete operation span");
+    estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
+    // The parked process is gone, its data dir stays, and the successor is untouched.
+    assert!(!alive(pid), "the parked predecessor's process {pid} exited");
+    assert!(old_dir.exists(), "node.delete releases node.id and name, not storage: {old_dir:?}");
+    let now = estate.node(NODE).await;
+    assert!(now["node_id"] == after["node_id"] && ready(&now), "the successor at {NODE} is untouched: {now}");
+    estate.shutdown().await;
+}
+
 /// CONTRACT: a planned replace of a node-admin that holds no seat (node-replace.md, the same recipe
 /// as any node): its stop parks it and its NodeStopped drops it from every book before it is renamed
 /// `<path>.old` and before its successor exists, so no admin's view holds two live births at the path
