@@ -125,6 +125,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3072-delete-{}", NodeId::mint())),
+        store_dir: std::env::temp_dir().join(format!("i143-3072-delete-store-{}", NodeId::mint())),
         mesh_issuer: None,
     };
     let (provider, observer, joins) = (Exits::default(), Recorded::default(), rafka_node_admin_core::join::Joins::default());
