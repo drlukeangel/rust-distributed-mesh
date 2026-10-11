@@ -1,8 +1,12 @@
 //! i143.e12.s33 functional: a step whose receipt the Build state refuses is not complete. The
 //! receipt is the step's durable commit (node-recovery.md "Failure and receipts": durable step
-//! outcomes are `Complete` or `Failed { step, reason }`), and a receipt that cannot be recorded or
-//! broadcast (a fact with no wire shape, a fenced seat, an I/O failure) fails the step by name: its
-//! span, and the pipeline's error naming the step and the refusal. Nothing after it runs.
+//! outcomes are `Complete` or `Failed { step, reason }`), and a receipt that is not written to the
+//! executor's own log (a fact with no wire shape, a fenced seat, a failed local write) fails the
+//! step by name: its span, and the pipeline's error naming the step and the refusal. Nothing after
+//! it runs. A receipt written to the local log whose Build-topic broadcast fails is committed: the
+//! step completes and the broadcast failure is named (node-rpc-envelope.md "Build carrier":
+//! "Progress waits on no gossip; Build-topic facts remain durability and recovery evidence through
+//! the existing publication path"); the neighbour-up catch-up and `FetchBuildFacts` repair it.
 
 use opentelemetry::trace::TracerProvider as _;
 use rafka_node_admin_core::build::BuildId;
@@ -67,11 +71,19 @@ impl TopologySink for Discard {
     fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
 }
 
-/// The Build state, refusing the receipt of one step as the fabric's adapter refuses a fact with no
-/// wire shape.
+/// The Build state, refusing the receipt of one step: as the fabric's adapter refuses a fact with no
+/// wire shape (`local: false`), or as a local log whose write fails (`local: true`).
 struct Refuses {
     inner: MemoryBuildStateAdapter,
     step: &'static str,
+    local: bool,
+}
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::build_state::LocalBuildLog for Refuses {
+    async fn absorb_facts(&self, facts: &[BuildFact]) {
+        self.inner.absorb_facts(facts).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -95,6 +107,9 @@ impl BuildStateAdapter for Refuses {
         self.inner.adopt_claim(c).await
     }
     async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        if r.step == self.step && self.local {
+            return Err(BuildStateError::Io(format!("journal write of step {} of {} attempt {}: this cell's disk refuses it", r.step, r.build_id, r.attempt)));
+        }
         if r.step == self.step {
             return Err(BuildStateError::Unencodable(format!("the output of step {} of {} attempt {} has no wire shape: this cell refuses it", r.step, r.build_id, r.attempt)));
         }
@@ -130,7 +145,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
         .build();
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-3051"))));
 
-    let builds = Refuses { inner: MemoryBuildStateAdapter::new(), step: "DrainNode" };
+    let builds = Refuses { inner: MemoryBuildStateAdapter::new(), step: "DrainNode", local: false };
     let build_id = BuildId::mint();
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
@@ -173,4 +188,153 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     assert_eq!(attrs.get("build_id"), Some(&build_id.to_string()), "{attrs:?}");
     assert!(attrs.get("detail").is_some_and(|d| d.contains("has no wire shape")), "{attrs:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
+}
+
+/// A capture of every finished span, by name.
+struct Capture {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    provider: opentelemetry_sdk::trace::TracerProvider,
+}
+
+impl Capture {
+    fn new(service: &'static str) -> (Self, tracing::subscriber::DefaultGuard) {
+        crate::enable_callsites();
+        let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service)]))
+            .build();
+        let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-3051"))));
+        (Self { exporter, provider }, guard)
+    }
+
+    fn spans(&self, name: &str) -> Vec<(String, std::collections::BTreeMap<String, String>)> {
+        let _ = self.provider.force_flush();
+        self.exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == name)
+            .map(|s| (s.span_context.trace_id().to_string(), s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()))
+            .collect()
+    }
+}
+
+/// A node-admin's real Build state on the fabric's Build topic, over `local`: its endpoint, its
+/// gossip (to shut down) and its router.
+async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rafka_node_admin_core::build_state::LocalBuildLog>) -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router, rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter) {
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::generate())
+        .alpns(vec![iroh_gossip::ALPN.to_vec()])
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+    let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+    let builds = rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter::join(
+        &gossip,
+        &endpoint,
+        &rafka_mesh_entity::FabricId::mint(),
+        vec![],
+        local,
+        std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), name)),
+        rafka_node_admin_core::shutdown::ShutdownControl::memory(name).await,
+        name.into(),
+        None,
+    )
+    .await
+    .unwrap();
+    (endpoint, gossip, router, builds)
+}
+
+/// A standalone drain of a ready `mesh1.rpc.1` as attempt 1 of `build_id`, through `builds`.
+async fn drain_through(builds: &dyn BuildStateAdapter, build_id: &BuildId) -> Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError> {
+    let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+    node.incarnation_id = Some(IncarnationId::mint());
+    node.status = NodeStatus::ReadyForTraffic;
+    let template = LaunchTemplate {
+        fabric: "fabric1".into(),
+        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        executable: "/nonexistent/rshape-none".into(),
+        seeds: vec![],
+        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        env: Default::default(),
+        data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
+        mesh_issuer: None,
+    };
+    let joins = rafka_node_admin_core::join::Joins::default();
+    let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Drains, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
+    let handle = DeploymentHandle { deployment_id: rafka_node_admin_core::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
+    pipeline.drain(&RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal }).await
+}
+
+/// Build `build_id` accepted and its attempt 1 claimed by `mesh1.admin.1`, in `builds`.
+async fn accepted_and_claimed(builds: &dyn BuildStateAdapter, build_id: &BuildId) {
+    builds
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+        .await
+        .unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+}
+
+/// CONTRACT (node-rpc-envelope.md "Build carrier": "Progress waits on no gossip; Build-topic facts
+/// remain durability and recovery evidence through the existing publication path"; R-ON8: Build-
+/// topic gossip is for recovery only): a standalone drain run through the fabric's real Build state
+/// whose gossip is shut down (every broadcast fails) completes: each step's receipt is written to the
+/// admin's own log, the run goes on to `Complete`, and each failed broadcast is named under
+/// `rdm.node_admin.build.reject.via-broadcast-refused` with the Build, attempt, step and the send
+/// error. Must NOT happen: the step failed (a `via-receipt-refused` span, the run stopped at
+/// `DrainNode`) because the broadcast after its durable local write failed.
+#[tokio::test]
+async fn a_step_whose_receipt_is_written_locally_completes_when_its_broadcast_fails() {
+    let (capture, _guard) = Capture::new("i143-3051-broadcast-refused");
+    let local = std::sync::Arc::new(MemoryBuildStateAdapter::new());
+    let (_endpoint, gossip, _router, builds) = fabric_builds("mesh1.admin.1", local.clone()).await;
+    let build_id = BuildId::mint();
+    accepted_and_claimed(&builds, &build_id).await;
+    gossip.shutdown().await.unwrap();
+
+    if let Err(e) = drain_through(&builds, &build_id).await {
+        panic!("every receipt was written to the local log and only its broadcast failed, yet the drain failed: {e:?}");
+    }
+    let steps: Vec<String> = local.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
+    assert!(steps.iter().any(|s| s == "DrainNode") && steps.last().map(String::as_str) == Some("Complete"), "every step's receipt is in the local log: {steps:?}");
+    assert!(capture.spans("rdm.node_admin.deployment.reject.via-receipt-refused").is_empty(), "no step was refused for a failed broadcast");
+    let refused = capture.spans("rdm.node_admin.build.reject.via-broadcast-refused");
+    let drain = refused.iter().find(|(_, a)| a.get("step").map(String::as_str) == Some("DrainNode")).unwrap_or_else(|| panic!("the DrainNode receipt's failed broadcast is named: {refused:?}"));
+    assert_eq!(drain.1.get("build_id"), Some(&build_id.to_string()), "{drain:?}");
+    assert_eq!(drain.1.get("attempt").map(String::as_str), Some("1"), "{drain:?}");
+    assert_eq!(drain.1.get("fact").map(String::as_str), Some("step"), "{drain:?}");
+    assert!(drain.1.get("detail").is_some_and(|d| !d.is_empty()), "the send error is carried: {drain:?}");
+    eprintln!("span rdm.node_admin.build.reject.via-broadcast-refused trace_id={} {:?}", drain.0, drain.1);
+}
+
+/// CONTRACT (node-recovery.md "Failure and receipts"): a standalone drain run through the fabric's
+/// real Build state whose local log refuses the `DrainNode` receipt (a failed journal write) fails
+/// at `DrainNode`, the error naming the step and the failed write, under
+/// `rdm.node_admin.deployment.reject.via-receipt-refused`. Must NOT happen: the run going on as if
+/// the step were committed, or the receipt broadcast with nothing written locally.
+#[tokio::test]
+async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
+    let (capture, _guard) = Capture::new("i143-3051-local-write-refused");
+    let local = std::sync::Arc::new(Refuses { inner: MemoryBuildStateAdapter::new(), step: "DrainNode", local: true });
+    let (_endpoint, _gossip, _router, builds) = fabric_builds("mesh1.admin.1", local.clone()).await;
+    let build_id = BuildId::mint();
+    accepted_and_claimed(&builds, &build_id).await;
+
+    let err = match drain_through(&builds, &build_id).await {
+        Err(e) => e,
+        Ok(()) => panic!("the DrainNode receipt's local write failed and the drain still reported complete"),
+    };
+    assert_eq!(err.step, "DrainNode", "{err:?}");
+    assert!(err.reason.contains("this cell's disk refuses it"), "the failed write is named in the error: {err:?}");
+    assert!(local.inner.read_build(&build_id).await.unwrap().steps.is_empty(), "nothing after the refused step ran");
+    let spans = capture.spans("rdm.node_admin.deployment.reject.via-receipt-refused");
+    assert_eq!(spans.len(), 1, "one refusal span: {spans:?}");
+    assert_eq!(spans[0].1.get("step").map(String::as_str), Some("DrainNode"), "{spans:?}");
+    assert!(capture.spans("rdm.node_admin.build.reject.via-broadcast-refused").is_empty(), "nothing was broadcast for an unwritten receipt");
+    eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {:?}", spans[0].0, spans[0].1);
 }
