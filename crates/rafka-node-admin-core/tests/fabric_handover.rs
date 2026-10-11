@@ -702,11 +702,16 @@ struct Seats {
 }
 
 async fn seats_fabric() -> Seats {
+    seats_fabric_with(|| Arc::new(MemoryFabricStorage::new())).await
+}
+
+/// The seats fabric with each admin's fabric.storage given by `storage` (one per admin).
+async fn seats_fabric_with(storage: impl Fn() -> Arc<dyn FabricStorage>) -> Seats {
     let fabric_id = FabricId::mint();
-    let (p, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true).await;
-    let (n, _) = admin(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true).await;
-    let (m, _) = admin(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true).await;
-    let (x, _) = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true).await;
+    let (p, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, storage()).await;
+    let (n, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true, storage()).await;
+    let (m, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, storage()).await;
+    let (x, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, storage()).await;
     let mut pn = node_of(&p, NodeStatus::ReadyForTraffic, true);
     pn.is_primary = true;
     let mut nn = node_of(&n, NodeStatus::ReadyForTraffic, false);
@@ -908,21 +913,35 @@ async fn a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_b
     assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.p, 7)), "P still holds the fabric seat");
 }
 
-/// CONTRACT: an executor that cannot reach the holder never moves past the transfer on silence; once
-/// the holder's birth is proven gone it reads the seat records it holds: a SeatedTogether naming it
-/// is the committed result; none means no transfer happened (the ordinary election seats it).
+/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer": "once P's birth is proven
+/// lost it reads the committed seat row. A row naming N is the committed result and N installs it;
+/// no row means the transfer never happened"; R-SR1=A): every admin's fabric.storage is on the
+/// fabric's one store root. P commits the transfer as ONE row under its own mesh's directory
+/// (`meshes/mesh1/seat-transfers/`) and its reply is lost; no SeatedTogether reaches N. N never
+/// moves on silence; once P's birth is proven gone it point-reads P's committed row on the root and
+/// installs the seats it names. M, executing another operation of P's that no row records, finds
+/// none: no transfer happened (the ordinary election seats the successor). M, asked for P's committed
+/// operation, finds the row naming N and refuses by name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_records() {
-    if crate::own_process::delegated(module_path!(), "an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_records") {
+async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_seat_row() {
+    if crate::own_process::delegated(module_path!(), "an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_seat_row") {
         return;
     }
     let spans = capture();
-    let f = seats_fabric().await;
+    let root = DataDir::new("seat-transfer-root");
+    let f = seats_fabric_with(|| {
+        Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&root.0), &rafka_node_admin_core::model::IncarnationId::mint()).unwrap()) as Arc<dyn FabricStorage>
+    })
+    .await;
     let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
     let p_inc = f.p.resolved.incarnation.clone();
     let op_key = "drain-node:mesh1.admin.1";
     // The transfer committed at P (its reply is lost to N's step), then P's process is gone.
     let Reply::SeatsCommitted { seats } = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op_key)).await else { panic!("committed") };
+    assert_eq!(seats, committed_to(&f.n, 4, 8));
+    let row_file = root.0.join("meshes").join("mesh1").join("seat-transfers").join("drain-node_mesh1_admin_1.json");
+    assert!(row_file.exists(), "P's seat-transfer row is not under its own mesh's directory on the root: {}", row_file.display());
+    assert!(!root.0.join("fabric").join("seat-transfers").exists(), "a seat-transfer row was written under fabric/, the fabric-primary's");
     let Seats { p, n, m, x } = f;
     let _ = p._router.shutdown().await;
     // N's step sends the identical call, which nothing answers: it waits, never moving on silence.
@@ -933,17 +952,22 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_held_seat_
     });
     until("N's call to the gone holder is uncertain", || spans.named(SEATS_REJECTED).iter().any(|f| f["side"] == "executor" && f["reason"] == "uncertain")).await;
     assert!(!step.is_finished(), "an uncertain call is never the end of the step");
-    // P's SeatedTogether reaches N, and P's birth is proven gone.
-    let op = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: op_key.into(), node_id: p_node.node_id.clone(), incarnation: p_inc.clone(), name: "mesh1.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
-    n.door.membership.seats().take_together(&op, &holder_of(&n, 4), &seats, false);
+    // No SeatedTogether reaches N; P's birth is proven gone.
     n.door.membership.seats().mark_gone(p_inc.clone());
     let out = tokio::time::timeout(std::time::Duration::from_secs(30), step).await.expect("a proven-lost holder ends the wait").unwrap();
     assert_eq!(out, Ok(SeatTransferOutcome::HeldRecords { seats: committed_to(&n, 4, 8) }));
-    // M, which heard no transfer, holds none: the ordinary election applies.
+    let book = n.door.membership.seats();
+    assert!(book.mesh("mesh1").is_some_and(|h| h.is_birth(&n.resolved.node_id, &n.resolved.incarnation) && h.epoch == 4), "N did not install the mesh seat the row names");
+    assert!(book.fabric().is_some_and(|h| h.is_birth(&n.resolved.node_id, &n.resolved.incarnation) && h.epoch == 8), "N did not install the fabric seat the row names");
+    // M: an operation of P's that no row records is no transfer.
     m.door.membership.seats().mark_gone(p_inc);
     m.claims.0.lock().unwrap().insert(("b9".into(), 1), "mesh1.admin.3".into());
-    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, op_key)).await.expect("a proven-lost holder ends the wait");
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, "stop-node:mesh1.admin.1")).await.expect("a proven-lost holder ends the wait");
     assert_eq!(out, Ok(SeatTransferOutcome::NoTransfer));
+    // M asked for the operation P committed to N: the row names N, refused by name.
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), m.door.take_seats(&p_node, "b9", 1, op_key)).await.expect("a proven-lost holder ends the wait");
+    let e = out.expect_err("M took seats P's committed row gives N");
+    assert!(e.contains(op_key) && e.contains(&n.resolved.node_id.to_string()), "{e}");
     let _ = x;
 }
 
