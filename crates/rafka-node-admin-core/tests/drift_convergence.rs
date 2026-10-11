@@ -339,7 +339,7 @@ impl Estate {
                 gate: Arc::new(OpenGate),
                 departure: Arc::new(crate::loopback::Proofs::default()),
                 verdicts: Arc::new(crate::loopback::NoVerdicts),
-                rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+                rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, self.view.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
             });
             if let Some(current) = self.accepted.current(&*self.builds).await {
                 if matches!(current.state, BuildState::Pending | BuildState::Running) {

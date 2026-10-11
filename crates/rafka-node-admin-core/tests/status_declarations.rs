@@ -756,7 +756,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
         let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")))));
         let records = rafka_node_admin_core::admin::Records::default();
-        records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.storage.clone()).with_configs(configs)));
+        records.set_rows(Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.storage.clone()).with_configs(configs)));
         let mut t = rig.topology.read().await.clone();
         t.nodes.push(newcomer.node.clone());
         records.install_projected(&rig.topology, || t).await;

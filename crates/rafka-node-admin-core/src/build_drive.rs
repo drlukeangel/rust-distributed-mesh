@@ -367,7 +367,9 @@ pub struct DriveEnv {
     pub departure: Arc<dyn DepartureProof>,
     /// Records an executor's verdict on this admin's log.
     pub verdicts: Arc<dyn VerdictSink>,
-    /// The writer of node rows: the live `Step` frames of a delete and a create write them.
+    /// The record of each parked predecessor a replace left at `<path>.old`, which admits its
+    /// `node.delete`: the live `Step` frames of a replace and a delete feed it, and write no row
+    /// (`crate::node_rows::NodeRows::on_step`).
     pub rows: Arc<crate::node_rows::NodeRows>,
 }
 
@@ -734,14 +736,14 @@ impl DriveEnv {
     }
 
     /// A `Step` frame new to `drive`, live from the executor or read from a receipt (a completed
-    /// step's receipt is the same event as its frame): the row writer handles it once, from the
-    /// record this fabric-primary holds, before any reader of the drive sees the frame.
+    /// step's receipt is the same event as its frame): the parked-predecessor record is fed from it
+    /// once, from what this fabric-primary holds, before any reader of the drive sees the frame.
     async fn step(&self, drive: &Drive, frame: BuildReply, subject: Option<crate::model::NodeId>) {
         if !drive.take_key(&frame) {
             return;
         }
         if let BuildReply::Step { operation, step, .. } = &frame {
-            self.rows.on_step(&self.me, &self.topology, operation, step, subject.as_ref()).await;
+            self.rows.on_step(&self.topology, operation, step, subject.as_ref()).await;
         }
         drive.publish(frame);
     }

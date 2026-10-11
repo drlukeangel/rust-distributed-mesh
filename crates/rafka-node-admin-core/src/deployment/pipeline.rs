@@ -781,6 +781,12 @@ pub trait TopologySink: Send + Sync {
     /// The birth `incarnation` of `node_id` is renamed `<name>.old` in the executor's view: its
     /// successor takes the path. Only that birth is renamed; whatever else is recorded at the path stays.
     fn rename_predecessor(&self, _name: &PathName, _node_id: &NodeId, _incarnation: &IncarnationId) {}
+    /// The writer of node rows this admin's executor writes through (`crate::node_rows`): a
+    /// create's name claim, a replace's move to `.old`, a removal's `Deleted` row. `None` where the
+    /// sink keeps no nodes store.
+    fn node_rows(&self) -> Option<std::sync::Arc<crate::node_rows::NodeRows>> {
+        None
+    }
 }
 
 /// The fabric-wide facts every launch carries.
@@ -1154,6 +1160,30 @@ impl DeploymentPipeline<'_> {
     /// hands its storage over once the successor's identity, storage and network are decided, and
     /// only then does the successor start.
     async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, recovering: Option<&Recovering<'_>>) -> Result<Created, PipelineError> {
+        // The name this create claimed (a create, never a restart: a restart keeps its node and its
+        // row): a step after the claim that fails withdraws it, so the next attempt's fresh birth is
+        // not refused by this one's claim (lifecycles/node-create.md step 1).
+        let mut claimed: Option<NodeId> = None;
+        let operation = run.operation.clone();
+        let r = self.create_to_ready_claimed(run, req, before_ready, recovering, &mut claimed).await;
+        if let (Err(e), Some(node_id), Some(rows)) = (&r, &claimed, self.sink.node_rows()) {
+            rows.withdraw(&req.node, node_id, &operation, &format!("the create failed at {}: {}", e.step, e.reason)).await;
+        }
+        r
+    }
+
+    /// An earlier attempt's birth that is decided afresh lets go of the name its create claimed.
+    async fn withdraw_earlier(&self, run: &Run<'_>, req: &CreateRequest, why: &str) {
+        if req.restart_of.is_some() {
+            return;
+        }
+        let (Some(rows), Some(Some(earlier))) = (self.sink.node_rows(), run.done.get(CreateStep::AllocateIdentity.name())) else { return };
+        if let Ok(earlier) = serde_json::from_value::<Identity>(earlier.clone()) {
+            rows.withdraw(&req.node, &earlier.node_id, &run.operation, why).await;
+        }
+    }
+
+    async fn create_to_ready_claimed(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, recovering: Option<&Recovering<'_>>, claimed: &mut Option<NodeId>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
@@ -1169,6 +1199,7 @@ impl DeploymentPipeline<'_> {
             };
             if !alive {
                 tracing::info!(node = %req.node, "the earlier attempt's runtime is gone: a fresh birth");
+                self.withdraw_earlier(run, req, "the earlier attempt's runtime is gone: a fresh birth claims the name").await;
                 run.done.clear();
             } else if recorded_by_another(&run, CreateStep::DeployRuntime) && !run.done.contains_key(CreateStep::WaitForMeshJoin.name()) {
                 // Launched by an executor that is not this one and never joined: its only seed is
@@ -1192,20 +1223,33 @@ impl DeploymentPipeline<'_> {
                     .instrument(span)
                     .await
                     .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", req.node) })?;
+                self.withdraw_earlier(run, req, "the earlier attempt's runtime was launched by another executor and never joined: a fresh birth claims the name").await;
                 run.done.clear();
             }
         }
         let prior = req.restart_of.clone();
+        let rows = self.sink.node_rows();
         let id: Identity = self
             .step(run, CreateStep::AllocateIdentity.name(), async {
-                Ok(Identity {
+                let id = Identity {
                     node_id: prior.as_ref().map(|p| p.node_id.clone()).unwrap_or_else(NodeId::mint),
                     incarnation: IncarnationId::mint(),
                     supersedes: prior.as_ref().and_then(|p| p.incarnation_id.clone()),
                     deployment_id: DeploymentId::mint(),
-                })
+                };
+                // The name claim, by the writer of the mesh's rows, after the node id is minted and
+                // before anything is launched (lifecycles/node-create.md step 1): refused, nothing is.
+                if let (Some(rows), None) = (&rows, &prior) {
+                    rows.claim(&req.node, &id.node_id, &run_operation)
+                        .await
+                        .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
+                }
+                Ok(id)
             })
             .await?;
+        if prior.is_none() {
+            *claimed = Some(id.node_id.clone());
+        }
         // The node binds port 0 and the operating system assigns the port; the address it
         // reports at its join is the one this admin publishes for the birth.
         let bind_ip = self
@@ -1633,7 +1677,7 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.deleting(&op).await;
             self.terminate_step(&mut run, &req.node, &req.handle).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone())).await?;
             self.lifecycle.deleted(&op).await;
             self.complete_for_birth(&mut run, &req.node).await
         }
@@ -1705,7 +1749,7 @@ impl DeploymentPipeline<'_> {
         // node's Leaving, its drained reply, the claim) is.
         if let Some(op) = op {
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&node, op.clone())).await?;
             self.lifecycle.deleted(&op).await;
         }
         if req.kind == RetireKind::Removal {
@@ -1744,6 +1788,16 @@ impl DeploymentPipeline<'_> {
             name: node.name.clone(),
             event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
         })
+    }
+
+    /// `NodeDeleted`'s work (node-decommission.md step 3, before node.deleted): the writer of the
+    /// mesh's rows writes `record`'s row `Deleted` at its `path.name`, the record and its config
+    /// kept; a refusal fails the step by name.
+    async fn deleted_row(&self, record: &Node, op: LifecycleOp) -> Result<LifecycleOp, String> {
+        if let Some(rows) = self.sink.node_rows() {
+            rows.deleted(record, &op.operation).await.map_err(|e| format!("{}: the Deleted row of {} is not written: {e}", record.name, record.node_id))?;
+        }
+        Ok(op)
     }
 
     /// Resolves when this deployment's own runtime has exited.
@@ -2071,6 +2125,10 @@ impl DeploymentPipeline<'_> {
                 to = %to,
             )
             .in_scope(|| tracing::info!("the predecessor gives up its path.name: the successor is created at it"));
+            // node1.update(.old): the writer of the mesh's rows moves the predecessor's row first.
+            if let Some(rows) = self.sink.node_rows() {
+                rows.moved_to_old(&old, &op.operation).await.map_err(|e| format!("{name}: the predecessor {} keeps its path.name: {e}", old.node_id))?;
+            }
             self.sink.rename_predecessor(name, &old.node_id, &birth);
             Ok(op.clone())
         })
@@ -2085,7 +2143,8 @@ impl DeploymentPipeline<'_> {
             // The recovery's departure of the old identity: the provider's inspection is the proof,
             // and the successor is admitted and ready.
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
+            let parked = Node { name: name.renamed(), ..old.clone() };
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&parked, op.clone())).await?;
             self.lifecycle.deleted(&op).await;
             self.release_storage_step(&mut run, &req.build_id, &old).await?;
         }

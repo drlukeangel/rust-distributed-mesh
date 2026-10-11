@@ -291,8 +291,9 @@ pub struct Records {
     heard_ready: Mutex<BTreeSet<String>>,
     /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
     view_tick: tokio::sync::watch::Sender<u64>,
-    /// The fabric-primary's writer of node rows: a birth its view holds for the first time claims
-    /// its row at its `path.name` (`crate::node_rows`). Set once at start.
+    /// The writer of the node rows of each mesh this admin writes for (`crate::node_rows`): the
+    /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
+    /// that no create of it claimed. Set once at start.
     rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
 }
 
@@ -530,12 +531,16 @@ impl TopologySink for Records {
     fn remove(&self, name: &PathName) {
         let gone = self.nodes.lock().unwrap().remove(name);
         self.removed.lock().unwrap().insert((name.clone(), gone.and_then(|n| n.incarnation_id)));
-    }    fn rename_predecessor(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
+    }
+    fn rename_predecessor(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
         let mut nodes = self.nodes.lock().unwrap();
         if nodes.get(name).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
             nodes.remove(name);
         }
         self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
+    }
+    fn node_rows(&self) -> Option<Arc<crate::node_rows::NodeRows>> {
+        self.rows.get().cloned()
     }
 }
 
@@ -3608,7 +3613,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
             verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
             rows: {
-                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
+                let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()));
                 records.set_rows(rows.clone());
                 let held = rows.clone();
                 let _ = control.parked_old.set(Arc::new(move |old: &PathName| held.parked_at(old)));
