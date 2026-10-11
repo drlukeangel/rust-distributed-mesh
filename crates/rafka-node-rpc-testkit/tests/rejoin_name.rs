@@ -102,11 +102,13 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
 
 /// CONTRACT: a node born `mesh1.rpc.1.new` takes `mesh1.rpc.1` live (`ApplyNodeName` answered
 /// `Applied`) and is then stopped: its authority's held stopped digest names `mesh1.rpc.1`, and so
-/// does its row. Its start presents the name it holds, `mesh1.rpc.1`, and is admitted. What must NOT
-/// happen: the join presenting the birth's frozen `.new`, refused `JoinMismatch("name")`.
+/// does its row. Its start presents the name it holds, `mesh1.rpc.1`, and is admitted; its stop and
+/// start spans name `mesh1.rpc.1`. What must NOT happen: the join presenting the birth's frozen
+/// `.new`, refused `JoinMismatch("name")`, or a lifecycle span after the rename naming `.new`.
 #[test]
 fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
     let cap = crate::common::capture("a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start");
+    let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         if crate::own_process::delegated(module_path!(), "a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start") {
             return;
@@ -163,6 +165,11 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
             digests.changed().await.unwrap();
         }
         assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, taken, "the started node publishes the name it holds");
+        // Its lifecycle spans after the rename name the name it holds, never its birth's (R12).
+        for span in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.status.update.via-start-node"] {
+            let named: Vec<String> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == span).map(|(_, _, f)| f["node"].clone()).collect();
+            assert_eq!(named, vec![taken.to_string()], "{span} names the name the node holds");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
