@@ -22,6 +22,10 @@
 //!   of `<path>` ([`NodeRows::moved_to_old`]).
 //! - `NodeDeleted`: the row with status `Deleted`, the record and its config kept
 //!   ([`NodeRows::deleted`]).
+//! - A mesh leave (R-MN1, mesh-leave.md steps 3 and 7): each member's row `Deleted` on its exact
+//!   Exited receipt, by the leaving mesh's primary, and the final primary's at mesh-left, by the
+//!   fabric-primary as acting primary of a mesh with none left; a birth the view no longer names is
+//!   written from this writer's record of its row ([`NodeRows::deleted_birth`]).
 //! - A birth no create of this writer claimed (the bootstrap admin, a birth made before this
 //!   admin took its mesh's seat): written when the writer's view first holds it
 //!   ([`NodeRows::arrivals`]); an admin that takes a mesh's seat writes every member's row of that
