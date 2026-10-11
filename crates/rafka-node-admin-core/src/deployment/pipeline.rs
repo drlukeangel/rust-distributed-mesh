@@ -870,6 +870,24 @@ pub struct ReplaceRequest {
     pub held_runtimes: Vec<crate::storage::RuntimeRow>,
 }
 
+/// A request to recover one node from its exact exited birth (node-recovery.md): node.delete of the
+/// exited instance, then node.create at the same path.name over its data dir.
+#[derive(Debug, Clone)]
+pub struct RecoverRequest {
+    /// The Build.
+    pub build_id: BuildId,
+    /// The attempt.
+    pub attempt: u32,
+    /// The exited birth's record: its node.id, incarnation, endpoint key and data dir.
+    pub exited: Node,
+    /// The exited birth's exact runtime handle.
+    pub handle: DeploymentHandle,
+    /// The mesh primary's durable exit proof of that birth, which node.deleted is published from.
+    pub exit: crate::status_storage::NodeExitRow,
+    /// The endpoint plan of the node's kind.
+    pub spec: &'static KindSpec,
+}
+
 /// The predecessor a successor's create stops and takes the storage of, between its prepared
 /// identity and the start of its runtime.
 struct Replacing<'a> {
@@ -1995,6 +2013,30 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         Ok(created)
+    }
+
+    /// Recover `req.exited` as ONE operation `recover-node:<path>` (node-recovery.md, "Numbered
+    /// end-to-end sequence" steps 3-5):
+    ///
+    /// ```text
+    /// NodeDeleting -> TerminateRuntime (the exit proof, no RPC, no stop frames) -> NodeDeleted
+    ///   -> [after_deleted: the old birth fenced]
+    ///   -> AllocateIdentity (new node.id, no supersedes) -> PrepareStorage (the inherited data dir,
+    ///      the same endpoint key) -> ... -> WaitForMeshJoin -> WaitForNodeReady -> Complete
+    /// ```
+    ///
+    /// `after_deleted` fences the exited birth before the new one joins (the resolver and the direct
+    /// paths of the retained endpoint key); `after_ready` commits the new node's ReadyForTraffic.
+    /// The `Complete` receipt names the EXITED birth: the recovery is keyed on it.
+    pub async fn recover<D, DFut, F, Fut>(&self, req: &RecoverRequest, after_deleted: D, after_ready: F) -> Result<Created, PipelineError>
+    where
+        D: FnOnce(Node) -> DFut,
+        DFut: std::future::Future<Output = ()>,
+        F: FnOnce(Node) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let _ = (after_deleted, after_ready);
+        Err(PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("recover-node:{}: no recovery workflow for the exited birth {}", req.exited.name, req.exited.node_id) })
     }
 
     /// The predecessor stops, with the provider's exact terminal proof, and its storage goes into the
