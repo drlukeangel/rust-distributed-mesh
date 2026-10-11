@@ -32,7 +32,8 @@ impl NodeConfigs {
 
     /// Serve an `UpdateNodeConfig` at the admin `me` deciding over `view`, writing to `storage`. One
     /// span, opened first, holds the whole put: the row write and the call that tells the birth are
-    /// inside it, and its outcome is the reply's name.
+    /// inside it, and its outcome is the reply's name. A refusal's reply carries its detail cut to the
+    /// reply bound; the span carries it whole (`answered`, `detail`), so nothing of it is lost.
     pub async fn update(&self, me: &crate::model::PathName, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateNodeConfig only") };
         let span = tracing::info_span!(
@@ -45,6 +46,8 @@ impl NodeConfigs {
             row_status = tracing::field::Empty,
             route = tracing::field::Empty,
             outcome = tracing::field::Empty,
+            answered = tracing::field::Empty,
+            detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
         let reply = tracing::Instrument::instrument(self.put(me, view, storage, node_id, incarnation, config, &span), span.clone()).await;
@@ -82,15 +85,20 @@ impl NodeConfigs {
         let _one = self.one_at_a_time.lock().await;
         let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
         if let Err(e) = storage.put_node_row(&row).await {
-            return StatusReply::config_row_refused(&subject.name.to_string(), &format!("{me}: nodes.storage refused the row of {node_id}: {e}"));
+            let detail = format!("{me}: nodes.storage refused the row of {node_id}: {e}");
+            span.record("detail", detail.as_str());
+            return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
         }
         let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
         let told = NodeRpc::new(&self.client).config_apply(&birth, &route, config.clone(), &CallOptions::default()).await;
-        match told {
-            Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() },
-            Ok(refused) => StatusReply::config_not_applied(&subject.name.to_string(), refused.name(), &format!("{me} wrote the row; the birth answered {refused:?}")),
-            Err(end) => StatusReply::config_not_applied(&subject.name.to_string(), end.outcome(), &format!("{me} wrote the row; apply-node-config ended {}", describe(&end))),
-        }
+        let (answered, detail) = match told {
+            Ok(StatusReply::Applied | StatusReply::AlreadyApplied) => return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() },
+            Ok(refused) => (refused.name(), format!("{me} wrote the row; the birth answered {refused:?}")),
+            Err(end) => (end.outcome(), format!("{me} wrote the row; apply-node-config ended {}", describe(&end))),
+        };
+        span.record("answered", answered);
+        span.record("detail", detail.as_str());
+        StatusReply::config_not_applied(&subject.name.to_string(), answered, &detail)
     }
 }
 
