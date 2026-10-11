@@ -83,14 +83,10 @@ fn walk_logs(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// One offline-tickle round at its longest: the direct ping and every via-peer carrier, each one call
-/// of the default budget.
+/// One offline-tickle round at its longest: the direct connect, then every via-peer carrier at once,
+/// each one call of the default budget.
 fn tickle_round() -> std::time::Duration {
-    let budget = match rafka_node_rpc::CallOptions::default().budget {
-        rafka_node_rpc::Budget::Overall(d) => d,
-        other => panic!("the default call budget is not one overall deadline: {other:?}"),
-    };
-    budget * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32)
+    rafka_node_admin_core::offline::tickle_round_at_default_budget()
 }
 
 fn attr<'a>(sp: &'a Value, k: &str) -> &'a str {

@@ -771,13 +771,13 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 
     // Round 1 on the mesh-primary that holds the seat now. Its span ends the round, due by
     // node-recovery.md steps 1-2: the silence (one floor, marked on the pruner's gossip-interval
-    // sweep), the tick (one gossip interval) half a floor after the mark, then one direct connect and
-    // up to VIA_PEER_TICKLE_FANOUT connects through peers, one after another, each to a killed
-    // process and so spending its whole dial: the connection's idle timeout, the staleness floor
-    // (R-T8), inside the call's 10 s budget. Then the export's 200 ms schedule.
+    // sweep), the tick (one gossip interval) half a floor after the mark, then one tickle round: one
+    // direct connect, then the connects through up to two peers at once, each to a killed process
+    // and so spending its whole dial: the connection's idle timeout, the staleness floor (R-T8),
+    // inside the call's 10 s budget. Then the export's 200 ms schedule.
     let gossip = rafka_mesh_entity::cadence::gossip_interval();
     let connect = floor.min(Duration::from_secs(10));
-    let round1_due = floor + gossip + gossip + floor / 2 + connect * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32) + Duration::from_millis(200);
+    let round1_due = floor + gossip + gossip + floor / 2 + rafka_node_admin_core::offline::tickle_round(connect) + Duration::from_millis(200);
     let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { tickle_span(&estate.spans(), &mp, &before["node_id"], 1).cloned() }).await;
     // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.
     let (status, stop) = estate.post(&format!("/api/nodes/{mp}/stop"), &json!({})).await;

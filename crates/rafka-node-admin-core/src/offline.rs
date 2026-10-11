@@ -23,6 +23,21 @@ pub(crate) struct SilentNode {
 /// How many live peers the via-peer step asks.
 pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
+/// The longest one offline-tickle round takes when each call waits `per_call`: the direct connect
+/// (a ping that fails, or a ping that answers and the status kick after it), then one via-peer rung
+/// with every carrier probed at once (node-recovery.md step 2). The fan-out adds no wait.
+pub fn tickle_round(per_call: std::time::Duration) -> std::time::Duration {
+    per_call * 2
+}
+
+/// [`tickle_round`] at the default call budget, the one every call of the tickle spends.
+pub fn tickle_round_at_default_budget() -> std::time::Duration {
+    match rafka_node_rpc::CallOptions::default().budget {
+        rafka_node_rpc::Budget::Overall(d) => tickle_round(d),
+        other => panic!("the default call budget is not one overall deadline: {other:?}"),
+    }
+}
+
 /// Verdict of asking live peer nodes to tickle a target node.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ViaPeerVerdict {
@@ -458,13 +473,13 @@ mod tests {
             let start = Instant::now();
             let r1 = round(&mut t, PROBE_DELAY).await;
             assert!(r1.offline.is_empty() && t.is_in_hold_down(&id), "round 1 no path opens the hold-down: nothing is owed to the provider");
-            assert_eq!(start.elapsed(), BUDGET * 2, "round 1: the direct budget, then one budget for both peers");
+            assert_eq!(start.elapsed(), tickle_round(BUDGET), "round 1: the direct budget, then one budget for both peers");
             let start = Instant::now();
             let r2 = round(&mut t, PROBE_DELAY + FLOOR).await;
             assert!(direct_failed.load(Ordering::SeqCst));
             assert_eq!(r2.offline, vec![id.clone()], "round 2 no path is TRUE OFFLINE: the provider is owed");
             assert_eq!(ended.load(Ordering::SeqCst), 4, "TRUE OFFLINE only once both peer probes of both rounds ended");
-            assert_eq!(start.elapsed(), BUDGET * 2, "round 2: the direct budget, then one budget for both peers");
+            assert_eq!(start.elapsed(), tickle_round(BUDGET), "round 2: the direct budget, then one budget for both peers");
         }
     }
 
