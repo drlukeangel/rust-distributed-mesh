@@ -64,7 +64,9 @@ impl NodeKind {
 }
 
 /// A node's stable logical address `<mesh>.<kind>.<ordinal>`; `<mesh>.<kind>.<ordinal>.old` names
-/// the predecessor a replacement renamed to free the path for its successor (node-replace.md).
+/// the predecessor a replacement renamed to free the path for its successor, and
+/// `<mesh>.<kind>.<ordinal>.new` the successor born beside it until it takes the name
+/// (node-replace.md). At most one of `old` and `new` is set: every constructor keeps it so.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathName {
     /// The mesh's name.
@@ -75,6 +77,8 @@ pub struct PathName {
     pub ordinal: u32,
     /// The path is the `.old` name of a replaced predecessor.
     pub old: bool,
+    /// The path is the `.new` name of a successor that has not yet taken the name.
+    pub new: bool,
 }
 
 /// Why a `path.name` was refused.
@@ -88,7 +92,8 @@ pub enum PathNameError {
     Kind(String),
     /// The ordinal is not a number of at least 1.
     Ordinal(String),
-    /// A fourth segment other than the one `old` suffix a replaced predecessor carries.
+    /// A fourth segment other than the one `old` suffix a replaced predecessor carries or the one
+    /// `new` suffix a successor carries.
     Suffix(String),
 }
 
@@ -99,7 +104,7 @@ impl fmt::Display for PathNameError {
             Self::MeshName(s) => write!(f, "mesh name `{s}` must match [a-z0-9][a-z0-9-]{{0,63}}"),
             Self::Kind(s) => write!(f, "node kind `{s}` is not admin, rpc, broker, gateway or compute"),
             Self::Ordinal(s) => write!(f, "ordinal `{s}` is not a number >= 1"),
-            Self::Suffix(s) => write!(f, "`{s}` is not a path.name: the only suffix is one `.old`, on a replaced predecessor"),
+            Self::Suffix(s) => write!(f, "`{s}` is not a path.name: the only suffixes are one `.old`, on a replaced predecessor, and one `.new`, on its successor"),
         }
     }
 }
@@ -116,12 +121,22 @@ pub fn is_valid_mesh_name(m: &str) -> bool {
 impl PathName {
     /// A `path.name` from its parts.
     pub fn new(mesh: impl Into<String>, kind: NodeKind, ordinal: u32) -> Self {
-        Self { mesh: mesh.into(), kind, ordinal, old: false }
+        Self { mesh: mesh.into(), kind, ordinal, old: false, new: false }
     }
 
     /// The name the predecessor of a replacement keeps: this path with the `.old` suffix.
     pub fn renamed(&self) -> Self {
-        Self { old: true, ..self.clone() }
+        Self { old: true, new: false, ..self.clone() }
+    }
+
+    /// The name the successor of a replacement is born at: this path with the `.new` suffix.
+    pub fn successor(&self) -> Self {
+        Self { old: false, new: true, ..self.clone() }
+    }
+
+    /// This path with no suffix: the name a replacement's successor takes.
+    pub fn base(&self) -> Self {
+        Self { old: false, new: false, ..self.clone() }
     }
 }
 
@@ -129,9 +144,10 @@ impl FromStr for PathName {
     type Err = PathNameError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split('.').collect();
-        let (mesh, kind, ord, old) = match parts[..] {
-            [mesh, kind, ord] => (mesh, kind, ord, false),
-            [mesh, kind, ord, "old"] => (mesh, kind, ord, true),
+        let (mesh, kind, ord, old, new) = match parts[..] {
+            [mesh, kind, ord] => (mesh, kind, ord, false, false),
+            [mesh, kind, ord, "old"] => (mesh, kind, ord, true, false),
+            [mesh, kind, ord, "new"] => (mesh, kind, ord, false, true),
             [_, _, _, _] => return Err(PathNameError::Suffix(s.into())),
             _ => return Err(PathNameError::Shape(s.into())),
         };
@@ -144,7 +160,7 @@ impl FromStr for PathName {
             .ok()
             .filter(|n| *n >= 1 && !ord.starts_with('0'))
             .ok_or_else(|| PathNameError::Ordinal(ord.into()))?;
-        Ok(Self { mesh: mesh.into(), kind, ordinal, old })
+        Ok(Self { mesh: mesh.into(), kind, ordinal, old, new })
     }
 }
 
@@ -153,6 +169,9 @@ impl fmt::Display for PathName {
         write!(f, "{}.{}.{}", self.mesh, self.kind.segment(), self.ordinal)?;
         if self.old {
             f.write_str(".old")?;
+        }
+        if self.new {
+            f.write_str(".new")?;
         }
         Ok(())
     }
@@ -194,5 +213,14 @@ mod tests {
         assert_eq!(serde_json::to_string(&old).unwrap(), "\"mesh1.rpc.2.old\"");
         assert_eq!("mesh1.rpc.2.older".parse::<PathName>(), Err(PathNameError::Suffix("mesh1.rpc.2.older".into())));
         assert_eq!("mesh1.rpc.2.old.old".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc.2.old.old".into())));
+        // A successor born beside it carries exactly one `.new` until it takes the name.
+        let new: PathName = "mesh1.rpc.2.new".parse().unwrap();
+        assert!(new.new && !new.old);
+        assert_eq!(new, "mesh1.rpc.2".parse::<PathName>().unwrap().successor());
+        assert_eq!(new.to_string(), "mesh1.rpc.2.new");
+        assert_eq!(new.base(), "mesh1.rpc.2".parse::<PathName>().unwrap());
+        assert_eq!(new.renamed().to_string(), "mesh1.rpc.2.old", "one suffix at most");
+        assert_eq!(old.successor().to_string(), "mesh1.rpc.2.new", "one suffix at most");
+        assert_eq!("mesh1.rpc.2.new.old".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc.2.new.old".into())));
     }
 }
