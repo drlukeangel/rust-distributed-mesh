@@ -7783,12 +7783,21 @@ mod tests {
         assert!(topology.read().await.node(&old.node.name).is_none(), "the view holds the removed node: a projection taken before the lock was installed after the removal");
     }
 
-    /// A status store whose exit-proof row read waits on a latch: it says it is inside the read,
-    /// then holds until released. Every other row is the memory store's.
+    /// A status store whose exit-proof row read, while `latch` is set, takes its answer and then
+    /// waits on a latch: it says it is inside the read, then holds until released. While `refuse` is
+    /// set the read fails. Every other row is the memory store's.
     struct LatchedExits {
         inner: crate::status_storage::MemoryStatusStorage,
         entered: tokio::sync::Notify,
         release: tokio::sync::Notify,
+        latch: std::sync::atomic::AtomicBool,
+        refuse: std::sync::atomic::AtomicBool,
+    }
+
+    impl LatchedExits {
+        fn new(latch: bool) -> Self {
+            Self { inner: Default::default(), entered: tokio::sync::Notify::new(), release: tokio::sync::Notify::new(), latch: latch.into(), refuse: false.into() }
+        }
     }
 
     #[async_trait::async_trait]
@@ -7833,9 +7842,15 @@ mod tests {
             self.inner.put_mesh_status_of(mesh, row).await
         }
         async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
-            self.entered.notify_one();
-            self.release.notified().await;
-            self.inner.node_exit_of(mesh, node_id, incarnation_id).await
+            let answer = self.inner.node_exit_of(mesh, node_id, incarnation_id).await;
+            if self.latch.load(std::sync::atomic::Ordering::SeqCst) {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::record_store::StorageError::Io { file: format!("status/{mesh}/exits"), reason: "the cell refuses the read".into() });
+            }
+            answer
         }
         async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_exit_of(mesh, row).await
@@ -7853,7 +7868,7 @@ mod tests {
         let book = Arc::new(DigestBook::default());
         let lost = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
         book.record(lost.clone());
-        let store = Arc::new(LatchedExits { inner: Default::default(), entered: tokio::sync::Notify::new(), release: tokio::sync::Notify::new() });
+        let store = Arc::new(LatchedExits::new(true));
         let row = crate::status_storage::NodeExitRow { node_id: lost.node.node_id.clone(), name: lost.node.name.clone(), incarnation_id: lost.node.incarnation.clone(), exit_code: Some(9), proof: "provider".into(), observed_at_ms: 1 };
         store.inner.put_node_exit_of("mesh1", &row).await.unwrap();
         let records = Arc::new(Records::default());
@@ -7877,6 +7892,47 @@ mod tests {
         let read = capture.named("rdm.node_admin.node.resolve.via-exit-proof-row");
         assert_eq!(read.len(), 1, "the read phase reads the birth's exit-proof row once: {read:?}");
         eprintln!("span rdm.node_admin.node.resolve.via-exit-proof-row trace_id={} {:?}", read[0].trace_id, read[0].attributes);
+    }
+
+    /// CONTRACT (s41 land 4; node-recovery.md: "Exited is the proof, recorded durably"; the status
+    /// store puts and point-reads an exit-proof row and nothing removes it): with the reads outside
+    /// the view's lock two installs interleave, and a proof once read stays held while its birth is
+    /// named: an install whose read was taken before the row was put, and stored after a later
+    /// install read the row, takes nothing away; nor does a read that fails. Must NOT happen: a
+    /// proven-exited birth read live again (and so seated again) by a stale or failed read.
+    #[tokio::test]
+    async fn an_exit_proof_once_read_is_never_withdrawn_by_an_older_or_failed_read() {
+        use crate::status_storage::StatusStorage as _;
+        use std::sync::atomic::Ordering::SeqCst;
+        let book = Arc::new(DigestBook::default());
+        let lost = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(lost.clone());
+        let store = Arc::new(LatchedExits::new(true));
+        let records = Arc::new(Records::default());
+        records.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
+        records.set_book((*book).clone());
+        let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
+        let status = |t: &Topology| t.node(&lost.node.name).map(|n| n.status);
+        // The older install: its read finds no row, and it is held before it stores.
+        let older = {
+            let (records, topology, book) = (records.clone(), topology.clone(), book.clone());
+            tokio::spawn(async move { records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await })
+        };
+        store.entered.notified().await;
+        store.latch.store(false, SeqCst);
+        // The exit is proven and its row put; a later install reads it.
+        let row = crate::status_storage::NodeExitRow { node_id: lost.node.node_id.clone(), name: lost.node.name.clone(), incarnation_id: lost.node.incarnation.clone(), exit_code: Some(9), proof: "provider".into(), observed_at_ms: 1 };
+        store.inner.put_node_exit_of("mesh1", &row).await.unwrap();
+        let later = records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+        assert_eq!(status(&later), Some(NodeStatus::Dead), "the later install reads the proof");
+        store.release.notify_one();
+        let after_older = older.await.unwrap();
+        assert_eq!(status(&after_older), Some(NodeStatus::Dead), "the older read, stored after the later one, withdrew the proof");
+        // A read that fails proves nothing new and takes nothing away.
+        store.refuse.store(true, SeqCst);
+        let failed = records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
+        assert_eq!(status(&failed), Some(NodeStatus::Dead), "a failed read withdrew the proof");
+        assert_eq!(status(&*topology.read().await), Some(NodeStatus::Dead));
     }
 
     const STORE_DIR: &str = "/tmp/rdm-admin-cells/store";
