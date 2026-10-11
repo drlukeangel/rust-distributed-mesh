@@ -208,7 +208,10 @@ mod tests {
         let root = rafka_mesh_audit::workspace_root();
         let copy = Copy::of(&root, "wire");
         let before = pages(&copy.0).unwrap();
-        copy.edit("crates/rafka-node-rpc-contract/src/status.rs", |s| {
+        const STATUS: &str = "crates/rafka-node-rpc-contract/src/status.rs";
+        const APPENDED: &str = "    /// Appended by the docgen cell.\n    DocgenAppended {\n        /// Its one field.\n        appended: u64,\n    },\n";
+        let mut at_line = 0;
+        copy.edit(STATUS, |s| {
             let start = s.find("pub enum StatusReply {").expect("StatusReply is declared");
             let mut depth = 0usize;
             let close = start
@@ -224,19 +227,38 @@ mod tests {
                     })
                     .expect("StatusReply closes")
                     .0;
-            format!("{}    /// Appended by the docgen cell.\n    DocgenAppended {{\n        /// Its one field.\n        appended: u64,\n    }},\n{}", &s[..close], &s[close..])
+            at_line = s[..close].matches('\n').count() + 1;
+            format!("{}{APPENDED}{}", &s[..close], &s[close..])
         });
         let after = pages(&copy.0).unwrap();
         let (b, a) = (page(&before, "wire.md"), page(&after, "wire.md"));
         let mut expected = variant_rows(b, "StatusReply");
         expected.push((expected.len().to_string(), "DocgenAppended".into()));
         assert_eq!(variant_rows(a, "StatusReply"), expected, "the appended variant is the last row, at the next position");
-        let gone: Vec<&str> = b.lines().filter(|l| !a.lines().any(|x| x == *l)).collect();
-        let added: Vec<&str> = a.lines().filter(|l| !b.lines().any(|x| x == *l)).collect();
+        // Every status.rs site at or below the insertion moves down by the inserted lines; with
+        // that applied, the page differs only by StatusReply's count line and the two new rows.
+        let shift = APPENDED.matches('\n').count();
+        let moved = |line: &str| {
+            let mut out = String::new();
+            let mut rest = line;
+            while let Some(at) = rest.find(&format!("{STATUS}:")) {
+                let digits_at = at + STATUS.len() + 1;
+                let digits: String = rest[digits_at..].chars().take_while(char::is_ascii_digit).collect();
+                let n: usize = digits.parse().unwrap();
+                out.push_str(&rest[..digits_at]);
+                out.push_str(&(if n >= at_line { n + shift } else { n }).to_string());
+                rest = &rest[digits_at + digits.len()..];
+            }
+            out + rest
+        };
+        let b_moved: Vec<String> = b.lines().map(moved).collect();
+        let gone: Vec<&str> = b_moved.iter().map(String::as_str).filter(|l| !a.lines().any(|x| x == *l)).collect();
+        let added: Vec<&str> = a.lines().filter(|l| !b_moved.iter().any(|x| x == l)).collect();
         assert_eq!(gone.len(), 1, "only StatusReply's variant count line changed: {gone:?}");
         assert!(gone[0].contains(&format!("{} variants", expected.len() - 1)), "{gone:?}");
         assert_eq!(added.len(), 3, "the count line, the variant row and its field row: {added:?}");
         assert!(added[0].contains(&format!("{} variants", expected.len())), "{added:?}");
+        assert!(added[1].starts_with(&format!("| {} | **`DocgenAppended`** |", expected.len() - 1)), "{added:?}");
         assert!(added[2].starts_with(&format!("| {}.0 | `appended` | `u64` |", expected.len() - 1)), "{added:?}");
         for p in ["frames.md", "statuses.md", "spans.md", "config.md"] {
             assert_eq!(page(&before, p), page(&after, p), "{p} does not move for a wire variant");
