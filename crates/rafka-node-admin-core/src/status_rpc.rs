@@ -289,6 +289,12 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
             if me.mesh != *mesh_name {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("an admin of {mesh_name}") } }, None);
             }
+            // The mesh's primary writes its status (fabric-node-lifecycle.md 4.3): an admin whose view
+            // names another admin the mesh's primary is not the receiver. One whose view names none
+            // yet is the admin the hand-off created, before its own seat shows in its view.
+            if let Some(primary) = view.cohort_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != auth.node_id) {
+                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) } }, None);
+            }
             // Never a replacement mesh id to satisfy the operation.
             if let Some(held) = (auth.mesh_ids)().get(mesh_name) {
                 if held != mesh_id {
