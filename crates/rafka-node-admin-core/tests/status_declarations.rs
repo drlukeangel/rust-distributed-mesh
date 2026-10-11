@@ -127,6 +127,7 @@ async fn client_of(rig: &Rig, b: &Birth) -> NodeRpcClient {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(rig.resolved.clone());
     let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    tracing::info!(step = "client-bound", node = %b.node.name, peer = %b.key.public().fmt_short(), local = ?ep.bound_sockets(), "a client endpoint is bound on the birth's key");
     NodeRpcClient::new(ep, resolver).with_caller_system("rdm")
 }
 
@@ -546,6 +547,22 @@ impl Capture {
         rt.block_on(f)
     }
 
+    /// Every finished span called `name`: its trace id, its attributes and its events (each event's
+    /// message and fields), in the order they happened.
+    fn spans_with_events(&self, name: &str) -> Vec<(String, BTreeMap<String, String>, Vec<String>)> {
+        let _ = self.provider.force_flush();
+        self.exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == name)
+            .map(|s| {
+                let events = s.events.iter().map(|e| format!("{} {:?}", e.name, e.attributes.iter().map(|kv| format!("{}={}", kv.key, kv.value)).collect::<Vec<_>>())).collect();
+                (s.span_context.trace_id().to_string(), s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect(), events)
+            })
+            .collect()
+    }
+
     /// Every finished span called `name`: its trace id and its attributes.
     fn spans(&self, name: &str) -> Vec<(String, BTreeMap<String, String>)> {
         let _ = self.provider.force_flush();
@@ -630,25 +647,79 @@ fn a_config_update_for_another_meshs_member_reaches_it_through_that_meshs_primar
 /// is answered by the admin itself: `Applied`, after it handed the whole map to what holds it and
 /// publishes its digest. One naming another incarnation of it is `RejectedStaleIncarnation` with the
 /// one held; one from a member that is not a node-admin is `RejectedNotAuthority`. Neither holds anything.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
-    let (rig, b) = rig().await;
-    let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
-    let held: Arc<Mutex<Vec<BTreeMap<String, String>>>> = Arc::default();
-    let h = held.clone();
-    let _ = rig.authority.configure.set(Arc::new(move |config: BTreeMap<String, String>| {
-        let h = h.clone();
-        Box::pin(async move { h.lock().unwrap().push(config) })
-    }));
-    let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
-    let me = &rig.admin.node;
-    // One endpoint per sender for the whole cell, as a node has one: its key is bound once.
-    let fp = NodeTarget::ExactNode(me.node_id.clone());
-    let (from_admin2, from_rpc1) = (client_of(&rig, admin2).await, client_of(&rig, rpc1).await);
-    let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation, config };
-    assert_eq!(reply(&from_admin2.call::<Status>(&fp, &told(me.incarnation_id.clone().unwrap(), config.clone()), &CallOptions::default()).await.0), StatusReply::Applied);
-    assert_eq!(held.lock().unwrap().clone(), vec![config.clone()], "the admin holds the whole config it was told");
-    assert_eq!(reply(&from_admin2.call::<Status>(&fp, &told(IncarnationId::mint(), config.clone()), &CallOptions::default()).await.0), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
-    assert!(matches!(reply(&from_rpc1.call::<Status>(&fp, &told(me.incarnation_id.clone().unwrap(), config), &CallOptions::default()).await.0), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its config");
-    assert_eq!(held.lock().unwrap().len(), 1, "neither refusal held anything");
+#[test]
+fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
+        let held: Arc<Mutex<Vec<BTreeMap<String, String>>>> = Arc::default();
+        let h = held.clone();
+        let _ = rig.authority.configure.set(Arc::new(move |config: BTreeMap<String, String>| {
+            let h = h.clone();
+            Box::pin(async move { h.lock().unwrap().push(config) })
+        }));
+        let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
+        let me = &rig.admin.node;
+        let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation, config };
+        assert_eq!(reply(&call(&rig, admin2, &told(me.incarnation_id.clone().unwrap(), config.clone())).await), StatusReply::Applied);
+        assert_eq!(held.lock().unwrap().clone(), vec![config.clone()], "the admin holds the whole config it was told");
+        assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), config.clone())).await), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
+        assert!(matches!(reply(&call(&rig, rpc1, &told(me.incarnation_id.clone().unwrap(), config)).await), StatusReply::RejectedNotAuthority { .. }), "only a node-admin tells a node its config");
+        assert_eq!(held.lock().unwrap().len(), 1, "neither refusal held anything");
+    });
+    for name in ["rdm.node_rpc.request.update.via-call", "rdm.node_rpc.connection.create.via-dial"] {
+        for (trace, attrs, events) in cap.spans_with_events(name) {
+            eprintln!("trace {trace} {name} {attrs:?}");
+            for e in events {
+                eprintln!("    {e}");
+            }
+        }
+    }
+}
+
+/// CONTRACT (a restart is the same key in a new process: node-lifecycle restart vocabulary, same
+/// key and path.name, new socket): a sender whose endpoint ended without a close, so the authority
+/// still holds its old connection, reaches the authority from a new endpoint bound on the same key:
+/// its first call dials and is answered, a second call on that pooled connection is answered after
+/// the authority took the new connection in, and the same holds for a second re-bind while two old
+/// connections are held. Every call is a reply within the default budget; none ends `NotSent`.
+#[test]
+fn a_sender_rebound_on_its_key_while_its_old_connection_is_held_reaches_the_authority() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let admin2 = &b["admin2"];
+        let me = &rig.admin.node;
+        let fp = NodeTarget::ExactNode(me.node_id.clone());
+        // A told config naming another birth of the authority: answered by name, nothing held.
+        let stale = StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), config: BTreeMap::new() };
+        let first = client_of(&rig, admin2).await;
+        assert!(matches!(first.call::<Status>(&fp, &stale, &CallOptions::default()).await.0, RpcOutcome::Reply(_)), "the first endpoint is answered");
+        // The process ends without a close: the authority keeps the old connection until it idles out.
+        drop(first);
+        for rebind in 1..=2 {
+            let next = client_of(&rig, admin2).await;
+            for call in ["dialed", "pooled"] {
+                let out = next.call::<Status>(&fp, &stale, &CallOptions::default()).await.0;
+                assert!(matches!(out, RpcOutcome::Reply(_)), "re-bind {rebind}, {call} call: {out:?}");
+            }
+            drop(next);
+        }
+    });
+    let calls = cap.spans("rdm.node_rpc.request.update.via-call");
+    assert_eq!(calls.len(), 5, "{calls:?}");
+    assert!(calls.iter().all(|(_, a)| a.get("outcome").map(String::as_str) == Some("Reply")), "{calls:?}");
+    let dials = cap.spans("rdm.node_rpc.connection.create.via-dial");
+    let locals: std::collections::BTreeSet<_> = dials.iter().filter_map(|(_, a)| a.get("local").cloned()).collect();
+    assert_eq!((dials.len(), locals.len()), (3, 3), "one dial per endpoint, each from its own socket: {dials:?}");
+    assert!(dials.iter().all(|(_, a)| a.get("outcome").map(String::as_str) == Some("connected")), "{dials:?}");
+    for name in ["rdm.node_rpc.request.update.via-call", "rdm.node_rpc.connection.create.via-dial"] {
+        for (trace, attrs, events) in cap.spans_with_events(name) {
+            eprintln!("trace {trace} {name} outcome={:?} reason={:?} elapsed_ms={:?} local={:?}", attrs.get("outcome"), attrs.get("reason"), attrs.get("elapsed_ms"), attrs.get("local"));
+            for e in events.iter().filter(|e| e.contains("step=")) {
+                eprintln!("    {e}");
+            }
+        }
+    }
 }
