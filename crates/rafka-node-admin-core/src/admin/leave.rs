@@ -14,7 +14,7 @@
 use super::*;
 use crate::build_state::{BuildStepReceipt, StepOutcome};
 use crate::deployment::pipeline::{MeshLeaveEvent, RuntimeProof, TerminalReceipt};
-use crate::mesh_leave::{accepted_roster, first_mismatch, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT, STEP_OTHER_MEMBERS_EXITED};
+use crate::mesh_leave::{accepted_roster, first_mismatch, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
 use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
@@ -331,23 +331,10 @@ impl AdminRunner {
             Ok(f) => f.facts,
             Err(e) => return StatusReply::NotReady { reason: format!("{}: the manifest {receipt_manifest} could not be read from {final_node_id}: {e}", self.me) },
         };
-        let receipt = facts.iter().find_map(|f| match f {
-            crate::build_state::BuildFact::Step(r) if r.operation == operation && r.attempt == attempt && r.step == STEP_OTHER_MEMBERS_EXITED && r.outcome == StepOutcome::Complete => Some(r.clone()),
-            _ => None,
-        });
-        let Some(receipt) = receipt else {
-            return unmatched("receipt_manifest", format!("a Complete {STEP_OTHER_MEMBERS_EXITED} receipt under {operation}, attempt {attempt}"), format!("{receipt_manifest}: none among the {} facts read", facts.len()));
+        let manifest = match crate::mesh_leave::handoff_verdict(&facts, &key, &admitted, receipt_manifest) {
+            crate::mesh_leave::HandoffVerdict::Accept(m) => m,
+            refused => return refused.refusal().expect("a verdict other than Accept refuses"),
         };
-        let manifest: ExitManifest = match receipt.output.clone().and_then(|v| serde_json::from_value(v).ok()) {
-            Some(m) => m,
-            None => return unmatched("receipt_manifest", "a readable exit manifest".into(), format!("{receipt_manifest}: its output does not decode")),
-        };
-        if let Some((field, expected, reported)) = first_mismatch(&manifest, &admitted.roster, &admitted.final_primary, false) {
-            return unmatched(&field, expected, reported);
-        }
-        if manifest.final_runtime.as_ref() != Some(&admitted.final_runtime) {
-            return unmatched("final_runtime", format!("{:?}", admitted.final_runtime), format!("{:?}", manifest.final_runtime));
-        }
         if self.leaves.resolve(&key, manifest) {
             StatusReply::Applied
         } else {
