@@ -963,6 +963,26 @@ fn dropped_contacts(written: &HashMap<NodeId, crate::storage::NodeRecord>, held:
         .collect()
 }
 
+/// The durable runtime row of the exact birth `(node_id, incarnation)` of `node`, read by its key
+/// (`NodesStorage::runtime`, the point read; never a list of every row searched for it), with
+/// `reader` naming the admin that reads it. A row never written (`Ok(None)`) and a store that could
+/// not be read (`Err`, naming the store's cause) are two facts, each on its own span.
+pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, node: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, String> {
+    match nodes.runtime(node_id, incarnation).await {
+        Ok(Some(row)) => Ok(Some(row)),
+        Ok(None) => {
+            tracing::info_span!("rdm.node_admin.node.reject.via-no-runtime-row", reader = %reader, node = %node, node_id = %node_id, incarnation_id = %incarnation.0, store = "nodes.storage")
+                .in_scope(|| tracing::info!("no durable runtime row of this birth was ever written here"));
+            Ok(None)
+        }
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.node.reject.via-runtime-row-unreadable", reader = %reader, node = %node, node_id = %node_id, incarnation_id = %incarnation.0, store = "nodes.storage", error = %e)
+                .in_scope(|| tracing::info!("the durable runtime row of this birth could not be read"));
+            Err(format!("the durable runtime row of {node} ({node_id}) at {} could not be read from {reader}'s nodes.storage: {e}", incarnation.0))
+        }
+    }
+}
+
 /// The provider's proof that the exact birth a digest or a durable row names exited: the runtime
 /// fact is the digest's (when it is of this birth) or the row's, adopted in this provider's control
 /// domain and inspected, and only the runtime's own terminal status counts. `Ok` carries the exit
@@ -1040,6 +1060,37 @@ impl RecoverySubmitter {
         }
     }
 
+    /// The durable runtime rows the tick watches births from, read once per tick. A refused read
+    /// leaves the tick watching the view's births only.
+    pub(crate) async fn durable_rows(&self) -> Vec<crate::storage::RuntimeRow> {
+        match self.nodes_storage.runtimes().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %self.me, store = "nodes.storage", error = %e)
+                    .in_scope(|| tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only"));
+                Vec::new()
+            }
+        }
+    }
+
+    /// One TRUE OFFLINE birth on the mesh primary's tick (node-recovery.md "Detection and proof"
+    /// step 3, sequence step 1): the provider's inspection, named when its verdict for the birth
+    /// changes, and the recovery submitted only on an exit proof. Any other verdict ends here.
+    pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &Mutex<HashMap<(NodeId, IncarnationId), Inspected>>) -> Inspected {
+        let outcome = self.inspect(n).await;
+        if let Some(incarnation) = n.incarnation_id.clone() {
+            if verdicts.lock().unwrap().insert((n.node_id.clone(), incarnation), outcome.clone()).as_ref() != Some(&outcome) {
+                self.span_inspection(n, &outcome);
+            }
+        }
+        if let Inspected::Exited(code, source) = &outcome {
+            if let Err(e) = self.submit(n, *code, source).await {
+                tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
+            }
+        }
+        outcome
+    }
+
     /// The inspection's span, named when its verdict for the birth changes (a hung member is
     /// inspected every tick and named once).
     pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected) {
@@ -1058,7 +1109,6 @@ impl RecoverySubmitter {
     /// holds the birth as submitted until then. A repeat answers AlreadyApplied or BuildInProgress.
     pub(crate) async fn submit(&self, node: &Node, code: Option<i32>, source: &'static str) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
-        crate::offline::put_exit_proof(&*self.status_storage, node, code, source, local_now_ms()).await?;
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-node-recovery",
             node = %node.name,
@@ -1073,7 +1123,12 @@ impl RecoverySubmitter {
             disposition = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
-        let (outcome, r) = settle(self.submit_in(&span, node, &incarnation).instrument(span.clone()).await);
+        // The exit-proof row first: a refused put ends the submit here, named on its own span.
+        let end = match crate::offline::put_exit_proof(&*self.status_storage, node, code, source, local_now_ms()).await {
+            Ok(_) => self.submit_in(&span, node, &incarnation).instrument(span.clone()).await,
+            Err(e) => Err(e),
+        };
+        let (outcome, r) = settle(end);
         span.record("outcome", outcome.as_str());
         span.in_scope(|| tracing::info!("the mesh primary submits the recovery of its proven-exited member to the fabric-primary"));
         r
@@ -1090,7 +1145,7 @@ impl RecoverySubmitter {
                     span.record("build_id", o.build_id.0.as_str());
                     span.record("attempt", o.attempt);
                     span.record("disposition", "created");
-                    let drive = door.drives.ensure(&door.env, &o.build_id);
+                    let drive = door.drives.ensure(&door.env, &o.build_id, o.attempt);
                     let mut reader = drive.reader(o.attempt);
                     follow(&mut reader).await
                 }
@@ -1306,6 +1361,8 @@ impl crate::build_drive::Gate for SeatGate {
 /// Proof that an executor's birth departed: the provider inspects the exact runtime the digest book
 /// or the durable runtime rows name for it, and only an exited runtime counts.
 struct ProviderDeparture {
+    /// The admin proving the departure: the reader its refusals name.
+    me: PathName,
     topology: Arc<RwLock<Topology>>,
     /// Projects this admin's view now and installs it, so a birth just proven exited holds no seat
     /// in the view the next attempt is planned from.
@@ -1326,9 +1383,15 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
             return Err(format!("{executor} holds no incarnation id to inspect"));
         };
         let held_row = self.book.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
-        let durable = self.nodes.runtimes().await.map_err(|e| format!("the durable runtime rows could not be read: {e}"))?;
-        let row = durable.iter().find(|r| r.node_id == n.node_id && r.incarnation_id == incarnation);
-        let (code, source) = crate::admin::exit_proof_of(&*self.provider, &held_row, row).await?;
+        // The birth's digest names its runtime; else its own durable runtime row does (a point read).
+        let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
+            None
+        } else {
+            Some(birth_runtime_row(&*self.nodes, &self.me, &n.name, &n.node_id, &incarnation).await?.ok_or_else(|| {
+                format!("the book holds no runtime for {executor} ({}) at {} and no durable runtime row of that birth was ever written at {}", n.node_id, incarnation.0, self.me)
+            })?)
+        };
+        let (code, source) = crate::admin::exit_proof_of(&*self.provider, &held_row, row.as_ref()).await?;
         tracing::info_span!("rdm.node_admin.build.update.via-executor-exit-proof", node = %n.name, node_id = %n.node_id, incarnation_id = %incarnation.0, exit_code = code.map(|c| c.to_string()).unwrap_or_default(), exit_proof = source)
             .in_scope(|| tracing::info!("the executor's exact runtime is inspected and exited"));
         self.records.mark_exited(&n.node_id, &incarnation);
@@ -2096,6 +2159,9 @@ pub struct AdminRunner {
     pub records: Arc<Records>,
     /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
+    /// This admin's own Build log, the one `builds` reads: facts read from another admin are
+    /// absorbed into it without authoring Build gossip.
+    pub local: Arc<dyn crate::build_state::LocalBuildLog>,
     /// The facts every launch carries.
     pub template: LaunchTemplate,
     /// The environment passed to every node-admin launch.
@@ -2362,7 +2428,7 @@ impl AdminRunner {
         // durable runtime row its maker handed over.
         let held = self.book.get(node.node_id.as_str()).map(|(d, _)| d).or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id == node.node_id)).filter(|d| d.node.incarnation == incarnation);
         let row = match (&held, self.records.contacts.get()) {
-            (None, Some(store)) => store.runtimes().await.ok().and_then(|rows| rows.into_iter().find(|r| r.node_id == node.node_id && r.incarnation_id == incarnation)),
+            (None, Some(store)) => birth_runtime_row(&**store, &self.me, &node.name, &node.node_id, &incarnation).await?,
             _ => None,
         };
         let (published, data_dir) = match (&held, &row) {
@@ -3406,22 +3472,15 @@ pub fn rpc_server(
 /// The unreadable pre-event steps already named: each is named once, not on every fact.
 type NamedSteps = HashSet<(String, u32, String, String)>;
 
-/// Apply the lifecycle overlays the facts of `log` name open to `book`: the restarts as the facts'
-/// truth (`DigestBook::restarts_from_facts`: open while named open, closed only by its own `Complete`
-/// receipt or its Build's forgetting), every other open operation as a hold, and every
-/// pre-event step this build cannot read refused by name, once.
-async fn overlays_from_facts(log: &dyn crate::build_state::LocalBuildLog, book: &DigestBook, named: &mut NamedSteps) {
-    let facts = match log.facts().await {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::info_span!("rdm.node_admin.build.reject.via-facts-unread", error = %e)
-                .in_scope(|| tracing::warn!("this admin's Build log could not be read: its lifecycle overlays wait on its next fact"));
-            return;
-        }
-    };
-    let builds = crate::build_state::fold(&facts);
-    let in_flight = crate::build_state::in_flight_ops(&builds);
-    book.restarts_from_facts(&in_flight.ops, &in_flight.restarts_completed, &crate::build_state::forgotten_builds(&facts, &builds));
+/// Apply the lifecycle overlays `facts` name open to `book`: the restarts as the facts' truth
+/// (`DigestBook::restarts_from_facts`: open while named open, closed only by its own `Complete`
+/// receipt, its attempt's `Converged` verdict or its Build's forgetting), every other open operation
+/// as a hold, and every pre-event step this build cannot read refused by name, once. Run inside the
+/// log's append as each fact enters it ([`crate::build_state::LocalBuildLog::derive_on_every_fact`]).
+fn overlays_from_facts(facts: &[crate::build_state::BuildFact], book: &DigestBook, named: &mut NamedSteps) {
+    let builds = crate::build_state::fold(facts);
+    let in_flight = crate::build_state::in_flight_ops(facts, &builds);
+    book.restarts_from_facts(&in_flight.ops, &in_flight.restarts_completed, &in_flight.attempts_converged, &crate::build_state::forgotten_builds(facts, &builds));
     for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
         book.deleting(op);
     }
@@ -3430,15 +3489,6 @@ async fn overlays_from_facts(log: &dyn crate::build_state::LocalBuildLog, book: 
             tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
                 .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
         }
-    }
-}
-
-/// [`overlays_from_facts`] each time a fact enters `log` (`facts_moved`, the log's fact watch):
-/// one coalesced recomputation per wake, no timer.
-async fn follow_overlays_from_facts(log: Arc<crate::build_state::FileJournal>, book: DigestBook, mut facts_moved: tokio::sync::watch::Receiver<u64>, mut named: NamedSteps) {
-    while facts_moved.changed().await.is_ok() {
-        facts_moved.borrow_and_update();
-        overlays_from_facts(&*log, &book, &mut named).await;
     }
 }
 
@@ -4188,6 +4238,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone(), handover: handover_slot.clone() }),
         records: records.clone(),
         builds: builds_dyn.clone(),
+        local: journal.clone(),
         template,
         admin_env,
         bin_dir: cfg.bin_dir.clone(),
@@ -4231,6 +4282,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
             gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone() }),
             departure: Arc::new(ProviderDeparture {
+                me: name.clone(),
                 topology: control.topology.clone(),
                 refresh: {
                     let (topology, records, book, fabric, fabric_id, provider) = (control.topology.clone(), records.clone(), book.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
@@ -4894,15 +4946,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let holds_seat = view.holds_mesh_seat(&mesh, &me_id);
                 // Every admin watches the same set, the seat holder or not, so a successor tickles on
                 // the window already running; the durable rows are read each tick (one point in time).
-                let durable = match recovery.nodes_storage.runtimes().await {
-                    Ok(rows) => {
-                        let planned = records.planned();
-                        durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
-                    }
-                    Err(e) => {
-                        tracing::info!(error = %e, "the durable runtime rows could not be read: this tick watches the view's births only");
-                        Vec::new()
-                    }
+                let durable = {
+                    let rows = recovery.durable_rows().await;
+                    let planned = records.planned();
+                    durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
                 };
                 let watched = watched_births(&view, &me_id, &mesh, &durable);
                 let silent = watched.values().map(|n| crate::offline::SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string() }).collect();
@@ -5002,11 +5049,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     if written.get(&node.node_id) == Some(&fact) {
                         return;
                     }
-                    match crate::offline::put_silence_status(&*status_storage, &node, status).await {
-                        Ok(_) => {
-                            written.insert(node.node_id.clone(), fact);
-                        }
-                        Err(e) => tracing::info!(node = %node.name, error = %e, "the node's silence status could not be written to status.storage"),
+                    // A refusal is spanned where it happened (`offline::put_silence_status`); the memo
+                    // keeps the last status that stands, and nothing below waits on this row.
+                    if crate::offline::put_silence_status(&*status_storage, &node, status).await.is_ok() {
+                        written.insert(node.node_id.clone(), fact);
                     }
                 };
                 if holds_seat {
@@ -5043,15 +5089,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         }
                         let (recovery, n, in_flight, verdicts) = (recovery.clone(), n.clone(), in_flight.clone(), verdicts.clone());
                         tokio::spawn(async move {
-                            let outcome = recovery.inspect(&n).await;
-                            if verdicts.lock().unwrap().insert(birth.clone(), outcome.clone()).as_ref() != Some(&outcome) {
-                                recovery.span_inspection(&n, &outcome);
-                            }
-                            if let Inspected::Exited(code, source) = outcome {
-                                if let Err(e) = recovery.submit(&n, code, source).await {
-                                    tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
-                                }
-                            }
+                            recovery.recover_if_proven(&n, &verdicts).await;
                             in_flight.lock().unwrap().remove(&birth);
                         });
                     }
@@ -5080,16 +5118,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         tasks.push(park_gate.spawn(crate::seat_watch::run(watch)));
     }
 
-    // The open lifecycle overlays, derived from the Build facts as each fact enters this admin's
-    // log (its own appends and the facts it absorbs from the fabric alike): a hold opens with its
-    // pre-event's receipt and closes with its operation's `Complete`, never at the next round. A
-    // successor primary publishes the same overlays from the same facts. Derived once before the
-    // hierarchy's first round, then on every fact.
+    // The open lifecycle overlays, derived from the Build facts inside each append to this admin's
+    // log (its own appends and the facts it absorbs from the fabric alike), before the append
+    // returns: a hold opens with its pre-event's receipt and closes with its operation's `Complete`
+    // or its attempt's `Converged`, and no reader of the log sees that fact while the book still
+    // holds the hold. A successor primary publishes the same overlays from the same facts. Derived
+    // once over the facts held before the hierarchy's first round, then on every fact.
     {
-        let facts_moved = journal.fact_changes();
-        let mut named = HashSet::new();
-        overlays_from_facts(&*journal, &membership.book, &mut named).await;
-        tasks.push(park_gate.spawn(follow_overlays_from_facts(journal.clone(), membership.book.clone(), facts_moved, named)));
+        let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));
+        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap())));
     }
 
     let hierarchy;
@@ -5527,6 +5564,360 @@ mod tests {
     fn with_id(mut d: MeshDigest, id: &str) -> MeshDigest {
         d.node.node_id = NodeId::parse(id).unwrap();
         d
+    }
+
+    /// A provider whose every inspection answers `status`, in the control domain of the runtime it
+    /// is asked about; it counts the inspections.
+    struct Answers {
+        domain: String,
+        status: crate::deployment::provider::DeploymentStatus,
+        inspected: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for Answers {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            self.domain.clone()
+        }
+        async fn spawn(&self, spec: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::DeploymentHandle, crate::deployment::provider::DeployError> {
+            Err(crate::deployment::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
+        }
+        async fn terminate(&self, _: &crate::deployment::provider::DeploymentHandle, _: crate::deployment::provider::TerminationMode) -> Result<(), crate::deployment::provider::DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, _: &crate::deployment::provider::DeploymentHandle) -> crate::deployment::provider::DeploymentStatus {
+            self.inspected.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.status.clone()
+        }
+        async fn signal_stop(&self, _: &crate::deployment::provider::DeploymentHandle) -> Result<(), crate::deployment::provider::DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<Option<crate::deployment::provider::DeploymentHandle>, crate::deployment::provider::DeployError> {
+            Ok(None)
+        }
+    }
+
+    /// A nodes store whose reads of runtime rows (the point read and the whole set) are refused; every
+    /// other row is the memory store's.
+    #[derive(Default)]
+    struct RuntimeRowUnreadable(crate::storage::MemoryNodesStorage);
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for RuntimeRowUnreadable {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_runtime(row).await
+        }
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Io { file: "runtimes".into(), reason: "Input/output error (os error 5)".into() })
+        }
+        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Unrecognised { file: format!("runtimes/{node_id}--{}.json", incarnation.0), reason: "format runtime/9 is not one this build reads".into() })
+        }
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.0.own().await
+        }
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_own(record).await
+        }
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.0.contacts().await
+        }
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.0.put_contact(record).await
+        }
+        async fn remove_contact(&self, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
+            self.0.remove_contact(node_id).await
+        }
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<(), crate::storage::NameHeld>, crate::record_store::StorageError> {
+            self.0.put_node_row(row).await
+        }
+        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.0.node_row_at(name).await
+        }
+        async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.0.release_node_row(name, holder).await
+        }
+    }
+
+    /// A nodes.storage over memory that counts every list of the runtime rows and answers the point
+    /// read of one birth's row as `point` says: the row held (`None`), or the store's refusal.
+    #[derive(Default)]
+    struct CountsRuntimeLists {
+        inner: crate::storage::MemoryNodesStorage,
+        lists: std::sync::atomic::AtomicUsize,
+        point_refused: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::storage::NodesStorage for CountsRuntimeLists {
+        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_runtime(row).await
+        }
+        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.runtimes().await
+        }
+        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::record_store::StorageError> {
+            if self.point_refused {
+                return Err(crate::record_store::StorageError::Io { file: format!("runtimes/{node_id}--{}.json", incarnation.0), reason: "Input/output error (os error 5)".into() });
+            }
+            self.inner.runtime(node_id, incarnation).await
+        }
+        async fn own(&self) -> Result<Option<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.inner.own().await
+        }
+        async fn put_own(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_own(record).await
+        }
+        async fn contacts(&self) -> Result<Vec<crate::storage::NodeRecord>, crate::record_store::StorageError> {
+            self.inner.contacts().await
+        }
+        async fn put_contact(&self, record: &crate::storage::NodeRecord) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_contact(record).await
+        }
+        async fn remove_contact(&self, node_id: &NodeId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_contact(node_id).await
+        }
+        async fn put_node_row(&self, row: &crate::storage::NodeRow) -> Result<Result<(), crate::storage::NameHeld>, crate::record_store::StorageError> {
+            self.inner.put_node_row(row).await
+        }
+        async fn node_row_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.inner.node_row_at(name).await
+        }
+        async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.release_node_row(name, holder).await
+        }
+    }
+
+    /// CONTRACT (CLAUDE.md read rule: "Every lookup is a point read through a declared index"; error
+    /// rule: "never written" and "could not be read" are different errors, distinct arms and spans):
+    /// the fabric-primary proves a lost executor `mesh2.admin.1` departed whose digest carries no
+    /// runtime, so the proof reads that exact birth's durable runtime row by its key. Held and
+    /// exited: the departure is proven. Never written: refused on
+    /// `rdm.node_admin.node.reject.via-no-runtime-row`. Unreadable: refused on
+    /// `rdm.node_admin.node.reject.via-runtime-row-unreadable` naming the store's cause. Must NOT
+    /// happen: a list of every runtime row searched for the one birth, or the two refusals as one.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_executor_exit_proof_point_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable() {
+        use crate::build_drive::DepartureProof as _;
+        use crate::storage::NodesStorage as _;
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-executor").unwrap();
+        let executor = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
+        let book = DigestBook::default();
+        for d in [executor.clone(), digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic)] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let row = crate::storage::RuntimeRow { node_id: executor.node.node_id.clone(), name: executor.node.name.clone(), incarnation_id: executor.node.incarnation.clone(), runtime: fact.clone(), data_dir: None };
+        let departure = |nodes: Arc<CountsRuntimeLists>| ProviderDeparture {
+            me: "mesh1.admin.1".parse().unwrap(),
+            topology: Arc::new(RwLock::new(view.clone())),
+            refresh: Arc::new(|| Box::pin(async {})),
+            book: book.clone(),
+            provider: Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() }),
+            nodes,
+            records: Arc::new(Records::default()),
+        };
+        let executor_name: PathName = "mesh2.admin.1".parse().unwrap();
+        let birth = (executor.node.node_id.to_string(), executor.node.incarnation.0.clone());
+        let capture = crate::span_capture::Capture::new("i143-3051-executor-exit-proof-point-read");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+
+        let held = Arc::new(CountsRuntimeLists::default());
+        held.put_runtime(&row).await.unwrap();
+        departure(held.clone()).proven(&executor_name).await.expect("the held row's runtime is proven exited");
+        let unwritten = Arc::new(CountsRuntimeLists::default());
+        let never = departure(unwritten.clone()).proven(&executor_name).await.unwrap_err();
+        let refused = Arc::new(CountsRuntimeLists { point_refused: true, ..Default::default() });
+        let unread = departure(refused.clone()).proven(&executor_name).await.unwrap_err();
+
+        let lists = |s: &CountsRuntimeLists| s.lists.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!((lists(&held), lists(&unwritten), lists(&refused)), (0, 0, 0), "the proof reads one row by its key, never the list of every row");
+        assert_eq!(capture.named("rdm.node_admin.build.update.via-executor-exit-proof").len(), 1, "the held row proves the exit once");
+        assert!(never.contains("no durable runtime row") && !never.contains("could not be read"), "never written is its own refusal: {never}");
+        assert!(unread.contains("could not be read") && unread.contains("Input/output error (os error 5)"), "unreadable names the store's cause: {unread}");
+        let attrs = |name: &str| {
+            let spans = capture.named(name);
+            assert_eq!(spans.len(), 1, "{name} once: {spans:?}");
+            eprintln!("span {name} trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
+            spans[0].attributes.clone()
+        };
+        let attr = |a: &std::collections::BTreeMap<String, String>, k: &str| a.get(k).cloned().unwrap_or_default();
+        let no_row = attrs("rdm.node_admin.node.reject.via-no-runtime-row");
+        assert_eq!((attr(&no_row, "reader"), attr(&no_row, "node"), attr(&no_row, "node_id"), attr(&no_row, "incarnation_id"), attr(&no_row, "store")), ("mesh1.admin.1".to_string(), "mesh2.admin.1".to_string(), birth.0.clone(), birth.1.clone(), "nodes.storage".to_string()), "{no_row:?}");
+        let unreadable = attrs("rdm.node_admin.node.reject.via-runtime-row-unreadable");
+        assert_eq!((attr(&unreadable, "reader"), attr(&unreadable, "node"), attr(&unreadable, "node_id"), attr(&unreadable, "incarnation_id"), attr(&unreadable, "store")), ("mesh1.admin.1".to_string(), "mesh2.admin.1".to_string(), birth.0, birth.1, "nodes.storage".to_string()), "{unreadable:?}");
+        assert!(attr(&unreadable, "error").contains("Input/output error (os error 5)"), "{unreadable:?}");
+    }
+
+    /// The mesh primary `mesh2.admin.1`'s recovery of its own mesh's births, over `book`, `provider`
+    /// and `nodes_storage`, and the TRUE OFFLINE member `mesh2.rpc.1` of `view`.
+    fn recovery_of(view: &Topology, book: DigestBook, provider: Arc<dyn DeploymentProvider>, nodes_storage: Arc<dyn crate::storage::NodesStorage>, status: Arc<dyn crate::status_storage::StatusStorage>) -> (RecoverySubmitter, Arc<dyn crate::status_storage::StatusStorage>, Node) {
+        let member = view.node(&"mesh2.rpc.1".parse().unwrap()).cloned().expect("the member is in the view");
+        let recovery = RecoverySubmitter {
+            me: "mesh2.admin.1".parse().unwrap(),
+            topology: Arc::new(RwLock::new(view.clone())),
+            book,
+            provider,
+            nodes_storage,
+            status_storage: status.clone(),
+            door: Default::default(),
+            client: None,
+        };
+        (recovery, status, member)
+    }
+
+    /// What the mesh primary's two ticks over one TRUE OFFLINE birth left: the verdict, the
+    /// inspection spans, the submit spans, and the birth's exit-proof row.
+    async fn two_ticks(recovery: &RecoverySubmitter, status: &dyn crate::status_storage::StatusStorage, member: &Node, cell: &str) -> (Inspected, Vec<crate::span_capture::Captured>, usize, Option<crate::status_storage::NodeExitRow>) {
+        let capture = crate::span_capture::Capture::new(cell);
+        let verdicts = Mutex::new(HashMap::new());
+        let outcome = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            let first = recovery.recover_if_proven(member, &verdicts).await;
+            let second = recovery.recover_if_proven(member, &verdicts).await;
+            assert_eq!(first, second, "the same birth, the same verdict on the next tick");
+            first
+        };
+        let inspections = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
+        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery").len();
+        let proof = status.node_exit(&member.node_id, member.incarnation_id.as_ref().unwrap()).await.unwrap();
+        (outcome, inspections, submits, proof)
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
+    /// durably. Still running is no proof"; operation summary "Trigger: Exact provider proof only"):
+    /// the mesh primary asks the provider about a TRUE OFFLINE member's exact runtime and the
+    /// provider cannot tell (`Unknown`). That is no proof: the verdict is not-exited with the
+    /// provider's answer as its reason, named once over two ticks, and nothing is recorded or
+    /// submitted. Must NOT happen: an exit-proof row, a recovery submit, a verdict spanned every tick.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_true_offline_member_the_provider_cannot_tell_about_is_not_proven_exited_and_never_recovered() {
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-unknown").unwrap();
+        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        member.node.runtime = Some(fact.clone());
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() });
+        let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let (outcome, inspections, submits, proof) = two_ticks(&recovery, &*status, &node, "i143-3051-provider-unknown").await;
+        assert_eq!(outcome, Inspected::NotExited("its runtime is not proven exited: Unknown".into()), "Unknown is no proof");
+        assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 2, "the provider was asked about the exact runtime on each tick");
+        assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
+        let a = &inspections[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.0.clone()), "the exact birth: {a:?}");
+        assert_eq!((attr("verdict"), attr("exit_proof"), attr("reason")), ("not-exited".to_string(), "none".to_string(), "its runtime is not proven exited: Unknown".to_string()), "{a:?}");
+        assert_eq!(attr("inspector"), "mesh2.admin.1", "{a:?}");
+        assert_eq!((submits, proof), (0, None), "no exit-proof row and no recovery submit without an exit proof");
+        eprintln!("span rdm.node_admin.node.resolve.via-provider-inspection trace_id={} {a:?}", inspections[0].trace_id);
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
+    /// durably"; CLAUDE.md: an error state names what failed and where): the provider proves a TRUE
+    /// OFFLINE member exited and status.storage refuses the birth's exit-proof row. The submit ends
+    /// there, on its own `via-node-recovery` span, whose outcome names the row and the store's own
+    /// cause; nothing reaches the fabric-primary (no Build named) and no row stands. Must NOT happen:
+    /// a refused exit-proof write with no span (an info line only), or a submit without its row.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_refused_exit_proof_write_ends_the_recovery_submit_on_its_span_naming_the_stores_cause() {
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-exit-refused").unwrap();
+        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        member.node.runtime = Some(fact.clone());
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() });
+        let refusing = crate::offline::tests::SilenceRefusing { exit: true, ..Default::default() };
+        let (recovery, status, node) = recovery_of(&view, book, provider, Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(refusing));
+        let capture = crate::span_capture::Capture::new("i143-3051-exit-proof-refused");
+        let outcome = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+        };
+        assert_eq!(outcome, Inspected::Exited(Some(1), "provider"), "the provider proved the exit");
+        assert_eq!(status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap(), None, "no exit-proof row stands");
+        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+        assert_eq!(submits.len(), 1, "the submit that ended on the refused row is spanned: {submits:?}");
+        let a = &submits[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.0.clone()), "the exact birth: {a:?}");
+        assert!(attr("outcome").contains("exit-proof row") && attr("outcome").contains("No space left on device (os error 28)"), "the outcome names the row and the store's cause: {a:?}");
+        assert_eq!(attr("build_id"), "", "nothing reached the fabric-primary: {a:?}");
+        eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
+    /// births, those known only by a durable runtime row included; CLAUDE.md: an error state names
+    /// what failed and where): when the tick's read of the durable runtime rows is refused, the
+    /// refusal is one `rdm.node_admin.node.reject.via-runtime-rows-unreadable` span naming the
+    /// reader, the store and its cause, and the tick watches the view's births only. Must NOT happen:
+    /// the narrowed watch with no span (an info line only).
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_refused_read_of_the_durable_runtime_rows_is_spanned_and_the_tick_watches_the_views_births() {
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic)] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let provider = Arc::new(Answers { domain: String::new(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() });
+        let (recovery, _, _) = recovery_of(&view, book, provider, Arc::new(RuntimeRowUnreadable::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let capture = crate::span_capture::Capture::new("i143-3051-runtime-rows-unreadable");
+        let rows = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            recovery.durable_rows().await
+        };
+        assert!(rows.is_empty(), "no row is read from a refused store: the view's births only");
+        let spans = capture.named("rdm.node_admin.node.reject.via-runtime-rows-unreadable");
+        assert_eq!(spans.len(), 1, "the refused read is spanned: {spans:?}");
+        let a = &spans[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("reader"), attr("store"), attr("error")), ("mesh2.admin.1".to_string(), "nodes.storage".to_string(), "runtimes: Input/output error (os error 5)".to_string()), "{a:?}");
+        eprintln!("span rdm.node_admin.node.reject.via-runtime-rows-unreadable trace_id={} {a:?}", spans[0].trace_id);
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof" step 3: the provider is asked "about the
+    /// exact runtime recorded at launch"): a TRUE OFFLINE member whose digest carries no runtime is
+    /// inspected through its durable runtime row, and that point read is refused. With no runtime
+    /// fact nothing can be proven, whatever the provider would answer: the verdict is not-exited,
+    /// naming the row and the store's own cause, the provider is not asked, and nothing is recorded
+    /// or submitted. Must NOT happen: the refusal read as "no row", an inspection of a guessed
+    /// runtime, an exit-proof row, a recovery submit.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_true_offline_member_whose_runtime_row_cannot_be_read_is_not_proven_exited_and_never_recovered() {
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-unreadable").unwrap();
+        let member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        // The provider would prove an exit: it must never be asked without the birth's runtime fact.
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() });
+        let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(RuntimeRowUnreadable::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        let (outcome, inspections, submits, proof) = two_ticks(&recovery, &*status, &node, "i143-3051-runtime-row-unreadable").await;
+        let why = format!("the durable runtime row of {} at {} could not be read: runtimes/{}--{}.json is not a record this build recognises: format runtime/9 is not one this build reads", node.node_id, member.node.incarnation.0, node.node_id, member.node.incarnation.0);
+        assert_eq!(outcome, Inspected::NotExited(why.clone()), "an unreadable row is no proof, and is named as unreadable");
+        assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 0, "with no runtime fact the provider is not asked");
+        assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
+        let a = &inspections[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("verdict"), attr("exit_proof"), attr("reason")), ("not-exited".to_string(), "none".to_string(), why), "{a:?}");
+        assert_eq!((submits, proof), (0, None), "no exit-proof row and no recovery submit without an exit proof");
+        eprintln!("span rdm.node_admin.node.resolve.via-provider-inspection trace_id={} {a:?}", inspections[0].trace_id);
     }
 
     /// CONTRACT (states.md): a mesh is ready-for-traffic when every node of the mesh is. A mesh with a

@@ -249,7 +249,15 @@ impl Drive {
     /// Whether the drive ended with the Build complete: its frames are the record a re-submit is
     /// answered from.
     pub fn completed(&self) -> bool {
-        matches!(self.state.lock().unwrap().terminal, Some(BuildReply::Complete { .. }))
+        self.completed_attempt().is_some()
+    }
+
+    /// The attempt the drive completed the Build at, when it ended with the Build complete.
+    pub fn completed_attempt(&self) -> Option<u32> {
+        match self.state.lock().unwrap().terminal {
+            Some(BuildReply::Complete { attempt, .. }) => Some(attempt),
+            _ => None,
+        }
     }
 
     /// Whether this drive dispatched an attempt: it holds the frames of the calls it made.
@@ -385,13 +393,24 @@ pub struct Drives {
 }
 
 impl Drives {
-    /// The drive of `build_id`, with a task making its frames running: the one held, or a new one.
-    /// A drive that stalled or paused is picked up again here.
-    pub fn ensure(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId) -> Arc<Drive> {
+    /// The drive of `build_id` for `attempt` (the attempt opened, or
+    /// [`BuildProjection::attempt_to_drive`] of the caller's read), with a task making its frames
+    /// running: the one held, or a new one. A drive that stalled or paused is picked up again here.
+    /// A drive that completed the Build at `attempt` or later is the record of that run and is handed
+    /// back as it is, with nothing run: a caller whose read predates the verdict (the reconcile
+    /// loop's `list_active`, a re-submit's `read_build`, showing that attempt running) gets the
+    /// drive that ended it, never a second one in its place. A drive that ended otherwise (it
+    /// completed an earlier attempt and the Build was reopened, it failed, its seat was lost) is
+    /// replaced by a new one.
+    pub fn ensure(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId, attempt: u32) -> Arc<Drive> {
         let drive = {
             let mut drives = self.drives.lock().unwrap();
-            if drives.get(build_id).is_some_and(|d| d.ended()) {
-                drives.remove(build_id);
+            match drives.get(build_id) {
+                Some(d) if d.completed_attempt().is_some_and(|done| done >= attempt) => return d.clone(),
+                Some(d) if d.ended() => {
+                    drives.remove(build_id);
+                }
+                _ => {}
             }
             drives.entry(build_id.clone()).or_insert_with(|| Drive::new(build_id.clone())).clone()
         };
@@ -418,14 +437,11 @@ impl Drives {
         drive
     }
 
-    /// The drive a re-submit of a Build that ended is answered from: the completed drive this admin
-    /// kept, else the one running, else a new one (a fabric-primary that took the seat after the
-    /// Build ended, whose drive attaches to the last attempt's executor).
-    pub fn replay_of(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId) -> Arc<Drive> {
-        if let Some(d) = self.get(build_id).filter(|d| d.completed()) {
-            return d;
-        }
-        self.ensure(env, build_id)
+    /// The drive a re-submit of a Build that ended at `attempt` is answered from: the drive this
+    /// admin kept that completed it, else the one running, else a new one (a fabric-primary that
+    /// took the seat after the Build ended, whose drive attaches to the last attempt's executor).
+    pub fn replay_of(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId, attempt: u32) -> Arc<Drive> {
+        self.ensure(env, build_id, attempt)
     }
 
     /// The Build left history: its drive's record goes with it.

@@ -14,7 +14,7 @@
 //! (`0x1F`) from the sender, never from a reference alone.
 
 use crate::build::BuildId;
-use crate::build_state::{BuildFact, BuildStateAdapter, BuildStepReceipt, StepOutcome};
+use crate::build_state::{BuildFact, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
@@ -454,16 +454,13 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
 
 /// The provider's exact Exited of the lost final primary `lost`, whose runtime was admitted as
 /// `runtime` (mesh-leave.md, "Resume after the primary's loss", step 1), proven from the durable
-/// runtime row this admin stored for that birth (`rows`, the blind put every admin makes the moment
-/// it first holds a birth): the same runtime by fingerprint, adopted in this admin's provider domain,
-/// and that runtime's own terminal status. A birth no row names, another runtime, or a runtime not
-/// proven exited proves nothing.
-pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::DeploymentProvider, rows: &[crate::storage::RuntimeRow], lost: &RosterBirth, runtime: &RuntimeProof) -> Result<TerminalReceipt, String> {
+/// runtime row this admin stored for that birth (`row`, the point read of the blind put every admin
+/// makes the moment it first holds a birth): the same runtime by fingerprint, adopted in this
+/// admin's provider domain, and that runtime's own terminal status. A birth with no row, another
+/// runtime, or a runtime not proven exited proves nothing.
+pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, lost: &RosterBirth, runtime: &RuntimeProof) -> Result<TerminalReceipt, String> {
     let named = format!("{} {}", lost.node, lost.incarnation_id);
-    let row = rows
-        .iter()
-        .find(|r| r.node_id.to_string() == lost.node_id && r.incarnation_id.0 == lost.incarnation_id)
-        .ok_or_else(|| format!("no durable runtime row of {named} is held ({} rows): its runtime is unknown", rows.len()))?;
+    let row = row.ok_or_else(|| format!("no durable runtime row of {named} was ever written here: its runtime is unknown"))?;
     if &RuntimeProof::of(&row.runtime) != runtime {
         return Err(format!("the durable runtime row of {named} names the runtime {:?}, not the one admitted for it {runtime:?}", RuntimeProof::of(&row.runtime)));
     }
@@ -478,17 +475,17 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
 
 /// The fabric-primary's resume after the leaving mesh's final primary `admitted.final_primary` was
 /// lost and `held` (runtime `held_runtime`) is the mesh's node-admin primary now (mesh-leave.md,
-/// "Resume after the primary's loss", steps 1-2): the lost birth's exact Exited, proven from the
-/// durable runtime rows `rows` unless the Build already holds it, is recorded as its roster receipt,
+/// "Resume after the primary's loss", steps 1-2): the lost birth's exact Exited, proven from its
+/// durable runtime row `row` unless the Build already holds it, is recorded as its roster receipt,
 /// then `RosterAmended` admits `held`. A lost primary not proven exited refuses the resume by name
 /// and nothing is amended (R-D1).
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, rows: &[crate::storage::RuntimeRow], key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
+pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
     let operation = key.operation.as_str();
     let lost = &admitted.final_primary;
     let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
     if !exit_receipts(&steps, operation, std::slice::from_ref(lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
-        let terminal = prove_predecessor_exit(provider, rows, lost, &admitted.final_runtime).await.map_err(|reason| {
+        let terminal = prove_predecessor_exit(provider, row, lost, &admitted.final_runtime).await.map_err(|reason| {
             span_unproven(key, lost, &reason);
             format!("{operation} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost.node, lost.incarnation_id, held.node, held.incarnation_id)
         })?;
@@ -558,8 +555,15 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
 /// roster is the owner's accepted roster plus every amendment, used for this run and written
 /// nowhere, so the accepted roster is never recaptured. Any other final primary refuses the run by
 /// name, both births named.
+///
+/// When this admin's own log (`local`, the log `builds` reads) holds no fact of the Build at all
+/// (`LeaveMesh` outran the gossip that carries the Build's facts), the owner's Build facts are read
+/// once and absorbed into `local` before anything else is decided (node-build-hydration.md: "Facts
+/// are absorbed into the existing Build log"), as an executor absorbs the intent its claim names;
+/// no Build gossip is authored for them, and that one read is what the rest of the admission uses.
+/// A Build log that could not be read refuses the run by name.
 #[allow(clippy::too_many_arguments)]
-pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
+pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, local: &dyn LocalBuildLog, key: &LeaveKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
 where
     C: FnOnce() -> Result<Vec<RosterBirth>, String>,
     F: FnOnce() -> Fut,
@@ -568,7 +572,30 @@ where
     let operation = key.operation.as_str();
     let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
     let build_id = BuildId(key.build_id.clone());
-    let own = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}"))?.steps;
+    let unread = |e: BuildStateError| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}");
+    // The owner's Build facts: read once when this admin's own log holds none, else not yet read.
+    enum Owner<F> {
+        Read(Vec<BuildFact>),
+        Unread(F),
+    }
+    let (own, owner) = match builds.read_build(&build_id).await {
+        Ok(p) => (p.steps, Owner::Unread(fetch_owner)),
+        Err(BuildStateError::UnknownBuild(_)) => {
+            let facts = fetch_owner().await?;
+            local.absorb_facts(&facts).await;
+            let own = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the owner's {} Build facts of {build_id} were absorbed for {operation}, but its own log still cannot read the Build: {e}", facts.len()))?.steps;
+            tracing::info_span!("rdm.node_admin.build.update.via-owner-facts-absorbed", build_id = %build_id, operation = %operation, executor = %executor, facts = facts.len(), steps = own.len())
+                .in_scope(|| tracing::info!("this admin's own log held no fact of the Build: the owner's Build facts are absorbed into it before the leave is admitted"));
+            (own, Owner::Read(facts))
+        }
+        Err(e) => return Err(unread(e)),
+    };
+    let fetch_owner = || async move {
+        match owner {
+            Owner::Read(facts) => Ok(facts),
+            Owner::Unread(fetch) => fetch().await,
+        }
+    };
     if accepted_row(&own, operation, STEP_LEAVING_ROSTER).is_some() {
         let roster = accepted_roster(builds, key, STEP_LEAVING_ROSTER, executor, me, my_runtime, capture).await?;
         return admission_roster(&roster, &own, operation, me, fetch_owner).await;
@@ -824,6 +851,24 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
         return unmatched("final_runtime", format!("{:?}", admitted.final_runtime), format!("{:?}", manifest.final_runtime));
     }
     HandoffVerdict::Accept(manifest)
+}
+
+/// The verdict on the handoff of the leave `key` from the final primary's Build facts as `reader`
+/// read them from it (`read`, the sender `sender`'s FetchBuildFacts answer). A sender that holds no
+/// fact of the Build (`UnknownBuild`) recorded no exit manifest when it called: its member
+/// workflows are incomplete, every roster birth but the final primary without an Exited receipt,
+/// and the open leave ends now (mesh-leave.md: "Missing receipts ... leave the workflow
+/// incomplete"). `Err` is a read that decides nothing (not ready, unreached, interrupted, refused
+/// or an incomplete stream): the reply is not-ready by that name and the open leave stays open.
+pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, String> {
+    match read {
+        Ok(facts) => Ok(handoff_verdict(&facts, key, admitted, receipt_manifest)),
+        Err(crate::build_facts_read::FetchFailure::UnknownBuild(detail)) => Ok(match handoff_verdict(&[], key, admitted, receipt_manifest) {
+            HandoffVerdict::Incomplete { reason, without_exit } => HandoffVerdict::Incomplete { reason: format!("{reader}: the final primary {sender} holds no fact of the Build ({detail}): {reason}"), without_exit },
+            other => other,
+        }),
+        Err(e) => Err(format!("{reader}: the manifest {receipt_manifest} could not be read from {sender}: {e}")),
+    }
 }
 
 /// The key of one open mesh leave at the fabric-primary.

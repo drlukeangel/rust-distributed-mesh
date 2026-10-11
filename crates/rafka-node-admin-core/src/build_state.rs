@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// A Build accepted by the fabric-primary: the complete topology it realizes, and the change that
 /// produced it (history only; planning reads `topology`, never `submitted_change`).
@@ -274,6 +274,16 @@ pub struct BuildProjection {
 }
 
 impl BuildProjection {
+    /// The attempt a drive of this Build covers as it reads now: the current attempt while it runs or
+    /// once it completed; the next one while it waits for its claim (an attempt opened on it, a
+    /// complete Build reopened included, or the hand-off of the current one) or after it failed.
+    pub fn attempt_to_drive(&self) -> u32 {
+        match self.state {
+            BuildState::Running | BuildState::Complete => self.attempt,
+            BuildState::Pending | BuildState::Failed => self.attempt + 1,
+        }
+    }
+
     /// Whether `attempt` carried exactly `action`.
     pub fn carried(&self, attempt: u32, action: &AttemptAction) -> bool {
         self.attempt_actions.get(&attempt) == Some(action)
@@ -473,13 +483,26 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
     out
 }
 
-/// The lifecycle operations open in `builds`: every `NodeDeleting` step a retire operation
-/// completed with no `NodeDeleted` step of the same operation after it, and every
-/// `NodeRestarting` step whose restart (`restart-node:<path>`, the op it carries) has no
-/// `Complete` step yet. Derived from the Build facts as each fact enters the log, never stored: a
-/// successor primary publishes the same overlays from the same facts.
-pub(crate) fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
+/// The lifecycle operations open in `builds` (the fold of `facts`): every `NodeDeleting` step a
+/// retire operation completed with no `NodeDeleted` step of the same operation after it, and every
+/// `NodeRestarting` step whose restart (`restart-node:<path>`, the op it carries) has no `Complete`
+/// step yet and whose attempt is not `Converged`. An attempt's `Converged` verdict ends every
+/// restart of that attempt: the fabric-primary records it from the executor's stream terminal, which
+/// follows every step's `Complete` receipt durable on the executor (node-rpc-envelope.md: progress
+/// waits on no gossip), so the restart's own `Complete` need not have reached this log. Derived from
+/// the Build facts as each fact enters the log, never stored: a successor primary publishes the same
+/// overlays from the same facts.
+pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
     let mut out = InFlight::default();
+    // An attempt has one verdict, the first appended (as `fold` reads it).
+    let mut decided: std::collections::BTreeSet<(&BuildId, u32)> = std::collections::BTreeSet::new();
+    for f in facts {
+        if let BuildFact::Attempt(a) = f {
+            if decided.insert((&a.build_id, a.attempt)) && a.outcome == AttemptOutcome::Converged && builds.contains_key(&a.build_id) {
+                out.attempts_converged.insert((a.build_id.0.clone(), a.attempt));
+            }
+        }
+    }
     for p in builds.values() {
         for s in &p.steps {
             if s.step == "Complete" && s.outcome == StepOutcome::Complete && s.operation.starts_with("restart-node:") {
@@ -507,7 +530,8 @@ pub(crate) fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> InFl
             let closed = if s.step == "NodeDeleting" {
                 p.steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete)
             } else {
-                p.steps.iter().any(|t| t.step == "Complete" && t.operation == op.operation && t.outcome == StepOutcome::Complete)
+                out.attempts_converged.contains(&(op.build_id.clone(), op.attempt))
+                    || p.steps.iter().any(|t| t.step == "Complete" && t.operation == op.operation && t.outcome == StepOutcome::Complete)
             };
             if !closed {
                 out.ops.push(op);
@@ -528,6 +552,9 @@ pub struct InFlight {
     /// The restarts whose `restart-node:<path>` `Complete` is receipted, by (Build, operation): the
     /// facts end every hold of that operation in that Build.
     pub restarts_completed: std::collections::BTreeSet<(String, String)>,
+    /// The attempts whose verdict is `Converged`, by (Build, attempt): the facts end every restart
+    /// hold of that attempt in that Build.
+    pub attempts_converged: std::collections::BTreeSet<(String, u32)>,
 }
 
 /// The Builds the facts forgot: each a `Forget` fact names whose Build the fold no longer holds
@@ -655,9 +682,10 @@ fn describe_open(o: &AttemptOpened) -> String {
 #[derive(Debug)]
 struct FactLog {
     facts: Vec<BuildFact>,
-    /// Ticks each time a fact enters the log ([`FactLog::push`]): what everything derived from the
-    /// facts (the lifecycle overlays a book holds) is recomputed on, as the fact lands.
-    changes: tokio::sync::watch::Sender<u64>,
+    /// What is derived from the facts (the lifecycle overlays a book holds), run inside
+    /// [`FactLog::push`] under the adapter's lock as each fact enters the log: no reader of the log
+    /// sees a fact before what is derived from it reflects it.
+    derived: Derived,
     /// The recovery index, in two halves a receipt fills in whatever order it arrives (gossip and
     /// catch-up deliver in any order): every deleting workflow's (`recover-node`, `replace-node`,
     /// `retire-node`) `NodeDeleted` by the birth `(node_id, incarnation)` it names, to its path,
@@ -673,12 +701,24 @@ struct FactLog {
 
 impl Default for FactLog {
     fn default() -> Self {
-        Self { facts: Vec::new(), changes: tokio::sync::watch::channel(0).0, recovery_deletes: Default::default(), recovery_completes: Default::default() }
+        Self { facts: Vec::new(), derived: Derived(None), recovery_deletes: Default::default(), recovery_completes: Default::default() }
+    }
+}
+
+/// A derivation over the whole fact log, run as each fact enters it ([`LocalBuildLog::derive_on_every_fact`]).
+pub type FactDerivation = Arc<dyn Fn(&[BuildFact]) + Send + Sync>;
+
+/// The derivation a log runs on every fact, when one is installed.
+struct Derived(Option<FactDerivation>);
+
+impl std::fmt::Debug for Derived {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "Derived(installed)" } else { "Derived(none)" })
     }
 }
 
 impl FactLog {
-    /// Append `fact` to the log, fold it into the indexes and tick [`FactLog::changes`].
+    /// Append `fact` to the log, fold it into the indexes and run [`FactLog::derived`] over the log.
     fn push(&mut self, fact: BuildFact) {
         if let BuildFact::Step(s) = &fact {
             if let Some((path, node_id, incarnation)) = recovery_deleted(s) {
@@ -691,7 +731,16 @@ impl FactLog {
             }
         }
         self.facts.push(fact);
-        self.changes.send_modify(|n| *n += 1);
+        if let Some(derive) = &self.derived.0 {
+            derive(&self.facts);
+        }
+    }
+
+    /// Install `derive` and run it once over the facts already held, in one step: no fact enters
+    /// between the first run and the installation.
+    fn derive_on_every_fact(&mut self, derive: FactDerivation) {
+        derive(&self.facts);
+        self.derived = Derived(Some(derive));
     }
 
     /// The point read of [`BuildStateAdapter::recovery_of`]: the birth's `NodeDeleted` receipts at
@@ -815,9 +864,10 @@ pub trait LocalBuildLog: BuildStateAdapter {
     /// Merge facts heard from the fabric (append the unseen ones; intents, opens and claims are
     /// insert-and-fail, receipts deduplicate).
     async fn absorb_facts(&self, facts: &[BuildFact]);
-    /// Ticks each time a fact enters this log, whoever put it there: an own append, an absorbed
-    /// fact or a journal's replay. What is derived from the facts is recomputed on it.
-    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64>;
+    /// Run `derive` over the facts held now, then over the whole log each time a fact enters it,
+    /// whoever put it there (an own append or an absorbed fact), inside the append and before it
+    /// returns: what is derived from the facts never lags a reader of them.
+    fn derive_on_every_fact(&self, derive: FactDerivation);
 }
 
 #[async_trait]
@@ -826,15 +876,15 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
         self.absorb(facts)
     }
 
-    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.log.lock().unwrap().changes.subscribe()
+    fn derive_on_every_fact(&self, derive: FactDerivation) {
+        self.log.lock().unwrap().derive_on_every_fact(derive)
     }
 }
 
 #[async_trait]
 impl LocalBuildLog for FileJournal {
-    fn fact_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.log.lock().unwrap().changes.subscribe()
+    fn derive_on_every_fact(&self, derive: FactDerivation) {
+        self.log.lock().unwrap().derive_on_every_fact(derive)
     }
 
     async fn absorb_facts(&self, facts: &[BuildFact]) {
@@ -1178,7 +1228,7 @@ mod tests {
             with(&b.operation, "NodeDeleting", &b),
             with(&b.operation, "DrainNode", &b),
         ];
-        let open = in_flight_ops(&fold(&facts)).ops;
+        let open = in_flight_ops(&facts, &fold(&facts)).ops;
         assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");
 
         // A restart's pre-event is a step of its retire half; the restart is open until its
@@ -1187,12 +1237,12 @@ mod tests {
         let mut facts = facts;
         facts.push(with("retire-node:mesh1.rpc.3", "NodeRestarting", &c));
         facts.push(with("retire-node:mesh1.rpc.3", "TerminateRuntime", &c));
-        assert_eq!(in_flight_ops(&fold(&facts)).ops, vec![b.clone(), c.clone()], "a successor holds the restart from the Build facts alone");
+        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![b.clone(), c.clone()], "a successor holds the restart from the Build facts alone");
         facts.push(with("restart-node:mesh1.rpc.3", "Complete", &c));
-        assert_eq!(in_flight_ops(&fold(&facts)).ops, vec![b], "the restart's create half completing closes it");
-        assert!(in_flight_ops(&fold(&facts)).unrecognised.is_empty());
+        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![b], "the restart's create half completing closes it");
+        assert!(in_flight_ops(&facts, &fold(&facts)).unrecognised.is_empty());
         assert_eq!(
-            in_flight_ops(&fold(&facts)).restarts_completed,
+            in_flight_ops(&facts, &fold(&facts)).restarts_completed,
             [("b1".to_string(), "restart-node:mesh1.rpc.3".to_string())].into(),
             "the restart's Complete is named by Build and operation: it ends that restart's hold and no other"
         );
@@ -1202,6 +1252,43 @@ mod tests {
         facts.push(BuildFact::Forget { build_id: BuildId("b1".into()) });
         facts.push(BuildFact::Forget { build_id: BuildId("b9".into()) });
         assert_eq!(forgotten_builds(&facts, &fold(&facts)), ["b9".to_string()].into(), "only a Build the fold no longer holds is forgotten");
+    }
+
+    /// CONTRACT (node-rpc-envelope.md: "Progress waits on no gossip"): a restart is open until its
+    /// `restart-node:<path>` `Complete` is receipted or its attempt's verdict is `Converged` (the
+    /// fabric-primary's own fact from the stream terminal); an attempt's first verdict is its one, so
+    /// a `Converged` after a `Failed` ends nothing, and a verdict ends only its own attempt's restarts.
+    #[test]
+    fn a_restart_is_closed_by_its_attempts_converged_verdict_and_by_no_other_attempts() {
+        let restart = |node: &str, attempt: u32| rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt,
+            operation: format!("restart-node:{node}"),
+            node_id: rafka_mesh_entity::NodeId::mint(),
+            incarnation: rafka_mesh_entity::IncarnationId::mint(),
+            name: node.parse().unwrap(),
+            event_at_rafka_ms: 1,
+        };
+        let pre_event = |op: &rafka_mesh_entity::LifecycleOp| {
+            BuildFact::Step(BuildStepReceipt {
+                build_id: BuildId("b1".into()),
+                attempt: op.attempt,
+                operation: format!("retire-node:{}", op.name),
+                step: "NodeRestarting".into(),
+                outcome: StepOutcome::Complete,
+                output: Some(serde_json::to_value(op).unwrap()),
+                executor: None,
+            })
+        };
+        let (failed, converged, later) = (restart("mesh1.rpc.1", 2), restart("mesh1.rpc.2", 3), restart("mesh1.rpc.3", 4));
+        let mut facts = vec![BuildFact::Accepted(intent("b1")), pre_event(&failed), pre_event(&converged), pre_event(&later)];
+        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![failed.clone(), converged.clone(), later.clone()]);
+        facts.push(BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "lost".into() })));
+        facts.push(BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Converged)));
+        facts.push(BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::Converged)));
+        let read = in_flight_ops(&facts, &fold(&facts));
+        assert_eq!(read.ops, vec![failed, later], "attempt 3's Converged ends its restart; attempt 2's first verdict is Failed and attempt 4 has none");
+        assert_eq!(read.attempts_converged, [("b1".to_string(), 3)].into(), "the converged attempts are named by Build and attempt");
     }
 
     /// CONTRACT: a completed pre-event step whose recorded operation this build cannot read (a row
@@ -1222,13 +1309,14 @@ mod tests {
         };
         let old_shape = serde_json::json!({"build_id": "b1", "attempt": 2, "operation": "retire-node:mesh1.rpc.1", "event_at_ms": 1});
         let facts = vec![BuildFact::Accepted(intent("b1")), step(Some(old_shape))];
-        let read = in_flight_ops(&fold(&facts));
+        let read = in_flight_ops(&facts, &fold(&facts));
         assert!(read.ops.is_empty(), "an unreadable step opens no overlay");
         assert_eq!(read.unrecognised.len(), 1, "{read:?}");
         let u = &read.unrecognised[0];
         assert_eq!((u.attempt, u.operation.as_str(), u.step.as_str()), (2, "retire-node:mesh1.rpc.1", "NodeDeleting"));
         assert!(u.reason.contains("not a LifecycleOp this build reads"), "{}", u.reason);
-        let none = in_flight_ops(&fold(&[BuildFact::Accepted(intent("b1")), step(None)]));
+        let held = [BuildFact::Accepted(intent("b1")), step(None)];
+        let none = in_flight_ops(&held, &fold(&held));
         assert_eq!(none.unrecognised[0].reason, "the step recorded no operation");
     }
 

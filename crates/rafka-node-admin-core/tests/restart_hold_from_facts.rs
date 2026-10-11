@@ -1,8 +1,9 @@
 //! The restart hold an admin's book carries is the Build facts' truth from the moment a fact enters
 //! the admin's log (node-restart.md "Completion: node.restarted after the whole start completes"):
-//! the `NodeRestarting` pre-event opens it and the `restart-node:<path>` `Complete` receipt closes
-//! it, each as it lands, never at the next hierarchy round. A restart door reading the book between
-//! the receipt and the next round must not refuse a live node as still `restarting`.
+//! the `NodeRestarting` pre-event opens it, and the `restart-node:<path>` `Complete` receipt or the
+//! attempt's `Converged` verdict (node-rpc-envelope.md: progress waits on no gossip) closes it, each
+//! inside the append that brings it, never at the next hierarchy round. A restart door reading the
+//! book after that fact must not refuse a live node as still `restarting`.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`) whose rounds are stretched far
 //! past the cell's bound (`RDM_GOSSIP_INTERVAL_MS`, `RDM_BACKBONE_INTERVAL_MS`), in a process of its
@@ -10,7 +11,7 @@
 
 use rafka_mesh_entity::{IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
-use rafka_node_admin_core::build_state::{BuildStepReceipt, StepOutcome};
+use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildStepReceipt, StepOutcome};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -229,4 +230,105 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
     assert_eq!(closed.len(), 1, "one restart hold closed, by its Complete: {closed:?}");
     let text = closed[0].to_string();
     assert!(text.contains("mesh1.rpc.1") && text.contains("restart-node:mesh1.rpc.1"), "the close names the birth and the operation: {text}");
+}
+
+/// CONTRACT (node-rpc-envelope.md "Frames, durable receipts and reattachment": "Progress waits on no
+/// gossip; Build-topic facts remain durability and recovery evidence"; node-restart.md "Completion":
+/// "no event is inferred from gossip"; rafka-node-rpc-contract build.rs: a `Step` frame only after
+/// the step's `Complete` receipt is durable on its executor, then the terminal): an attempt's
+/// `Converged` verdict, which the fabric-primary records from the executor's stream terminal, ends
+/// every restart hold of that attempt in this admin's book, with no `restart-node:<path>`
+/// `Complete` receipt in the log (that receipt reaches the fabric-primary only by Build-topic
+/// gossip). The hold is closed by the time the verdict's append returns: no reader of the log can
+/// see the attempt `Converged` while the book still holds the restart. The close is spanned
+/// `rdm.mesh.membership.update.via-restart-closed-by-facts` once, `by = attempt-converged`.
+/// Must NOT happen: the hold outliving its attempt's `Converged` until the gossiped `Complete`
+/// arrives (the restart door then refuses the live node `node-not-live`, status `restarting`,
+/// mesh_identity__canonical_ids :106), or a hold of another attempt closing on this verdict.
+#[test]
+fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_arrives() {
+    let cell = "a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_arrives";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let evidence = evidence_dir(cell);
+    let _ = std::fs::remove_dir_all(&evidence);
+    std::fs::create_dir_all(&evidence).unwrap();
+    std::env::set_var("RDM_GOSSIP_INTERVAL_MS", STRETCHED_MS);
+    std::env::set_var("RDM_BACKBONE_INTERVAL_MS", STRETCHED_MS);
+    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-3016");
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+    rt.block_on(async {
+        let dir = std::env::temp_dir().join(format!("restart-hold-converged-{}", NodeId::mint()));
+        let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
+        let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
+        let build_id = running.control.accepted.build_id().await.expect("the Day-0 admin holds its accepted Build");
+        let book = running.membership.book.clone();
+        let builds = running.runner.builds.clone();
+
+        // An attempt number the Day-0 Build has given no verdict: the first verdict of an attempt is its one.
+        const ATTEMPT: u32 = 9;
+        let op_at = |path: &str, attempt: u32| {
+            let path: rafka_node_admin_core::model::PathName = path.parse().unwrap();
+            LifecycleOp {
+                build_id: build_id.0.clone(),
+                attempt,
+                operation: format!("restart-node:{path}"),
+                node_id: NodeId::mint(),
+                incarnation: IncarnationId::mint(),
+                name: path,
+                event_at_rafka_ms: 1,
+            }
+        };
+        // The restart this attempt ran, and one of another attempt the verdict must not end.
+        let restart = op_at("mesh1.rpc.1", ATTEMPT);
+        let other = op_at("mesh1.rpc.2", ATTEMPT + 1);
+        let pre_event = |op: &LifecycleOp| BuildStepReceipt {
+            build_id: build_id.clone(),
+            attempt: op.attempt,
+            operation: format!("retire-node:{}", op.name),
+            step: "NodeRestarting".into(),
+            outcome: StepOutcome::Complete,
+            output: Some(serde_json::to_value(op).unwrap()),
+            executor: Some("mesh2.admin.1".into()),
+        };
+
+        // Both pre-events enter the log: both holds open on their exact births.
+        let mut overlays = book.overlay_changes();
+        overlays.borrow_and_update();
+        builds.append_step_receipt(&pre_event(&restart)).await.unwrap();
+        builds.append_step_receipt(&pre_event(&other)).await.unwrap();
+        tokio::time::timeout(NEVER, async {
+            while book.restart_of(other.node_id.as_str(), &other.incarnation).is_none() || book.restart_of(restart.node_id.as_str(), &restart.incarnation).is_none() {
+                overlays.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the NodeRestarting receipts entered the log and the holds did not open");
+
+        // The attempt's Converged enters the log (the fabric-primary's own verdict from the stream's
+        // terminal), no restart-node Complete with it: the hold is over when the append returns.
+        builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: build_id.clone(), attempt: ATTEMPT, outcome: AttemptOutcome::Converged }).await.unwrap();
+        assert_eq!(
+            book.restart_of(restart.node_id.as_str(), &restart.incarnation),
+            None,
+            "attempt {ATTEMPT} is Converged in the log and its restart is still held: the hold waits on the gossiped Complete receipt"
+        );
+        assert_eq!(
+            book.restart_of(other.node_id.as_str(), &other.incarnation).map(|o| o.operation),
+            Some(other.operation.clone()),
+            "attempt {ATTEMPT}'s verdict closed a restart of attempt {}", ATTEMPT + 1
+        );
+
+        running.leave().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+    drop(rt);
+    drop(telemetry);
+    let spans = collect_spans(&evidence);
+    let closed: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-restart-closed-by-facts").cloned().collect();
+    assert_eq!(closed.len(), 1, "one restart hold closed, by its attempt's Converged: {closed:?}");
+    let text = closed[0].to_string();
+    assert!(text.contains("restart-node:mesh1.rpc.1") && text.contains("attempt-converged"), "the close names the operation and its cause: {text}");
 }

@@ -672,6 +672,54 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
 }
 
+/// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": "a completed Build answers
+/// AlreadyApplied with its terminal frame"): the reconcile loop's tick that read the Build active
+/// just before its verdict landed, and so asks for its drive after the drive ended `Complete`, is
+/// handed the completed drive itself. The record a re-submit is answered from stays the drive
+/// that made the calls: the re-submit is `AlreadyApplied` with every frame and the terminal frame.
+/// Must NOT happen: the completed drive replaced by a new one, which reattaches to the executor
+/// (a second `build.attempt.run` of the ended attempt) and makes a re-submit read a running drive
+/// and answer `Attached` (fabric_build__build_op gate fa338efb, build_op.rs:233).
+#[test]
+fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_already_applied() {
+    let cap = capture();
+    let (build, kept, first, again, disposition) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let fp = Arc::new(MemoryBuildStateAdapter::new());
+        let door = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
+        let served = serve(door.clone()).await;
+        let nodes = nodes_over(&served.carrier);
+        rig.membership.joined.store(true, Ordering::SeqCst);
+        let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
+        let build = BuildId(stream.accepted().build_id.0.clone());
+        let accepted = stream.accepted().clone();
+        tokio::spawn({
+            let (rig, build) = (rig.clone(), build.clone());
+            async move { rig.report_bind(&build, "mesh1.rpc.3").await }
+        });
+        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        let completed = door.drives.get(&build).expect("the drive that completed the Build is held");
+        assert!(completed.completed(), "the drive ended Complete");
+        // The reconcile loop's `ensure_active`, acting on a `list_active` read taken before the
+        // verdict entered the log.
+        let ensured = door.drives.ensure(&door.env, &build, accepted.attempt);
+        let kept = Arc::ptr_eq(&ensured, &completed) && door.drives.get(&build).is_some_and(|d| Arc::ptr_eq(&d, &completed));
+        let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
+        let disposition = resumed.disposition();
+        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        assert!(end.is_none(), "{end:?}");
+        (build, kept, first, again, disposition)
+    });
+    assert!(kept, "the reconcile tick is handed the completed drive, never a new one in its place");
+    assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
+    assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
+    let spans = cap.spans();
+    let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.0.as_str()).collect();
+    assert_eq!(dispatches.len(), 1, "one build.attempt.run, from the drive that made the calls: {dispatches:?}");
+    eprintln!("span rdm.node_admin.build.update.via-dispatch {}", dispatches[0]);
+}
+
 /// CONTRACT (node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat submit answers
 /// AlreadyApplied or BuildInProgress, never a second recovery"): over op `0x20`, a recovery submit
 /// for an exited birth already recovered answers `Started { AlreadyApplied }` naming the Build and

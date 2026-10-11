@@ -173,8 +173,8 @@ impl AdminRunner {
         let lost = adm.final_primary.clone();
         if !crate::mesh_leave::exit_receipts(steps, outer, std::slice::from_ref(&lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
             let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {} holds no durable runtime rows to prove the lost final primary {} {}'s exit from", self.me, lost.node, lost.incarnation_id))?;
-            let rows = store.runtimes().await.map_err(|e| format!("{outer} is refused: {}'s durable runtime rows could not be read to prove the lost final primary {} {}'s exit: {e}", self.me, lost.node, lost.incarnation_id))?;
-            let terminal = crate::mesh_leave::prove_predecessor_exit(&*self.provider, &rows, &lost, &adm.final_runtime).await.map_err(|reason| {
+            let row = self.lost_primary_row(&**store, &lost).await.map_err(|e| format!("{outer} is refused: the lost final primary's exit cannot be proven: {e}"))?;
+            let terminal = crate::mesh_leave::prove_predecessor_exit(&*self.provider, row.as_ref(), &lost, &adm.final_runtime).await.map_err(|reason| {
                 crate::mesh_leave::span_unproven(key, &lost, &reason);
                 format!("{outer} is refused: {mesh} has no live admin and its final primary {} {} is silent but not proven exited, so no admin is created for it: {reason}", lost.node, lost.incarnation_id)
             })?;
@@ -230,8 +230,16 @@ impl AdminRunner {
         let (_, handle) = self.handle_for(primary).await.map_err(|e| format!("{outer} is refused: no provider proof path for the new final primary {}: {e}", primary.name))?;
         let fact = handle.fact().ok_or_else(|| format!("{outer} is refused: the new final primary {} has no exact runtime handle", primary.name))?;
         let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {} holds no durable runtime rows to prove the lost final primary {} {}'s exit from", self.me, adm.final_primary.node, adm.final_primary.incarnation_id))?;
-        let rows = store.runtimes().await.map_err(|e| format!("{outer} is refused: {}'s durable runtime rows could not be read to prove the lost final primary {} {}'s exit: {e}", self.me, adm.final_primary.node, adm.final_primary.incarnation_id))?;
-        crate::mesh_leave::resume_after_loss(&*self.builds, &*self.provider, &rows, key, &self.me.to_string(), adm, held, &RuntimeProof::of(&fact)).await.map(|_| ())
+        let row = self.lost_primary_row(&**store, &adm.final_primary).await.map_err(|e| format!("{outer} is refused: the lost final primary's exit cannot be proven: {e}"))?;
+        crate::mesh_leave::resume_after_loss(&*self.builds, &*self.provider, row.as_ref(), key, &self.me.to_string(), adm, held, &RuntimeProof::of(&fact)).await.map(|_| ())
+    }
+
+    /// The durable runtime row of the lost final primary `lost`, read by its key
+    /// ([`crate::admin::birth_runtime_row`]); a roster birth whose ids do not parse is refused by name.
+    async fn lost_primary_row(&self, store: &dyn crate::storage::NodesStorage, lost: &RosterBirth) -> Result<Option<crate::storage::RuntimeRow>, String> {
+        let node: PathName = lost.node.parse().map_err(|e| format!("the roster names the lost final primary by `{}`, which is not a path.name: {e}", lost.node))?;
+        let node_id = NodeId::parse(&lost.node_id).map_err(|e| format!("the roster names the lost final primary {} by node id `{}`, which does not parse: {e}", lost.node, lost.node_id))?;
+        crate::admin::birth_runtime_row(store, &self.me, &node, &node_id, &IncarnationId(lost.incarnation_id.clone())).await
     }
 
     /// Steps 2-7 of the owner's workflow, for the leave `key` opened with `admitted`.
@@ -432,7 +440,7 @@ impl AdminRunner {
             roster.push(me_birth.clone());
             Ok(roster)
         };
-        let (roster, known) = crate::mesh_leave::leaving_roster(&*self.builds, key, &self.me.to_string(), &me_birth, &my_runtime, capture, fetch_owner).await?;
+        let (roster, known) = crate::mesh_leave::leaving_roster(&*self.builds, &*self.local, key, &self.me.to_string(), &me_birth, &my_runtime, capture, fetch_owner).await?;
         let mesh: Vec<Node> = view.nodes.iter().filter(|n| n.mesh == me.mesh).cloned().collect();
         let records = crate::mesh_leave::roster_records(&mesh, &roster, |b| self.held_record(b));
         let records = &records;
@@ -539,11 +547,12 @@ impl AdminRunner {
         let Some(node_rpc) = self.node_rpc.as_ref() else {
             return StatusReply::NotReady { reason: format!("{} holds no Node RPC client to read the manifest with", self.me) };
         };
-        let facts = match crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(build_id.to_string())).await {
-            Ok(f) => f.facts,
-            Err(e) => return StatusReply::NotReady { reason: format!("{}: the manifest {receipt_manifest} could not be read from {final_node_id}: {e}", self.me) },
+        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(build_id.to_string())).await.map(|f| f.facts);
+        let verdict = match crate::mesh_leave::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &self.me.to_string(), &final_node_id.to_string()) {
+            Ok(v) => v,
+            Err(reason) => return StatusReply::NotReady { reason },
         };
-        let manifest = match crate::mesh_leave::handoff_verdict(&facts, &key, &admitted, receipt_manifest) {
+        let manifest = match verdict {
             crate::mesh_leave::HandoffVerdict::Accept(m) => m,
             crate::mesh_leave::HandoffVerdict::Incomplete { reason, without_exit } => {
                 // The leaving primary recorded no manifest: the open leave ends now with the

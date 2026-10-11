@@ -5708,7 +5708,6 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let near_mesh = st.mesh_of_fp();
     let far_mesh = if near_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let (near, far) = (side(&near_mesh), side(&far_mesh));
-    let near_fp = st.fp_name();
     let far_primary = st.primary_of(&far_mesh);
     let far_fp_base = s(&far_primary["admin_api_base"]);
     let bases: Vec<(String, String, String)> = st.admins.iter().map(|n| (s(&n["name"]), s(&n["admin_api_base"]), s(&n["mesh"]))).collect();
@@ -5758,7 +5757,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         NearFault::HardKill => {
             let ack = kill_exact_runtime(&victim, rt.as_ref().unwrap());
             f.actions.push(json!({"t_ms": now_ms(), "action": "fault.kill-runtime", "node": victim, "ack": ack}));
-            let born = wait_for(&format!("{near_fp} replaces {victim} under the cut"), Duration::from_secs(120), || async {
+            let born = wait_for(&format!("{near_mesh}'s mesh-primary recovers {victim} under the cut"), Duration::from_secs(120), || async {
                 let v = f.estate.nodes_at(&st.fp_base()).await;
                 let n = v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != victim_id.as_str()).cloned()?;
                 let b = build_attempt(&st, &formation).await;
@@ -5812,7 +5811,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         let rt_far = exact_runtime(&f, &far_victim).await;
         let attempt_h = build_attempt(&st2, &formation).await["attempt"].as_u64().unwrap();
         far_kill = kill_exact_runtime(&far_victim, &rt_far);
-        let born = wait_for(&format!("{} repairs {far_victim} after the heal", st2.fp_name()), Duration::from_secs(120), || async {
+        let born = wait_for(&format!("{far_mesh}'s mesh-primary recovers {far_victim} after the heal"), Duration::from_secs(120), || async {
             let v = f.estate.nodes_at(&st2.fp_base()).await;
             let n = v.iter().find(|n| n["name"] == far_victim.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != far_before["node_id"]).cloned()?;
             let b = build_attempt(&st2, &formation).await;
@@ -5822,7 +5821,8 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         far_new_id = s(&born["node_id"]);
     }
     let gone: BTreeSet<String> = if fault == NearFault::HardKill { BTreeSet::from([victim.clone(), far_victim.clone()]) } else { BTreeSet::new() };
-    let (victim_c, far_victim_c, far_c, near_c, near_fp_c) = (victim.clone(), far_victim.clone(), far_mesh.clone(), near_mesh.clone(), near_fp.clone());
+    let (victim_c, far_victim_c, far_c, near_c) = (victim.clone(), far_victim.clone(), far_mesh.clone(), near_mesh.clone());
+    let (near_primary_c, far_primary_c) = (s(&st.primary_of(&near_mesh)["name"]), s(&far_primary["name"]));
     let (vid, vinc, fid, fnew) = (victim_id.clone(), victim_inc.clone(), s(&far_before["node_id"]), far_new_id.clone());
     let events = json!({"events": [{"event": "near-fault", "fault": if fault == NearFault::Restart { "restart" } else { "hard-kill" }, "node": victim, "node_id": victim_id, "near_attempt": near_builds, "far_attempt": far_attempt0, "after_heal": after_heal, "far_kill": far_kill}]});
     close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C9", "C10"], events, gone, move |_f, spans, inv| {
@@ -5864,13 +5864,21 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         let departed = since("rdm.mesh.membership.reject.via-departed-birth", cut_at);
         assert!(departed.is_empty(), "no admin refused the live birth as departed: {} refusals, first {:?}", departed.len(), departed.first());
         if !fnew.is_empty() {
-            let repair: Vec<&&Value> = drifts.iter().filter(|sp| start_ns(sp) >= healed_at && s(&sp["attributes"]["scope"]).contains(&far_victim_c)).collect();
-            assert_eq!(repair.len(), 1, "the healed fabric-primary repaired the killed far gateway with one proven-drift attempt: {repair:?}");
+            // node-recovery.md: an ordinary member is its own mesh-primary's to recover; a fabric-primary's
+            // drift opens nothing for either gateway.
+            let member_drifts: Vec<&&Value> = drifts.iter().filter(|sp| [&victim_c, &far_victim_c].iter().any(|p| s(&sp["attributes"]["scope"]).contains(p.as_str()))).collect();
+            assert!(member_drifts.is_empty(), "a fabric-primary opened a proven-drift attempt for a member: {member_drifts:?}");
+            let recovered = |p: &str, id: &str| -> Vec<&Value> { since("rdm.node_admin.build.update.via-node-recovery", cut_at).into_iter().filter(|sp| sp["attributes"]["node"] == p && sp["attributes"]["node_id"] == id && s(&sp["attributes"]["outcome"]).starts_with("complete")).collect() };
+            let repair = recovered(&far_victim_c, &fid);
+            assert_eq!(repair.len(), 1, "the far mesh's mesh-primary recovered the killed far gateway with one completed submit: {repair:?}");
+            assert!(start_ns(repair[0]) >= healed_at, "the far gateway's recovery came after the heal: {repair:?}");
+            assert_eq!(repair[0]["attributes"]["submitter"], far_primary_c.as_str(), "the far mesh's own mesh-primary submitted it: {repair:?}");
             let later_holds = since(HOLD, healed_at).into_iter().filter(|sp| sp["attributes"]["node"] == far_victim_c.as_str()).count();
             assert_eq!(later_holds, 0, "a heard mesh is never held");
-            let near_repair: Vec<&&Value> = drifts.iter().filter(|sp| start_ns(sp) < healed_at && s(&sp["attributes"]["scope"]).contains(&victim_c)).collect();
-            assert_eq!(near_repair.len(), 1, "the near writer repaired the killed near gateway once, under the cut, as itself: {near_repair:?}");
-            assert_eq!(near_repair[0]["attributes"]["authority"], near_fp_c.as_str(), "the near side's own fabric-primary repaired it");
+            let near_repair = recovered(&victim_c, &vid);
+            assert_eq!(near_repair.len(), 1, "the near mesh's mesh-primary recovered the killed near gateway once: {near_repair:?}");
+            assert!(start_ns(near_repair[0]) < healed_at, "the near gateway was recovered under the cut: {near_repair:?}");
+            assert_eq!(near_repair[0]["attributes"]["submitter"], near_primary_c.as_str(), "the near mesh's own mesh-primary submitted it");
         }
         inv.holds(
             &format!("R-D1: through the cut the far side's fabric-primary held {victim_c} (an exited birth of the unheard {near_c} mesh) with its evidence, opened no attempt, emitted no NodeDeleted and created no birth; after the heal the live birth was refused nowhere"),
@@ -5901,11 +5909,13 @@ async fn mock_cut_restart_of_a_near_node_is_held_by_the_far_side() {
 /// CONTRACT: in the formed estate every UDP path between the two meshes is dropped and the provider kills the
 /// exact runtime of a near gateway. The far side's fabric-primary reads the exit on the shared host and holds
 /// it as the unheard near mesh's (one `build.reject.via-unheard-mesh` naming the exact birth and its exit
-/// proof), opening nothing. The near side's own fabric-primary opens the one proven-drift attempt and replaces
-/// the gateway under a new NodeId. The cut is dropped: every admin holds the replacement ready; then a far
-/// gateway is killed and the healed fabric-primary, which hears that mesh again, repairs it with one attempt:
-/// the hold is gone and left no tombstone. What must NOT happen: an attempt by the far side for a near node
-/// during the cut, a second birth at either path, a hold on a heard mesh.
+/// proof), opening nothing. The near mesh's own mesh-primary proves the exit and submits the one recovery
+/// (node-recovery.md), which the fabric-primary admits as an attempt of the formation's Build and which
+/// creates the gateway under a new NodeId at the same path.name. The cut is dropped: every admin holds the
+/// recovered gateway ready; then a far gateway is killed and the far mesh's own mesh-primary, heard again,
+/// recovers it with one submit: the hold is gone and left no tombstone. What must NOT happen: an attempt by
+/// the far side for a near node during the cut, a proven-drift attempt by a fabric-primary for either
+/// gateway (an ordinary member is its mesh-primary's), a second birth at either path, a hold on a heard mesh.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side() {
     cut_near_fault_run("mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side", any_tier(), NearFault::HardKill).await;

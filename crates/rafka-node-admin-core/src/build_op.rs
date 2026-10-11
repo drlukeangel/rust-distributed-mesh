@@ -191,7 +191,7 @@ impl BuildDoor {
                     }
                     Err(refusal) => return Ok(refusal),
                 };
-                let drive = self.drives.ensure(&self.env, &opened.build_id);
+                let drive = self.drives.ensure(&self.env, &opened.build_id, opened.attempt);
                 let sink = started(sink, BuildReply::Started { build_id: opened.build_id.0.clone(), attempt: opened.attempt, disposition: Disposition::Created }).await?;
                 stream_frames(sink, drive.reader(opened.attempt)).await
             }
@@ -214,7 +214,7 @@ impl BuildDoor {
         // attempt's executor and reads its frames.
         let held = self.drives.get(&id);
         if p.state == BuildState::Complete && held.as_ref().map(|d| d.ended()).unwrap_or(true) {
-            let drive = self.drives.replay_of(&self.env, &id);
+            let drive = self.drives.replay_of(&self.env, &id, p.attempt);
             let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition: Disposition::AlreadyApplied }).await?;
             return stream_frames(sink, drive.reader(from_attempt)).await;
         }
@@ -224,7 +224,7 @@ impl BuildDoor {
         let disposition = if p.state == BuildState::Failed { Disposition::NextAttempt } else { Disposition::Attached };
         // The drive is the one reader of the receipts: a drive this admin took up after a seat move
         // reads every earlier attempt's receipts at its first dispatch, in its own task.
-        let drive = self.drives.ensure(&self.env, &id);
+        let drive = self.drives.ensure(&self.env, &id, p.attempt_to_drive());
         let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition }).await?;
         stream_frames(sink, drive.reader(from_attempt)).await
     }
@@ -506,5 +506,5 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
         }
     };
     let accepted = env.accepted.build_id().await;
-    active.into_iter().filter(|b| accepted.as_ref() == Some(&b.build_id)).map(|b| drives.ensure(env, &b.build_id)).collect()
+    active.into_iter().filter(|b| accepted.as_ref() == Some(&b.build_id)).map(|b| drives.ensure(env, &b.build_id, b.attempt_to_drive())).collect()
 }

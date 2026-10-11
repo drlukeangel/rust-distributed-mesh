@@ -339,8 +339,9 @@ fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
 }
 
 /// CONTRACT: a span guard bound with `enter()` or `entered()` and still alive at an `.await` of
-/// its block is refused in non-test code; a guard released before the await, one that never meets
-/// an await, a discarded `let _ =` and a test module are not.
+/// its block is refused in non-test code, including code below an item-level `#[cfg(test)]`; a
+/// guard released before the await, one that never meets an await, a discarded `let _ =` and a
+/// test module are not.
 #[test]
 fn no_span_guard_across_await_refuses_a_guard_alive_at_an_await() {
     let t = Planted::of_tree();
@@ -348,7 +349,10 @@ fn no_span_guard_across_await_refuses_a_guard_alive_at_an_await() {
     let v = only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
     assert!(matches!(&v[0], Violation::Token { file, line: 2, token, .. } if file.ends_with("planted.rs") && token.contains("held across the .await at line 3")), "{v:?}");
     t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn f(span: tracing::Span) {\n    let g = span.clone().entered();\n    if ok() {\n        step();\n    }\n    other().await;\n}\n");
-    only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
+    only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);    // An item-level `#[cfg(test)]` gates its one item: the guard below it is still read.
+    t.write("crates/rafka-node-admin-core/src/planted.rs", "#[cfg(test)]\nfn helper() {}\n\nasync fn f(span: tracing::Span) {\n    let _g = span.enter();\n    work().await;\n}\n");
+    let v = only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
+    assert!(matches!(&v[0], Violation::Token { file, line: 5, .. } if file.ends_with("planted.rs")), "{v:?}");
 }
 
 #[test]
@@ -388,6 +392,27 @@ mod tests {
 "#,
     );
     assert!(check_one(t.root(), Ratchet::NoSpanGuardAcrossAwait).is_empty());
+}
+
+/// CONTRACT: the rename ratchet reads non-test code only, by the one rule every non-test scan
+/// shares: a `#[cfg(test)]` item is skipped and nothing else. A test double's forward of
+/// `.release_node_row(` inside a `#[cfg(test)]` module is not a rename door; a real door below an
+/// item-level `#[cfg(test)]` (a gated helper, not the test module) is still read and refused.
+#[test]
+fn one_rename_write_path_reads_only_non_test_code() {
+    let t = Planted::of_tree();
+    t.write(
+        "crates/rafka-node-admin-core/src/planted.rs",
+        "pub fn real() {}\n\n#[cfg(test)]\nmod tests {\n    struct Double(MemoryNodesStorage);\n    impl Double {\n        async fn release_node_row(&self, n: &PathName, by: &NodeId) -> bool {\n            self.0.release_node_row(n, by).await\n        }\n    }\n}\n",
+    );
+    assert!(check_one(t.root(), Ratchet::OneRenameWritePath).is_empty(), "{:?}", check_one(t.root(), Ratchet::OneRenameWritePath));
+
+    t.write(
+        "crates/rafka-node-admin-core/src/planted.rs",
+        "#[cfg(test)]\npub(crate) fn tempdir() -> u8 {\n    0\n}\n\nasync fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) {\n    let _ = s.release_node_row(n, by).await;\n}\n",
+    );
+    let v = only(check(t.root()), Ratchet::OneRenameWritePath);
+    assert!(matches!(&v[0], Violation::Token { file, line: 7, token, .. } if file.ends_with("planted.rs") && token == ".release_node_row("), "{v:?}");
 }
 
 #[test]
