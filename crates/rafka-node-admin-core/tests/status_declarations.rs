@@ -870,3 +870,70 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
     assert_eq!(outcomes, vec!["name-held".to_string(), "rejected-meta-field-is-rdm-owned".to_string()], "{spans:?}");
     eprintln!("trace {}: rdm.node_admin.node.update.via-update-node outcome=name-held", spans[0].0);
 }
+
+/// CONTRACT (R13; ops-naming "A rename is the same write": caller → the node's mesh-primary, Forward
+/// `0x1A` when not directly reachable): a caller of another mesh whose client reaches mesh1's primary
+/// only through a carrier (mesh1.admin.2) renames the live successor `mesh1.rpc.3.new` to
+/// `mesh1.rpc.3` with `node.update`: the call ends `NodeUpdated` naming the exact birth, the row at
+/// `mesh1.rpc.3` holds it, the birth was told `ApplyNodeName` once; the route span says `via-peer`
+/// with the carrier, and the mesh-primary's `via-update-node` span says `node-updated` after the
+/// apply answered `applied`. What must NOT happen: the call ending `NotBackedToday` on the caller.
+#[test]
+fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_node_updated() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (succ, node) = successor_new(&rig).await;
+        let (carrier, _carrier_router) = carrier_admin(&b["admin2"], &rig.resolved).await;
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(carrier.clone());
+        let caller = &b["m2admin"];
+        let ep = rafka_node_rpc::endpoint::bind(caller.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+        let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: carrier.node_id.clone(), path: carrier.name.clone() };
+        let taken: PathName = "mesh1.rpc.3".parse().unwrap();
+        let reply = rafka_node_admin_client::NodeRpc::new(&client).node_update(&rig.admin.node.node_id, &route, &exact(&succ), &taken, &CallOptions::default()).await.expect("a typed reply");
+        assert_eq!(reply, StatusReply::NodeUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
+        let row = rig.storage.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
+        assert_eq!(row.node_id, succ.node.node_id);
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }]);
+    });
+    let updates = cap.spans("rdm.node_admin.node.update.via-update-node");
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    let (mp_trace, attrs) = &updates[0];
+    assert_eq!((attrs.get("outcome").map(String::as_str), attrs.get("answered").map(String::as_str)), (Some("node-updated"), Some("applied")), "{attrs:?}");
+    let routes = cap.spans("rdm.node_rpc.route.resolve.via-connections");
+    let carried: Vec<_> = routes.iter().filter(|(_, a)| a.get("route").map(String::as_str) == Some("via-peer")).collect();
+    assert_eq!(carried.len(), 1, "one carried leg: {routes:?}");
+    assert_eq!((carried[0].1.get("carrier").map(String::as_str), carried[0].1.get("protocol").map(String::as_str)), (Some("mesh1.admin.2"), Some("status")));
+    eprintln!("trace {}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh1.admin.2 protocol=status; trace {mp_trace}: rdm.node_admin.node.update.via-update-node answered=applied outcome=node-updated", carried[0].0);
+}
+
+/// CONTRACT (R13; node-rpc-envelope.md "Meta and config": row first, mesh second; a stopped node is
+/// sent nothing and reads its name in its join answer at its next start): `node.update` renaming the
+/// stopped `mesh1.rpc.2` (parked in the mesh-primary's view) to `mesh1.rpc.2.old` ends `NodeUpdated`:
+/// the row at `mesh1.rpc.2.old` holds the node, the old key is released, the mesh-primary's view
+/// lists it at the new name, and the birth is told nothing (the span records no apply answer).
+#[test]
+fn a_stopped_nodes_rename_at_its_mesh_primary_writes_the_row_and_tells_the_node_nothing() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let stopped = &b["rpc2"];
+        if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == stopped.node.node_id) {
+            (n.parked, n.status) = (true, NodeStatus::Leaving);
+        }
+        rig.storage.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: stopped.node.name.clone(), node_id: stopped.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default() }).await.unwrap();
+        let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        let reply = reply(&call(&rig, &b["admin2"], &update_node(stopped, &to.to_string())).await);
+        assert_eq!(reply, StatusReply::NodeUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() });
+        assert_eq!(rig.storage.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(stopped.node.node_id.clone()), "the row moved to the new name");
+        assert_eq!(rig.storage.node_row_at(&stopped.node.name).await.unwrap(), None, "the old key is released");
+        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.name == to), "the view lists the stopped node at the row's name");
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-update-node");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let (trace_id, attrs) = &spans[0];
+    assert_eq!((attrs.get("outcome").map(String::as_str), attrs.get("traffic").map(String::as_str), attrs.get("answered")), (Some("node-updated"), Some("Stopped"), None), "{attrs:?}");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-update-node from=mesh1.rpc.2 to=mesh1.rpc.2.old traffic=Stopped outcome=node-updated (no apply sent)");
+}
