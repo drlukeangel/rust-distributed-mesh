@@ -68,10 +68,12 @@ const GATE_SCENARIOS: &[&str] = &[
     "node_rpc__role_routing", "node_rpc__role_context", "mesh_runtime__role_wedge", "mesh_elections__late_authority", "mesh_elections__sticky_seat",
     "mesh_lifecycle__mesh_create", "mesh_lifecycle__mesh_replace", "mesh_identity__canonical_ids", "mesh_elections__cohort_election", "mesh_elections__fabric_primary", "mesh_rpc__proof_store",
     "fabric_build__accepted_topology", "fabric_build__build_op", "i143_acceptance_2803", "node_rpc__rpc_certainty", "i143_acceptance_2803_detect", "i143_acceptance_rg6", "mesh_runtime__rafka_time_discipline", "fabric_certs__issuance", "fabric_states__rounds",
+    "mesh_lifecycle__mesh_leave_resume",
 ];
 /// Gate stems that only the release gate runs (`RELEASE_ONLY`).
 const GATE_RELEASE_ONLY: &[&str] = &[
     "mesh_elections__cohort_election", "i143_acceptance_2803", "i143_acceptance_2803_detect", "i143_acceptance_2777", "i143_acceptance_2780",
+    "mesh_lifecycle__mesh_leave_resume",
 ];
 /// Crates whose every executable the fast gate runs.
 const GATE_CRATES: &[&str] = &[
