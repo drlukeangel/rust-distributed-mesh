@@ -1,8 +1,11 @@
 //! i143.e2.s5 functional: the retire pipeline runs its steps in order —
 //! DrainNode, AwaitNodeDrained, StopNode, AwaitNodeLeft,
-//! TerminateRuntime, ReleaseStorage (permanent),
-//! RemoveTopologyMembership, Complete — each with a receipt and a step span,
-//! and a retire then create on the same node succeeds.
+//! TerminateRuntime, NodeDeleted, RemoveTopologyMembership, Complete — each
+//! with a receipt and a step span, and a retire then create on the same node
+//! succeeds. A node.delete releases identity, never storage (node-delete.md
+//! "Storage": "Retain data dir and endpoint key; a later spec can inherit
+//! them"): the birth's data dir and its endpoint key stay whatever the Build's
+//! storage meta says.
 //!
 //! The span-asserting cell runs in its own process (`own_process`), and its capture enables every
 //! callsite before installing its dispatcher (`crate::enable_callsites`).
@@ -54,7 +57,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
         let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
-        let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral, so a permanent retirement releases its storage
+        let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral
         pipeline
             .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
             .await
@@ -87,7 +90,12 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         assert_eq!(digest.status, MemberStatus::Draining, "the node gossips nothing for its stop: its last word on the fabric is Draining");
         assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
         assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
-        assert!(!std::path::Path::new(first.node.data_dir.as_deref().unwrap()).exists(), "permanent: the data dir is gone");
+        // node-delete.md step 3: "Retain the data dir, node-identity.json and endpoint key." An
+        // Ephemeral path's delete keeps them too: no step of the delete releases storage.
+        let first_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's data dir"));
+        assert!(first_dir.is_dir(), "the delete keeps the birth's data dir: {first_dir:?}");
+        assert!(first_dir.join("node-key").is_file(), "the delete keeps the endpoint key in the data dir: {first_dir:?}");
+        assert!(view.steps.iter().all(|r| r.step != "ReleaseStorage"), "no step of a delete releases storage: {:?}", view.steps.iter().map(|r| r.step.as_str()).collect::<Vec<_>>());
         assert_eq!(*sink.removed.lock().unwrap(), vec![node.clone()]);
 
         // Each retire step ran as a child of the retire pipeline span.
@@ -123,26 +131,25 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));
         assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the retired one");
 
-        // The Build names this path's storage Persistent { on_retire: Preserve }: a permanent
-        // retirement terminates the runtime and leaves the data dir, and the receipt says so.
-        let mut keep = common::add_node();
-        let preserve = rafka_mesh_entity::meta::NodeMeta {
-            storage: rafka_mesh_entity::meta::StorageMeta::Persistent { on_retire: rafka_mesh_entity::meta::PersistentRetireDisposition::Preserve },
+        // The Build names this path's storage Persistent { on_retire: Release }: the delete still
+        // terminates the runtime and keeps the data dir and its key (node-delete.md: "It releases
+        // node.id and name, not storage"; deployment-provider.md: "Delete releases no storage").
+        let mut release = common::add_node();
+        let released = rafka_mesh_entity::meta::NodeMeta {
+            storage: rafka_mesh_entity::meta::StorageMeta::Persistent { on_retire: rafka_mesh_entity::meta::PersistentRetireDisposition::Release },
             placement: Default::default(),
         };
-        keep.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, preserve).unwrap();
-        let again_build = publish_build(&builds, keep).await;
+        release.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, released).unwrap();
+        let again_build = publish_build(&builds, release).await;
         pipeline
             .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
             .await
             .unwrap();
-        assert!(std::path::Path::new(again.node.data_dir.as_deref().unwrap()).exists(), "Persistent/Preserve: the data dir stays on a permanent retirement");
+        assert!(matches!(provider.inspect(&again.handle).await, DeploymentStatus::Exited { .. }), "the delete ended the runtime");
+        let again_dir = std::path::PathBuf::from(again.node.data_dir.clone().expect("the birth's data dir"));
+        assert!(again_dir.is_dir() && again_dir.join("node-key").is_file(), "Persistent/Release: the delete keeps the data dir and its endpoint key: {again_dir:?}");
         let kept = builds.read_build(&again_build).await.unwrap().steps;
-        let disposition: rafka_node_admin_core::deployment::pipeline::StorageDisposition = serde_json::from_value(
-            kept.iter().find(|r| r.step == RetireStep::ReleaseStorage.name()).and_then(|r| r.output.clone()).expect("ReleaseStorage receipted"),
-        )
-        .unwrap();
-        assert_eq!(disposition, rafka_node_admin_core::deployment::pipeline::StorageDisposition::Preserved);
+        assert!(kept.iter().all(|r| r.step != "ReleaseStorage"), "no step of a delete releases storage: {:?}", kept.iter().map(|r| r.step.as_str()).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&template.data_root);
     })
 }

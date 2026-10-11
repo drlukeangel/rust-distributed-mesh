@@ -14,6 +14,9 @@
 //!    having heard an event.
 //! 3. The pre-notice is never emitted before the executor's claim, the departure never before
 //!    the terminal proof, and the departure is not drift: nothing is reborn.
+//! 4. The delete releases identity, not storage (node-delete.md "Storage": "Retain data dir and
+//!    endpoint key; a later spec can inherit them"): the victim's data dir and its endpoint key
+//!    stay, and no step of the delete releases storage.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -63,6 +66,9 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     .await;
     assert_eq!(found["reply"]["incarnation_id"], victim["incarnation_id"], "{found}");
     assert!(before.iter().all(|n| n["routable"] == true), "every live node is routable before the delete: {before:#?}");
+    // The victim's data dir, read while an admin still advertises it.
+    let victim_dir = std::path::PathBuf::from(estate.data_dir_of(VICTIM).await);
+    assert!(victim_dir.join("node-key").is_file(), "the victim's data dir holds its endpoint key before the delete: {victim_dir:?}");
 
     // 1. The removal.
     let (status, d) = estate.delete(&format!("/api/nodes/{VICTIM}")).await;
@@ -75,6 +81,9 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let after = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
     assert!(after.iter().all(|n| n["name"] != VICTIM), "the current topology no longer lists the node: {after:#?}");
     estate.artifact("nodes-after.json", &json!(after));
+    // 4. node-delete.md step 3: "Retain the data dir, node-identity.json and endpoint key."
+    assert!(victim_dir.is_dir(), "the delete keeps the victim's data dir: {victim_dir:?}");
+    assert!(victim_dir.join("node-key").is_file(), "the delete keeps the victim's endpoint key in its data dir: {victim_dir:?}");
 
     let gone = wait_for("mesh1.rpc.1 holds the departure", Duration::from_secs(30), || async {
         let r = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
@@ -189,6 +198,8 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // The mesh primary publishes the departure from that reply, before the runtime exits.
     let published = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).map(start).min().expect("the executor published NodeStopped from the left reply");
     assert!(left_at <= published && published < terminal, "NodeStopped follows left and precedes the terminal proof");
+    let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["build_id"] == build_id).map(|sp| s(&sp["attributes"]["step"])).collect();
+    assert!(!victim_steps.iter().any(|st| st == "ReleaseStorage"), "no step of the delete releases storage: {victim_steps:?}");
     for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
         let done = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()

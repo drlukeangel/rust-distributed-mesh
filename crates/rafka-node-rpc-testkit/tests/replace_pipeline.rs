@@ -105,8 +105,9 @@ impl LifecycleEvents for Recorder<'_> {
     }
 }
 
-/// Every step of a replace of a live birth, in order.
-const REPLACE_ORDER: [&str; 23] = [
+/// Every step of a replace of a live birth, in order. The old identity's delete releases no storage
+/// (node-delete.md "Storage": "Retain data dir and endpoint key").
+const REPLACE_ORDER: [&str; 22] = [
     "NodeDeleting",
     "DrainNode",
     "AwaitNodeDrained",
@@ -128,7 +129,6 @@ const REPLACE_ORDER: [&str; 23] = [
     "WaitForMeshJoin",
     "WaitForNodeReady",
     "NodeDeleted",
-    "ReleaseStorage",
     "Complete",
 ];
 
@@ -367,8 +367,9 @@ fn a_predecessor_that_never_admits_its_stop_is_renamed_only_after_its_exit_proof
 /// Leaving, no admission wait (node-recovery.md). The sequence is NodeDeleting, the terminal proof,
 /// rename (a predecessor that was never stopped is renamed only on its exit proof, node-update.md
 /// "Rename precondition"), the successor's identity, the handoff, the successor's start and
-/// readiness, NodeDeleted. With ephemeral storage nothing is handed over and the predecessor's
-/// directory is released after the departure.
+/// readiness, NodeDeleted. With ephemeral storage nothing is handed over, and the old identity's
+/// delete keeps the predecessor's directory and its endpoint key (node-delete.md step 3: "Retain the
+/// data dir, node-identity.json and endpoint key").
 #[test]
 fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage() {
     let cap = crate::common::capture("recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage");
@@ -408,10 +409,11 @@ fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephem
         let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
         assert!(at(&format!("NodeDeleting:{old}")) < at(&format!("ready:{new}")) && at(&format!("ready:{new}")) < at(&format!("NodeDeleted:{old}")), "{log:?}");
 
-        // Ephemeral: nothing moved, and the renamed directory is gone after the departure.
+        // Ephemeral: nothing moved, and the predecessor's directory stays after the departure.
         let new_dir = std::path::PathBuf::from(second.node.data_dir.clone().unwrap());
         assert!(!new_dir.join("scratch").exists(), "ephemeral storage is not handed over");
-        assert!(!old_dir.exists(), "the predecessor's directory is released after NodeDeleted");
+        assert!(old_dir.join("scratch").is_dir() && old_dir.join("node-key").is_file(), "the old identity's delete keeps the predecessor's directory and its endpoint key: {old_dir:?}");
+        assert!(view.steps.iter().all(|r| r.step != "ReleaseStorage"), "no step of a replace releases storage: {:?}", receipts(&view.steps, &operation));
         // The successor is this test's runtime: it is stopped, with the provider's proof, before the test ends.
         rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
         assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the successor was stopped");
