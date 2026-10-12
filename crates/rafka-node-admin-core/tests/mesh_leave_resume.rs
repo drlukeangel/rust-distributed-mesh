@@ -203,9 +203,10 @@ impl NodeObserver for NoRpc {
     }
 }
 
-/// The view: the last record the pipeline published for each node.
+/// The view: the last record the pipeline published for each node, and the births a node.delete
+/// removed from it.
 #[derive(Default)]
-struct View(Mutex<BTreeMap<String, Node>>);
+struct View(Mutex<BTreeMap<String, Node>>, Mutex<BTreeSet<String>>);
 impl TopologySink for View {
     fn publish(&self, n: Node) {
         self.0.lock().unwrap().insert(n.name.to_string(), n);
@@ -216,6 +217,16 @@ impl TopologySink for View {
         if view.get(&name.to_string()).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)) {
             view.remove(&name.to_string());
         }
+        self.1.lock().unwrap().insert(name.to_string());
+    }
+}
+
+impl View {
+    /// `records` as the view holds them now: a birth a node.delete removed is no longer held, a
+    /// published one is its last record, any other its record as given.
+    fn holds(&self, records: &[Node]) -> Vec<Node> {
+        let (view, removed) = (self.0.lock().unwrap(), self.1.lock().unwrap());
+        records.iter().filter(|n| !removed.contains(&n.name.to_string())).map(|n| view.get(&n.name.to_string()).cloned().unwrap_or_else(|| n.clone())).collect()
     }
 }
 
@@ -363,8 +374,8 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
         };
         let first = members_exited(&builds, &key(1), FINAL, &mp1, &me, final_runtime.clone(), &records, &[], shutdown(1), lost_put).await;
 
-        // Attempt 2 reads the view the first one left.
-        let records2: Vec<Node> = records.iter().map(|n| view.0.lock().unwrap().get(&n.name.to_string()).cloned().unwrap_or_else(|| n.clone())).collect();
+        // Attempt 2 reads the view the first one left: the node its node.delete removed is gone.
+        let records2: Vec<Node> = view.holds(&records);
         let fp2 = accepted_roster(&builds, &key(2), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records2)).await.unwrap();
         let mp2 = accepted_roster(&builds, &key(2), STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records2)).await.unwrap();
         // The view attempt 2's rows are written over no longer names the exited node.
@@ -388,6 +399,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let calls = calls.into_inner().unwrap();
     let ran = |attempt: u32| calls.iter().filter(|(a, _)| *a == attempt).map(|(_, n)| n.clone()).collect::<BTreeSet<_>>();
     assert_eq!(ran(1), BTreeSet::from([FAILING.to_string(), EXITING.to_string()]), "attempt 1 ran the ordinary tier only");
+    assert!(records2.iter().all(|n| n.name.to_string() != EXITING), "the resumed attempt's view no longer holds the node attempt 1's node.delete removed: {records2:?}");
     assert!(records2.iter().filter(|n| n.kind == rafka_node_admin_core::model::NodeKind::RpcNode).all(|n| !n.status.is_live()), "the resumed attempt's view shows neither ordinary node live: {records2:?}");
 
     // The accepted roster is the one captured at admission, on both sides, in every attempt.
@@ -824,7 +836,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         // The amended primary's member workflows, over the leaving roster plus the amendments.
         let leaving = accepted_row(&steps, &outer, STEP_LEAVING_ROSTER).unwrap().unwrap().roster;
         let mp2 = amended_roster(&leaving, &steps, &outer).unwrap();
-        let records2: Vec<Node> = records.iter().map(|n| view.0.lock().unwrap().get(&n.name.to_string()).cloned().unwrap_or_else(|| n.clone())).collect();
+        let records2: Vec<Node> = view.holds(&records);
         let manifest = members_exited(&builds, &key(2), OTHER_ADMIN, &mp2, &survivor, survivor_runtime.clone(), &records2, &[], shutdown(2), no_rows).await.expect("the amended primary's member workflows complete");
         let facts = builds.facts().await.unwrap();
         let verdict = handoff_verdict(&facts, &key(2), &admitted, &manifest_reference(&build_id.0, 2, &outer, false));
