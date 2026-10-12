@@ -1,15 +1,16 @@
 //! Fixed bytes for the coordinated 2026-10-07 status reseal (#2923); the four drain/stop command
 //! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand, as are
 //! `node.connections.delete`'s request (21) and its two replies (31, 32), the reads' four
-//! requests (22..=25) and six replies (33..=38) with the views they carry, and the mesh.delete round
-//! and manifest refusals (39, 40, 41).
+//! requests (22..=25) and six replies (33..=38) with the views they carry, the mesh.delete round
+//! and manifest refusals (39, 40, 41), the tags `node.update` (20) puts, the tag filter `node.get`
+//! (22) selects by, the tags its answer (33) carries, and the tag refusal (43).
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rafka_mesh_entity::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{ConnectionScope, DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter};
 use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -62,7 +63,8 @@ fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
         (UpdateNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c30313233343536373839616205626972746801016b0176"),
         (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c30313233343536373839616205626972746801016b0176"),
         (ApplyNodeName { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "130c3031323334353637383961620562697274680b6d657368312e7270632e31"),
-        (UpdateNode { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "140c3031323334353637383961620562697274680b6d657368312e7270632e31"),
+        // node_id | incarnation | name | tags (len 1: "red")
+        (UpdateNode { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into(), tags: ["red".to_string()].into() }, "140c3031323334353637383961620562697274680b6d657368312e7270632e310103726564"),
         (DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c30313233343536373839616205626972746801010c333132333435363738396162"),
         (GetNodes { select: NodeSelect::Mesh("mesh1".into()) }, "1601056d65736831"),
         (GetMeshes { mesh: Some("mesh1".into()) }, "1701056d65736831"),
@@ -78,7 +80,7 @@ fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_forty_three_variant_wire_schema() {
+fn replies_match_the_frozen_forty_four_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -119,7 +121,7 @@ fn replies_match_the_frozen_forty_three_variant_wire_schema() {
             concat!(
                 "2101",
                 "0b6d657368312e7270632e31", "01", "056d65736831", "0c303132333435363738396162", "010165", "01056269727468",
-                "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304",
+                "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564",
             ),
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31")),
@@ -147,6 +149,8 @@ fn replies_match_the_frozen_forty_three_variant_wire_schema() {
         (RejectedIncompleteManifest { missing: 1, without_exit: vec!["n i".into()], reason: "r".into() }, "290101036e20690172"),
         // source "s" | op "o" | cause "c"
         (RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, "2a0173016f0163"),
+        // reason "r"
+        (RejectedTags { reason: "r".into() }, "2b0172"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -215,6 +219,7 @@ fn node_view() -> NodeView {
         parked: false,
         load: Some(rafka_mesh_entity::NodeLoad { cpu_used_millicores: 1, cpu_budget_millicores: 2, ram_used_bytes: 3, ram_budget_bytes: 4 }),
         gossip: Some(rafka_mesh_entity::GossipStats { heard: 2, neighbours: 1, frames_sent: 3, frames_received: 4 }),
+        tags: ["red".to_string()].into(),
     }
 }
 
@@ -253,6 +258,10 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(ConnectionScope::Connections(vec![connection()]), "01010c333132333435363738396162");
     golden(NodeSelect::Id(node()), "000c303132333435363738396162");
     golden(NodeSelect::Mesh("m".into()), "01016d");
+    // Tags | Any | len 1 | "red"
+    golden(NodeSelect::Tags(TagFilter::Any(["red".to_string()].into())), "02010103726564");
+    // All | len 2 | "a" | "b"
+    golden(TagFilter::All(["a".to_string(), "b".to_string()].into()), "000201610162");
     for (status, expected) in [
         (NodeStatus::Pending, "00"), (NodeStatus::ReadyForTraffic, "01"), (NodeStatus::Draining, "02"), (NodeStatus::Leaving, "03"),
         (NodeStatus::PendingReconnect, "04"), (NodeStatus::Restarting, "05"), (NodeStatus::Dead, "06"), (NodeStatus::Deleted, "07"),

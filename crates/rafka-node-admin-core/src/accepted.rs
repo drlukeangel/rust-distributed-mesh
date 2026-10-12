@@ -16,7 +16,7 @@ use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesire
 use rafka_node_rpc_contract::build::RecipeStep;
 use crate::build_state::{BuildProjection, BuildStateAdapter, BuildStateError};
 use crate::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricStorage, FabricStorageError};
-use crate::model::{is_valid_mesh_name, IncarnationId, NodeId, NodeKind, NodeStatus, PathName};
+use crate::model::{is_valid_mesh_name, IncarnationId, MeshId, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use tracing::Instrument as _;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,11 @@ use std::sync::{Arc, Mutex};
 pub struct MeshTopology {
     /// The mesh's name.
     pub name: String,
+    /// The mesh's id (node-identity-and-state.md §2.7, "Who mints it"): minted once, when the mesh
+    /// enters the accepted topology, and carried by every Build after it, never reissued. Every run of
+    /// the mesh's `create-mesh` operation, by any executor and any attempt, claims the mesh's name with
+    /// it; a mesh removed and created again enters the topology anew with a new id (R-MN1).
+    pub mesh_id: MeshId,
     /// Every node the mesh should have, by `path.name`.
     pub nodes: BTreeSet<PathName>,
     /// The typed desired-state meta of every materialized path, explicit after ingress
@@ -37,9 +42,15 @@ pub struct MeshTopology {
 }
 
 impl MeshTopology {
-    /// A mesh from its counts: every path minted with its kind's migration default meta (ingress
-    /// normalization; the Build is explicit from here).
+    /// A new mesh from its counts, entering the accepted topology: its id minted, and every path
+    /// minted with its kind's migration default meta (ingress normalization; the Build is explicit
+    /// from here).
     pub fn of(desired: &MeshDesired) -> Self {
+        Self::with_id(desired, MeshId::mint())
+    }
+
+    /// The mesh `mesh_id` from its counts: every path minted with its kind's migration default meta.
+    fn with_id(desired: &MeshDesired, mesh_id: MeshId) -> Self {
         let mut nodes = BTreeSet::new();
         let mut node_meta_by_path = BTreeMap::new();
         for (kind, want) in desired.counts() {
@@ -49,7 +60,7 @@ impl MeshTopology {
                 nodes.insert(path);
             }
         }
-        Self { name: desired.name.clone(), nodes, node_meta_by_path }
+        Self { name: desired.name.clone(), mesh_id, nodes, node_meta_by_path }
     }
     /// The meta of one of this mesh's paths; `None` for a path this mesh does not hold.
     pub fn meta(&self, path: &PathName) -> Option<&NodeMeta> {
@@ -91,10 +102,11 @@ pub struct FabricTopology {
 }
 
 impl FabricTopology {
-    /// Day 0: the bootstrap admin's own mesh, one node-admin.
-    pub fn root(fabric: &str, mesh: &str) -> Self {
+    /// Day 0: the bootstrap admin's own mesh `mesh_id`, one node-admin. The mesh's id is the one the
+    /// bootstrap admin was born with, never minted here.
+    pub fn root(fabric: &str, mesh: &str, mesh_id: MeshId) -> Self {
         let mut meshes = BTreeMap::new();
-        meshes.insert(mesh.to_string(), MeshTopology::of(&MeshDesired::of(mesh, [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 0)])));
+        meshes.insert(mesh.to_string(), MeshTopology::with_id(&MeshDesired::of(mesh, [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 0)]), mesh_id));
         Self { fabric: fabric.into(), meshes }
     }
 
@@ -136,12 +148,14 @@ impl FabricTopology {
     }
 
     /// The topology an observed view realizes: every live node's path, per mesh (a view with no
-    /// live node of a mesh still names the mesh). For fixtures and Day-0 adoption, never planning.
+    /// live node of a mesh still names the mesh), each mesh under the id the view holds for it. For
+    /// fixtures and Day-0 adoption, never planning: a mesh whose id no member of the view has stated
+    /// takes a fresh id, as a fixture's new mesh does.
     pub fn of_observed(observed: &Topology) -> Self {
-        let mut meshes: BTreeMap<String, MeshTopology> =
-            observed.meshes.iter().map(|m| (m.name.clone(), MeshTopology { name: m.name.clone(), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() })).collect();
+        let empty = |name: &str, mesh_id: Option<MeshId>| MeshTopology { name: name.to_string(), mesh_id: mesh_id.unwrap_or_else(MeshId::mint), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() };
+        let mut meshes: BTreeMap<String, MeshTopology> = observed.meshes.iter().map(|m| (m.name.clone(), empty(&m.name, m.id.clone()))).collect();
         for n in observed.members().filter(|n| n.status.is_live()) {
-            let mesh = meshes.entry(n.mesh.clone()).or_insert_with(|| MeshTopology { name: n.mesh.clone(), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() });
+            let mesh = meshes.entry(n.mesh.clone()).or_insert_with(|| empty(&n.mesh, None));
             mesh.node_meta_by_path.insert(n.name.clone(), NodeMeta::default_for(n.name.kind));
             mesh.nodes.insert(n.name.clone());
         }
@@ -388,7 +402,8 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
             }
             next.meshes.retain(|name, _| names.contains(name));
             for m in &desired.meshes {
-                let mesh = next.meshes.entry(m.name.clone()).or_insert_with(|| MeshTopology { name: m.name.clone(), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() });
+                // A mesh the topology does not hold enters it here: its id is minted now, once.
+                let mesh = next.meshes.entry(m.name.clone()).or_insert_with(|| MeshTopology { name: m.name.clone(), mesh_id: MeshId::mint(), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() });
                 resize(mesh, m, observed);
             }
         }
@@ -426,6 +441,7 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
             if next.meshes.contains_key(&desired.name) {
                 return Err(BuildReject::MeshAlreadyExists { mesh: desired.name.clone() });
             }
+            // The new mesh's id is minted here, once, at acceptance.
             next.meshes.insert(desired.name.clone(), MeshTopology::of(desired));
         }
         TopologyChange::RemoveMesh { mesh } => {
@@ -660,7 +676,7 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     };
     for (name, m) in &topology.meshes {
         if !mesh_exists(name) {
-            ops.push(BuildOperation::CreateMesh { mesh: name.clone() });
+            ops.push(BuildOperation::CreateMesh { mesh: name.clone(), mesh_id: m.mesh_id.clone() });
         }
         for p in &m.nodes {
             // A path whose birth the view holds live is satisfied; any other path is planned and the
@@ -967,12 +983,42 @@ mod tests {
         );
     }
 
+    /// CONTRACT (node-identity-and-state.md §2.7, "Who mints it": "The Build that creates a mesh's first
+    /// node-admin mints the mesh id, never reissued"; R-MN1: "A mesh created again under the same name is
+    /// a new mesh with a new id"): a mesh's id is minted once, when the mesh enters the accepted topology
+    /// (`CreateMesh`, or a `ReconcileFabric` that names a mesh the topology does not hold), and every later
+    /// Build carries it unchanged through every other change. Every plan of a Build that holds the mesh
+    /// unrealized carries that id in its `create-mesh` operation. A mesh removed and created again enters
+    /// anew with a new id. Must NOT happen: a plan minting an id of its own, a kept mesh's id moving, or a
+    /// recreated mesh reusing the removed one's.
+    // @feature: mesh-lifecycle
+    #[test]
+    fn a_meshs_id_is_minted_once_when_it_is_accepted_and_every_plan_carries_it() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let m1 = cur.mesh("mesh1").unwrap().mesh_id.clone();
+        let two = compile(&cur, &TopologyChange::CreateMesh { desired: counts("mesh2", 1, 1) }, &mn()).unwrap();
+        let m2 = two.mesh("mesh2").unwrap().mesh_id.clone();
+        assert_ne!(m2, m1, "mesh2 enters the topology under an id of its own");
+        assert_eq!(two.mesh("mesh1").unwrap().mesh_id, m1, "a kept mesh keeps its id");
+        let create = |t: &FabricTopology| plan(t, &mn(), None).operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. }));
+        let want = Some(BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: m2.clone() });
+        assert_eq!((create(&two), create(&two)), (want.clone(), want.clone()), "every plan of the Build carries the id minted at acceptance");
+        let grown = compile(&two, &TopologyChange::ReconcileMesh { desired: counts("mesh2", 1, 3) }, &mn()).unwrap();
+        let whole = compile(&grown, &TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 3), counts("mesh2", 1, 3), counts("mesh3", 1, 0)] } }, &mn()).unwrap();
+        assert_eq!((whole.mesh("mesh1").unwrap().mesh_id.clone(), whole.mesh("mesh2").unwrap().mesh_id.clone()), (m1.clone(), m2.clone()), "a later Build carries every kept mesh's id unchanged");
+        let m3 = whole.mesh("mesh3").unwrap().mesh_id.clone();
+        assert!(m3 != m1 && m3 != m2, "a mesh a ReconcileFabric adds enters under an id of its own");
+        let removed = compile(&whole, &TopologyChange::RemoveMesh { mesh: "mesh2".into() }, &mn()).unwrap();
+        let again = compile(&removed, &TopologyChange::CreateMesh { desired: counts("mesh2", 1, 1) }, &mn()).unwrap();
+        assert_ne!(again.mesh("mesh2").unwrap().mesh_id, m2, "a mesh removed and created again is a new mesh with a new id");
+    }
+
     #[test]
     fn the_plan_is_topology_minus_observed_and_a_satisfied_topology_plans_nothing() {
         let cur = t(&[("mesh1", 2, 3)]);
         assert_eq!(plan(&cur, &mn(), None).operations, vec![]);
         let fresh = plan(&cur, &observed(vec![], &[]), None);
-        assert_eq!(fresh.operations[0], BuildOperation::CreateMesh { mesh: "mesh1".into() });
+        assert_eq!(fresh.operations[0], BuildOperation::CreateMesh { mesh: "mesh1".into(), mesh_id: cur.mesh("mesh1").unwrap().mesh_id.clone() });
         assert_eq!(fresh.operations.len(), 6);
         // A dead (unheard) birth's path is planned again — the create pipeline's fence then holds a
         // runtime that still runs; a live node outside the topology is retired.
@@ -1094,7 +1140,7 @@ mod tests {
         later.nodes.iter_mut().find(|x| x.name == path).unwrap().incarnation_id = Some(IncarnationId::mint());
         assert_eq!(plan(&cur, &later, Some(&restart)).operations, vec![]);
         // Day 0 roots one admin; a topology without an admin is refused.
-        assert_eq!(paths(FabricTopology::root("fabric1", "mesh1").mesh("mesh1").unwrap()), ["mesh1.admin.1"]);
+        assert_eq!(paths(FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()).mesh("mesh1").unwrap()), ["mesh1.admin.1"]);
         let mut bad = cur.clone();
         bad.meshes.get_mut("mesh1").unwrap().nodes.retain(|p| p.kind == NodeKind::RpcNode);
         assert_eq!(bad.validate(), Err(BuildReject::MeshWithoutAdmin { mesh: "mesh1".into() }));

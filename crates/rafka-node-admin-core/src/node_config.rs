@@ -44,6 +44,19 @@ impl NodeConfigs {
         &self.client
     }
 
+    /// The record this admin's writer of its mesh's rows holds: node.update puts its rows through it
+    /// as this door does, so each row carries every field the writer knows.
+    pub fn written(&self) -> &Arc<crate::node_rows::WrittenRows> {
+        &self.written
+    }
+
+    /// The turn of one change to a node record at this mesh-primary (node-update.md "Config update":
+    /// "every change to a node record goes through its mesh-primary's one held record, one at a
+    /// time"): this door's puts and node.update's take it.
+    pub async fn one_at_a_time(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.one_at_a_time.lock().await
+    }
+
     /// Serve an `UpdateNodeConfig` at the admin `me` (born as `me_id`) deciding over `view`, writing to `storage`. One
     /// span, opened first, holds the whole put: the row write and the call that tells the birth are
     /// inside it, and its outcome is the reply's name. A refusal's reply carries its detail cut to the
@@ -57,6 +70,7 @@ impl NodeConfigs {
             node_id = %node_id,
             incarnation_id = %incarnation.0,
             keys = config.len(),
+            tags = tracing::field::Empty,
             row_status = tracing::field::Empty,
             apply = tracing::field::Empty,
             outcome = tracing::field::Empty,
@@ -94,7 +108,17 @@ impl NodeConfigs {
             Some(_) => {}
         }
         let _one = self.one_at_a_time.lock().await;
-        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
+        // The row carries the node's tags as this writer knows them: a config put changes the config.
+        let tags = match self.written.known_row(storage, &subject.mesh, node_id).await {
+            Ok(row) => row.map(|r| r.tags).unwrap_or_default(),
+            Err(why) => {
+                let detail = format!("{me}: {why}: the row of {} is not written without the tags it carries", subject.name);
+                span.record("detail", detail.as_str());
+                return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
+            }
+        };
+        span.record("tags", crate::node_rows::labels(&tags).as_str());
+        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags };
         let refused = match storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);

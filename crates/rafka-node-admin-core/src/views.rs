@@ -1,5 +1,6 @@
 //! The reads over Node RPC (node-rpc-envelope.md "Typed objects mapped to wire and execution
-//! owners"): `node.get`, `mesh.get` and `fabric.get` answered from a node-admin's view, and
+//! owners"): `node.get`, `mesh.get` and `fabric.get` answered from a node-admin's view (a node's
+//! tags read from its row, and `node.get`'s tag filter from the node store's tags index, R-TG1), and
 //! `node.connections.get` answered by any node from the connections it holds as its own
 //! (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held connections"). A read changes
 //! nothing and publishes nothing; its answer is one Status reply, and an answer past the Status reply
@@ -13,9 +14,11 @@ use crate::model::{Node, PathName};
 use crate::topology::Topology;
 use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
 use rafka_mesh_entity::{GossipStats, NodeLoad};
-use rafka_node_rpc_contract::status::{NodeSelect, StatusReply, StatusRequest};
+use crate::storage::NodesStorage;
+use rafka_mesh_entity::NodeId;
+use rafka_node_rpc_contract::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
 use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Each member's CPU and RAM and mesh-channel counts from its latest digest, by node id: served
@@ -56,8 +59,9 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
     }
 }
 
-/// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried.
-pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>) -> NodeView {
+/// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried
+/// and the tags its row carries.
+pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>) -> NodeView {
     NodeView {
         name: n.name.clone(),
         kind: n.kind,
@@ -78,6 +82,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>) 
         parked: n.parked,
         load,
         gossip,
+        tags,
     }
 }
 
@@ -85,22 +90,130 @@ fn mesh_view(m: crate::topology::MeshView) -> MeshView {
     MeshView { id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, admin_api_base: m.admin_api_base, nodes: m.nodes }
 }
 
-/// The births `view` holds that `select` selects, sorted by `path.name`, each with what `loads`
-/// carries for it: every birth the control API's node list holds, replaced predecessors included.
-pub fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, select: &NodeSelect) -> Vec<NodeView> {
-    let mut out: Vec<NodeView> = view
+/// Which births a `node.get` selects, once a tag filter's index reads are made.
+enum Chosen<'a> {
+    /// The node with this minted id.
+    Id(&'a NodeId),
+    /// Every node of this mesh.
+    Mesh(&'a str),
+    /// The nodes the tags index named for the filter.
+    Ids(BTreeSet<NodeId>),
+}
+
+/// Why a `node.get` read failed: what it read, and the store's error.
+struct ReadFailed {
+    source: String,
+    op: String,
+    cause: String,
+}
+
+/// The nodes a tag filter selects: one point read of the tags index per label (`NodesStorage::tagged`),
+/// every label for `All` (the nodes in each), any for `Any` (the nodes in one at least). Never a read of
+/// a node's row and never a pass over the view.
+async fn tagged(me: &PathName, storage: &dyn NodesStorage, filter: &TagFilter) -> Result<BTreeSet<NodeId>, ReadFailed> {
+    let mut picked: Option<BTreeSet<NodeId>> = None;
+    for label in filter.labels() {
+        let carrying = storage.tagged(label).await.map_err(|e| ReadFailed { source: format!("the tags index of {me}'s nodes store"), op: format!("read of the label {label}"), cause: e.to_string() })?;
+        picked = Some(match (picked, filter) {
+            (None, _) => carrying,
+            (Some(p), TagFilter::All(_)) => p.intersection(&carrying).cloned().collect(),
+            (Some(p), TagFilter::Any(_)) => p.union(&carrying).cloned().collect(),
+        });
+    }
+    Ok(picked.unwrap_or_default())
+}
+
+/// The tags of the birth `n`: those of the row it holds, a point read through the node row's id
+/// index and then the row's own key; none when it holds no row.
+async fn tags_of(storage: &dyn NodesStorage, n: &Node) -> Result<BTreeSet<String>, ReadFailed> {
+    let failed = |op: String, e: crate::record_store::StorageError| ReadFailed { source: format!("the nodes store's rows of {}", n.mesh), op, cause: e.to_string() };
+    let Some(name) = storage.node_row_name(&n.mesh, &n.node_id).await.map_err(|e| failed(format!("read of the id index entry of {} ({})", n.name, n.node_id), e))? else { return Ok(BTreeSet::new()) };
+    let row = storage.node_row_at(&name).await.map_err(|e| failed(format!("read of the row at {name}"), e))?;
+    Ok(row.filter(|r| r.node_id == n.node_id).map(|r| r.tags).unwrap_or_default())
+}
+
+/// The births `view` holds that `chosen` selects, sorted by `path.name`, each with what `loads`
+/// carries for it and the tags its row carries: every birth the view holds, replaced predecessors
+/// included.
+async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, chosen: &Chosen<'_>) -> Result<Vec<NodeView>, ReadFailed> {
+    let births: Vec<&Node> = view
         .births()
-        .filter(|n| match select {
-            NodeSelect::Id(id) => &n.node_id == id,
-            NodeSelect::Mesh(mesh) => &n.mesh == mesh,
-        })
-        .map(|n| {
-            let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-            node_view(n, load, gossip)
+        .filter(|n| match chosen {
+            Chosen::Id(id) => &n.node_id == *id,
+            Chosen::Mesh(mesh) => n.mesh == *mesh,
+            Chosen::Ids(ids) => ids.contains(&n.node_id),
         })
         .collect();
+    let mut out = Vec::with_capacity(births.len());
+    for n in births {
+        let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
+        out.push(node_view(n, load, gossip, tags_of(storage, n).await?));
+    }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    Ok(out)
+}
+
+/// `node.get` answered by the node-admin `me` from its `view`, its members' `loads` and its nodes
+/// `storage`: the births `select` selects, each with its tags. A tag filter is read from the tags
+/// index, one point read per label; a filter that is not a tag set is `RejectedTags`, named; a read
+/// that fails is `RejectedSourceFailed` naming the read. Its span names what was asked, the filter,
+/// its labels, how many index reads were made and how many nodes were answered.
+pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, select: &NodeSelect) -> StatusReply {
+    let span = tracing::info_span!(
+        "rdm.node_admin.node.serve.via-get",
+        node = %me,
+        select = select.name(),
+        filter = tracing::field::Empty,
+        labels = tracing::field::Empty,
+        index_reads = tracing::field::Empty,
+        nodes = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        detail = tracing::field::Empty,
+        "otel.kind" = "internal",
+    );
+    let read = async {
+        let chosen = match select {
+            NodeSelect::Id(id) => Chosen::Id(id),
+            NodeSelect::Mesh(mesh) => Chosen::Mesh(mesh),
+            NodeSelect::Tags(filter) => {
+                span.record("filter", filter.name()).record("labels", crate::node_rows::labels(filter.labels()).as_str());
+                if let Some(reason) = filter.refusal() {
+                    return StatusReply::rejected_tags(&format!("{me}: {reason}"));
+                }
+                span.record("index_reads", filter.labels().len() as u64);
+                match tagged(me, storage, filter).await {
+                    Ok(ids) => Chosen::Ids(ids),
+                    Err(f) => return StatusReply::source_failed(&f.source, &f.op, &f.cause),
+                }
+            }
+        };
+        match nodes(view, &loads(), storage, &chosen).await {
+            Ok(nodes) => {
+                let count = nodes.len();
+                span.record("nodes", count as u64);
+                let reply = StatusReply::within_reply_bound(StatusReply::Nodes { nodes }, "node.get");
+                if let StatusReply::ReadOverBound { bytes, max, .. } = &reply {
+                    tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %me, read = "node.get", select = select.name(), nodes = count, bytes, max, "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the selected nodes encode past the Status reply bound; nothing of them is sent"));
+                }
+                reply
+            }
+            Err(f) => StatusReply::source_failed(&f.source, &f.op, &f.cause),
+        }
+    };
+    let reply = tracing::Instrument::instrument(read, span.clone()).await;
+    span.record("outcome", reply.name());
+    match &reply {
+        StatusReply::ReadOverBound { bytes, max, .. } => {
+            span.record("detail", format!("the selected nodes encode to {bytes} bytes, past the {max}-byte Status reply bound").as_str());
+        }
+        StatusReply::RejectedTags { reason } | StatusReply::RejectedSourceFailed { cause: reason, .. } => {
+            span.record("detail", reason.as_str());
+            span.in_scope(|| tracing::info!("node.get refused by name"));
+        }
+        _ => span.in_scope(|| tracing::info!("the nodes the view holds answered")),
+    }
+    reply
 }
 
 /// The mesh `view` holds by the minted id or the name `mesh`, or every mesh it holds (`None`);
@@ -181,23 +294,11 @@ pub fn connections_answer(held: &HeldConnections) -> StatusReply {
     reply
 }
 
-/// `node.get`, `mesh.get` or `fabric.get` answered by the node-admin `me` from its `view` and its
-/// members' `loads`; `None` for any other request. Each read's span names what was asked and how much was
-/// answered; a mesh the view does not hold is `UnknownMesh`, named.
-pub fn view_answer(me: &PathName, view: &Topology, loads: &Loads, req: &StatusRequest) -> Option<StatusReply> {
+/// `mesh.get` or `fabric.get` answered by the node-admin `me` from its `view`; `None` for any other
+/// request (`node.get` reads the nodes store too: [`nodes_answer`]). Each read's span names what was
+/// asked and how much was answered; a mesh the view does not hold is `UnknownMesh`, named.
+pub fn view_answer(me: &PathName, view: &Topology, req: &StatusRequest) -> Option<StatusReply> {
     let reply = match req {
-        StatusRequest::GetNodes { select } => {
-            let nodes = nodes(view, &loads(), select);
-            let count = nodes.len();
-            let reply = StatusReply::within_reply_bound(StatusReply::Nodes { nodes }, "node.get");
-            match &reply {
-                StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %me, read = "node.get", select = select.name(), nodes = count, bytes, max, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the selected nodes encode past the Status reply bound; nothing of them is sent")),
-                _ => tracing::info_span!("rdm.node_admin.node.serve.via-get", node = %me, select = select.name(), nodes = count, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the nodes the view holds answered")),
-            }
-            reply
-        }
         StatusRequest::GetMeshes { mesh } => {
             let select = if mesh.is_some() { "mesh" } else { "fabric" };
             match meshes(view, mesh.as_deref()) {

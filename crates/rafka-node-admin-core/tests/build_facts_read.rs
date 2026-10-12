@@ -37,7 +37,7 @@ async fn admin(name: &str, fabric: &FabricId) -> Admin {
 
 /// `a` holds Build `id` through attempt `attempts`, converged, and points at it.
 async fn holds(a: &Admin, id: &BuildId, attempts: u32, point: bool) {
-    a.log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+    a.log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
     for attempt in 1..=attempts {
         if attempt > 1 {
             a.log.open_attempt(&AttemptOpened { build_id: id.clone(), attempt, reason: AttemptReason::Restart, action: None, opened_by: "x".into(), opened_at_ms: 0 }).await.unwrap();

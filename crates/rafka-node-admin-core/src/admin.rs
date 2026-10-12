@@ -1478,18 +1478,22 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me
 
 /// `create-mesh:<mesh>` at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent ... Until
 /// the mesh has a primary, the fabric-primary writes its rows"; R13; CLAUDE.md: the claim is the first
-/// durable write of a create): the mesh's id, the one `records` already holds for it (an earlier
-/// attempt of this create) or a new one, is claimed at the mesh's name before anything else of the
-/// mesh is written, and held in `records` (what every launch of the mesh carries) only once the claim
-/// won. A refused claim fails the operation by name, holding nothing of the mesh: the Build runs no
-/// create of its nodes, so no node row of the mesh is claimed.
-pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str) -> Result<MeshId, String> {
-    let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned().unwrap_or_else(MeshId::mint);
-    match claim_mesh_name(meshes, me, mesh, &mesh_id).await {
+/// durable write of a create): `mesh_id`, the id the operation carries (minted once, when the mesh
+/// entered the accepted topology: node-identity-and-state.md §2.7, "Who mints it"), is claimed at the
+/// mesh's name before anything else of the mesh is written, and held in `records` (what every launch
+/// of the mesh carries) only once the claim won. Every run of the operation claims with that id, so
+/// a re-run (a later attempt, or a successor fabric-primary that holds nothing of the first run) finds
+/// the mesh's own row: the same MeshId re-claiming is idempotent. A refused claim fails the operation
+/// by name, holding nothing of the mesh: the Build runs no create of its nodes, so no node row of the
+/// mesh is claimed.
+pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<MeshId, String> {
+    match claim_mesh_name(meshes, me, mesh, mesh_id).await {
         Ok(Ok(_)) => {
-            records.meshes.lock().unwrap().entry(mesh.to_string()).or_insert_with(|| mesh_id.clone());
+            // The won claim's id is the mesh's: it replaces any id held for the name before (a
+            // removed mesh's), so no launch of this mesh carries another.
+            records.meshes.lock().unwrap().insert(mesh.to_string(), mesh_id.clone());
             records.wake.poke();
-            Ok(mesh_id)
+            Ok(mesh_id.clone())
         }
         Ok(Err(refused)) => Err(format!("{me}: create-mesh:{mesh}: the claim of the mesh's name for mesh {mesh_id} was refused, and nothing of the mesh is written: {refused}")),
         Err(e) => Err(format!("{e}; nothing of the mesh is written")),
@@ -2719,12 +2723,7 @@ impl NodeObserver for MembershipObserver {
     /// otherwise the primary's projection), never a heartbeat's.
     async fn ready(&self, node: &Node) -> Result<(), String> {
         match self.digest_of(node) {
-            Some(d) if d.status == MemberStatus::ReadyForTraffic => {
-                if node.kind == NodeKind::NodeAdmin && d.admin_api_base.is_none() {
-                    return Err(format!("{} serves no control API yet", node.name));
-                }
-                Ok(())
-            }
+            Some(d) if d.status == MemberStatus::ReadyForTraffic => Ok(()),
             Some(d) => Err(format!("{} is held {:?}, not ready-for-traffic: its mesh-primary has not taken its node.started", node.name, d.status)),
             None => Err(format!("no digest from {} for this birth", node.name)),
         }
@@ -4146,7 +4145,7 @@ impl AdminRunner {
     async fn run_op(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         use tracing::Instrument;
         match op {
-            BuildOperation::CreateMesh { mesh } => create_mesh(&self.records, &*self.mesh_storage, &self.me.to_string(), mesh).await.map(|_| ()),
+            BuildOperation::CreateMesh { mesh, mesh_id } => create_mesh(&self.records, &*self.mesh_storage, &self.me.to_string(), mesh, mesh_id).await.map(|_| ()),
             BuildOperation::CreateNode { node, over: Some(from) } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.0);
@@ -4255,8 +4254,8 @@ impl AdminRunner {
                         let Some(authority) = self.observer.authority.get() else {
                             return Err(format!("{key}: {} holds no status authority yet to serve node.update; nothing is written", self.me));
                         };
-                        let req = rafka_node_rpc_contract::status::StatusRequest::UpdateNode { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
-                        match authority.update_node(&req).await {
+                        let req = rafka_node_rpc_contract::status::StatusRequest::UpdateNode { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string(), tags: Default::default() };
+                        match authority.update_node(&req, crate::node_update::PutTags::Held).await {
                             rafka_node_rpc_contract::status::StatusReply::NodeUpdated { .. } => Ok(()),
                             refused => Err(format!("{key}: node.update of {node} ({}) to {name} answered {refused:?}", birth.node_id)),
                         }
@@ -5238,7 +5237,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     } else if accepted.build_id().await.is_none() {
                                         let b0 = crate::build_state::BuildAccepted {
                                             build_id: crate::build::BuildId::mint(),
-                                            topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh),
+                                            topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh, mesh_id.clone()),
                                             submitted_change: None,
                                             submitted_at_ms: rafka_time.now_ms(),
                                         };
@@ -6923,6 +6922,25 @@ mod tests {
         assert_eq!(dropped, want, "the departed birth's and the replaced birth's contacts go; the silent one's stays");
     }
 
+    /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; node-update.md: "Config on the
+    /// row, `admin_api_base` included, is stored and gossiped as given; nothing checks it"): a
+    /// node-admin birth this admin's book holds ready-for-traffic is Ready, its digest carrying no
+    /// `admin_api_base`. What must NOT happen: a node-admin refused Ready for a config value RDM
+    /// never reads.
+    #[tokio::test]
+    async fn a_node_admin_with_no_admin_api_base_is_ready_once_its_book_holds_it_ready_for_traffic() {
+        let book = DigestBook::default();
+        let mut d = digest("mesh1.admin.2", MemberStatus::ReadyForTraffic);
+        d.admin_api_base = None;
+        assert!(book.record(d.clone()), "the book takes the node-admin's digest");
+        assert_eq!(book.get(d.node.node_id.as_str()).map(|(held, _)| held.status), Some(MemberStatus::ReadyForTraffic), "the book holds the birth ready-for-traffic");
+        let mut node = Node::allocated(d.node.name.clone());
+        node.node_id = d.node.node_id.clone();
+        node.incarnation_id = Some(d.node.incarnation.clone());
+        let observer = MembershipObserver { book, client: None, commands: Arc::default(), authority: Arc::default(), handover: Arc::default() };
+        assert_eq!(crate::deployment::pipeline::NodeObserver::ready(&observer, &node).await, Ok(()));
+    }
+
     /// A nodes store that counts the contact writes made through it.
     struct CountingNodes(Arc<dyn crate::storage::NodesStorage>, std::sync::atomic::AtomicUsize);
 
@@ -6968,6 +6986,9 @@ mod tests {
         }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
+            self.0.tagged(label).await
         }
     }
 
@@ -7076,8 +7097,8 @@ mod tests {
     /// its rows"; CLAUDE.md: the claim is the first durable write of a create, nothing is written for the
     /// entity until it wins; node-identity-and-state.md §2.7: `NameHeld` names the holder, the same MeshId
     /// re-claiming is idempotent): `create-mesh:mesh2` at the fabric-primary claims mesh2's name first.
-    /// On a free key it writes the Mesh row under the id it mints and holds that id for the mesh's
-    /// launches; a re-run of the operation claims the same id and finds its own row. Where another mesh's
+    /// On a free key it writes the Mesh row under the id the operation carries and holds that id for the
+    /// mesh's launches; a re-run of the operation claims the same id and finds its own row. Where another mesh's
     /// live row holds mesh3, the operation fails naming the holder: mesh3's row stands and no id is held
     /// for mesh3, so no launch can carry one and the Build runs no create of mesh3's nodes. One
     /// `rdm.node_admin.mesh.create.via-mesh-row` span per claim, naming the fabric-primary. Must NOT
@@ -7090,13 +7111,16 @@ mod tests {
         let holder = MeshId::mint();
         let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false };
         assert_eq!(crate::storage::MeshStorage::claim_mesh(&meshes, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written { over: None })));
+        // The ids the two operations carry, minted when each mesh entered the accepted topology.
+        let (carried, mesh3_carried) = (MeshId::mint(), MeshId::mint());
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-claim");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let minted = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2").await.expect("a free name is claimed");
-        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false }), "the claim wrote mesh2's row under the minted id");
+        let minted = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2", &carried).await.expect("a free name is claimed");
+        assert_eq!(minted, carried, "the claim is made for the id the operation carries");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false }), "the claim wrote mesh2's row under the carried id");
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the won claim's id is what the mesh's launches carry");
-        assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2").await, Ok(minted.clone()), "a re-run claims the same id");
-        let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3").await.expect_err("mesh3's name is held by another mesh's live row");
+        assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2", &carried).await, Ok(minted.clone()), "a re-run claims the same id");
+        let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3", &mesh3_carried).await.expect_err("mesh3's name is held by another mesh's live row");
         assert!(refused.contains("create-mesh:mesh3") && refused.contains(&holder.to_string()), "the refusal names the operation and the holder: {refused}");
         assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused claim wrote nothing: mesh3's row is the holder's");
         assert_eq!(records.meshes.lock().unwrap().get("mesh3"), None, "no id is held for a mesh whose claim was refused: no launch of it can carry one");
@@ -7108,6 +7132,43 @@ mod tests {
         let row = |mesh: &str, outcome: &str, holder: &str| ("mesh1.admin.1".to_string(), mesh.to_string(), outcome.to_string(), holder.to_string());
         assert_eq!(said, vec![row("mesh2", "row-written", ""), row("mesh2", "row-held-by-mesh", ""), row("mesh3", "name-held", &holder.to_string())], "{spans:?}");
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[2].trace_id, spans[2].attributes);
+    }
+
+    /// CONTRACT (node-identity-and-state.md §2.7: "Who mints it. The Build that creates a mesh's first
+    /// node-admin mints the mesh id, never reissued"; "The same MeshId re-claiming its own name, at
+    /// state-commit, on a retry or from a replaced primary, is idempotent and accepted"): the accepted
+    /// Build that creates mesh2 is planned by its fabric-primary and, after that admin is lost, by its
+    /// successor, which holds nothing of its predecessor's memory. Each runs the plan's
+    /// `create-mesh:mesh2` over the one mesh store: the first claim writes mesh2's row, and the
+    /// successor's re-run claims with the same MeshId and finds its own row (`row-held-by-mesh`), so
+    /// the id its launches carry is the row's. Must NOT happen: the successor minting another MeshId
+    /// and being refused `name-held` by its own mesh's row.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_successor_re_running_create_mesh_of_the_same_build_claims_with_its_mesh_id_and_finds_its_own_row() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let observed = view(&[digest("mesh1.admin.1", MemberStatus::ReadyForTraffic)]);
+        let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
+        let change = crate::accepted::TopologyChange::CreateMesh { desired: crate::build::MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]) };
+        let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
+        let create_mesh_of = |plan: crate::build::BuildPlan| plan.operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
+        let (first_op, successor_op) = (create_mesh_of(crate::accepted::plan(&accepted, &observed, None)), create_mesh_of(crate::accepted::plan(&accepted, &observed, None)));
+        let (BuildOperation::CreateMesh { mesh: first_mesh, mesh_id: first_id }, BuildOperation::CreateMesh { mesh: successor_mesh, mesh_id: successor_id }) = (&first_op, &successor_op) else { unreachable!() };
+        let minted = &accepted.mesh("mesh2").expect("the accepted topology holds mesh2").mesh_id;
+        assert_eq!((first_id, successor_id), (minted, minted), "every plan of the Build carries the MeshId minted when mesh2 was accepted");
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-rerun");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let (first, successor) = (Records::default(), Records::default());
+        let claimed = create_mesh(&first, &meshes, "mesh1.admin.1", first_mesh, first_id).await.expect("the first run claims mesh2's free name");
+        assert_eq!(&claimed, minted, "the first run claims with the Build's MeshId");
+        let rerun = create_mesh(&successor, &meshes, "mesh1.admin.2", successor_mesh, successor_id).await;
+        assert_eq!(rerun, Ok(claimed.clone()), "the successor's re-run of the same Build's create-mesh claims with the same MeshId and finds its own row");
+        assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(&claimed), "the successor's launches of mesh2 carry the id mesh2's row holds");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(claimed.clone()), "mesh2's row is the first claim's");
+        let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
+        let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
+        assert_eq!(said, vec![("mesh1.admin.1".to_string(), claimed.to_string(), "row-written".to_string()), ("mesh1.admin.2".to_string(), claimed.to_string(), "row-held-by-mesh".to_string())], "{spans:?}");
+        eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
     }
 
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
@@ -7299,6 +7360,9 @@ mod tests {
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
         }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
+            self.0.tagged(label).await
+        }
     }
 
     /// A nodes.storage over memory that counts every list of the runtime rows and answers the point
@@ -7354,6 +7418,9 @@ mod tests {
         }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.inner.release_node_row(name, holder).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
+            self.inner.tagged(label).await
         }
     }
 
@@ -7602,7 +7669,7 @@ mod tests {
             executor: Some("mesh2.admin.2".into()),
         };
         builds.absorb(&[
-            crate::build_state::BuildFact::Accepted(crate::build_state::BuildAccepted { build_id: b1.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 1 }),
+            crate::build_state::BuildFact::Accepted(crate::build_state::BuildAccepted { build_id: b1.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
             crate::build_state::BuildFact::Opened(crate::build_state::AttemptOpened {
                 build_id: b1.clone(),
                 attempt: 2,
@@ -7811,7 +7878,7 @@ mod tests {
         };
         let build = crate::build::BuildId(op.build_id.clone());
         let mut facts = vec![
-            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2"), submitted_change: None, submitted_at_ms: 1 }),
+            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
             BuildFact::Step(BuildStepReceipt { build_id: build.clone(), attempt: 2, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&op).unwrap()), executor: None }),
         ];
         let capture = crate::span_capture::Capture::new("i143-3068-failed-removal-recovered");
@@ -8284,7 +8351,7 @@ mod tests {
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+        crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
         let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-final-exit-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
@@ -8373,7 +8440,7 @@ mod tests {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
             let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
             let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
             prove_exit(&book, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
             let status = crate::status_storage::MemoryStatusStorage::default();
@@ -8423,7 +8490,7 @@ mod tests {
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let member = with_id(digest("mesh2.rpc.1", MemberStatus::Leaving), "210000000000");
         let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
         let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
         // mesh2's primary wrote its members' contacts while it held the seat; mesh1's own stays.
         for d in [&last, &member, &fp] {
@@ -8761,7 +8828,7 @@ mod tests {
         store.point(&id, 0, "test").await.unwrap();
         let blocked = hydration_blocker(&me, &store, &builds, None).await.expect("blocked while the pointed Build is not held").to_string();
         assert!(blocked.contains("bld-0") && blocked.contains("cannot read it"), "{blocked}");
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         assert_eq!(hydration_blocker(&me, &store, &builds, None).await, None, "an admin served no entry owes no attempt floor");
         let blocked = hydration_blocker(&me, &store, &builds, Some((id.clone(), 2))).await.expect("blocked below the entry's attempt").to_string();
         assert!(blocked.contains("holds attempt 0 of Build bld-0") && blocked.contains("held attempt 2"), "{blocked}");
@@ -8958,9 +9025,9 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new() };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default() };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
-        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), &held.node.name, &to).await.unwrap();
+        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), &held.node.name, &to).await.unwrap();
         // This admin: the same book, its own store on the same root, no rename of its own.
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(mine);
@@ -8975,7 +9042,7 @@ mod tests {
         // name): only the view names the birth by its row.
         assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()]);
         // The row moved back (node-replace.md Rollback): the next projection reads it there.
-        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), &to, &held.node.name).await.unwrap();
+        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), &to, &held.node.name).await.unwrap();
         view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
         let t = topology.read().await.clone();
         assert!(t.node(&held.node.name).is_some_and(|n| n.node_id == held.node.node_id && n.parked) && t.node(&to).is_none(), "{:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
@@ -9216,6 +9283,9 @@ mod tests {
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.inner.release_node_row(name, holder).await
         }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
+            self.inner.tagged(label).await
+        }
     }
 
     /// `mesh1.rpc.1`, born `mesh1.rpc.1.new` and stopped there, its row moved twice by its mesh-primary
@@ -9242,11 +9312,11 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new() };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default() };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
         let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), held.node.name.base());
-        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), &held.node.name, &base).await.unwrap();
-        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), &base, &base.renamed()).await.unwrap();
+        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), &held.node.name, &base).await.unwrap();
+        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), &base, &base.renamed()).await.unwrap();
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
         let probed = Arc::new(ProbedRows {
             inner: Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap()),

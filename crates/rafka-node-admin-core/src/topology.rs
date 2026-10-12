@@ -62,8 +62,6 @@ pub enum TopologyViolation {
     FabricPrimaryNotAdmin(PathName),
     /// The fabric primary is not the node-admin primary of its own mesh.
     FabricPrimaryNotMeshPrimary(PathName),
-    /// A node-admin primary advertises no control endpoint.
-    AdminPrimaryWithoutControlEndpoint(PathName),
 }
 
 impl fmt::Display for TopologyViolation {
@@ -82,9 +80,6 @@ impl fmt::Display for TopologyViolation {
             Self::FabricPrimaryNotAdmin(p) => write!(f, "fabric primary {p} is not a node-admin"),
             Self::FabricPrimaryNotMeshPrimary(p) => {
                 write!(f, "fabric primary {p} is not the node-admin primary of its own mesh")
-            }
-            Self::AdminPrimaryWithoutControlEndpoint(p) => {
-                write!(f, "node-admin primary {p} advertises no control endpoint")
             }
         }
     }
@@ -267,12 +262,7 @@ impl Topology {
             let primaries: Vec<PathName> = members.iter().filter(|n| n.is_primary).map(|n| n.name.clone()).collect();
             match primaries.len() {
                 0 => out.push(V::NoCohortPrimary { mesh: mesh.clone(), kind: *kind }),
-                1 => {
-                    let p = members.iter().find(|n| n.is_primary).unwrap();
-                    if *kind == NodeKind::NodeAdmin && p.admin_api_base.is_none() {
-                        out.push(V::AdminPrimaryWithoutControlEndpoint(p.name.clone()));
-                    }
-                }
+                1 => {}
                 _ => out.push(V::SplitCohortPrimary { mesh: mesh.clone(), kind: *kind, primaries }),
             }
         }
@@ -447,10 +437,17 @@ mod tests {
         assert!(v.contains(&TopologyViolation::NodeInUnknownMesh { node: "mesh1.rpc.1".parse().unwrap(), mesh: "mesh9".into() }), "{v:?}");
     }
 
+    /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; node-update.md: "Config on the
+    /// row, `admin_api_base` included, is stored and gossiped as given; nothing checks it"): a
+    /// fabric whose node-admins advertise no `admin_api_base` names no violation and is converged.
+    /// What must NOT happen: a topology held unconverged for a config value RDM never reads.
     #[test]
-    fn primary_admin_without_endpoint_is_named() {
+    fn a_node_admin_primary_with_no_admin_api_base_names_no_violation() {
         let mut t = mn();
-        t.nodes[0].admin_api_base = None;
-        assert!(t.violations().contains(&TopologyViolation::AdminPrimaryWithoutControlEndpoint("mesh1.admin.1".parse().unwrap())));
+        for n in t.nodes.iter_mut() {
+            n.admin_api_base = None;
+        }
+        assert_eq!(t.violations(), vec![]);
+        assert!(t.is_converged());
     }
 }

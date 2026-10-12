@@ -79,7 +79,7 @@ async fn a_pointer_move_held_mid_write_never_moves_the_pointer_back_past_a_newer
     storage.inner.claim_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap().unwrap();
     let builds = MemoryBuildStateAdapter::new();
     for (id, at) in [(&older, 1), (&newer, 2)] {
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: at }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: at }).await.unwrap();
     }
     let store = Arc::new(AcceptedStore::new(storage.clone(), "mesh1.admin.1"));
 

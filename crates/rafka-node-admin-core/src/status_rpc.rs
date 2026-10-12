@@ -444,11 +444,12 @@ impl StatusAuthority {
 
     /// `node.update` at this admin as the node's mesh-primary (`crate::node_update`): the one write
     /// path of a node's record, whoever asks, a caller's 0x1B call and a recipe's update step alike.
-    pub async fn update_node(&self, req: &StatusRequest) -> StatusReply {
+    pub async fn update_node(&self, req: &StatusRequest, tags_from: crate::node_update::PutTags) -> StatusReply {
         let StatusRequest::UpdateNode { node_id, incarnation, .. } = req else { unreachable!("update_node is called for UpdateNode only") };
-        // A stopped node is told nothing: only a live birth's apply needs the node-RPC client.
+        // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
         let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
-        crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| c.client()), &self.row_moved, deleted.as_ref(), req).await
+        let doors = crate::node_update::UpdateDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
+        crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), req, tags_from).await
     }
 
     /// [`Self::apply`] of a call whose transport-proven endpoint is `peer` (`PeerContext`): the
@@ -482,7 +483,7 @@ impl StatusAuthority {
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
                 };
             }
-            StatusRequest::UpdateNode { .. } => return self.update_node(req).await,
+            StatusRequest::UpdateNode { .. } => return self.update_node(req, crate::node_update::PutTags::Request).await,
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {
                     Some(configs) => configs.update(&self.me, &self.node_id, &view, &*self.nodes_storage, req).await,
@@ -490,12 +491,19 @@ impl StatusAuthority {
                 };
             }
             // The reads: answered from what this admin holds, changing nothing.
-            StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric => {
+            StatusRequest::GetNodes { select } => {
                 let me = view.own(&self.node_id).map(|n| n.name.clone()).unwrap_or_else(|| self.me.clone());
-                return match self.loads.as_ref().and_then(|loads| crate::views::view_answer(&me, &view, loads, req)) {
-                    Some(reply) => reply,
+                return match self.loads.as_ref() {
+                    Some(loads) => crate::views::nodes_answer(&me, &view, loads, &*self.nodes_storage, select).await,
                     None => StatusReply::NotReady { reason: format!("{me} reads no digest book; {} is refused", req.op()) },
                 };
+            }
+            StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric => {
+                let me = view.own(&self.node_id).map(|n| n.name.clone()).unwrap_or_else(|| self.me.clone());
+                if self.loads.is_none() {
+                    return StatusReply::NotReady { reason: format!("{me} reads no digest book; {} is refused", req.op()) };
+                }
+                return crate::views::view_answer(&me, &view, req).unwrap_or_else(|| StatusReply::NotReady { reason: format!("{me} answers no {} from its view", req.op()) });
             }
             StatusRequest::GetConnections { node_id, incarnation } => return self.read_connections(&view, node_id, incarnation).await,
             _ => {}

@@ -97,6 +97,7 @@ impl BuildDoor {
                 build_id = tracing::field::Empty,
                 change = %serde_json::to_string(change).unwrap_or_default(),
                 previous_build_id = tracing::field::Empty,
+                minted_meshes = tracing::field::Empty,
             )
         };
         let topology = |c: TopologyChange| async move {

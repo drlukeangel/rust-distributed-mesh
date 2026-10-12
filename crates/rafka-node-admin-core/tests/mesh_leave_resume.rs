@@ -284,7 +284,7 @@ fn writer_view(records: &[Node], primary: Option<&str>, fabric_primary: Option<N
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone() }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default() }).await.unwrap().unwrap();
         assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node").await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
     }
 }
@@ -330,7 +330,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -484,7 +484,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -570,7 +570,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         let (build_id, delete_build) = (BuildId::mint(), BuildId::mint());
         for b in [&build_id, &delete_build] {
             builds
-                .publish_accepted(&BuildAccepted { build_id: b.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+                .publish_accepted(&BuildAccepted { build_id: b.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
                 .await
                 .unwrap();
         }
@@ -793,7 +793,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -861,7 +861,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         record_completion(&builds, &key(2), "mesh1.admin.1", &completed).await.expect("mesh.deleted is recorded");
         let delete_build = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: delete_build.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: delete_build.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let last = records2.iter().find(|n| n.name.to_string() == OTHER_ADMIN).cloned().unwrap();
@@ -923,7 +923,7 @@ fn an_unproven_silent_primary_refuses_the_resume_and_no_amendment_is_recorded() 
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -974,7 +974,7 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -1046,7 +1046,7 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
         let outer = operation(&mesh_id);
         let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
         for b in [&owner, &own] {
-            b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+            b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
             accepted_roster(b, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
             accepted_roster(b, &key(1), STEP_LEAVING_ROSTER, FINAL, &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
         }
@@ -1115,7 +1115,7 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
     let (without_row, with_row, before, after, trace_id) = cap.run(async {
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
-        builds.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
         let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
@@ -1178,7 +1178,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
         let outer = operation(&mesh_id);
         let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
         for b in [&owner, &own] {
-            b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+            b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         }
         accepted_roster(&owner, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &runtime(FINAL), || live_roster(&admitted_births)).await.unwrap();
         // mesh2.rpc.2's exact exit, recorded by the lost primary and gossiped to the owner.
@@ -1295,7 +1295,7 @@ fn a_roster_birth_the_view_dropped_after_its_leaving_is_worked_from_the_record_i
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -1355,7 +1355,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone() }).await.unwrap().unwrap();
+            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default() }).await.unwrap().unwrap();
         }
         for n in &records {
             assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node").await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
@@ -1363,7 +1363,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
@@ -1419,7 +1419,7 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
         let build_id = BuildId::mint();
         let mesh_id = MeshId::mint();
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 1, operation: operation(&mesh_id) };
-        owner.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        owner.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         accepted_roster(&owner, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &my_runtime, || live_roster(&records)).await.unwrap();
         let owner_facts = owner.facts().await.unwrap();
         let root = tracing::info_span!("cell.mesh-leave-unheard-build", build_id = %build_id);

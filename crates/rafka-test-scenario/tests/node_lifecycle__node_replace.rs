@@ -828,6 +828,8 @@ async fn stop_and_rename(estate: &Estate, nodes: &Nodes, node: &str) -> Parked {
         mesh: parked.mesh.clone(),
         kind: parked.kind,
         otel_debug: false,
+        // The fixture's nodes carry no labels: the full tag set this put writes is none.
+        tags: Default::default(),
     };
     let reply = nodes.update(&held, &NodeMeta { name: path.renamed(), ..held.clone() }, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct).await.expect("node.update answered");
     assert!(matches!(reply, StatusReply::NodeUpdated { .. }), "the stopped {node} is renamed {}: {reply:?}", path.renamed());

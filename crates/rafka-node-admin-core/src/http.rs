@@ -149,6 +149,7 @@ impl ControlPlane {
             build_id = tracing::field::Empty,
             change = %serde_json::to_string(&change).unwrap_or_default(),
             previous_build_id = tracing::field::Empty,
+            minted_meshes = tracing::field::Empty,
         );
         self.submit_in(span, route, change).await
     }
@@ -200,6 +201,13 @@ impl ControlPlane {
             let build_id = BuildId::mint();
             span.record("build_id", build_id.0.as_str());
             span.record("previous_build_id", current.build_id.0.as_str());
+            // The meshes this Build brings into the accepted topology, each under the id `compile`
+            // minted for it now, once (node-identity-and-state.md §2.7, "Who mints it"): every run of
+            // the mesh's create-mesh, by any executor and any attempt, claims with that id.
+            let minted: Vec<String> = topology.meshes.values().filter(|m| !current.topology.meshes.values().any(|c| c.mesh_id == m.mesh_id)).map(|m| format!("{}={}", m.name, m.mesh_id)).collect();
+            if !minted.is_empty() {
+                span.record("minted_meshes", minted.join(",").as_str());
+            }
             let accepted = BuildAccepted {
                 build_id: build_id.clone(),
                 topology,
