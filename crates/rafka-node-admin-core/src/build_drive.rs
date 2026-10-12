@@ -157,6 +157,17 @@ struct DriveState {
     terminal: Option<BuildReply>,
     lost: Option<SeatLoss>,
     stall: Option<String>,
+    /// The attempt that ended handed back to this fabric-primary with nothing moved, and what its
+    /// resume decides on then ([`DriveEnv::world`]): no next attempt is claimed until that moves.
+    idle: Option<Idle>,
+}
+
+/// What a drive waits on after an attempt it handed back to itself ended with nothing moved.
+#[derive(Clone)]
+struct Idle {
+    attempt: u32,
+    world: String,
+    why: String,
 }
 
 /// One Build's drive: the frames its callers read. The task that makes them is [`DriveEnv::run`].
@@ -308,6 +319,14 @@ impl Drive {
         self.state.lock().unwrap().stall = None;
     }
 
+    fn idle(&self) -> Option<Idle> {
+        self.state.lock().unwrap().idle.clone()
+    }
+
+    fn set_idle(&self, idle: Option<Idle>) {
+        self.state.lock().unwrap().idle = idle;
+    }
+
     /// Whether this drive holds the `Complete` frame of the operation `key` in an attempt `counts`
     /// admits: an executor's stream reply (a `Step` frame goes out only once its receipt is durable on
     /// the executor that wrote it) or a receipt read said the operation completed.
@@ -397,8 +416,6 @@ pub struct DriveEnv {
     pub me: PathName,
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
-    /// `Fabric.build_id` as this admin holds it: only the accepted Build is driven.
-    pub accepted: Arc<crate::accepted::AcceptedStore>,
     /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The claim door: the one place an attempt's claim is decided.
@@ -504,6 +521,31 @@ fn node_of_key(key: &str) -> Option<PathName> {
 /// is the authority: a remote executor's receipt reaches this admin's log by the Build topic, and
 /// nothing waits for that copy. A lost executor's run reported nothing: what it left is planned from
 /// the view again, and the create pipeline's fence decides against the world.
+/// Whether an attempt ended incomplete: `me` ran it as its executor and it was handed back to `me`
+/// having moved nothing. A hand-off to `me` that another executor reported is that executor's end,
+/// and the drive attaching to the finished run of it replays the same terminal.
+fn ended_incomplete(me: &PathName, executor: &PathName, to: &PathName, before: &str, after: &str) -> bool {
+    executor == me && to == me && before == after
+}
+
+/// What the next claim of a Build decides on: the first operation left, the receipts the Build
+/// holds, and the members of the mesh that operation acts on, by birth, status and seat. An attempt
+/// that ended with this unchanged would end the same way again.
+fn world(drive: &Drive, p: &BuildProjection, t: &Topology) -> String {
+    let first = left(drive, p, t).into_iter().next();
+    let mesh = first.as_ref().and_then(|op| match op {
+        BuildOperation::CreateMesh { mesh, .. } | BuildOperation::ShutdownMesh { mesh, .. } => Some(mesh.clone()),
+        other => other.node().map(|n| n.mesh.clone()),
+    });
+    let mut members: Vec<String> = t
+        .members()
+        .filter(|n| Some(&n.mesh) == mesh.as_ref())
+        .map(|n| format!("{}:{}:{:?}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("-"), n.status, n.is_primary))
+        .collect();
+    members.sort();
+    format!("{} receipts={} members=[{}]", first.map(|op| op.key()).unwrap_or_default(), p.steps.len(), members.join(","))
+}
+
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
     crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
 }
@@ -722,8 +764,10 @@ impl DriveEnv {
                 drive.finish(BuildReply::Complete { build_id: id.0.clone(), attempt: p.attempt });
                 return DriveEnd::Terminal;
             }
-            if self.accepted.build_id().await.as_ref() != Some(&id) {
-                return self.stalled(drive, format!("{}: Build {id} is not the accepted Build (Fabric.build_id): nothing drives it", self.me));
+            match crate::build_state::drivable(&*self.builds, &p).await {
+                Ok(true) => {}
+                Ok(false) => return self.stalled(drive, format!("{}: Build {id} is neither the current Build nor a failed Build accepted after it: nothing drives it", self.me)),
+                Err(e) => return self.stalled(drive, format!("{}: the current Build could not be read to admit Build {id}: {e}", self.me)),
             }
             // The claim's holder was proven departed: by this pass, or by an earlier pass or the
             // drift reconcile, whose proof this admin recorded for its exact birth. Either way the
@@ -743,6 +787,9 @@ impl DriveEnv {
                 };
                 (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
             } else {
+                if let Some(end) = self.idle_until_moved(drive, &p).await {
+                    return end;
+                }
                 match self.claim_next(drive, &p, handed_to.take()).await {
                     Ok(c) => c,
                     Err(end) => return end,
@@ -773,6 +820,12 @@ impl DriveEnv {
                     Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f),
                 }
             };
+            // What the attempt decides on, as claimed: an attempt handed back to this admin with this
+            // unchanged would end the same way again.
+            let before = match self.builds.read_build(&id).await {
+                Ok(claimed) => Some(world(drive, &claimed, &self.topology.read().await.clone())),
+                Err(_) => None,
+            };
             let inner = self.run_inner(drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
             drive.clear_stall();
             match inner {
@@ -798,6 +851,23 @@ impl DriveEnv {
                     let Some(next) = parse_path(&to) else {
                         return self.stalled(drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
                     };
+                    // An attempt handed back to this admin that moved nothing (it ended incomplete: a
+                    // participant lost, a proof not in) would be claimed again and end the same way: the
+                    // Build stays in progress, and the next attempt waits for what it decides on to move.
+                    if next == self.me {
+                        if let (Some(before), Ok(ended)) = (before, self.builds.read_build(&id).await) {
+                            let after = world(drive, &ended, &self.topology.read().await.clone());
+                            if ended_incomplete(&self.me, &executor, &next, &before, &after) {
+                                let why = format!(
+                                    "{}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves",
+                                    self.me
+                                );
+                                self.blocked(drive, attempt, "", "incomplete", &why);
+                                drive.set_idle(Some(Idle { attempt, world: after, why: why.clone() }));
+                                return self.stalled(drive, why);
+                            }
+                        }
+                    }
                     handed_to = Some(next);
                     departed = None;
                 }
@@ -841,6 +911,22 @@ impl DriveEnv {
                 }
             }
         }
+    }
+
+    /// The drive waits, named, while the attempt it handed back to itself with nothing moved has not
+    /// seen what its resume decides on move ([`world`]); the stall is the same reason, named once.
+    async fn idle_until_moved(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
+        let idle = drive.idle()?;
+        if idle.attempt != p.attempt {
+            drive.set_idle(None);
+            return None;
+        }
+        let now = world(drive, p, &self.topology.read().await.clone());
+        if now == idle.world {
+            return Some(self.stalled(drive, idle.why));
+        }
+        drive.set_idle(None);
+        None
     }
 
     /// Claim the next attempt of `p` for the admin that runs what is left (or `forced`, the admin a
@@ -1019,5 +1105,28 @@ pub fn describe(r: &BuildReply) -> String {
         BuildReply::UnknownBuild { build_id } => format!("unknown-build ({build_id})"),
         BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::Draining { reason } | BuildReply::PeerUnresolved { reason } | BuildReply::Unauthorized { reason } => format!("{} ({reason})", r.name()),
         other => other.name().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CONTRACT (R-BI4; node-rpc-envelope.md TakeSeats: "N resumes the same attempt as the new
+    /// fabric-primary"): an attempt ended incomplete only when this admin ran it itself and it came
+    /// back to this admin having moved nothing. A hand-off to this admin that another executor
+    /// reported (the old fabric-primary's attempt, handed to the new seat before its operation ran, and
+    /// replayed from its run when the new seat's drive attaches to it) is that executor's end: the
+    /// drive claims the next attempt for the admin the view names, it does not idle.
+    /// Must NOT happen: the new seat's drive idling on the replay of an attempt it never ran, and
+    /// never claiming the attempt the old seat handed it.
+    #[test]
+    fn an_attempt_another_executor_handed_to_this_admin_is_not_an_attempt_that_ended_incomplete() {
+        let path = |p: &str| p.parse::<PathName>().unwrap();
+        let (me, old_seat) = (path("mesh2.admin.1"), path("mesh1.admin.1"));
+        assert!(!ended_incomplete(&me, &old_seat, &me, "w", "w"), "the old seat's attempt, replayed to the new seat's drive, moved nothing in this dispatch and is still not incomplete");
+        assert!(ended_incomplete(&me, &me, &me, "w", "w"), "an attempt this admin ran, handed back to it with nothing moved, ended incomplete");
+        assert!(!ended_incomplete(&me, &me, &me, "w", "w + a receipt"), "an attempt that moved something is progress, the next is claimed at once");
+        assert!(!ended_incomplete(&me, &me, &old_seat, "w", "w"), "an attempt handed to another admin is that admin's");
     }
 }

@@ -1,7 +1,8 @@
 //! The accepted topology: what a Build carries (RDM #47).
 //!
-//! `Fabric.build_id` names one Build, and that Build holds the complete Fabric topology as exact
-//! node `path.name`s per Mesh ([`FabricTopology`]). A submitted change ([`TopologyChange`]) is
+//! The current Build (the Build entities read last in, first out, R-BI3:
+//! [`crate::build_state::BuildStateAdapter::current_build`]) holds the complete Fabric topology as
+//! exact node `path.name`s per Mesh ([`FabricTopology`]). A submitted change ([`TopologyChange`]) is
 //! input only: [`compile`] applies it once to the current accepted topology and yields the next
 //! complete map; the change itself is kept on the Build as history, never read to plan. Planning
 //! is always `topology − observed` ([`plan`]). A restart or replacement changes no topology: it is
@@ -13,11 +14,10 @@
 
 use rafka_mesh_entity::meta::NodeMeta;
 use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired};
-use crate::build_state::{BuildProjection, BuildStateAdapter, BuildStateError};
-use crate::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricStorage, FabricStorageError};
+use crate::build_state::{BuildStateAdapter, BuildStateError};
+use crate::fabric_storage::{FabricIdentity, FabricStorage, FabricStorageError};
 use crate::model::{is_valid_mesh_name, IncarnationId, MeshId, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use tracing::Instrument as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -672,141 +672,54 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     BuildPlan { operations: ops }
 }
 
-/// `Fabric.build_id` as this admin holds it: the pointer rows in `fabric.storage` folded with the
-/// pointer it learned, and the Build it names in `builds.storage`. `fabric/` has one writer, the
-/// fabric-primary (R14 item 2): it moves the pointer on acceptance (Build persisted first) through
-/// `fabric.storage`. Every admin that hears a Fabric record (its entry answer, the Build topic)
-/// holds it as its own runtime state, never as a row: before the fabric's first state-commit the
-/// store root holds nothing to read, and after it the fabric-primary's rows are there. A learned
-/// record is taken only once its Build is held locally. Each move is ordered by its Build's
-/// submission time, so a lagging copy never moves the pointer back.
+/// The Fabric identity as this admin holds it: the identity row in `fabric.storage`, or, while the
+/// store holds none, the identity it learned (its entry answer, the Build topic) as its own runtime
+/// state, never as a row. `fabric/` has one writer, the fabric-primary (R14 item 2). The Fabric row
+/// carries no pointer to the newest Build (R-BI3): which Build is current is read from the Build
+/// entities alone ([`BuildStateAdapter::current_build`]).
 pub struct AcceptedStore {
     storage: Arc<dyn FabricStorage>,
-    /// The Fabric identity and pointer this admin learned last: runtime state, folded with the rows.
-    learned: Mutex<Option<(FabricIdentity, FabricPointer)>>,
-    /// A learned record whose Build is not held yet.
-    wanted: Mutex<Option<FabricRecord>>,
+    /// The Fabric identity this admin learned: runtime state, read while the store holds none.
+    learned: Mutex<Option<FabricIdentity>>,
     node: String,
 }
 
 impl AcceptedStore {
     /// A store over `storage`, held by the admin named `node`.
     pub fn new(storage: Arc<dyn FabricStorage>, node: impl Into<String>) -> Self {
-        Self { storage, learned: Mutex::new(None), wanted: Mutex::new(None), node: node.into() }
+        Self { storage, learned: Mutex::new(None), node: node.into() }
     }
 
-    /// The fabric record held, when one is: the identity row (or the learned identity while the
-    /// store holds none) and the newest of the pointer rows and the learned pointer.
-    pub async fn record(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        let (identity, pointer) = self.storage.fabric_rows().await?;
-        let learned = self.learned.lock().unwrap().clone();
-        let identity = identity.or_else(|| learned.as_ref().map(|(i, _)| i.clone()));
-        let pointer = pointer.into_iter().chain(learned.map(|(_, p)| p)).max_by(|a, b| a.order().cmp(&b.order()));
-        Ok(identity.map(|i| FabricRecord { fabric_id: i.fabric_id, name: i.name, build_id: pointer.map(|p| p.build_id) }))
+    /// The Fabric identity held, when one is: the identity row, or the learned identity while the
+    /// store holds none.
+    pub async fn record(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        let held = self.storage.fabric().await?;
+        Ok(held.or_else(|| self.learned.lock().unwrap().clone()))
     }
 
-    /// The Build the pointer names, when it names one.
-    pub async fn build_id(&self) -> Option<BuildId> {
-        self.record().await.ok().flatten().and_then(|r| r.build_id)
-    }
-
-    /// The pointer this admin learned (its entry answer, the Build topic), when it learned one: what
-    /// it writes as the fabric-primary when the seat comes to it (`crate::admin`'s fabric rows).
-    pub fn learned_pointer(&self) -> Option<FabricPointer> {
-        self.learned.lock().unwrap().as_ref().map(|(_, p)| p.clone())
-    }
-
-    /// The accepted Build: the one the pointer names, as `builds` holds it.
-    pub async fn current(&self, builds: &dyn BuildStateAdapter) -> Option<BuildProjection> {
-        let id = self.build_id().await?;
-        builds.read_build(&id).await.ok()
-    }
-
-    /// The fabric-primary moves the pointer to `build_id` (its Build is already durable in
-    /// `builds.storage`; `submitted_at_ms` is that Build's submission time, the order of pointer
-    /// rows): a blind put of the move's own row. Returns the record now held, the identity and the
-    /// newest pointer folded.
-    pub async fn point(&self, build_id: &BuildId, submitted_at_ms: u64, via: &str) -> Result<FabricRecord, FabricStorageError> {
-        let before = self.record().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "no Fabric identity to point".into() })?;
-        // The span opens BEFORE the write: the pointer is readable (by the Ready guard, by a
-        // reader) the moment the row is renamed into place, which is before `put_pointer`
-        // returns, so a span opened after the write can start later than a read that already saw it.
-        let span = tracing::info_span!(
-            "rdm.node_admin.fabric.update.via-build-accepted",
-            node = %self.node,
-            fabric_id = %before.fabric_id,
-            build_id = %build_id,
-            previous_build_id = %before.build_id.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
-            via,
-        );
-        let put = self.storage.put_pointer(&FabricPointer { build_id: build_id.clone(), submitted_at_ms }).instrument(span.clone()).await;
-        match &put {
-            Ok(()) => span.in_scope(|| tracing::info!("Fabric.build_id moved")),
-            Err(e) => span.in_scope(|| tracing::info!(error = %e, "Fabric.build_id could not be moved")),
-        }
-        put?;
-        self.record().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the Fabric identity vanished after the pointer was put".into() })
-    }
-
-    /// A Fabric record heard on the Build topic or in an entry answer (`from`). Taken when its Build
-    /// is held, as this admin's runtime state (nothing is written: the fabric-primary wrote it);
-    /// otherwise remembered until the Build's facts arrive. A record naming another Fabric, or a
-    /// pointer older than the one learned, is ordered out.
-    pub async fn learn(&self, record: FabricRecord, builds: &dyn BuildStateAdapter, from: &str) {
-        let Some(id) = record.build_id.clone() else { return };
-        let before = match self.record().await {
-            Ok(Some(mine)) if mine.fabric_id != record.fabric_id => return,
-            Ok(mine) => mine,
-            Err(_) => return,
-        };
-        if self.learned.lock().unwrap().as_ref().is_some_and(|(_, p)| p.build_id == id) {
+    /// A Fabric identity heard in an entry answer or on the Build topic (`from`), taken as this
+    /// admin's runtime state (nothing is written: the fabric-primary writes `fabric/`). One naming
+    /// another Fabric than the one held is not taken.
+    pub async fn learn(&self, identity: FabricIdentity, from: &str) {
+        // An identity already held (on the store root, or learned) stands: the same Fabric's is
+        // nothing new, and another Fabric's is not this admin's.
+        if !matches!(self.record().await, Ok(None)) {
             return;
         }
-        let Ok(named) = builds.read_build(&id).await else {
-            *self.wanted.lock().unwrap() = Some(record);
+        let mut learned = self.learned.lock().unwrap();
+        if learned.is_some() {
             return;
-        };
-        let pointer = FabricPointer { build_id: id.clone(), submitted_at_ms: named.submitted_at_ms };
-        {
-            let mut learned = self.learned.lock().unwrap();
-            if learned.as_ref().is_some_and(|(_, p)| p.order() >= pointer.order()) {
-                *self.wanted.lock().unwrap() = None;
-                return;
-            }
-            *learned = Some((FabricIdentity { fabric_id: record.fabric_id.clone(), name: record.name.clone() }, pointer));
         }
-        *self.wanted.lock().unwrap() = None;
-        let previous = before.as_ref().and_then(|r| r.build_id.clone());
-        tracing::info_span!(
-            "rdm.node_admin.fabric.update.via-pointer-learned",
-            node = %self.node,
-            fabric_id = %record.fabric_id,
-            build_id = %id,
-            previous_build_id = %previous.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
-            on_store_root = previous.as_ref() == Some(&id),
-            from = %from,
-        )
-        .in_scope(|| tracing::info!("this admin holds the Fabric.build_id it heard as its own runtime state; the fabric-primary writes fabric/"));
-    }
-
-    /// The Build a remembered Fabric record names: the pointer this admin heard and cannot take yet.
-    pub(crate) fn wanted_build_id(&self) -> Option<BuildId> {
-        self.wanted.lock().unwrap().as_ref().and_then(|r| r.build_id.clone())
-    }
-
-    /// Facts arrived: a remembered record whose Build is now held is taken.
-    pub async fn resolve_wanted(&self, builds: &dyn BuildStateAdapter) {
-        let wanted = self.wanted.lock().unwrap().clone();
-        if let Some(r) = wanted {
-            self.learn(r, builds, "catch-up").await;
-        }
+        tracing::info_span!("rdm.node_admin.fabric.update.via-identity-learned", node = %self.node, fabric_id = %identity.fabric_id, from = %from)
+            .in_scope(|| tracing::info!("this admin holds the Fabric identity it heard as its own runtime state; the fabric-primary writes fabric/"));
+        *learned = Some(identity);
     }
 }
 
 impl AcceptedStore {
-    /// A store over memory `fabric.storage` whose pointer names a Build of `topology` that `builds`
-    /// holds settled (accepted, attempt 1 claimed by `me`, converged). Fixtures: what a Day 0 plus
-    /// one converged Build leaves behind.
+    /// A store over memory `fabric.storage` holding the Fabric's identity, and a Build of `topology`
+    /// that `builds` holds settled (accepted, attempt 1 claimed by `me`, converged): the current
+    /// Build. Fixtures: what a Day 0 plus one converged Build leaves behind.
     pub async fn seeded(builds: &dyn BuildStateAdapter, fabric_id: crate::model::FabricId, topology: FabricTopology, me: &str) -> Result<Arc<Self>, BuildStateError> {
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         storage
@@ -815,12 +728,11 @@ impl AcceptedStore {
             .map_err(|held| BuildStateError::Io(held.to_string()))?;
         let store = Arc::new(Self::new(storage, me));
         let build_id = BuildId::mint();
-        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 0 }).await?;
+        crate::build_state::accept(builds, &crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 0 }, None, me, "seeded").await?;
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: me.into() }).await?;
         builds
             .append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged })
             .await?;
-        store.point(&build_id, 0, "seeded").await.map_err(|e| BuildStateError::Io(e.to_string()))?;
         Ok(store)
     }
 }
@@ -1251,6 +1163,7 @@ mod tests {
             attempt_actions: [(8, AttemptAction::Delete { path: path.clone(), from_incarnation: other.clone() }), (9, delete.clone())].into(),
             attempt_executors: Default::default(),
             opened: 0,
+            completed_at: None,
             reported: Default::default(),
         };
         let gone = mn();
@@ -1296,6 +1209,7 @@ mod tests {
             attempt_actions: [(6, AttemptAction::Stop { path: path.clone(), from_incarnation: other.clone() }), (7, AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() })].into(),
             attempt_executors: Default::default(),
             opened: 0,
+            completed_at: None,
             reported: Default::default(),
         };
         let mut gone = mn();
@@ -1343,6 +1257,7 @@ mod tests {
             attempt_actions: Default::default(),
             attempt_executors: Default::default(),
             opened: 0,
+            completed_at: None,
             reported: Default::default(),
         };
         let replace = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
@@ -1423,6 +1338,7 @@ mod tests {
             attempt_actions: Default::default(),
             attempt_executors: Default::default(),
             opened: 0,
+            completed_at: None,
             reported: Default::default(),
         };
         let keys = |steps: Vec<BuildStepReceipt>, o: &Topology| plan_for_build(&build(&path, &node_id, steps), o).operations.iter().map(|op| op.key()).collect::<Vec<_>>();

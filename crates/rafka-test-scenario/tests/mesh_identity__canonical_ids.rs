@@ -87,6 +87,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         assert_eq!(s(&own["id"]), fabric_id, "{} names the Fabric by the same id", admin["name"]);
     }
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Restart keeps NodeId, FabricId and the incarnation: the process is stopped and started.
     let before = nodes.iter().find(|n| n["name"] == "mesh2.rpc.2").unwrap().clone();
     let (status, a) = estate.post("/api/nodes/mesh2.rpc.2/restart", &json!({})).await;

@@ -986,6 +986,19 @@ pub enum StatusReply {
         /// Why, by name, naming the label; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
+    /// An `UpdateNode` at a mesh-primary whose fabric has not yet first reached ready-for-traffic
+    /// (states.md "The initial fabric before ready-for-traffic"): before state-commit a row lives
+    /// only in its holder's scratchpad, so a caller's node.update writes none. Nothing is written
+    /// and no claim is made. The Build family's `Rejected { reason: "fabric-not-ready", detail }`
+    /// is the same refusal at build.create.
+    RejectedFabricNotReady {
+        /// The refused workflow and its subject, by name (`node.update <path.name>`); within
+        /// [`MAX_REFUSAL_NODE_BYTES`].
+        workflow: String,
+        /// The fabric's current status as the refusing admin holds it (`pending`, `state-sync`,
+        /// `state-commit`); within [`MAX_REFUSAL_NODE_BYTES`].
+        status: String,
+    },
 }
 
 /// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -1098,6 +1111,12 @@ impl StatusReply {
         Self::RejectedTags { reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
+    /// `RejectedFabricNotReady` for `workflow` while the fabric holds `status`, each within its budget
+    /// so the reply always fits the Status reply bound.
+    pub fn rejected_fabric_not_ready(workflow: &str, status: &str) -> Self {
+        Self::RejectedFabricNotReady { workflow: within(workflow, MAX_REFUSAL_NODE_BYTES), status: within(status, MAX_REFUSAL_NODE_BYTES) }
+    }
+
     /// `NodeRowRefused` for `node`, each field within its budget (as [`Self::config_row_refused`]).
     pub fn node_row_refused(node: &str, reason: &str) -> Self {
         Self::NodeRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
@@ -1184,6 +1203,7 @@ impl StatusReply {
             Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             Self::RejectedSourceFailed { .. } => "rejected-source-failed",
             Self::RejectedTags { .. } => "rejected-tags",
+            Self::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
         }
     }
 }
@@ -1202,7 +1222,7 @@ impl NodeProtocol for Status {
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 26;
-    const REPLY_VARIANTS: u32 = 44;
+    const REPLY_VARIANTS: u32 = 45;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1246,7 +1266,8 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedConflictingRound { .. }
             | StatusReply::RejectedIncompleteManifest { .. }
             | StatusReply::RejectedSourceFailed { .. }
-            | StatusReply::RejectedTags { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::RejectedTags { .. }
+            | StatusReply::RejectedFabricNotReady { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -1351,6 +1372,7 @@ mod tests {
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::ProtocolRefusal),
             (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts bld_1", "unreached: no path"), ReplyKind::ProtocolRefusal),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::ProtocolRefusal),
+            (StatusReply::rejected_fabric_not_ready("node.update mesh1.rpc.1", "state-sync"), ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {

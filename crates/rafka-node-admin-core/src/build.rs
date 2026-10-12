@@ -371,6 +371,15 @@ pub enum BuildReject {
         /// The open Build.
         build_id: String,
     },
+    /// The workflow would move a seat or write a caller's row while the initial fabric has not
+    /// first reached ready-for-traffic: before state-commit its rows live only in their holders'
+    /// scratchpads (states.md, "The initial fabric before ready-for-traffic"; R-PB1, R-PC1).
+    FabricNotReady {
+        /// The refused workflow and its subject (`node.stop mesh1.rpc.1`, `mesh.delete mesh2`).
+        workflow: String,
+        /// The fabric's status as this admin holds it.
+        status: String,
+    },
 }
 
 impl BuildReject {
@@ -395,6 +404,7 @@ impl BuildReject {
             Self::LastAdmin { .. } => "last-admin",
             Self::NodeNotStopped { .. } => "node-not-stopped",
             Self::ReferencedByOpenBuild { .. } => "referenced-by-open-build",
+            Self::FabricNotReady { .. } => "fabric-not-ready",
         }
     }
 }
@@ -424,6 +434,10 @@ impl fmt::Display for BuildReject {
             ),
             Self::NodeNotStopped { node, found } => write!(f, "node `{node}` is not the birth the stopped-node collector selected at its delete's admission: {found}; nothing is deleted from the scan's decision"),
             Self::ReferencedByOpenBuild { node, build_id } => write!(f, "node `{node}`'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds"),
+            Self::FabricNotReady { workflow, status } => write!(
+                f,
+                "{workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit its rows live only in their holders' scratchpads, so nothing that moves a seat or writes caller state runs"
+            ),
             Self::LastAdmin { node, mesh, action } => write!(
                 f,
                 "node `{node}` holds the fabric-primary seat and no other live node-admin of mesh `{mesh}` can take its seats: a {action} of it is refused; TakeSeats moves seats inside the holder's mesh only, and the fabric seat leaves mesh `{mesh}` only through TakeFabricPrimary inside a mesh-leave"

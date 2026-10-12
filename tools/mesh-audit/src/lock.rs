@@ -269,7 +269,7 @@ pub const DRAIN_ARMS: [&str; 8] = ["Admitted", "AlreadyAdmitted", "Stopped", "St
 
 /// The frozen 0x1B counts.
 pub const STATUS_REQUESTS: u32 = 26;
-pub const STATUS_REPLIES: u32 = 44;
+pub const STATUS_REPLIES: u32 = 45;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -620,7 +620,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 STATUS_WIRE,
                 &[
                     "fn requests_match_the_frozen_twenty_six_variant_wire_schema",
-                    "fn replies_match_the_frozen_forty_four_variant_wire_schema",
+                    "fn replies_match_the_frozen_forty_five_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
                     "Status::REPLY_VARIANTS",
@@ -668,7 +668,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, TOPOLOGY_SOURCE, &["chunks_of", "take_read_chunk", "ProjectionEntry::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
             require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_fourteen_variant_wire_schema"], ratchet, &mut out);
             require(root, BUILD_FACTS_SOURCE, &["encode_chunks", "BuildMessage::from_bytes", "rdm.node_admin.build.serve.via-fetch-facts"], ratchet, &mut out);
-            require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "resolve_wanted", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
+            require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_ten_variant_wire_schema"], ratchet, &mut out);
             require(root, HANDOVER_SOURCE, &["rdm.node_admin.fabric.update.via-handover-committed", "rdm.node_admin.fabric.update.via-handover-confirmed", "rdm.node_admin.fabric.reject.via-handover", "announce_new_fabric_primary", "put_seat"], ratchet, &mut out);
             require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_three_variant_wire_schema", "fn replies_match_the_frozen_nineteen_variant_wire_schema"], ratchet, &mut out);

@@ -139,6 +139,12 @@ async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)
     frames.extend(until_complete(&mut stream).await);
     estate.settled_shape(shape, Duration::from_secs(90)).await;
     caller.learn().await;
+    // A workflow a caller submits is refused until the initial fabric has first reached ready-for-traffic
+    // (states.md "The initial fabric before ready-for-traffic").
+    Fabrics::new(carrier.clone())
+        .fact("ready-for-traffic: the initial fabric has climbed", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic)
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
     (carrier, frames)
 }
 

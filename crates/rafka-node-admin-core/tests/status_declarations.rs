@@ -112,7 +112,8 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         row_moved: Default::default(),
         loads: None,
         book: None,
-        accepted: std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test")),
+        first_ready: Default::default(),
+        builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
     });
     // The rig's view stands for the admin's projection: a moved row moves the birth's entry.
     let moved_view = topology.clone();
@@ -1286,6 +1287,47 @@ fn update_node_tagged(b: &Birth, name: &str, tags: &[&str]) -> StatusRequest {
     StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into(), tags: labels(tags) }
 }
 
+/// CONTRACT (R-PC1, states.md "The initial fabric before ready-for-traffic"; node-rpc-envelope.md Status
+/// 0x1B): until the initial fabric has first reached ready-for-traffic, a caller's `UpdateNode` at the
+/// node's mesh-primary is refused `RejectedFabricNotReady`, naming the workflow with its node and the
+/// fabric's status (state-sync). Nothing is written: no row at `mesh1.rpc.1`, no tags index entry, and the
+/// birth is told nothing. One `rdm.node_admin.node.reject.via-fabric-not-ready` span says the same, and
+/// the update span ends `rejected-fabric-not-ready`. Once the fabric has first reached ready-for-traffic
+/// the same put ends `NodeUpdated`, and it still does when a resize has put the fabric back to pending.
+/// What must NOT happen: a row written to a scratchpad the successor of this mesh-primary cannot read.
+#[test]
+fn a_node_update_before_the_fabric_first_reaches_ready_for_traffic_is_refused_by_name_and_writes_nothing() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let rpc1 = &b["rpc1"];
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        rig.topology.write().await.fabric.status = ScopeStatus::StateSync;
+
+        let refused = reply(&call(&rig, &b["admin2"], &update_node_tagged(rpc1, "mesh1.rpc.1", &["rabbit"])).await);
+        assert_eq!(refused, StatusReply::RejectedFabricNotReady { workflow: "node.update mesh1.rpc.1".into(), status: "state-sync".into() });
+        assert_eq!(rig.nodes.node_row_at(&rpc1.node.name).await.unwrap(), None, "no row is written");
+        assert!(rig.nodes.tagged("rabbit").await.unwrap().is_empty(), "no tags index entry is written");
+        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+
+        // The fabric reaches ready-for-traffic: the same put is admitted.
+        rig.authority.first_ready.reach("the test fabric reached ready-for-traffic");
+        rig.topology.write().await.fabric.status = ScopeStatus::Pending;
+        let put = reply(&call(&rig, &b["admin2"], &update_node_tagged(rpc1, "mesh1.rpc.1", &["rabbit"])).await);
+        assert_eq!(put, StatusReply::NodeUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() }, "admitted once the fabric has first been ready-for-traffic, a resize notwithstanding");
+        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [rpc1.node.node_id.clone()].into());
+    });
+    let rejects = cap.spans("rdm.node_admin.node.reject.via-fabric-not-ready");
+    assert_eq!(rejects.len(), 1, "{rejects:?}");
+    let (trace_id, attrs) = &rejects[0];
+    assert_eq!((attrs.get("workflow").map(String::as_str), attrs.get("status").map(String::as_str)), (Some("node.update mesh1.rpc.1"), Some("state-sync")), "{attrs:?}");
+    let updates = cap.spans("rdm.node_admin.node.update.via-update-node");
+    let outcomes: Vec<_> = updates.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect();
+    assert_eq!(outcomes, vec!["rejected-fabric-not-ready".to_string(), "node-updated".to_string()], "{updates:?}");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.update mesh1.rpc.1 status=state-sync; update outcome=rejected-fabric-not-ready");
+}
+
 /// CONTRACT (R-TG1, Luke 2026-10-12: tags are labels in the node's meta, set through node.update;
 /// node-update.md step 7: "A change that touches no name completes after the row is written";
 /// fabric-node-lifecycle.md "A rewrite is lossless for every field its writer knows"): a caller's
@@ -1476,26 +1518,29 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)");
 }
 
-/// CONTRACT (node-identity-and-state.md §2.8: a fabric's fields "are `id`, `name`, `path`, `state`,
-/// `status` and `build_id`. `build_id` is `Fabric.build_id`, moved only by the fabric-primary";
-/// node-rpc-envelope.md typed objects: `fabric.get` answers the fabric): `fabric.get` (op 0x1B
-/// `GetFabric`) at a node-admin answers the fabric's `build_id`, the Build its fabric record names,
-/// and an admin whose record names no accepted Build answers none. Must NOT happen: a caller that
-/// needs the accepted Build reading it from anywhere but the fabric's own read.
+/// CONTRACT (build.md §4: the current Build is the first in progress or completed, read last in,
+/// first out; R-BI3, docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md: "Each accepted Build is its
+/// own entity in the builds store, written once" and "The Fabric row carries no pointer to the newest
+/// Build"; node-rpc-envelope.md typed objects: `fabric.get` answers the fabric): `fabric.get` (op 0x1B
+/// `GetFabric`) at a node-admin answers the fabric's `build_id`, the current Build its own builds store
+/// returns, skipping a failed Build, and an admin whose builds store holds no Build in progress or
+/// completed answers none. Must NOT happen: a caller that needs the current Build reading it from
+/// anywhere but the fabric's own read, or `fabric.get` naming a failed Build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fabric_get_answers_the_build_id_the_admins_fabric_record_names() {
+async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips_a_failed_one() {
     use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology};
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
     let admin = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes: vec![admin.node.clone()],
     };
-    let builds = rafka_node_admin_core::build_state::MemoryBuildStateAdapter::default();
-    let seeded = AcceptedStore::seeded(&builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), "mesh1.admin.1").await.unwrap();
-    let held = seeded.build_id().await.expect("the seeded record names its Build").0;
-    let empty = Arc::new(AcceptedStore::new(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "mesh1.admin.1"));
-    let answer = |accepted: Arc<AcceptedStore>| {
+    let builds = Arc::new(MemoryBuildStateAdapter::default());
+    AcceptedStore::seeded(&*builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), "mesh1.admin.1").await.unwrap();
+    let held = builds.current_build().await.unwrap().into_build_id().expect("the seeded Build is current").0;
+    let empty = Arc::new(MemoryBuildStateAdapter::default());
+    let answer = |builds: Arc<dyn BuildStateAdapter>| {
         let view = view.clone();
         let admin = admin.node.clone();
         async move {
@@ -1522,7 +1567,8 @@ async fn fabric_get_answers_the_build_id_the_admins_fabric_record_names() {
                 row_moved: Default::default(),
                 loads: Some(Arc::new(BTreeMap::new)),
                 book: None,
-                accepted,
+                builds,
+                first_ready: Default::default(),
             };
             match authority.apply(None, &StatusRequest::GetFabric).await {
                 StatusReply::Fabric { fabric } => fabric,
@@ -1530,8 +1576,15 @@ async fn fabric_get_answers_the_build_id_the_admins_fabric_record_names() {
             }
         }
     };
-    assert_eq!(answer(seeded.clone()).await.build_id, Some(held), "fabric.get answers the Build the admin's fabric record names");
-    assert_eq!(answer(empty).await.build_id, None, "an admin whose record names no accepted Build answers none");
+    assert_eq!(answer(builds.clone()).await.build_id, Some(held.clone()), "fabric.get answers the current Build the admin's builds store returns");
+    // A newer Build that failed is skipped: the older completed one is still the current Build.
+    let newer = rafka_node_admin_core::build::BuildId::mint();
+    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: newer.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    assert_eq!(answer(builds.clone()).await.build_id, Some(newer.0.clone()), "the newer Build in progress is the current Build");
+    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }).await.unwrap();
+    assert_eq!(answer(builds).await.build_id, Some(held), "a failed Build is skipped: fabric.get answers the Build before it");
+    assert_eq!(answer(empty).await.build_id, None, "an admin whose builds store holds no Build in progress or completed answers none");
 }
 
 /// CONTRACT (node-rpc-envelope.md Status: "`RejectedNotAuthority` says the receiver is not the

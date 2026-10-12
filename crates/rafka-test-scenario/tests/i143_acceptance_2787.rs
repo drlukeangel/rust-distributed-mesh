@@ -206,7 +206,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
 /// replace and hand-off as Builds the node-admin rectifier executes, and kills and holds of exact
 /// runtimes on the process provider. After every action the estate converges (the Build's receipts
 /// name the new birth, every live admin holds the same births) and the invariants hold: one current
-/// birth per path, one fabric-primary, `Fabric.build_id` held, no peer mesh unheard, the seats
+/// birth per path, one fabric-primary, the current build_id held, no peer mesh unheard, the seats
 /// equal the public candidates', every rpc node reachable on its current birth, no Build minted
 /// for drift, a held runtime comes back as the same birth, a retired node is never dispatched.
 /// At the end every issued operation is accounted: issued = Reply + NotSent + Unserved +

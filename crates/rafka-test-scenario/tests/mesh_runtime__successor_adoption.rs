@@ -64,6 +64,8 @@ async fn a_successor_manages_births_it_never_launched() {
     // Only now is the successor born: A is no longer active.
     build(&estate, 2, 3).await;
     let nodes = estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
+    // The initial fabric refuses a node restart and a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let successor = nodes.iter().find(|n| n["name"] == "mesh1.admin.2").cloned().unwrap();
     let launcher = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").cloned().unwrap();
     let base = s(&successor["admin_api_base"]);
@@ -95,12 +97,14 @@ async fn a_successor_manages_births_it_never_launched() {
     let (status, a) = estate.post("/api/nodes/mesh1.rpc.2/restart", &json!({})).await;
     assert_eq!(status, 202, "{a}");
     estate.await_attempt(a["build_id"].as_str().unwrap(), Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let after = wait_for("mesh1.rpc.2 ready under a new incarnation", Duration::from_secs(30), || async {
+    // A restart keeps the birth (node-restart.md: "Same node.id, incarnation, immutable path, name, endpoint
+    // key, bound port, bin and data dir"): the node is ready again as the same birth.
+    let after = wait_for("mesh1.rpc.2 ready again as the same birth", Duration::from_secs(30), || async {
         let n = estate.node_opt("mesh1.rpc.2").await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != restarted["incarnation_id"]).then_some(n)
+        (n["status"] == "ready-for-traffic").then_some(n)
     })
     .await;
-    assert_eq!(after["node_id"], restarted["node_id"], "a restart keeps the node id");
+    assert_eq!((&after["node_id"], &after["incarnation_id"]), (&restarted["node_id"], &restarted["incarnation_id"]), "a restart keeps the node id and the birth");
     let (status, a) = estate.delete("/api/nodes/mesh1.rpc.3").await;
     assert_eq!(status, 202, "{a}");
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
@@ -147,11 +151,27 @@ async fn a_successor_manages_births_it_never_launched() {
     for r in &recoveries {
         assert_eq!(r["attributes"]["scope"], "mesh1.node_admin: 1 present of 2 desired (exited: mesh1.admin.1)");
     }
-    let by_request = launched.iter().filter(|w| w["attributes"]["node"] != "mesh1.admin.1").count();
-    assert_eq!(by_request, 5, "mesh1.rpc.1-3, mesh1.admin.2 and mesh1.rpc.2's restart each waited for Ready");
-    for wait in launched {
+    // A restart relaunches nothing (node-restart.md: "Live process stops and rejoins; no relaunch"): its
+    // WaitForNodeReady follows NodeRestarting and none of the launch steps. Every other wait is a launch.
+    let steps_before = |wait: &Value| -> Vec<Value> {
         let (node, build) = (wait["attributes"]["node"].as_str().unwrap(), wait["attributes"]["build_id"].clone());
-        let before: Vec<Value> = steps_of(node, &|sp| sp["attributes"]["build_id"] == build && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"));
+        steps_of(node, &|sp| sp["attributes"]["build_id"] == build && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"))
+    };
+    let (restarts, launches): (Vec<&Value>, Vec<&Value>) =
+        launched.iter().filter(|w| w["attributes"]["node"] != "mesh1.admin.1").partition(|w| steps_before(w).iter().any(|sp| sp["attributes"]["step"] == "NodeRestarting"));
+    let restarted_nodes: Vec<&str> = restarts.iter().map(|w| w["attributes"]["node"].as_str().unwrap()).collect();
+    assert_eq!(restarted_nodes, ["mesh1.rpc.2"], "mesh1.rpc.2's restart waited for Ready, and no other node was restarted");
+    for node in ["mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"] {
+        assert!(launches.iter().any(|w| w["attributes"]["node"] == node), "{node} was launched and waited for Ready");
+    }
+    for wait in &restarts {
+        let node = wait["attributes"]["node"].as_str().unwrap();
+        let before = steps_before(wait);
+        assert!(!before.iter().any(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap()) || sp["attributes"]["step"] == "DeployRuntime"), "{node}: a restart relaunches nothing: {before:?}");
+    }
+    for wait in launches {
+        let node = wait["attributes"]["node"].as_str().unwrap();
+        let before = steps_before(wait);
         let names: Vec<&str> = before.iter().map(|sp| sp["attributes"]["step"].as_str().unwrap()).filter(|s| PREREQUISITES.contains(s)).collect();
         assert_eq!(names, PREREQUISITES, "{node}: every prerequisite committed, in order, before WaitForNodeReady");
         assert!(before.iter().filter(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap())).all(|sp| sp["attributes"]["outcome"] == "complete"));

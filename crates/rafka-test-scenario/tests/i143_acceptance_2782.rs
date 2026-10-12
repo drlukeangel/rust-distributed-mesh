@@ -178,7 +178,7 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
         }),
         ("no reconciliation", NO_RECONCILIATION, |e| e.reconciliation = None),
         ("empty reconciliation", NO_RECONCILIATION, |e| e.reconciliation = Some(Reconciliation::default())),
-        ("a reconciliation check fails", NO_RECONCILIATION, |e| e.reconciliation.as_mut().unwrap().check("fabric pointer names the Build", false, "names build-0, expected build-1")),
+        ("a reconciliation check fails", NO_RECONCILIATION, |e| e.reconciliation.as_mut().unwrap().check("the current Build is the Build", false, "names build-0, expected build-1")),
         ("dispatch to a superseded birth", SUPERSEDED_BIRTH_DISPATCHED, |e| {
             e.dispatches.push(Dispatch { birth: "inc-old".into(), current_birth: "inc-a".into(), after_supersession: true });
         }),
@@ -403,7 +403,17 @@ impl Run {
         build_log::build_value(&self.estate.carrier_at(&path(&door.name)).await, id).await
     }
 
-    /// `Fabric.build_id` as the admin the estate asks holds it (`fabric.get`).
+    /// [`Self::build`] while the admin's log may hold no fact of the Build yet: a Build whose one
+    /// durable write is held is held by no log (R-BI3), which is the progress marker `held-by-no-log`.
+    async fn build_if_held(&self, door: &Door, id: &str) -> Value {
+        let facts = build_log::log_read(&self.estate.carrier_at(&path(&door.name)).await, id).await.ok();
+        match facts.and_then(|f| build_log::projection(&f, id)) {
+            Some(p) => serde_json::to_value(p).expect("a Build view serializes"),
+            None => json!({"state": "held-by-no-log", "attempt": 0, "steps": []}),
+        }
+    }
+
+    /// the current build_id as the admin the estate asks holds it (`fabric.get`).
     async fn fabric_build_id(&self) -> String {
         self.estate.accepted_build_id().await
     }
@@ -531,10 +541,10 @@ impl Run {
 
 /// One progress read of the Build a cut holds.
 async fn read(run: &Run, door: &Door, build_id: &str, op: &Option<String>) -> (String, bool, u64) {
-    let b = run.build(door, build_id).await;
+    let b = run.build_if_held(door, build_id).await;
     let attempt = b["attempt"].as_u64().unwrap_or(0);
     let done = op.as_ref().map(|o| done_steps(&b, o, attempt)).unwrap_or_default();
-    let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "pointer": run.fabric_build_id().await, "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
+    let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "current_build": run.fabric_build_id().await, "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
     (marker, b["state"] == "complete", attempt)
 }
 
@@ -546,7 +556,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let (seats_before, seats_detail_before) = seats(&nodes_before);
     let admin_view = |nodes: &[Value]| nodes.iter().find(|n| n["name"] == door.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), admin_view(&nodes_before));
-    let pointer_before = run.fabric_build_id().await;
+    let current_before = run.fabric_build_id().await;
     let pid_before = run.admin_pid(&door.name);
     let may_move = matches!(trigger, Trigger::CreateMesh(_));
 
@@ -575,7 +585,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
 
     // The acknowledgement that the fault is active, naming the exact call it holds.
     let held = door.wait_held(id).await;
-    let build_id = if build_id.is_empty() { held["hit"]["build_id"].as_str().or(held["hit"]["pointer_to_build_id"].as_str()).expect("the cut names the Build").to_string() } else { build_id };
+    let build_id = if build_id.is_empty() { held["hit"]["build_id"].as_str().expect("the cut names the Build").to_string() } else { build_id };
     if !held["hit"]["build_id"].is_null() {
         assert_eq!(held["hit"]["build_id"], build_id.as_str(), "`{id}` holds a call of the Build that triggered it: {held}");
     }
@@ -651,9 +661,9 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
     rec.check("the Build completed at one attempt", done["state"] == "complete" && attempt == 1, format!("state {} attempt {attempt}", done["state"]));
-    let pointer = run.fabric_build_id().await;
-    rec.check("Fabric.build_id names the Build", pointer == build_id, format!("{pointer} vs {build_id}"));
-    rec.check("the pointer moved off the previous Build", pointer_before != build_id, format!("previous {pointer_before}"));
+    let current = run.fabric_build_id().await;
+    rec.check("the current build_id names the Build", current == build_id, format!("{current} vs {build_id}"));
+    rec.check("the Build is current, not the previous Build", current_before != build_id, format!("previous {current_before}"));
     match &shape {
         Shape::Create { .. } => create_checks(run, &mut rec, &done).await,
         Shape::Retire { node } => {
@@ -702,7 +712,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let nodes_before = run.estate.node_values().await;
     let (seats_before, detail_before) = seats(&nodes_before);
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
-    let pointer_before = run.fabric_build_id().await;
+    let current_before = run.fabric_build_id().await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
     let mut stream = run.spawn(NodeKind::NodeAdmin).await;
@@ -762,7 +772,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
     rec.check("the Build completed at one attempt", done["state"] == "complete" && attempt == 1, format!("state {} attempt {attempt}", done["state"]));
-    rec.check("Fabric.build_id names the Build", run.fabric_build_id().await == build_id && pointer_before != build_id, format!("previous {pointer_before}"));
+    rec.check("the current build_id names the Build", run.fabric_build_id().await == build_id && current_before != build_id, format!("previous {current_before}"));
     create_checks(run, &mut rec, &done).await;
     rec.check("the advertised seats equal the public candidates' after the release", seats_after, detail_after);
     ev.reconciliation = Some(rec);
@@ -861,7 +871,7 @@ async fn silent_case(run: &Run) {
     rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == incarnation.as_str() && kept["reply"]["executing_node"] == node_id.as_str(), kept.to_string());
     rec.check("the node keeps its process and its data dir", run.estate.pid_of(&name).await == pid && run.estate.data_dir(&name).await == data_dir, format!("pid {pid}, {data_dir}"));
     rec.check("exactly one runtime serves the node", run.runtimes(&name) == 1, format!("{}", run.runtimes(&name)));
-    rec.check("Fabric.build_id is the Build it was and that Build gained no attempt", run.fabric_build_id().await == fabric_build && attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
+    rec.check("the current build_id is the Build it was and that Build gained no attempt", run.fabric_build_id().await == fabric_build && attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
     rec.check("the advertised seats equal the public candidates' after the thaw", seats_after, detail_after);
     ev.reconciliation = Some(rec);
     run.rows.lock().unwrap().push(json!({
@@ -875,16 +885,16 @@ async fn silent_case(run: &Run) {
 /// faulted admin, and rpc nodes), each held and released through its own door or signal, are judged
 /// by the semantic detector, never by a timeout. Cuts: a deployment step (create `WaitForBind`), a
 /// removal step on a serving node (retire `NodeDeleting`), a lifecycle hook (`BeforeEligibility`),
-/// the accepted Build durable before `Fabric.build_id` names it and the pointer's own write (the
+/// the accepted Build durable, and current from then on (the
 /// fabric-primary admin held), and a non-primary rpc node frozen in place with SIGSTOP. Each: the
 /// injector acknowledged the active fault and named it; progress read three times (a Build's
-/// receipts and attempt on every admin, the pointer; a frozen node's process state, CPU use and the
+/// receipts and attempt on every admin, the current Build; a frozen node's process state, CPU use and the
 /// typed outcome of calls to it) stood still while held; the routing effect the cut's position
 /// implies; the seats equal what the public candidates compute and the held, running admin or
 /// frozen, running node was neither replaced, re-attempted nor re-born; the release; the work
-/// completed with its receipts once, one runtime, the pointer on the Build, and for the frozen node
+/// completed with its receipts once, one runtime, the Build current, and for the frozen node
 /// the value stored before the freeze served by the same birth afterwards. What must NOT happen: an
-/// election move or a new birth caused by silence, a Build executed before the pointer named it, a
+/// election move or a new birth caused by silence, a
 /// step receipt twice, a stalled-progress reading that moves while the fault is held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wedge_detector_proves_stall_and_stateful_recovery() {
@@ -897,6 +907,8 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     let run = Run { estate, root, doors: Default::default(), evidence: Default::default(), rows: Default::default(), holds: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: two admins first.
     run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
+    // The initial fabric refuses a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
     let node = "mesh1.rpc.1";
@@ -969,27 +981,15 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     run.plain_create(NodeKind::RpcNode).await;
     silent_case(&run).await;
 
-    // The fabric-primary admin held while it accepts a Build: durable before the pointer, then in the pointer's write.
+    // The fabric-primary admin held at the Build's one durable write: until it is made the Build is held by no admin (R-BI3: "Each
+    // accepted Build is its own entity in the builds store, written once").
     let fdoor = run.fabric_door().await;
     let before = run.names().await;
     door_case(
         &run,
         Family::AcceptedBuildPersistence,
-        "accept:build-durable-before-pointer",
+        "accept:build-durable",
         json!({"kind": "accepted-build"}),
-        &fdoor,
-        Trigger::SpawnRequest,
-        Shape::Create { node: None },
-        Watch::NewNodes(before),
-        false,
-    )
-    .await;
-    let before = run.names().await;
-    door_case(
-        &run,
-        Family::FabricPrimaryStall,
-        "pointer:fabric-record-write",
-        json!({"kind": "pointer-write", "moves_pointer": true}),
         &fdoor,
         Trigger::SpawnRequest,
         Shape::Create { node: None },
@@ -1060,11 +1060,11 @@ async fn finish(run: Run, dir: &std::path::Path) {
         .iter()
         .filter(|f| !covered.contains(&f.name()))
         .map(|f| {
-            // The hydration family's cut parks a joining admin's write of the Fabric record. R14 item 2 (rafka-v2
+            // The hydration family held a joining admin's write of the Fabric record. R14 item 2 (rafka-v2
             // docs/plans/rulings/i143-r14-rdm-shared-store.md: "Writers are exactly the ladder. Fabric-primary:
-            // `fabric/`") leaves a joiner with no such write: `AcceptedStore::learn` (accepted.rs) writes nothing and
-            // `FabricRowsWriter::round` (admin.rs) writes only while its admin holds the fabric seat.
-            let why = (*f == Family::RuntimeMetadataHydration).then_some("a joining admin writes nothing to fabric/ (R14 item 2): no call of a joiner reaches FabricStorage::put_pointer");
+            // `fabric/`") leaves a joiner with no such write, and the Fabric row carries no pointer to the newest
+            // Build (R-BI3): the cut has no call to hold.
+            let why = (*f == Family::RuntimeMetadataHydration).then_some("a joining admin writes nothing to fabric/ (R14 item 2): it has no write of the Fabric record to hold");
             json!({"family": f.name(), "judged_by": "wedge_detector_rejects_fault_without_progress_consequence (planted evidence)", "run_here": false, "why_not_on_the_estate": why})
         })
         .collect();

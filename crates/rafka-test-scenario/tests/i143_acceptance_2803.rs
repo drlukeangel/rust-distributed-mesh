@@ -121,7 +121,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     })
     .await;
     let after = values(&estate.settled_views(&shape).await);
-    assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build: Fabric.build_id is unchanged");
+    assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build: the current build_id is unchanged");
     assert_eq!(estate.mesh_view(lost).await.id.expect("the lost mesh still has its id").to_string(), lost_mesh_id, "{lost} recovered under its own MeshId");
     let (old, new) = (births(&before), births(&after));
     for (name, inc) in &old {
@@ -296,7 +296,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     estate.admin = base;
     let after = values(&estate.settles_to(&shape, Duration::from_secs(240)).await);
 
-    assert_eq!(estate.accepted_build_id().await, accepted, "no new Build: Fabric.build_id is unchanged");
+    assert_eq!(estate.accepted_build_id().await, accepted, "no new Build: the current build_id is unchanged");
     for (mesh, id) in &mesh_ids {
         assert_eq!(&estate.mesh_view(mesh).await.id.expect("the mesh still has its id").to_string(), id, "{mesh} recovered under its own MeshId");
     }

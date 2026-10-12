@@ -155,7 +155,10 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         })
     };
 
-    // THE HAND-OFF, through the rectifier: one Build retiring the holder's mesh.
+    // THE HAND-OFF, through the rectifier: one Build retiring the holder's mesh. A mesh.delete is refused
+    // until the initial fabric has first reached ready-for-traffic (states.md "The initial fabric before
+    // ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let started = now_ns();
     let build_id = estate.reconcile_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.0;
     let build_complete = now_ns();

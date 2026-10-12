@@ -3,9 +3,10 @@
 //!
 //! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `shutdown-mesh:<mesh2 id>`.
 //! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete DrainNode receipt) and
-//! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends at its hand-off
-//! wait, the drift plans the mesh.delete again, and the resume proves and records the lost primary's
-//! exact Exited, amends the roster with the new final primary, and finishes at mesh.deleted: its
+//! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends the moment its view
+//! holds the lost primary proven exited (`via-final-primary-exited`), never on the hand-off bound,
+//! and the next attempts record the lost primary's exact Exited, amend the roster with the new final
+//! primary once it is seated (or created, when none survives), and finish at mesh.deleted: its
 //! completion covers the accepted roster plus the amendment but the new final primary, which stays
 //! alive. Its end is its own node.delete (mesh-delete.md step 7), after which MeshLeft covers every
 //! birth, both primary births included.
@@ -17,7 +18,7 @@
 //! rpc.1 at its NodeDeleted receipt, so the Build holds rpc.1's exact Exited (TerminateRuntime) and
 //! no NodeDeleted.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -94,10 +95,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     // fabric's state-commit published them (states.md, Rounds: "Before state-commit, RDM holds its
     // rows in the scratchpad"; R14 item 9): the fabric is ready-for-traffic before mesh2 goes, so the
     // admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
-    wait_for("the fabric is ready-for-traffic: its state-commit published every node's rows", Duration::from_secs(90), || async {
-        (estate.get("/api/fabric").await.1["status"] == "ready-for-traffic").then_some(())
-    })
-    .await;
+    estate.until_fabric_ready(Duration::from_secs(90)).await;
     let (_, m2) = estate.get("/api/meshes/mesh2").await;
     let mesh2_id = s(&m2["id"]);
     let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
@@ -139,10 +137,11 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let pid = estate.pid_of(&lost.0).await;
     estate.kill_pid(u32::try_from(pid).unwrap());
 
-    // Attempt 1 ends at the owner's hand-off wait (120 s, unchanged); a later attempt completes.
-    // Nothing here panics before the estate is stopped: every process flushes its spans on exit,
-    // and a red run is read from them.
-    let deadline = std::time::Instant::now() + Duration::from_secs(420);
+    // Attempt 1 ends once the owner's view holds the primary proven exited; a later attempt
+    // completes. The bound is below the owner's 120 s hand-off bound: a resume that waited on it is
+    // red here. Nothing here panics before the estate is stopped: every process flushes its spans on
+    // exit, and a red run is read from them.
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
     let mut build = Value::Null;
     while std::time::Instant::now() < deadline {
         let (_, v) = estate.get(&format!("/api/builds?id={b}")).await;
@@ -204,7 +203,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let build = if build["state"] == "complete" { estate.get(&format!("/api/builds?id={b}")).await.1 } else { build };
     estate.stop().await;
     let spans = estate.spans();
-    assert!(build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2, "build {b} completes on an attempt after the first within 420 s: {build}");
+    assert!(build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2, "build {b} completes on an attempt after the first within 90 s: {build}");
     let last = last.unwrap_or_else(|| panic!("mesh.deleted leaves mesh2's final primary alive, the one mesh2 node the view holds after build {b}"));
     assert_eq!(deleted["state"], "complete", "the node.delete of mesh2's final primary {last} completes: {deleted}");
     assert!(view.iter().all(|n| n.starts_with("mesh1.")), "the view holds no mesh2 birth after mesh-left: {view:?}");
@@ -244,8 +243,12 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
         assert!(!v.is_empty(), "a {name} span for {outer}");
         v[0].clone()
     };
+    // Attempt 1 ends on the lost primary's proven exit in the owner's view, never on the timer.
+    let ended = one("rdm.node_admin.mesh.update.via-final-primary-exited");
+    assert_eq!((s(&ended["attributes"]["final_primary"]), attr_u(&ended, "attempt")), (format!("{} {}", lost.0, lost.1), 1), "attempt 1 ends on the lost primary's proven exit: {ended}");
     let recorded = one("rdm.node_admin.mesh.update.via-predecessor-exit-recorded");
     assert_eq!(s(&recorded["attributes"]["predecessor"]), format!("{} {}", lost.0, lost.1), "{recorded}");
+    assert!(start_ns(&ended) <= start_ns(&recorded), "the wait ends on the proof before the resume records it");
     let applied: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-roster-amended").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && sp["attributes"]["outcome"] == "applied").collect();
     assert_eq!(applied.len(), 1, "the amendment was applied once: {applied:?}");
     assert!(start_ns(&recorded) <= start_ns(applied[0]), "the lost primary's exit is recorded before the amendment");

@@ -112,6 +112,11 @@ async fn mn_resizes_live_and_back_to_floor_without_flap_or_collision() {
         let (step, now) = resize(&estate, label, &[("mesh1", admins, rpcs)], &nodes).await;
         steps.push(step);
         nodes = now;
+        // The steps after the first include shrinks, which the initial fabric refuses until it has first
+        // reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+        if steps.len() == 1 {
+            estate.until_fabric_ready(Duration::from_secs(120)).await;
+        }
     }
     estate.artifact("nodes.json", &json!(nodes));
     estate.stop().await;
@@ -133,6 +138,11 @@ async fn mm_meshes_grow_and_shrink_independently() {
         let (step, now) = resize(&estate, label, &[("mesh1", a.0, a.1), ("mesh2", b.0, b.1)], &nodes).await;
         steps.push(step);
         nodes = now;
+        // The steps after the first include shrinks, which the initial fabric refuses until it has first
+        // reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+        if steps.len() == 1 {
+            estate.until_fabric_ready(Duration::from_secs(120)).await;
+        }
     }
     estate.stop().await;
     retirements_are_causal(&estate, &steps);

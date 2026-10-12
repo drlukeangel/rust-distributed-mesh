@@ -39,7 +39,7 @@ use tracing::Instrument as _;
 pub struct BuildDoor {
     /// This admin's `path.name`.
     pub me: PathName,
-    /// The control plane: the Build state, the accepted pointer and the cores that accept a change.
+    /// The control plane: the Build state, the Fabric identity and the cores that accept a change.
     pub control: Arc<ControlPlane>,
     /// The drives this admin holds.
     pub drives: Arc<Drives>,
@@ -269,10 +269,10 @@ impl BuildDoor {
             let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition: Disposition::AlreadyApplied }).await?;
             return stream_frames(sink, drive.reader(from_attempt)).await;
         }
-        let accepted = self.control.accepted.build_id().await;
-        if accepted.as_ref() != Some(&id) {
-            let held = accepted.map(|b| b.0).unwrap_or_else(|| "no Build".into());
-            return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("{}: Build {id} is {:?} and is not the accepted Build (Fabric.build_id names {held} here): nothing drives it", self.me, p.state) });
+        match crate::build_state::drivable(&*self.control.builds, &p).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("{}: Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", self.me, p.state) }),
+            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: the current Build could not be read to admit Build {id}: {e}", self.me) }),
         }
         let disposition = if p.state == BuildState::Failed { Disposition::NextAttempt } else { Disposition::Attached };
         // The drive is the one reader of the receipts: a drive this admin took up after a seat move
@@ -287,8 +287,7 @@ impl BuildDoor {
     /// from the incumbent the committed transfer of this admin's fabric seat names, which accepted it
     /// and keeps serving after the seat row (node-rpc-envelope.md, "TakeSeats"), and are absorbed into
     /// this admin's own log as the Build topic's are (node-rpc-envelope.md, "Build facts": "Facts are
-    /// absorbed through the existing Build log"); a Fabric record this admin heard and parked for want
-    /// of the Build is taken with them. No Build gossip is authored and nothing is read again.
+    /// absorbed through the existing Build log"). No Build gossip is authored and nothing is read again.
     ///
     /// Only a Build no admin holds stays `UnknownBuild`: this admin took no seat by a transfer (its own
     /// log is the one it answers from), or the incumbent holds no fact of it either. A read that failed,
@@ -337,7 +336,6 @@ impl BuildDoor {
             span.record("facts", fetched.facts.len() as u64);
             span.record("chunks", fetched.chunks);
             self.run.local.absorb_facts(&fetched.facts).await;
-            self.control.accepted.resolve_wanted(&*self.control.builds).await;
             match self.control.builds.read_build(id).await {
                 Ok(p) => {
                     span.record("outcome", "absorbed");
@@ -621,15 +619,22 @@ impl VerdictSink for LocalVerdicts {
     }
 }
 
-/// The drive of `build_id`, for the reconcile loop: `ensure` it when it is the accepted Build.
+/// The drive of the current Build, for the reconcile loop: `ensure` it while it is in progress
+/// (R-BI3: the Build in progress is resumed).
 pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc<Drive>> {
-    let active = match env.builds.list_active().await {
-        Ok(a) => a,
+    let id = match env.builds.current_build().await {
+        Ok(crate::build_state::CurrentBuild::InProgress(id)) => id,
+        Ok(_) => return Vec::new(),
         Err(e) => {
             tracing::info!(error = %e, "Build state unreadable; nothing driven");
             return Vec::new();
         }
     };
-    let accepted = env.accepted.build_id().await;
-    active.into_iter().filter(|b| accepted.as_ref() == Some(&b.build_id)).map(|b| drives.ensure(env, &b.build_id, b.attempt_to_drive())).collect()
+    match env.builds.read_build(&id).await {
+        Ok(b) => vec![drives.ensure(env, &b.build_id, b.attempt_to_drive())],
+        Err(e) => {
+            tracing::info!(error = %e, build_id = %id, "the current Build is unreadable; nothing driven");
+            Vec::new()
+        }
+    }
 }

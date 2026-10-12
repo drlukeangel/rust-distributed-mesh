@@ -63,6 +63,52 @@ impl FabricState {
     }
 }
 
+/// Whether the initial fabric has first reached ready-for-traffic (states.md, "The initial fabric
+/// before ready-for-traffic"). Once true it stays true: a resize or roll puts the fabric back to
+/// pending, and the rows it already published to the store root stay there. One handle is shared by
+/// everything on an admin that refuses a workflow until it is true.
+///
+/// The durable fact is the ready-for-traffic Fabric event's row among the status rows of the admin's
+/// mesh (`crate::status_storage::FabricEventRow`): the fabric-primary applies the event at every mesh
+/// primary once the fabric reaches ready-for-traffic. The Fabric row on the store root is published at
+/// the first state-commit, before that, and is not the signal.
+#[derive(Debug, Clone, Default)]
+pub struct FirstReady(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl FirstReady {
+    /// A fabric that has not reached ready-for-traffic.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that the fabric is ready-for-traffic, and why this admin knows: `because` is told once, the
+    /// first time (`rdm.node_admin.fabric.update.via-first-ready`).
+    pub fn reach(&self, because: &'static str) {
+        if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tracing::info_span!("rdm.node_admin.fabric.update.via-first-ready", reason = because, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("this admin knows the fabric has first reached ready-for-traffic: workflows a caller submits are admitted as usual"));
+        }
+    }
+
+    /// Read the durable fact once: the status rows of this admin's mesh hold the ready-for-traffic event of
+    /// `fabric_id`. A read that fails is the caller's to refuse by name.
+    pub async fn read_from(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId) -> Result<(), crate::record_store::StorageError> {
+        let ready = crate::status_rpc::event_key(&rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic);
+        if status.fabric_events().await?.iter().any(|row| row.fabric_id == *fabric_id && row.event == ready) {
+            self.reach(READY_ROW_ON_ROOT);
+        }
+        Ok(())
+    }
+
+    /// Whether the fabric has reached ready-for-traffic at some time, or holds it `now`.
+    pub fn reached(&self, now: crate::model::ScopeStatus) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst) || matches!(now, crate::model::ScopeStatus::ReadyForTraffic | crate::model::ScopeStatus::Degraded)
+    }
+}
+
+/// Why an admin knows the fabric first reached ready-for-traffic when its root holds the fact.
+pub const READY_ROW_ON_ROOT: &str = "ready-for-traffic-row-on-store-root";
+
 /// Which of the two rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RoundKind {

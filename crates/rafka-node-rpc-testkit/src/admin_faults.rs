@@ -3,8 +3,8 @@
 //! Build, deployment, lifecycle and hydration sequences and releases it (i143.e8.s2).
 //!
 //! The product node-admin carries no fault code. Its `Wiring` (`rafka_node_admin_core::wiring`)
-//! takes the decorators here: a [`FaultedBuilds`] over the Build state, a [`FaultedFabricStorage`]
-//! over `fabric.storage`, a [`FaultedProvider`] over the deployment provider, a [`FaultedEvents`]
+//! takes the decorators here: a [`FaultedBuilds`] over the Build state, a [`FaultedProvider`] over
+//! the deployment provider, a [`FaultedEvents`]
 //! over the lifecycle events and one [`FaultedHook`] per reachable lifecycle phase. Each decorator
 //! asks the shared [`AdminFaults`] at its one cut; an armed, matching cut parks the caller there
 //! until the door releases it. Nothing else changes: every other call passes straight through.
@@ -27,7 +27,7 @@ use rafka_node_admin_core::build_state::{
 };
 use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError};
+use rafka_node_admin_core::fabric_storage::FabricIdentity;
 use rafka_node_admin_core::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
 use rafka_node_admin_core::model::ProviderKind;
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
@@ -69,7 +69,9 @@ pub enum CutSpec {
         /// The node the hook concerns.
         #[serde(default)] node: Option<String>,
     },
-    /// An accepted Build is durable (`publish_accepted` returned) and `Fabric.build_id` has not moved.
+    /// An accepted Build is about to become durable: its one write (`publish_accepted`) has been called
+    /// and has not been made. The Build is its own entity, current from the moment it is durable
+    /// (R-BI3), so until the release nothing holds it and nothing executes it.
     AcceptedBuild,
     /// An attempt's claim is durable on this admin's log and broadcast (`claim_attempt` decided
     /// `Won`) and the fabric-primary has not yet dispatched the attempt to its executor. `attempt`
@@ -77,12 +79,6 @@ pub enum CutSpec {
     ClaimedAttempt {
         /// The attempt, when the cut is for one.
         #[serde(default)] attempt: Option<u32>,
-    },
-    /// A write of the Fabric record to `fabric.storage` has begun and is not durable. With
-    /// `moves_pointer`, only a write that names a Build (the `Fabric.build_id` pointer moving).
-    PointerWrite {
-        /// Only a write that names a Build (the pointer moving).
-        #[serde(default)] moves_pointer: bool,
     },
     /// The deployment provider reports a control domain no held birth's runtime fact is in: the
     /// admin cannot adopt what it hears, so its Ready gate stays blocked until the release.
@@ -145,15 +141,10 @@ pub enum Probe {
         /// The executor the claim names.
         executor: String,
     },
-    /// An accepted Build about to move the pointer.
+    /// An accepted Build, durable, about to be returned to the acceptance.
     Accepted {
         /// The Build.
         build_id: String,
-    },
-    /// A write of the Fabric record.
-    Pointer {
-        /// The Build the write names, when it names one.
-        build_id: Option<String>,
     },
     /// The provider reports a control domain no held birth is in.
     ProviderDomain,
@@ -193,7 +184,6 @@ impl CutSpec {
             (CutSpec::Hook { phase, node }, Probe::Hook { phase: ph, target, .. }) => phase == ph && node_is(node, target),
             (CutSpec::AcceptedBuild, Probe::Accepted { .. }) => true,
             (CutSpec::ClaimedAttempt { attempt }, Probe::Claimed { attempt: a, .. }) => attempt.is_none_or(|w| w == *a),
-            (CutSpec::PointerWrite { moves_pointer }, Probe::Pointer { build_id }) => !*moves_pointer || build_id.is_some(),
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
             (CutSpec::CatchUp, Probe::CatchUp { .. }) => true,
@@ -211,7 +201,6 @@ impl Probe {
             Probe::Hook { phase, target, transition_id } => json!({"phase": phase, "target": target, "transition_id": transition_id}),
             Probe::Accepted { build_id } => json!({"build_id": build_id}),
             Probe::Claimed { build_id, attempt, executor } => json!({"build_id": build_id, "attempt": attempt, "executor": executor}),
-            Probe::Pointer { build_id } => json!({"pointer_to_build_id": build_id}),
             Probe::ProviderDomain => json!({"control_domain": "reported foreign"}),
             Probe::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Probe::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
@@ -364,18 +353,23 @@ pub(crate) struct FaultedBuilds {
 #[async_trait]
 impl BuildStateAdapter for FaultedBuilds {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        self.inner.publish_accepted(accepted).await?;
         self.faults.hold(Probe::Accepted { build_id: accepted.build_id.to_string() }).await;
-        Ok(())
+        self.inner.publish_accepted(accepted).await
     }
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await
     }
-    async fn publish_fabric(&self, record: &FabricRecord) -> Result<(), BuildStateError> {
+    async fn publish_fabric(&self, record: &FabricIdentity) -> Result<(), BuildStateError> {
         self.inner.publish_fabric(record).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
+    }
+    async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
     }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
@@ -416,60 +410,6 @@ impl BuildStateAdapter for FaultedBuilds {
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
-    }
-}
-
-/// `fabric.storage`, with the `Fabric.build_id` pointer-write cut.
-pub(crate) struct FaultedFabricStorage {
-    inner: Arc<dyn FabricStorage>,
-    faults: Arc<AdminFaults>,
-}
-
-#[async_trait]
-impl FabricStorage for FaultedFabricStorage {
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        self.inner.fabric().await
-    }
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
-        self.inner.fabric_rows().await
-    }
-    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<rafka_node_admin_core::fabric_storage::FabricClaim, rafka_node_admin_core::fabric_storage::FabricNameHeld>, FabricStorageError> {
-        self.faults.hold(Probe::Pointer { build_id: None }).await;
-        self.inner.claim_identity(identity).await
-    }
-    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
-        self.inner.release_name(identity).await
-    }
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        self.faults.hold(Probe::Pointer { build_id: Some(pointer.build_id.to_string()) }).await;
-        self.inner.put_pointer(pointer).await
-    }
-    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
-        self.inner.shutdown().await
-    }
-    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        self.inner.put_shutdown(shutdown).await
-    }
-    async fn put_seat(&self, row: &rafka_node_admin_core::fabric_storage::SeatRow) -> Result<(), FabricStorageError> {
-        self.inner.put_seat(row).await
-    }
-    async fn seats(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::SeatRow>, FabricStorageError> {
-        self.inner.seats().await
-    }
-    async fn put_handover(&self, row: &rafka_node_admin_core::fabric_storage::HandoverRow) -> Result<(), FabricStorageError> {
-        self.inner.put_handover(row).await
-    }
-    async fn handovers(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::HandoverRow>, FabricStorageError> {
-        self.inner.handovers().await
-    }
-    async fn put_seat_transfer(&self, row: &rafka_node_admin_core::fabric_storage::SeatTransferRow) -> Result<(), FabricStorageError> {
-        self.inner.put_seat_transfer(row).await
-    }
-    async fn seat_transfer(&self, holder_mesh: &str, operation: &str) -> Result<Option<rafka_node_admin_core::fabric_storage::SeatTransferRow>, FabricStorageError> {
-        self.inner.seat_transfer(holder_mesh, operation).await
-    }
-    async fn seat_transfers(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::SeatTransferRow>, FabricStorageError> {
-        self.inner.seat_transfers().await
     }
 }
 
@@ -604,13 +544,13 @@ pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibili
 
 /// The `Wiring` that puts every decorator and hook of `faults` into a node-admin.
 pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
-    let (f_builds, f_storage, f_provider, f_events) = (faults.clone(), faults.clone(), faults.clone(), faults.clone());
+    let (f_builds, f_provider, f_events) = (faults.clone(), faults.clone(), faults.clone());
     let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
     Wiring {
         leave_seam: Some(Arc::new(FaultedLeave(faults.clone()))),
         catch_up_seam: Some(Arc::new(FaultedCatchUp(faults.clone()))),
         builds: Some(Box::new(move |inner| Arc::new(FaultedBuilds { inner, faults: f_builds }))),
-        fabric_storage: Some(Box::new(move |inner| Arc::new(FaultedFabricStorage { inner, faults: f_storage }))),
+        fabric_storage: None,
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),
         lifecycle_events: Some(Box::new(move |inner| Arc::new(FaultedEvents { inner, faults: f_events }))),
         hydration: Default::default(),

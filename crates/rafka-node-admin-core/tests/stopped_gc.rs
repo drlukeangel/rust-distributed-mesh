@@ -76,7 +76,7 @@ fn capture(cell: &str) -> (Capture, tracing::subscriber::DefaultGuard) {
 async fn plane(builds: Arc<MemoryBuildStateAdapter>, t: Topology, me: &str) -> Arc<ControlPlane> {
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), desired(&t), me).await.unwrap();
     let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, me.parse().unwrap(), t, crate::adopted_time()));
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     settle(&builds, &b0).await;
     cp
 }
@@ -109,7 +109,7 @@ fn birth(t: &Topology, p: &str) -> (PathName, NodeId, IncarnationId) {
 /// Build: the attempt carries the fenced action, and its operation's `Complete` receipt is written
 /// at `at_ms` (a stop's names the birth and its rafka-time, the stop's lifecycle op).
 async fn period(cp: &ControlPlane, builds: &MemoryBuildStateAdapter, (path, node_id, incarnation): &(PathName, NodeId, IncarnationId), stop: bool, at_ms: u64) {
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     let (action, reason, operation) = if stop {
         (AttemptAction::Stop { path: path.clone(), from_incarnation: incarnation.clone() }, AttemptReason::Stop, format!("stop-node:{path}"))
@@ -142,7 +142,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     let t = view("mesh1.admin.1");
     let (old, young) = (birth(&t, STOPPED), birth(&t, YOUNG));
     let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let stopped_at = now(&cp) - 10 * TTL.as_millis() as u64;
     period(&cp, &builds, &old, true, stopped_at).await;
     period(&cp, &builds, &young, true, now(&cp)).await;
@@ -154,7 +154,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     let p = builds.read_build(&build_id).await.unwrap();
     assert_eq!(p.submitted_change, Some(TopologyChange::RemoveNode { node: old.0.clone() }), "the ordinary node.delete Build");
     assert!(!p.topology.contains(&old.0) && p.topology.contains(&young.0), "only the expired node leaves the topology: {:?}", p.topology);
-    assert_eq!(cp.accepted.build_id().await, Some(build_id.clone()), "Fabric.build_id names the delete");
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(build_id.clone()), "the current build_id names the delete");
 
     let collected = spans.spans("rdm.node_admin.node.delete.via-stopped-ttl");
     assert_eq!(collected.len(), 1, "{collected:?}");
@@ -181,10 +181,10 @@ async fn a_blank_ttl_runs_no_sweep() {
     let t = view("mesh1.admin.1");
     let old = birth(&t, STOPPED);
     let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     period(&cp, &builds, &old, true, 1).await;
     assert_eq!(cp.sweep_stopped(None).await, Swept::Forever);
-    assert_eq!(cp.accepted.build_id().await, Some(b0), "nothing was submitted");
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0), "nothing was submitted");
 }
 
 /// CONTRACT (§6.9 Recheck): the scan selects `mesh1.rpc.1`, stopped past the ttl. Before the
@@ -199,7 +199,7 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     let t = view("mesh1.admin.1");
     let (old, other) = (birth(&t, STOPPED), birth(&t, YOUNG));
     let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     period(&cp, &builds, &old, true, 1).await;
     period(&cp, &builds, &other, true, 2).await;
     let candidates: Vec<_> = cp.scan_stopped(TTL, now(&cp)).await.into_iter().filter_map(|v| if let Verdict::Expired(c) = v { Some(c) } else { None }).collect();
@@ -225,7 +225,7 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     let referenced = cp.collect_stopped(&candidates[1], TTL).await;
     assert!(matches!(&referenced, Err(Refusal::Reject(r)) if r.reason() == "referenced-by-open-build"), "{referenced:?}");
 
-    assert_eq!(cp.accepted.build_id().await, Some(b0), "no delete was accepted");
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0), "no delete was accepted");
     assert_eq!(spans.spans("rdm.node_admin.build.reject.via-node-not-stopped").len(), 1);
     assert_eq!(spans.spans("rdm.node_admin.build.reject.via-referenced-by-open-build").len(), 1);
     let tried = spans.spans("rdm.node_admin.node.delete.via-stopped-ttl");
@@ -244,7 +244,7 @@ async fn a_stopped_birth_an_open_replace_references_is_skipped() {
     let t = view("mesh1.admin.1");
     let old = birth(&t, STOPPED);
     let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     period(&cp, &builds, &old, true, 1).await;
     let young = birth(&cp.topology.read().await.clone(), YOUNG);
     period(&cp, &builds, &young, true, now(&cp)).await;
@@ -258,7 +258,7 @@ async fn a_stopped_birth_an_open_replace_references_is_skipped() {
     let verdicts = cp.scan_stopped(TTL, now(&cp)).await;
     assert!(verdicts.contains(&Verdict::Referenced { node: old.0.clone(), build_id: b0.clone() }), "{verdicts:?}");
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
-    assert_eq!(cp.accepted.build_id().await, Some(b0));
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0));
     let skipped = spans.spans("rdm.node_admin.node.reject.via-open-build-reference");
     assert!(skipped.iter().any(|(_, a)| a["node"] == STOPPED), "{skipped:?}");
 }
@@ -274,7 +274,7 @@ async fn an_earlier_stop_before_a_later_start_does_not_count() {
     let t = view("mesh1.admin.1");
     let (a, b) = (birth(&t, STOPPED), birth(&t, YOUNG));
     let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let long_ago = now(&cp) - 10 * TTL.as_millis() as u64;
     period(&cp, &builds, &a, true, long_ago).await;
     period(&cp, &builds, &a, false, long_ago + 1).await;
@@ -287,7 +287,7 @@ async fn an_earlier_stop_before_a_later_start_does_not_count() {
     assert!(verdicts.contains(&Verdict::Young { node: a.0.clone(), stopped_at_ms: latest }), "{verdicts:?}");
     assert!(verdicts.iter().any(|v| matches!(v, Verdict::NoCurrentReceipt { node, .. } if *node == b.0)), "{verdicts:?}");
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
-    assert_eq!(cp.accepted.build_id().await, Some(b0));
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0));
     assert!(spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt").iter().any(|(_, x)| x["node"] == YOUNG));
 }
 
@@ -306,7 +306,7 @@ async fn a_candidate_refused_build_in_progress_is_collected_on_a_later_sweep() {
     let other = cp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("a topology change is accepted").build_id;
 
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::BuildInProgress { node: a.0.clone(), current_build_id: other.clone() });
-    assert_eq!(cp.accepted.build_id().await, Some(other.clone()));
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(other.clone()));
     settle(&builds, &other).await;
     let first = match cp.sweep_stopped(Some(TTL)).await {
         Swept::Submitted { node, build_id } if node == a.0 => build_id,
@@ -345,7 +345,7 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     held.absorb(&builds.facts().await.unwrap()).await;
     let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), desired(&moved), "mesh1.admin.2").await.unwrap();
     let successor = ControlPlane::new(held.clone(), accepted, "mesh1.admin.2".parse().unwrap(), moved, crate::adopted_time());
-    let b = successor.accepted.build_id().await.unwrap();
+    let b = successor.builds.current_build().await.unwrap().into_build_id().unwrap();
     if !matches!(held.read_build(&b).await.unwrap().state, rafka_node_admin_core::build_state::BuildState::Complete) {
         settle(&held, &b).await;
     }
@@ -372,7 +372,7 @@ async fn a_stopped_node_whose_delete_is_under_way_is_skipped_by_its_own_name() {
     let Swept::Submitted { build_id, .. } = cp.sweep_stopped(Some(TTL)).await else { panic!("the expired node is collected") };
 
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing, "the delete is the one Build for it");
-    assert_eq!(cp.accepted.build_id().await, Some(build_id));
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(build_id));
     let under_way = spans.spans("rdm.node_admin.node.reject.via-delete-under-way");
     assert!(under_way.iter().any(|(_, a)| a["node"] == STOPPED), "{under_way:?}");
     let told_as_receipt = spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt");
@@ -391,7 +391,7 @@ async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_
     let t = view("mesh1.admin.1");
     let (path, _, incarnation) = birth(&t, STOPPED);
     let cp = plane(builds.clone(), t, "mesh1.admin.1").await;
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
         BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Stop, action: Some(AttemptAction::Stop { path: path.clone(), from_incarnation: incarnation }), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 }),
@@ -401,29 +401,84 @@ async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_
     ]).await;
 
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
-    assert_eq!(cp.accepted.build_id().await, Some(b0), "nothing was submitted");
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(b0), "nothing was submitted");
     let unreadable = spans.spans("rdm.node_admin.node.reject.via-unreadable-stop-receipt");
     assert!(unreadable.iter().any(|(_, a)| a["node"] == STOPPED && a["reason"].contains("does not decode")), "{unreadable:?}");
     let told_as_missing = spans.spans("rdm.node_admin.node.reject.via-no-current-stop-receipt");
     assert!(!told_as_missing.iter().any(|(_, a)| a["node"] == STOPPED), "an unreadable receipt is not a missing one: {told_as_missing:?}");
 }
 
-/// CONTRACT (§6.9 Age, "Distinct facts get distinct arms and distinct spans"): the fabric's pointer
-/// names an accepted Build this admin's Build log cannot read. Whether a stopped node is still in the
-/// accepted topology cannot be decided, so the sweep skips it as an unreadable Build log
-/// (`rdm.node_admin.node.reject.via-unreadable-build-log`, naming the accepted Build), never as a
-/// delete under way, and submits nothing.
+/// A builds store whose current-Build read fails, named: every other read passes through.
+struct UnreadableCurrent(MemoryBuildStateAdapter);
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::build_state::BuildStateAdapter for UnreadableCurrent {
+    async fn publish_accepted(&self, a: &rafka_node_admin_core::build_state::BuildAccepted) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.publish_accepted(a).await
+    }
+    async fn open_attempt(&self, o: &rafka_node_admin_core::build_state::AttemptOpened) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.open_attempt(o).await
+    }
+    async fn read_build(&self, id: &BuildId) -> Result<rafka_node_admin_core::build_state::BuildProjection, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.read_build(id).await
+    }
+    async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+        Err(rafka_node_admin_core::build_state::BuildStateError::Io("the cell's builds store refuses the acceptance-order index read".into()))
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.newest_accepted_at_ms().await
+    }
+    async fn list_active(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildProjection>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.list_active().await
+    }
+    async fn claim_attempt(&self, c: &rafka_node_admin_core::build_state::BuildAttemptClaim) -> Result<rafka_node_admin_core::build_state::ClaimOutcome, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.claim_attempt(c).await
+    }
+    async fn adopt_claim(&self, c: &rafka_node_admin_core::build_state::BuildAttemptClaim) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.adopt_claim(c).await
+    }
+    async fn append_step_receipt(&self, r: &rafka_node_admin_core::build_state::BuildStepReceipt) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.append_step_receipt(r).await
+    }
+    async fn append_attempt_receipt(&self, r: &rafka_node_admin_core::build_state::BuildAttemptReceipt) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.append_attempt_receipt(r).await
+    }
+    async fn facts(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildFact>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.facts().await
+    }
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.recovery_of(path, node_id, incarnation).await
+    }
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rafka_node_admin_core::build_state::OwedExit>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.exits_owed(build_id, mesh).await
+    }
+    async fn forget(&self, id: &BuildId) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.forget(id).await
+    }
+}
+
+/// CONTRACT (§6.9 Age, "Distinct facts get distinct arms and distinct spans"; CLAUDE.md: "Never
+/// written" and "could not be read" are different errors): a builds store whose current-Build read
+/// fails cannot say whether a stopped node is still in the accepted topology, so the sweep skips it
+/// as an unreadable Build log (`rdm.node_admin.node.reject.via-unreadable-build-log`, naming the
+/// store's error); a store that holds no current Build skips it as `via-no-current-build`. Neither is
+/// a delete under way, and nothing is submitted.
 #[tokio::test]
-async fn a_stopped_node_whose_accepted_build_cannot_be_read_is_skipped_as_an_unreadable_build_log() {
+async fn a_stopped_node_whose_current_build_cannot_be_read_is_skipped_as_an_unreadable_build_log() {
     let (spans, _g) = capture("i143-3072-unreadable-accepted");
     let t = view("mesh1.admin.1");
-    let elsewhere = MemoryBuildStateAdapter::new();
-    let accepted = AcceptedStore::seeded(&elsewhere, t.fabric.id.clone(), desired(&t), "mesh1.admin.1").await.unwrap();
-    let b0 = accepted.build_id().await.unwrap();
-    let cp = ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
-
+    let held = MemoryBuildStateAdapter::new();
+    let accepted = AcceptedStore::seeded(&held, t.fabric.id.clone(), desired(&t), "mesh1.admin.1").await.unwrap();
+    let cp = ControlPlane::new(Arc::new(UnreadableCurrent(held)), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time());
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     let unreadable = spans.spans("rdm.node_admin.node.reject.via-unreadable-build-log");
-    assert!(unreadable.iter().any(|(_, a)| a["node"] == STOPPED && a["reason"].contains(b0.0.as_str())), "{unreadable:?}");
-    assert!(spans.spans("rdm.node_admin.node.reject.via-delete-under-way").is_empty(), "an unreadable accepted Build is not a delete under way");
+    assert!(unreadable.iter().any(|(_, a)| a["node"] == STOPPED && a["reason"].contains("refuses the acceptance-order index read")), "{unreadable:?}");
+    let empty = ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
+    assert_eq!(empty.sweep_stopped(Some(TTL)).await, Swept::Nothing);
+    let none = spans.spans("rdm.node_admin.node.reject.via-no-current-build");
+    assert!(none.iter().any(|(_, a)| a["node"] == STOPPED), "{none:?}");
+    assert!(spans.spans("rdm.node_admin.node.reject.via-delete-under-way").is_empty(), "neither is a delete under way");
 }

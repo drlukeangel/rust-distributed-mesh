@@ -352,9 +352,13 @@ pub struct StatusAuthority {
     /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
     /// otherwise). `None` only where no admin owns a digest book.
     pub book: Option<rafka_mesh_transport::membership::DigestBook>,
-    /// This admin's fabric record (`fabric.storage` folded with what it learned): `fabric.get`
-    /// answers its `Fabric.build_id` from it (node-identity-and-state.md §2.8).
-    pub accepted: Arc<crate::accepted::AcceptedStore>,
+    /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
+    /// `UpdateNode` is refused `RejectedFabricNotReady` and nothing is written.
+    pub first_ready: crate::fabric_state::FirstReady,
+    /// This admin's builds store: `fabric.get` answers the current Build from it, read last in, first
+    /// out (build.md §4; R-BI3: "Each accepted Build is its own entity in the builds store, written
+    /// once"; "The Fabric row carries no pointer to the newest Build").
+    pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -460,7 +464,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
     }
 }
 
-fn event_key(e: &FabricEvent) -> String {
+pub(crate) fn event_key(e: &FabricEvent) -> String {
     match e {
         FabricEvent::ReadyForTraffic => "ready-for-traffic".into(),
         FabricEvent::ShutdownInitiated { initiated_by } => format!("shutdown-initiated:{initiated_by}"),
@@ -552,7 +556,7 @@ impl StatusAuthority {
                 // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
                 let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
                 let doors = crate::node_update::UpdateDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
-                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), req).await;
+                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), &self.first_ready, req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {
@@ -574,11 +578,11 @@ impl StatusAuthority {
                     return StatusReply::NotReady { reason: format!("{me} reads no digest book; {} is refused", req.op()) };
                 }
                 if matches!(req, StatusRequest::GetFabric) {
-                    // `Fabric.build_id` is the fabric's own field (node-identity-and-state.md §2.8): read from
-                    // this admin's fabric record, a read that fails named rather than answered as no Build.
-                    return match self.accepted.record().await {
-                        Ok(record) => crate::views::fabric_answer(&me, &view, record.and_then(|r| r.build_id).map(|b| b.0)),
-                        Err(e) => StatusReply::source_failed("fabric.storage", "fabric.get", &format!("{me} could not read its fabric record: {e}")),
+                    // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
+                    // a read that fails is named, never answered as no Build.
+                    return match self.builds.current_build().await {
+                        Ok(current) => crate::views::fabric_answer(&me, &view, current.into_build_id().map(|b| b.0)),
+                        Err(e) => StatusReply::source_failed("builds.storage", "fabric.get", &format!("{me} could not read its current Build: {e}")),
                     };
                 }
                 return crate::views::view_answer(&me, &view, req).unwrap_or_else(|| StatusReply::NotReady { reason: format!("{me} answers no {} from its view", req.op()) });
@@ -852,6 +856,13 @@ impl StatusAuthority {
                 }
             }
         };
+        // The row of the ready-for-traffic event is the durable fact that the fabric first reached
+        // ready-for-traffic: the admin that put it knows it from that moment (`FirstReady`).
+        if let (StatusReply::Applied | StatusReply::AlreadyApplied, Effect::Fabric(_, event)) = (&reply, &effect) {
+            if *event == event_key(&FabricEvent::ReadyForTraffic) {
+                self.first_ready.reach("ready-for-traffic-row-put");
+            }
+        }
         if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
             // The node's report, applied, sets its status (node-status.md "Status report": "A node
             // reports to its mesh's primary, which sets its status"), carried by this primary's member
@@ -1147,7 +1158,8 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
-            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
+            first_ready: Default::default(),
+            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1264,7 +1276,8 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
-            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
+            first_ready: Default::default(),
+            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
@@ -1324,7 +1337,8 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
-            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
+            first_ready: Default::default(),
+            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
     }
 
@@ -1616,7 +1630,8 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
-            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
+            first_ready: Default::default(),
+            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1707,7 +1722,8 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
-            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
+            first_ready: Default::default(),
+            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);

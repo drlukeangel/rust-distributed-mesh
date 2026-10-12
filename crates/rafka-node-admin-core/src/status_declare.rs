@@ -175,6 +175,9 @@ pub struct Pending {
 /// the new authority answers `AlreadyApplied` or applies it, never assumes it.
 #[derive(Debug, Default)]
 pub(crate) struct Declarer {
+    /// Whether the fabric has first reached ready-for-traffic: the fabric-primary owes the ready-for-traffic
+    /// event to every mesh primary from then on, a resize that puts the fabric back to pending included.
+    first_ready: crate::fabric_state::FirstReady,
     pending: Mutex<BTreeMap<Key, Pending>>,
     done: Mutex<BTreeMap<Key, (String, NodeId, Option<IncarnationId>)>>,
     /// Every declaration ever owed, by key: what is re-owed when the authority moves.
@@ -182,8 +185,15 @@ pub(crate) struct Declarer {
 }
 
 impl Declarer {
+    #[cfg(test)]
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// A declarer that reads whether the fabric first reached ready-for-traffic from `first_ready`, the handle
+    /// its admin's fabric state sets.
+    pub fn with_first_ready(first_ready: crate::fabric_state::FirstReady) -> Arc<Self> {
+        Arc::new(Self { first_ready, ..Self::default() })
     }
 
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.
@@ -484,12 +494,12 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
             d.owe(Key::Mesh(key, MeshState::Leaving), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Leaving });
         }
     }
-    // The fabric's readiness, as the fabric-primary, to every other mesh primary.
-    if i_am_fabric_primary && view.fabric.status == crate::model::ScopeStatus::ReadyForTraffic {
+    // The fabric's readiness, as the fabric-primary, to every mesh primary, its own mesh's included: the row the
+    // event leaves in a mesh's status rows is the one durable fact that the fabric first reached
+    // ready-for-traffic, so each mesh holds it from the first time the fabric holds it, whatever status it
+    // holds later (a resize puts the fabric back to pending).
+    if i_am_fabric_primary && d.first_ready.reached(view.fabric.status) {
         for m in &view.meshes {
-            if m.name == me.mesh {
-                continue;
-            }
             d.owe(
                 Key::FabricEventAt(m.name.clone(), "ready-for-traffic".into()),
                 Authority::MeshPrimaryOf(m.name.clone()),
@@ -874,6 +884,59 @@ mod tests {
         owed_from_view(&d, &me.renamed(), &me_id, "inc", rafka_mesh_entity::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
         let due: Vec<(Key, String)> = d.due(&me_id, &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
         assert_eq!(due, vec![(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string())], "its node.started, owed to mesh1's primary by its exact birth");
+    }
+
+    /// CONTRACT (wire.md `ApplyFabricEvent`: "the fabric-primary applies a Fabric event at a mesh primary";
+    /// fabric-ready-for-traffic.md: "the fabric is ready-for-traffic"): the fabric-primary owes the
+    /// ready-for-traffic fabric event to every mesh's primary once its view holds the fabric
+    /// ready-for-traffic, its own mesh's primary (itself) included: the row that event leaves is the one
+    /// durable fact that the fabric first reached ready-for-traffic, and the fabric-primary's mesh holds
+    /// it as every other mesh does. Must NOT happen: the event owed to every mesh but the fabric-primary's own.
+    #[test]
+    fn the_fabric_primary_owes_the_ready_for_traffic_event_to_every_mesh_primary_its_own_included() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let v = view("mesh1.admin.1", "mesh1.admin.1");
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let none = BTreeSet::new();
+        let d = Declarer::new();
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", rafka_mesh_entity::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
+        let mut events: Vec<(Key, String)> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().filter(|(p, _)| matches!(p.key, Key::FabricEventAt(..))).map(|(p, to)| (p.key, to.name.to_string())).collect();
+        events.sort();
+        assert_eq!(
+            events,
+            vec![
+                (Key::FabricEventAt("mesh1".into(), "ready-for-traffic".into()), "mesh1.admin.1".to_string()),
+                (Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into()), "mesh2.admin.1".to_string()),
+            ],
+            "the event is owed at each mesh's primary, the fabric-primary's own mesh included"
+        );
+    }
+
+    /// CONTRACT (states.md "A resize or roll puts the fabric back to pending"): once the fabric has first
+    /// reached ready-for-traffic, the fabric-primary owes the ready-for-traffic event to every mesh primary
+    /// the view names, whatever status the fabric holds now: a mesh a resize adds while the fabric is back at
+    /// pending is told too. Before the fabric first reached ready-for-traffic, nothing is owed.
+    /// Must NOT happen: a mesh created in a resize left with no row of the fact until the fabric climbs again.
+    #[test]
+    fn the_fabric_primary_owes_the_event_to_a_mesh_a_resize_adds_while_the_fabric_is_back_at_pending() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let mut v = view("mesh1.admin.1", "mesh1.admin.1");
+        v.fabric.status = ScopeStatus::Pending;
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let none = BTreeSet::new();
+        let events = |d: &Declarer| -> Vec<Key> { d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, _)| p.key).filter(|k| matches!(k, Key::FabricEventAt(..))).collect() };
+
+        let before = Declarer::new();
+        owed_from_view(&before, &me, &id_of(&me.to_string()), "inc", rafka_mesh_entity::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
+        assert!(events(&before).is_empty(), "the fabric has not first reached ready-for-traffic: no event is owed");
+
+        let first_ready = crate::fabric_state::FirstReady::new();
+        first_ready.reach("the test fabric reached ready-for-traffic");
+        let after = Declarer::with_first_ready(first_ready);
+        owed_from_view(&after, &me, &id_of(&me.to_string()), "inc", rafka_mesh_entity::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
+        let mut owed = events(&after);
+        owed.sort();
+        assert_eq!(owed, vec![Key::FabricEventAt("mesh1".into(), "ready-for-traffic".into()), Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into())], "owed at each mesh primary though the fabric is back at pending");
     }
 
     /// CONTRACT: an obligation newly created by this admin's own readiness or the declare gate,

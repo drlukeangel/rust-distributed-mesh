@@ -88,6 +88,9 @@ async fn retire_mesh1(test: &str) -> Retired {
         };
         pids.push((name, pid));
     }
+    // The Build retires mesh1, a mesh.delete, which the initial fabric refuses until it has first reached
+    // ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Control moves to mesh2 before mesh1 goes.
     estate.admin = before
         .iter()

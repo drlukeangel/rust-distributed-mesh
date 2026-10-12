@@ -84,10 +84,11 @@ impl SpanLoss {
     }
 }
 
-/// The product span processor; see the module docs.
+/// The product span processor; see the module docs. `inner` is the processor it counts in front
+/// of: product's `BatchSpanProcessor` on the export runtime ([`span_processor`]).
 #[derive(Debug, Clone)]
 pub struct CountingBatchProcessor {
-    inner: Arc<BatchSpanProcessor<crate::export::ExportRuntime>>,
+    inner: Arc<dyn SpanProcessor>,
     loss: SpanLoss,
 }
 
@@ -103,11 +104,15 @@ impl SpanProcessor for CountingBatchProcessor {
         self.inner.on_start(span, cx);
     }
 
+    /// The span is counted once the inner processor has taken it (queued, or refused because its
+    /// queue is full: a loss the count then names). Counting it before would let a flush begun in
+    /// between owe a span its flush request is queued ahead of, and report it lost.
     fn on_end(&self, span: SpanData) {
-        if span.span_context.is_sampled() {
+        let sampled = span.span_context.is_sampled();
+        self.inner.on_end(span);
+        if sampled {
             self.loss.tally.handed.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner.on_end(span);
     }
 
     /// Blocks until the queue has drained into the exporter and returns the SDK's answer. It has
@@ -207,7 +212,9 @@ impl SpanCapture {
     /// return, returns an error, or leaves a span behind is an `Err` naming which.
     pub fn flush(&self, bound: Duration) -> Result<(), String> {
         // Spans other threads end while the flush runs are not owed by it: only those handed over
-        // before it began.
+        // before it began. A span is counted only once it is queued (`on_end`), so every span
+        // counted here is in the queue ahead of the flush request below, which the queue serves in
+        // order.
         let owed = self.loss.handed();
         let (tx, rx) = std::sync::mpsc::channel();
         let provider = self.provider.clone();
@@ -225,5 +232,77 @@ impl SpanCapture {
             0 => Ok(()),
             n => Err(format!("{n} of the {owed} spans ended before the flush never reached the exporter")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry::trace::{Tracer, TracerProvider as _};
+    use std::sync::{mpsc, Mutex};
+
+    /// A processor in front of product's batch processor that holds the thread ending a span inside
+    /// `on_end`, before the span is handed on to the batch queue, until the cell releases it.
+    #[derive(Debug)]
+    struct HeldEnd<P> {
+        inner: P,
+        entered: Mutex<mpsc::Sender<()>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl<P: SpanProcessor> SpanProcessor for HeldEnd<P> {
+        fn on_start(&self, span: &mut Span, cx: &opentelemetry::Context) {
+            self.inner.on_start(span, cx);
+        }
+
+        fn on_end(&self, span: SpanData) {
+            let _ = self.entered.lock().unwrap().send(());
+            let _ = self.release.lock().unwrap().recv();
+            self.inner.on_end(span);
+        }
+
+        fn force_flush(&self) -> TraceResult<()> {
+            self.inner.force_flush()
+        }
+
+        fn shutdown(&self) -> TraceResult<()> {
+            self.inner.shutdown()
+        }
+    }
+
+    /// CONTRACT: a flush owes exactly the spans whose end returned before it began. A span another
+    /// thread is still ending when the flush starts (held inside the processor, not yet in the
+    /// batch queue) is not owed by it, so the flush answers Ok; once that end returns, the next flush
+    /// delivers the span to the exporter. Must NOT happen: the flush counting the span as ended
+    /// before it and reporting it lost because it was not yet queued when the flush request was
+    /// (the node-rpc gate's "1 of the 4286 spans ended before the flush never reached the exporter").
+    #[test]
+    fn a_span_still_ending_when_a_flush_begins_is_not_owed_by_that_flush() {
+        let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+        let tally = Arc::new(Tally::default());
+        let rt = crate::export::ExportRuntime::get();
+        let batch = {
+            let _export = rt.enter();
+            BatchSpanProcessor::builder(CountedExporter { inner: exporter.clone(), tally: tally.clone() }, rt.clone()).with_batch_config(crate::batch_config()).build()
+        };
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let held = HeldEnd { inner: batch, entered: Mutex::new(entered_tx), release: Mutex::new(release_rx) };
+        let processor = CountingBatchProcessor { inner: Arc::new(held), loss: SpanLoss { name: "held".into(), tally } };
+        let loss = processor.loss();
+        let provider = TracerProvider::builder().with_span_processor(processor).build();
+        let capture = SpanCapture { provider: provider.clone(), loss: loss.clone() };
+        let tracer = provider.tracer("held-end");
+        let ending = std::thread::spawn(move || drop(tracer.start("rdm.test.span.end.held")));
+        entered_rx.recv_timeout(Duration::from_secs(10)).expect("the span's end reached the processor");
+        let during = capture.flush(Duration::from_secs(10));
+        // Release before asserting, so a red does not leave the ending thread parked.
+        release_tx.send(()).unwrap();
+        ending.join().unwrap();
+        let after = capture.flush(Duration::from_secs(10));
+        assert_eq!(during, Ok(()), "a span still ending when the flush began is not owed by that flush");
+        assert_eq!(after, Ok(()), "the span whose end returned is delivered by the next flush");
+        assert_eq!(exporter.get_finished_spans().unwrap().iter().map(|s| s.name.to_string()).collect::<Vec<_>>(), vec!["rdm.test.span.end.held".to_string()]);
+        assert_eq!((loss.handed(), loss.reached()), (1, 1), "the one span was handed over and reached the exporter");
     }
 }

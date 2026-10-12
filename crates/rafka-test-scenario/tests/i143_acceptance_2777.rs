@@ -15,6 +15,7 @@ use rafka_test_scenario::estate::{artifacts_root, Estate, Owner};
 use rafka_test_scenario::{runner, scenario::Scenario};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::time::Duration;
 
 const FEATURE: &str = "i143-2777";
 
@@ -144,10 +145,18 @@ async fn seed_runner_completes_every_operation_on_container() {
     seed_cell("seed_runner_completes_every_operation_on_container", "container").await;
 }
 
-/// One MN estate whose Build is accepted and still reconciling: the estate and the stream that follows the Build.
+/// One MN estate whose initial Build settled and whose fabric first reached ready-for-traffic, and a second
+/// Build (two more rpc nodes) accepted and still reconciling: the estate and the stream that follows it.
+/// A restart is refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic
+/// (states.md "The initial fabric before ready-for-traffic"), ahead of `build-in-progress`: the Build in
+/// flight is a second one.
 async fn estate_with_build_in_flight(cell: &str) -> (Estate, BuildStream) {
     let estate = Estate::bootstrap(owner(cell, "restart-refusals"), "fabric1", "mesh1").await;
-    let stream = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])] })).await;
+    let desired = |rpcs: u32| FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, rpcs)])] };
+    estate.reconcile(&desired(3)).await;
+    estate.settled_views(&[("mesh1", 2, 3)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let stream = estate.submit(&BuildSpec::Fabric(desired(5))).await;
     (estate, stream)
 }
 
@@ -173,7 +182,7 @@ async fn restart_during_an_inflight_build_is_refused_and_opens_no_attempt() {
     let view = estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build");
     assert!(view.attempt <= 1 && view.reason != "restart", "the refusal opened no attempt: {view:?}");
     Estate::until_complete(&mut stream).await;
-    estate.settled_views(&[("mesh1", 2, 3)]).await;
+    estate.settled_views(&[("mesh1", 2, 5)]).await;
     let mut restart = estate.nodes_obj().await.restart(&"mesh1.rpc.2".parse().unwrap()).await.expect("the fabric-primary accepts the restart once the Build settled");
     let accepted = Estate::complete(&mut restart).await;
     assert_eq!(accepted.build_id, build, "the restart is an attempt of the accepted Build: {accepted:?}");

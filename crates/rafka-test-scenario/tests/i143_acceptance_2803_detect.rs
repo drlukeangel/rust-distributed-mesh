@@ -307,7 +307,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     })
     .await;
     let seat_moved = seat_lost_or_five(&f.estate.spans()).1;
-    assert_eq!(f.estate.accepted_build_id().await, f.accepted, "no new Build: Fabric.build_id is unchanged");
+    assert_eq!(f.estate.accepted_build_id().await, f.accepted, "no new Build: the current build_id is unchanged");
     assert_eq!(f.estate.mesh_view(&f.lost).await.id.expect("the lost mesh still has its id").to_string(), f.lost_mesh_id, "{} is reborn under its own MeshId", f.lost);
     let new_births = births(&after);
     for m in &survivors {

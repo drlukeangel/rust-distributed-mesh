@@ -315,13 +315,13 @@ pub type CutOffWrites = Arc<dyn Fn(WriteCutOff) -> std::pin::Pin<Box<dyn std::fu
 
 /// The file stores on the fabric's store root a seat transfer cuts off (R14 item 4): the
 /// mesh-primary seat's (the Mesh row, its members' Node rows and contacts, the mesh's status rows) and the fabric-primary
-/// seat's (the Fabric record and its pointers, and every other mesh's rows).
+/// seat's (the Fabric record, and every other mesh's rows).
 pub struct SeatStores {
     /// The Mesh rows.
     pub mesh: Arc<crate::storage::FileMeshStorage>,
     /// The Node rows and contacts.
     pub nodes: Arc<crate::storage::FileNodesStorage>,
-    /// The Fabric record and its pointers.
+    /// The Fabric record.
     pub fabric: Arc<crate::fabric_storage::FileFabricStorage>,
     /// The mesh's status rows.
     pub status: Arc<crate::status_storage::FileStatusStorage>,

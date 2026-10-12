@@ -6,13 +6,14 @@
 //! 100 ms while below the floor) hands it to a [`Hydrator`], which issues the request the reason
 //! names:
 //!
-//! - [`HydrationBlocker::NoPointer`] with a `wanted` BuildId (the entry reply supplied the Fabric
-//!   record and the Build is not held): `FetchBuildFacts` (op `0x1F`) for that Build.
-//! - [`HydrationBlocker::UnreadableBuild`] (the pointed Build cannot be read locally) and
+//! - [`HydrationBlocker::NoCurrentBuild`] with a `wanted` BuildId (the entry reply named the
+//!   answering admin's current Build and it is not held): `FetchBuildFacts` (op `0x1F`) for that
+//!   Build.
+//! - [`HydrationBlocker::UnreadableBuild`] (the entry's Build cannot be read locally) and
 //!   [`HydrationBlocker::BehindFloor`] (the local Build is behind the entry's attempt floor):
-//!   `FetchBuildFacts` for the pointed Build.
-//! - [`HydrationBlocker::NoPointer`] with nothing wanted: the control entry is retrieved again. A Build
-//!   that no pointer and no entry reply identified is never fetched.
+//!   `FetchBuildFacts` for the entry's Build.
+//! - [`HydrationBlocker::NoCurrentBuild`] with nothing wanted: the control entry is retrieved again.
+//!   A Build that no entry reply identified is never fetched.
 //!
 //! One request is outstanding at a time. Responders are asked in order: the current fabric-primary
 //! (resolved through the canonical leadership projection, `Topology::fabric_primary`), then every
@@ -21,7 +22,7 @@
 
 use crate::build::BuildId;
 use crate::build_facts_read::fetch_build_facts;
-use crate::build_state::{BuildStateAdapter, LocalBuildLog};
+use crate::build_state::LocalBuildLog;
 use crate::model::{NodeId, PathName};
 use rafka_node_rpc::{NodeRpcClient, NodeTarget};
 use std::collections::BTreeMap;
@@ -35,21 +36,29 @@ use tracing::Instrument as _;
 /// Why this admin holds back its Ready for want of control facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HydrationBlocker {
-    /// No installed `Fabric.build_id`. `wanted` is the Build the entry reply (or the Build topic)
-    /// named, parked until its facts arrive.
-    NoPointer {
+    /// No current Build: no Build in this admin's builds store is in progress or completed, or the
+    /// Build the entry reply named is not held. `wanted` is that Build, until its facts arrive.
+    NoCurrentBuild {
         /// This admin.
         me: PathName,
-        /// The Build named by the entry reply or the Build topic, when one was.
+        /// The Build the entry reply named (the answering admin's current Build), when one was.
         wanted: Option<BuildId>,
     },
-    /// `Fabric.build_id` names `build_id` and this admin's Build log cannot read it.
+    /// The entry reply named `build_id` and this admin's Build log cannot read it.
     UnreadableBuild {
         /// This admin.
         me: PathName,
-        /// The Build the pointer names.
+        /// The Build the entry reply named.
         build_id: BuildId,
         /// Why the Build log cannot read it.
+        error: String,
+    },
+    /// This admin's own builds store could not be read for its current Build: named, never taken
+    /// for a store that holds none. No request recovers it.
+    BuildStoreUnreadable {
+        /// This admin.
+        me: PathName,
+        /// Why the store could not be read.
         error: String,
     },
     /// The local Build holds attempt `held`; the admin that served the entry held `floor`.
@@ -68,8 +77,10 @@ pub enum HydrationBlocker {
 impl std::fmt::Display for HydrationBlocker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoPointer { me, .. } => write!(f, "{me}: holds no Fabric.build_id (not hydrated from an existing authority)"),
-            Self::UnreadableBuild { me, build_id, error } => write!(f, "{me}: Fabric.build_id names {build_id} and this admin's Build log cannot read it: {error}"),
+            Self::NoCurrentBuild { me, wanted: None } => write!(f, "{me}: holds no current Build (no Build in its builds store is in progress or completed; not hydrated from an existing authority)"),
+            Self::NoCurrentBuild { me, wanted: Some(id) } => write!(f, "{me}: holds no facts of Build {id}, the current Build of the admin that served its entry"),
+            Self::UnreadableBuild { me, build_id, error } => write!(f, "{me}: its entry named Build {build_id} and this admin's Build log cannot read it: {error}"),
+            Self::BuildStoreUnreadable { me, error } => write!(f, "{me}: its builds store cannot be read for the current Build: {error}"),
             Self::BehindFloor { me, build_id, held, floor } => write!(
                 f,
                 "{me}: holds attempt {held} of Build {build_id}; the admin that served its entry held attempt {floor} (its opens, claims and receipts are still arriving)"
@@ -85,24 +96,28 @@ pub enum Need {
     BuildFacts(BuildId),
     /// The control entry again: nothing identifies the Build yet.
     Entry,
+    /// No request: the blocker is this admin's own store, named.
+    Nothing,
 }
 
 impl HydrationBlocker {
     /// What would clear the blocker.
     pub fn need(&self) -> Need {
         match self {
-            Self::NoPointer { wanted: Some(id), .. } => Need::BuildFacts(id.clone()),
-            Self::NoPointer { wanted: None, .. } => Need::Entry,
+            Self::NoCurrentBuild { wanted: Some(id), .. } => Need::BuildFacts(id.clone()),
+            Self::NoCurrentBuild { wanted: None, .. } => Need::Entry,
             Self::UnreadableBuild { build_id, .. } | Self::BehindFloor { build_id, .. } => Need::BuildFacts(build_id.clone()),
+            Self::BuildStoreUnreadable { .. } => Need::Nothing,
         }
     }
 
     /// The blocker's name as it appears in spans and evidence.
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::NoPointer { wanted: Some(_), .. } => "no-pointer-wanted",
-            Self::NoPointer { wanted: None, .. } => "no-pointer",
+            Self::NoCurrentBuild { wanted: Some(_), .. } => "no-current-build-wanted",
+            Self::NoCurrentBuild { wanted: None, .. } => "no-current-build",
             Self::UnreadableBuild { .. } => "unreadable-build",
+            Self::BuildStoreUnreadable { .. } => "build-store-unreadable",
             Self::BehindFloor { .. } => "behind-floor",
         }
     }
@@ -165,8 +180,6 @@ pub struct Hydrator {
     me: PathName,
     client: Arc<NodeRpcClient>,
     local: Arc<dyn LocalBuildLog>,
-    builds: Arc<dyn BuildStateAdapter>,
-    accepted: Arc<crate::accepted::AcceptedStore>,
     responders: Responders,
     entry: Option<EntryRepeat>,
     in_flight: Option<tokio::task::JoinHandle<End>>,
@@ -177,18 +190,10 @@ pub struct Hydrator {
 }
 
 impl Hydrator {
-    /// A hydrator for the admin `me` over its client, its local Build log, its Build state, its
-    /// accepted-Build store, the `responders` it asks and the entry repeat.
-    pub fn new(
-        me: PathName,
-        client: Arc<NodeRpcClient>,
-        local: Arc<dyn LocalBuildLog>,
-        builds: Arc<dyn BuildStateAdapter>,
-        accepted: Arc<crate::accepted::AcceptedStore>,
-        responders: Responders,
-        entry: Option<EntryRepeat>,
-    ) -> Self {
-        Self { me, client, local, builds, accepted, responders, entry, in_flight: None, backoff: BTreeMap::new(), entry_backoff: Backoff::default(), judging: None }
+    /// A hydrator for the admin `me` over its client, its local Build log, the `responders` it asks
+    /// and the entry repeat.
+    pub fn new(me: PathName, client: Arc<NodeRpcClient>, local: Arc<dyn LocalBuildLog>, responders: Responders, entry: Option<EntryRepeat>) -> Self {
+        Self { me, client, local, responders, entry, in_flight: None, backoff: BTreeMap::new(), entry_backoff: Backoff::default(), judging: None }
     }
 
     /// One floor check's turn. `blocker` is what the check just found, `None` when no control fact
@@ -222,6 +227,7 @@ impl Hydrator {
         match blocker.need() {
             Need::Entry => self.repeat_entry(blocker, now),
             Need::BuildFacts(id) => self.fetch(blocker, id, now).await,
+            Need::Nothing => {}
         }
     }
 
@@ -252,7 +258,7 @@ impl Hydrator {
                 let span = tracing::info_span!("rdm.node_admin.fabric.update.via-entry-repeat", node = %me, blocker = kind, outcome = tracing::field::Empty);
                 let result = entry().instrument(span.clone()).await;
                 span.record("outcome", match &result { Ok(()) => "retrieved".to_string(), Err(e) => format!("failed: {e}") }.as_str());
-                span.in_scope(|| tracing::info!("no pointer and no Build identified: the control entry is retrieved again"));
+                span.in_scope(|| tracing::info!("no current Build and no Build identified: the control entry is retrieved again"));
                 End::Entry(result)
             }
             .instrument(parent)
@@ -265,7 +271,7 @@ impl Hydrator {
         let Some(target) = candidates.into_iter().filter(|r| r.name != self.me).find(|r| self.backoff.get(&r.node_id).is_none_or(|b| b.open(now))) else {
             return;
         };
-        let (client, local, builds, accepted, me, kind) = (self.client.clone(), self.local.clone(), self.builds.clone(), self.accepted.clone(), self.me.clone(), blocker.kind());
+        let (client, local, me, kind) = (self.client.clone(), self.local.clone(), self.me.clone(), blocker.kind());
         // The request is a step of the turn that started it: it runs under that turn's span and dispatcher.
         let parent = tracing::Span::current();
         self.in_flight = Some(tokio::spawn(
@@ -286,7 +292,6 @@ impl Hydrator {
                         span.record("facts", f.facts.len() as u64);
                         span.record("chunks", f.chunks);
                         local.absorb_facts(&f.facts).await;
-                        accepted.resolve_wanted(&*builds).await;
                         span.record("outcome", "absorbed");
                         span.in_scope(|| tracing::info!("the responder's complete holdings of the Build are absorbed into the local Build log"));
                         End::Absorbed(target.node_id)

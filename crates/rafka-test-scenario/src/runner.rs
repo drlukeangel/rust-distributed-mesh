@@ -177,6 +177,8 @@ pub async fn run_replayable(
     })
     .await;
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
     let mut failures = Vec::new();
     let mut outcomes = Vec::new();
     let mut fault_no = 0;

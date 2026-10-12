@@ -143,6 +143,7 @@ struct Rig {
     env: Arc<DriveEnv>,
     storage: Arc<MemoryNodesStorage>,
     build: BuildId,
+    accepted: Arc<AcceptedStore>,
 }
 
 /// A view change as the product makes one: the projection installed through
@@ -169,7 +170,6 @@ async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesSto
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: topology.clone(),
-        accepted,
         builds: builds.clone(),
         door: Arc::new(ClaimDoor { me, node_id: me_id, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: Arc::new(Script { acts: Mutex::new(Some(acts)), view: topology, records: records.clone() }),
@@ -178,7 +178,7 @@ async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesSto
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         rows,
     });
-    Rig { env, storage, build: opened.build_id }
+    Rig { env, storage, build: opened.build_id, accepted }
 }
 
 /// The writer of `mesh1`'s rows, its primary `mesh1.admin.2`, over `storage`, its view the fixture
@@ -711,7 +711,7 @@ fn a_fabric_primary_whose_view_never_names_the_old_path_admits_the_parked_predec
         let converged = rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: r.build.clone(), attempt, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged };
         r.env.builds.append_attempt_receipt(&converged).await.unwrap();
         // The door: the next attempt of the accepted Build, fenced to the held record's exact birth.
-        let mut cp = ControlPlane::new(r.env.builds.clone(), r.env.accepted.clone(), "mesh1.admin.1".parse().unwrap(), r.env.topology.read().await.clone(), crate::adopted_time());
+        let mut cp = ControlPlane::new(r.env.builds.clone(), r.accepted.clone(), "mesh1.admin.1".parse().unwrap(), r.env.topology.read().await.clone(), crate::adopted_time());
         cp.topology = r.env.topology.clone();
         let rows = r.env.rows.clone();
         let _ = cp.parked_old.set(Arc::new(move |p: &PathName| rows.parked_at(p)));
@@ -969,6 +969,12 @@ mod writer {
         }
         async fn read_build(&self, id: &BuildId) -> Result<rafka_node_admin_core::build_state::BuildProjection, rafka_node_admin_core::build_state::BuildStateError> {
             self.inner.read_build(id).await
+        }
+        async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.current_build().await
+        }
+        async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.newest_accepted_at_ms().await
         }
         async fn list_active(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildProjection>, rafka_node_admin_core::build_state::BuildStateError> {
             self.inner.list_active().await

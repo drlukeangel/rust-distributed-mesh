@@ -838,6 +838,8 @@ impl Driver {
 
     /// Run until the deadline or the first violation.
     pub async fn run(mut self) -> (Report, Estate) {
+        // The initial fabric refuses a node delete, restart and replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+        self.estate.until_fabric_ready(Duration::from_secs(120)).await;
         let tr = tokio::spawn(traffic(self.shared.clone(), self.estate.probe_handle(), self.cfg.seed));
         self.sched.record("start", &format!("seed={} secs={}", self.cfg.seed, self.cfg.secs));
         let deadline = Instant::now() + Duration::from_secs(self.cfg.secs);
@@ -1437,7 +1439,7 @@ impl Driver {
                 writers.insert(p.to_string());
             }
             if f["build_id"].as_str() != Some(self.build_id.as_str()) {
-                return Err(broken("fabric-build-id-held", format!("round {round}: {base} holds Fabric.build_id {} not {}", f["build_id"], self.build_id)));
+                return Err(broken("fabric-build-id-held", format!("round {round}: {base} holds the current build_id {} not {}", f["build_id"], self.build_id)));
             }
             let heard: BTreeSet<String> = f["meshes"].as_array().into_iter().flatten().filter(|m| m["status"] == "ready-for-traffic").map(|m| s(&m["name"])).collect();
             for (mesh, _) in &self.cfg.shape {
