@@ -89,8 +89,12 @@ impl NodeConfigs {
         if let Err(over) = rafka_mesh_entity::check_config(config) {
             return StatusReply::RejectedConfig { over };
         }
+        // A subject this receiver does not hold is the receiver's own fact (node-rpc-envelope.md:
+        // "`SubjectUnknown` when the receiver does not hold the subject at all"), never a peer that
+        // did not resolve.
         let Some(subject) = view.members().find(|n| n.node_id == *node_id) else {
-            return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} is not a member of this admin's view; its config cannot be put") };
+            span.record("detail", format!("{me}: node {node_id} is not a member of this admin's view; its config cannot be put").as_str());
+            return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
         };
         span.record("subject", subject.name.to_string().as_str());
         span.record("row_status", format!("{:?}", subject.status).as_str());
@@ -104,7 +108,10 @@ impl NodeConfigs {
         }
         match subject.incarnation_id.as_ref() {
             Some(held) if held != incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
-            None => return StatusReply::PeerUnresolved { reason: format!("{me}: {} has no known birth; its config cannot be put", subject.name) },
+            None => {
+                span.record("detail", format!("{me}: {} has no known birth; its config cannot be put", subject.name).as_str());
+                return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+            }
             Some(_) => {}
         }
         let _one = self.one_at_a_time.lock().await;

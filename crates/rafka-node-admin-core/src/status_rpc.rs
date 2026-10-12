@@ -662,8 +662,11 @@ impl StatusAuthority {
             scope = scope.name(), status_at_cut = tracing::field::Empty, closed = tracing::field::Empty, held = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
         let reply = async {
+            // A subject this receiver does not hold is the receiver's own fact (`SubjectUnknown`), never
+            // a peer that did not resolve.
             let Some(subject) = view.nodes.iter().find(|n| n.node_id == *node_id) else {
-                return StatusReply::PeerUnresolved { reason: format!("{}: node {node_id} is not in the mesh-primary's view; its connections cannot be deleted through it", self.me) };
+                tracing::Span::current().record("detail", format!("{}: node {node_id} is not in the mesh-primary's view; its connections cannot be deleted through it", self.me).as_str());
+                return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
             };
             tracing::Span::current().record("subject", subject.name.to_string().as_str()).record("status_at_cut", format!("{:?}", subject.status).as_str());
             if !view.own(&self.node_id).is_some_and(|n| n.is_primary && n.mesh == subject.mesh) {
@@ -672,7 +675,10 @@ impl StatusAuthority {
             if subject.incarnation_id.as_ref() != Some(incarnation) {
                 return match subject.incarnation_id.clone() {
                     Some(held) => StatusReply::RejectedStaleIncarnation { held },
-                    None => StatusReply::PeerUnresolved { reason: format!("{}: {} has no known birth; its connections cannot be deleted", self.me, subject.name) },
+                    None => {
+                        tracing::Span::current().record("detail", format!("{}: {} has no known birth; its connections cannot be deleted", self.me, subject.name).as_str());
+                        StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }
+                    }
                 };
             }
             if let Some(reason) = scope.refusal() {
