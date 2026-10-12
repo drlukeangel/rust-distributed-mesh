@@ -6971,6 +6971,25 @@ mod tests {
         assert_eq!(dropped, want, "the departed birth's and the replaced birth's contacts go; the silent one's stays");
     }
 
+    /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; node-update.md: "Config on the
+    /// row, `admin_api_base` included, is stored and gossiped as given; nothing checks it"): a
+    /// node-admin birth this admin's book holds ready-for-traffic is Ready, its digest carrying no
+    /// `admin_api_base`. What must NOT happen: a node-admin refused Ready for a config value RDM
+    /// never reads.
+    #[tokio::test]
+    async fn a_node_admin_with_no_admin_api_base_is_ready_once_its_book_holds_it_ready_for_traffic() {
+        let book = DigestBook::default();
+        let mut d = digest("mesh1.admin.2", MemberStatus::ReadyForTraffic);
+        d.admin_api_base = None;
+        assert!(book.record(d.clone()), "the book takes the node-admin's digest");
+        assert_eq!(book.get(d.node.node_id.as_str()).map(|(held, _)| held.status), Some(MemberStatus::ReadyForTraffic), "the book holds the birth ready-for-traffic");
+        let mut node = Node::allocated(d.node.name.clone());
+        node.node_id = d.node.node_id.clone();
+        node.incarnation_id = Some(d.node.incarnation.clone());
+        let observer = MembershipObserver { book, client: None, commands: Arc::default(), authority: Arc::default(), handover: Arc::default() };
+        assert_eq!(crate::deployment::pipeline::NodeObserver::ready(&observer, &node).await, Ok(()));
+    }
+
     /// A nodes store that counts the contact writes made through it.
     struct CountingNodes(Arc<dyn crate::storage::NodesStorage>, std::sync::atomic::AtomicUsize);
 
