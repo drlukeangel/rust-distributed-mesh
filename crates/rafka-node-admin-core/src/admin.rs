@@ -8037,7 +8037,9 @@ mod tests {
     /// (its primary's write), mesh-left's Dead write answers AlreadyApplied, writes nothing, and its
     /// `rdm.node_admin.mesh.update.via-dead-row` span says `already-applied` by `mesh-primary`; with
     /// none (no primary survived), the fabric-primary puts the row Dead among mesh2's status rows as
-    /// acting primary (`applied`, `acting-primary`), and its replay answers AlreadyApplied. No Dead
+    /// acting primary (`applied`, `acting-primary`), and its replay answers AlreadyApplied. The Mesh
+    /// row on mesh.storage follows the same rule (R-MN1 item 2, the name released): `already-dead`
+    /// over the mesh-primary's, else `dead-written` once and `already-dead` on the replay. No Dead
     /// row of mesh2 is ever put among the fabric-primary's own mesh's rows. Must NOT happen: a second
     /// transition over the mesh-primary's Dead (the fabric-primary deciding from what it applied
     /// itself, which holds nothing of mesh2), or the row written under the fabric-primary's mesh.
@@ -8055,9 +8057,12 @@ mod tests {
             prove_exit(&book, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
             let status = crate::status_storage::MemoryStatusStorage::default();
+            let meshes = crate::storage::MemoryMeshStorage::default();
             if case == "surviving-primary-wrote-dead" {
                 // mesh2's primary committed Dead at mesh.deleted, among mesh2's status rows (R-MD1 item 1).
                 status.put_mesh_status_of("mesh2", &dead("mesh2")).await.unwrap();
+                // ... and its Mesh row Dead on mesh.storage with it (admin/leave.rs, mesh.deleted).
+                crate::storage::MeshStorage::claim_mesh(&meshes, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), dead: true }).await.unwrap().unwrap();
             }
             let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
             let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
@@ -8065,16 +8070,16 @@ mod tests {
             {
                 let _g = tracing::dispatcher::set_default(&capture.dispatch);
                 for _replay in 0..2 {
-                    crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &crate::storage::MemoryMeshStorage::default(), &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary, &[exited_receipt(&last)]).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
+                    crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &meshes, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary, &[exited_receipt(&last)]).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
                 }
             }
             assert!(status.mesh_status_held_of("mesh2", &dead("mesh2")).await.unwrap(), "{case}: mesh2's row Dead stands among mesh2's status rows");
             assert_eq!(status.mesh_statuses().await.unwrap().get(&mesh_id("mesh2")), None, "{case}: no Dead row of mesh2 among the fabric-primary's own mesh's rows");
             let spans = capture.named("rdm.node_admin.mesh.update.via-dead-row");
-            let said: Vec<(String, String)> = spans.iter().map(|s| (s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("writer").cloned().unwrap_or_default())).collect();
-            let expected: Vec<(String, String)> = match case {
-                "surviving-primary-wrote-dead" => vec![("already-applied".into(), "mesh-primary".into()); 2],
-                _ => vec![("applied".into(), "acting-primary".into()), ("already-applied".into(), "acting-primary".into())],
+            let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("writer").cloned().unwrap_or_default(), s.attributes.get("mesh_row").cloned().unwrap_or_default())).collect();
+            let expected: Vec<(String, String, String)> = match case {
+                "surviving-primary-wrote-dead" => vec![("already-applied".into(), "mesh-primary".into(), "already-dead".into()); 2],
+                _ => vec![("applied".into(), "acting-primary".into(), "dead-written".into()), ("already-applied".into(), "acting-primary".into(), "already-dead".into())],
             };
             assert_eq!(said, expected, "{case}: one transition at most, and the span names who wrote the row: {spans:?}");
             eprintln!("{case}: span rdm.node_admin.mesh.update.via-dead-row trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
