@@ -9,7 +9,7 @@ use rafka_mesh_entity::connections::NodeConnection;
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, PathName};
-use rafka_node_admin_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeSelector, NodeStatus, Nodes};
+use rafka_node_admin_client::{BuildCarrier, BuildId, Builds, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeSelector, NodeStatus, Nodes};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
@@ -144,6 +144,17 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
                 "the unreported fact is named with the admin and its last report: {reason}"
             ),
             other => panic!("a fact the admin never reports ends Indeterminate, not {other:?}"),
+        }
+
+        // build.get awaited: a Build the fabric-primary holds no fact of is never reported; the call ends
+        // Indeterminate, naming the fact, the Build, the admin and how its last read ended.
+        let unheld = BuildId(NodeId::mint().to_string());
+        match Builds::new(carrier.clone()).fact(&unheld, "the Build is held", Duration::from_secs(1), |b| b.build_id == unheld).await {
+            Err(CallEnd::Indeterminate { reason }) => assert!(
+                reason.contains("the Build is held") && reason.contains(&unheld.0) && reason.contains(&me.node.name.to_string()) && reason.contains("unknown-build"),
+                "the unreported fact is named with the Build, the admin and how its last read ended: {reason}"
+            ),
+            other => panic!("a Build the admin holds no fact of ends Indeterminate, not {other:?}"),
         }
 
         // node.connections.get of the admin: exactly what it holds.

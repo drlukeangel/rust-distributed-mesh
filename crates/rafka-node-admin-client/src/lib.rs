@@ -322,6 +322,21 @@ impl NodeAdminClient {
         self.get(&format!("/api/builds?id={id}")).await
     }
 
+    /// Await the typed fact `holds` of Build `id` as the answering admin's own view holds it
+    /// (`GET /api/builds?id=`), read at half the gossip interval. Any admin answers this read from the Build
+    /// facts it has itself received, so it is how a caller learns that a fact reached an admin that is not
+    /// the fabric-primary: the Build family (`build.get`) is the fabric-primary's alone. `fact` names it.
+    /// An admin that does not hold it within `within` ends the call `Indeterminate`, naming the fact, the
+    /// admin's control API and the last thing it held or how its last read ended.
+    pub async fn build_fact(&self, id: &BuildId, fact: &str, within: std::time::Duration, holds: impl Fn(&BuildView) -> bool) -> Result<BuildView, CallEnd> {
+        let report = |b: &BuildView| {
+            let last = b.steps.last().map(|r| format!("{} {} of attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());
+            format!("state {:?}, attempt {}, {} receipts, the last {last}", b.state, b.attempt, b.steps.len())
+        };
+        let read = || async { self.build_view(id).await.map_err(CallEnd::from) };
+        objects::await_fact("build", &self.base, &format!("{fact} of Build {id}"), within, read, holds, report).await
+    }
+
     /// `DELETE /api/builds?id=`: drop a finished Build from history.
     pub async fn forget(&self, id: &BuildId) -> Result<(), ClientError> {
         self.delete::<serde_json::Value>(&format!("/api/builds?id={id}")).await.map(|_| ())

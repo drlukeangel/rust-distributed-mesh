@@ -46,6 +46,38 @@ fn ended_read<T>(span: &tracing::Span, op: &'static str, r: &Result<T, CallEnd>)
     span.in_scope(|| tracing::info!(op, "an object call ended"));
 }
 
+/// Await a typed fact of one admin's view: `read` it at half the gossip interval, so a fact that
+/// spreads by gossip is read as it lands, until `holds`. `kind` and `fact` name the fact and `admin` the
+/// admin asked. An admin that does not report it within `within` ends the call `Indeterminate`, naming
+/// the fact, the admin and the last thing it reported (`report` of the last view read) or how its last
+/// read ended. Every `fact` awaiter of the objects is this body.
+pub(crate) async fn await_fact<T, Fut>(
+    kind: &str,
+    admin: &str,
+    fact: &str,
+    within: std::time::Duration,
+    mut read: impl FnMut() -> Fut,
+    holds: impl Fn(&T) -> bool,
+    report: impl Fn(&T) -> String,
+) -> Result<T, CallEnd>
+where
+    Fut: std::future::Future<Output = Result<T, CallEnd>>,
+{
+    let started = std::time::Instant::now();
+    let every = rafka_mesh_entity::cadence::gossip_interval() / 2;
+    loop {
+        let last = match read().await {
+            Ok(view) if holds(&view) => return Ok(view),
+            Ok(view) => report(&view),
+            Err(e) => e.to_string(),
+        };
+        if started.elapsed() >= within {
+            return Err(CallEnd::Indeterminate { reason: format!("{admin} never reported the {kind} fact {fact} within {within:?}; its last report was: {last}") });
+        }
+        tokio::time::sleep(every).await;
+    }
+}
+
 /// What `node.create` is given: the mesh to add a node to and the node's kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeSpec {
@@ -515,19 +547,8 @@ impl Fabrics {
     /// `Indeterminate`, naming the fact, the admin and the last thing it reported or how its last read
     /// ended.
     pub async fn fact(&self, fact: &str, within: std::time::Duration, holds: impl Fn(&FabricView) -> bool) -> Result<FabricView, CallEnd> {
-        let started = std::time::Instant::now();
-        let every = rafka_mesh_entity::cadence::gossip_interval() / 2;
-        loop {
-            let last = match self.get().await {
-                Ok(view) if holds(&view) => return Ok(view),
-                Ok(view) => format!("status {:?}, fabric-primary {}, {} meshes", view.status, view.fabric_primary.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "none".into()), view.meshes.len()),
-                Err(e) => e.to_string(),
-            };
-            if started.elapsed() >= within {
-                return Err(CallEnd::Indeterminate { reason: format!("{} never reported the fabric fact {fact} within {within:?}; its last report was: {last}", self.carrier.fabric_primary()) });
-            }
-            tokio::time::sleep(every).await;
-        }
+        let report = |view: &FabricView| format!("status {:?}, fabric-primary {}, {} meshes", view.status, view.fabric_primary.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "none".into()), view.meshes.len());
+        await_fact("fabric", &self.carrier.fabric_primary().to_string(), fact, within, || self.get(), holds, report).await
     }
 }
 
@@ -572,6 +593,20 @@ impl Builds {
     /// `build.delete`: drop a finished Build from history.
     pub async fn delete(&self, id: &BuildId) -> Result<(), CallEnd> {
         self.call(BuildOp::Delete, self.carrier.delete(id)).await
+    }
+
+    /// Await the typed fact `holds` of Build `id` as the fabric-primary reports it (`build.get`), read at
+    /// half the gossip interval so a fact that spreads by gossip is read as it lands. `fact` names it. The
+    /// Build family is answered only by the fabric-primary (a node that is not it names it and the carrier
+    /// follows), so this is the fabric-primary's view of the Build, which is the view of the admin the
+    /// carrier starts at only when that admin is the fabric-primary. A fabric-primary that does not report it within `within` ends the call `Indeterminate`,
+    /// naming the fact, the admin the call started at and the last thing reported or how the last read ended.
+    pub async fn fact(&self, id: &BuildId, fact: &str, within: std::time::Duration, holds: impl Fn(&BuildReceipts) -> bool) -> Result<BuildReceipts, CallEnd> {
+        let report = |b: &BuildReceipts| {
+            let last = b.steps.last().map(|r| format!("{} {} of attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());
+            format!("phase {:?}, attempt {}, {} receipts, the last {last}", b.phase, b.attempt, b.steps.len())
+        };
+        await_fact("build", &format!("the fabric-primary reached from {}", self.carrier.fabric_primary()), &format!("{fact} of Build {id}"), within, || self.get(id), holds, report).await
     }
 }
 
