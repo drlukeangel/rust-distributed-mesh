@@ -1283,7 +1283,9 @@ impl LeaveBook {
 /// sends nothing again; nothing else would end the owner's wait.
 pub fn settle_handoff(book: &LeaveBook, key: &LeaveKey, primary: &str, reply: StatusReply) -> StatusReply {
     if !matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
-        book.incomplete(key, format!("the mesh-leave of {primary} was refused {}: {reply:?}", reply.name()));
+        let ended = book.incomplete(key, format!("the mesh-leave of {primary} was refused {}: {reply:?}", reply.name()));
+        tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-refused", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, final_primary = %primary, reply = %reply.name(), ended)
+            .in_scope(|| tracing::info!("the handoff the owner awaits was refused by name: the open leave ends incomplete and the next attempt resumes from the receipts"));
     }
     reply
 }

@@ -1880,14 +1880,14 @@ fn a_handoff_the_owner_refuses_by_name_ends_its_wait_incomplete_at_once() {
             tokio::task::yield_now().await;
         }
         // A reply that accepts a handoff settles nothing against the leave.
-        assert_eq!(settle_handoff(&book, &key, &named, StatusReply::AlreadyApplied), StatusReply::AlreadyApplied);
+        assert_eq!(root.in_scope(|| settle_handoff(&book, &key, &named, StatusReply::AlreadyApplied)), StatusReply::AlreadyApplied);
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
         let open_after_accepted = !wait.is_finished();
         // The owner's read of the sender's Build facts decided nothing: the call is refused by name.
         let refused = StatusReply::source_failed("the Build log of mesh2.admin.1 (the final primary)", "fetch-build-facts for the manifest", "not ready: hydrating");
-        let refusal = settle_handoff(&book, &key, &named, refused.clone());
+        let refusal = root.in_scope(|| settle_handoff(&book, &key, &named, refused.clone()));
         assert_eq!(refusal, refused, "the sender is told the refusal unchanged");
         for _ in 0..8 {
             tokio::task::yield_now().await;
@@ -1910,4 +1910,8 @@ fn a_handoff_the_owner_refuses_by_name_ends_its_wait_incomplete_at_once() {
         }
         other => panic!("the attempt ends incomplete on the refusal: {other:?}"),
     }
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    let refused = named("rdm.node_admin.mesh.update.via-handoff-refused");
+    assert_eq!(refused.len(), 1, "one span names the end on the refusal, and the accepted reply left none: {spans:?}");
+    assert_eq!((refused[0]["attributes"]["reply"].as_str(), refused[0]["attributes"]["ended"].as_str()), (Some("rejected-source-failed"), Some("true")), "{}", refused[0]);
 }
