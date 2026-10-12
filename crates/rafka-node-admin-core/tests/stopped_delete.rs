@@ -138,7 +138,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         lifecycle: &NoLifecycleEvents,
         builds: &builds,
         template: &template,
-        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
+        timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
     let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), exit: None };

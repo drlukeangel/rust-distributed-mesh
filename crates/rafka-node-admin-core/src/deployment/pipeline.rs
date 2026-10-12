@@ -1042,10 +1042,10 @@ pub struct Timeouts {
     pub join: Duration,
     /// How long `WaitForNodeReady` waits.
     pub ready: Duration,
-    /// How long `AwaitNodeDrained` and `AwaitNodeLeft` wait for a completion call.
-    pub drain: Duration,
+    /// How long `AwaitNodeLeft` waits for the stop's reply.
+    pub completion: Duration,
     /// Stop-ladder grace before a forced kill; longer than the node's own
-    /// drain deadline (node-rpc §35).
+    /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` (node-rpc §35).
     pub stop_grace: Duration,
 }
 
@@ -1055,7 +1055,7 @@ impl Default for Timeouts {
             bind: Duration::from_secs(20),
             join: Duration::from_secs(30),
             ready: Duration::from_secs(30),
-            drain: Duration::from_secs(10),
+            completion: Duration::from_secs(10),
             stop_grace: Duration::from_secs(8),
         }
     }
@@ -2209,7 +2209,7 @@ impl DeploymentPipeline<'_> {
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
                 let c = tokio::select! {
-                    c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.drain) => c,
+                    c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.completion) => c,
                     () = self.until_exited(handle) => Completion::RuntimeExited,
                 };
                 // The mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.

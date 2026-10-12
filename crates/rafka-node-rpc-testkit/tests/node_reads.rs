@@ -295,7 +295,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("node-reads-rpc-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -334,6 +334,11 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let mut heard = book.heard_changes();
         while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
+        }
+        // The node originates a data-plane connection to its admin: a Direct entry of its log.
+        match seams.client.call::<rafka_node_rpc_contract::ping::Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &rafka_node_rpc::CallOptions::default()).await.0 {
+            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(_) => {}
+            other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
         }
         seams.connections.drain().await;
 

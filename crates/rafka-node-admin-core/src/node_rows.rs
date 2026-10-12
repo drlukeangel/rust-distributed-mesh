@@ -514,7 +514,7 @@ impl NodeRows {
         let Ok(name) = path.parse::<PathName>() else { return };
         let is_subject = |n: &Node| subject.is_none_or(|id| &n.node_id == id);
         match (verb, step) {
-            ("replace-node", "NodeDeleting" | "DrainNode") => {
+            ("replace-node", "NodeDeleting" | "StopNode") => {
                 let held = match subject {
                     Some(id) => held_by(view, id).await,
                     None => held_at(view, &name).await,
@@ -691,7 +691,7 @@ pub(crate) enum Moved {
 }
 
 /// The record of a replace's predecessor at its rename to `to`: parked there. A live branch's
-/// predecessor was held live at its `DrainNode`, and its stop (`StopNode`, `AwaitNodeLeft`) precedes
+/// predecessor was held live at its `StopNode` call, and its stop (`StopNode`, `AwaitNodeLeft`) precedes
 /// the rename, so it is `Leaving` and parked now; a recovery's predecessor keeps the status it was held
 /// with (its exit is what the recovery proves).
 fn parked_record(record: &Node, to: &PathName) -> Node {

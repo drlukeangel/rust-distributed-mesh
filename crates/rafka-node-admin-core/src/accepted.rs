@@ -408,7 +408,7 @@ pub(crate) fn plan_for(topology: &FabricTopology, observed: &Topology, action: O
 /// and once the successor holds the path the view names another birth.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ReplaceProgress {
-    /// The operation began for this birth: a replace's `DrainNode`, or a receipt naming the exact
+    /// The operation began for this birth: a replace's `StopNode`, or a receipt naming the exact
     /// birth (a recovery's `NodeDeleting`, the `RenamePredecessor` of either).
     started: bool,
     /// The operation's `Complete` is receipted, at or after the attempt it began in.
@@ -468,7 +468,7 @@ impl ReplaceProgress {
                 .map(|s| s.attempt)
                 .min()
         };
-        let began = [done("NodeDeleting", true), done("RenamePredecessor", true)].into_iter().flatten().min();
+        let began = [done("StopNode", false), done("NodeDeleting", true), done("RenamePredecessor", true)].into_iter().flatten().min();
         let finished = began.is_some_and(|began| build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= began));
         Self { started: began.is_some(), finished, ..Self::default() }
     }
@@ -1087,21 +1087,21 @@ mod tests {
         assert!(plan(&cur, &o, None).operations.len() >= 3);
     }
 
-    /// CONTRACT: a standalone drain or stop plans its one operation (`drain-node:<path>` /
+    /// CONTRACT: a standalone node.connections.delete or stop plans its one operation (`node.connections.delete:<path>` /
     /// `stop-node:<path>`) while the view holds the exact birth, never a create, a retire or a repair
     /// of another member whatever the view lacks; a path run by another birth plans nothing.
     #[test]
-    fn a_drain_or_stop_plans_only_its_operation_for_its_exact_birth() {
+    fn a_connections_delete_or_stop_plans_only_its_operation_for_its_exact_birth() {
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
         let mut o = mn();
         let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
         o.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.3");
-        let drain = AttemptAction::DeleteConnections { path: path.clone(), from_incarnation: from.clone() };
+        let connections = AttemptAction::DeleteConnections { path: path.clone(), from_incarnation: from.clone() };
         let stop = AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan(&cur, &o, Some(&drain)).operations, vec![BuildOperation::DeleteConnections { node: path.clone(), from_incarnation: from.clone() }]);
+        assert_eq!(plan(&cur, &o, Some(&connections)).operations, vec![BuildOperation::DeleteConnections { node: path.clone(), from_incarnation: from.clone() }]);
         assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }]);
-        assert_eq!(BuildOperation::DeleteConnections { node: path.clone(), from_incarnation: from.clone() }.key(), "drain-node:mesh1.rpc.2");
+        assert_eq!(BuildOperation::DeleteConnections { node: path.clone(), from_incarnation: from.clone() }.key(), "node.connections.delete:mesh1.rpc.2");
         assert_eq!(BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }.key(), "stop-node:mesh1.rpc.2");
         // A Draining or Leaving birth of the path is still the birth the operation acts on.
         for status in [NodeStatus::Draining, NodeStatus::Leaving] {
@@ -1110,7 +1110,7 @@ mod tests {
         }
         let mut later = mn();
         later.nodes.iter_mut().find(|x| x.name == path).unwrap().incarnation_id = Some(IncarnationId::mint());
-        assert_eq!(plan(&cur, &later, Some(&drain)).operations, vec![]);
+        assert_eq!(plan(&cur, &later, Some(&connections)).operations, vec![]);
         assert_eq!(plan(&cur, &later, Some(&stop)).operations, vec![]);
     }
 
@@ -1224,7 +1224,7 @@ mod tests {
     }
 
     /// CONTRACT: the replace operation is planned until its `Complete` is receipted. Once it began
-    /// (a replace's `DrainNode`, or a receipt naming the exact birth: a recovery's `NodeDeleting`, the
+    /// (a replace's `StopNode`, or a receipt naming the exact birth: a recovery's `NodeDeleting`, the
     /// `RenamePredecessor` of either) it is planned whatever the view holds at the path (the
     /// successor, or nothing: a parked predecessor has left every book). A receipt of another birth of
     /// the path is not this replace's progress.
@@ -1277,16 +1277,16 @@ mod tests {
         let mut gone = mn();
         gone.nodes.retain(|x| x.name != path);
         assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&from))]), &gone).operations, replace);
-        // A replace of a live birth (node-replace.md): it began at its drain, the parked predecessor
+        // A replace of a live birth (node-replace.md): it began at its stop, the stopped predecessor
         // left the view, the rename names the birth, and it finishes at Complete with no NodeDeleted.
-        assert_eq!(plan_for_build(&build(vec![step(6, "DrainNode", None)]), &gone).operations, replace, "begun at the drain: the parked predecessor left the view");
+        assert_eq!(plan_for_build(&build(vec![step(6, "StopNode", None)]), &gone).operations, replace, "begun at the stop: the stopped predecessor left the view");
         assert_eq!(plan_for_build(&build(vec![step(6, "RenamePredecessor", Some(&IncarnationId::mint()))]), &o).operations, vec![], "another birth's rename is not this replace's");
-        let renamed = vec![step(6, "DrainNode", None), step(6, "RenamePredecessor", Some(&from))];
+        let renamed = vec![step(6, "StopNode", None), step(6, "RenamePredecessor", Some(&from))];
         assert_eq!(plan_for_build(&build(renamed.clone()), &o).operations, replace, "renamed, the successor not complete");
         let mut complete = renamed;
         complete.push(step(7, "Complete", None));
         assert_eq!(plan_for_build(&build(complete), &o).operations, vec![], "the replace is complete: the predecessor stays parked at <path>.old");
-        assert_eq!(plan_for_build(&build(vec![step(5, "Complete", None), step(6, "DrainNode", None)]), &o).operations, replace, "a Complete before the operation began is not its end");
+        assert_eq!(plan_for_build(&build(vec![step(5, "Complete", None), step(6, "StopNode", None)]), &o).operations, replace, "a Complete before the operation began is not its end");
     }
 
     /// CONTRACT (node-recovery.md, Operation summary "Steps"; rdm-code-conformance.md §0.1 and §2

@@ -1,27 +1,25 @@
 //! A live node takes the name its mesh-primary's row now holds (`ApplyNodeName`; node-rpc-envelope.md
 //! "Meta and config", R12/R13, R-CR1).
 //!
-//! CONTRACT: a node born `mesh1.rpc.1.new` answers `ApplyNodeName { name: mesh1.rpc.1 }` with
-//! `Busy` naming the route it holds to its admin (its join), and holds nothing: its digest still
-//! says `.new`. The cell runs the workflow's order (node-drain.md: "A caller reads the receipt
-//! before proceeding according to its workflow"; node-update.md, rename precondition: "the node is
-//! drained and its `node.connections.delete` has completed"): `DrainNode`, held open by one call in
-//! flight at the node until the cell releases it; the drain's `node-drained` accepted by its
-//! commander, and both of the drain's calls at the admin (that completion and the birth's own
-//! `Draining` declaration) answered at the node; only then `DeleteConnections { All }`.
-//! Nothing of the drain is still calling the admin when the connections are cut, so it answers
-//! `Applied` and holds `mesh1.rpc.1`; the same name again is `AlreadyApplied`, and a stale
-//! incarnation is refused naming the one held. What must NOT happen: a name taken while the node
-//! holds a connection, or a digest naming the new name before the apply.
+//! CONTRACT: a node born `mesh1.rpc.1.new` that originated a data-plane connection to its admin
+//! answers `ApplyNodeName { name: mesh1.rpc.1 }` with `Busy` naming that route, and holds nothing:
+//! its digest still says `.new`. The cell runs node-update.md's order ("Rename precondition": the
+//! node's `node.connections.delete { All }` has completed): `All`, held open by one call in flight
+//! at the node until the cell releases it, answers `ConnectionsDeleted` with an `Established`
+//! receipt counting that call and closing the route; only then is the name applied: `Applied`, and
+//! the node holds `mesh1.rpc.1`; the same name again is `AlreadyApplied`, and a stale incarnation is
+//! refused naming the one held. What must NOT happen: a name taken while the node holds a
+//! connection, `All` answered while the call it admitted is in flight, or a digest naming the new
+//! name before the apply.
 
 use crate::common::admin_side_serving;
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
-use rafka_node_admin_core::node_commands::CommandKey;
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{ConnectionScope, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, PullRequest, PullServer};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
@@ -29,10 +27,9 @@ use std::time::Duration;
 #[test]
 fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
     let cap = crate::common::capture("a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted");
-    let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
         let dir = std::env::temp_dir().join(format!("apply-node-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
@@ -59,12 +56,17 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         // The node serves one op the cell can hold: a call into it stays in flight until released.
         let pull = PullServer::new(vec![]);
         pull.gate.open();
-        let running = node::start(&launch, {
-            let pull = pull.clone();
-            move |b, _| pull.serve(b)
+        let seams: std::sync::Arc<std::sync::OnceLock<rafka_node_rpc_testkit::originate::Seams>> = Default::default();
+        let running = node::start_with_seams(&launch, {
+            let (pull, slot) = (pull.clone(), seams.clone());
+            move |b, s| {
+                let _ = slot.set(s);
+                pull.serve(b)
+            }
         })
         .await
         .expect("the node comes up");
+        let seams = seams.get().cloned().expect("the node handed its seams");
 
         let book = &admin.observer.membership.book;
         // Every digest the admin's book takes ticks this count: the cell awaits a published digest, never the cadence.
@@ -90,7 +92,13 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         };
         let apply = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.to_string() };
 
-        // Holding its join route: the name is refused Busy, naming that route, and nothing is held.
+        // The node originates a data-plane connection to its admin: a Direct entry of its log.
+        match seams.client.call::<Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &CallOptions::default()).await.0 {
+            RpcOutcome::Reply(_) => {}
+            other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
+        }
+        seams.connections.drain().await;
+        // Holding that route: the name is refused Busy, naming it, and nothing is held.
         match call(apply.clone()).await {
             StatusReply::Busy { reason } => assert!(reason.contains("mesh1.admin.1 (direct, entry "), "Busy names the route the node holds: {reason}"),
             other => panic!("a node holding a connection answered {other:?}"),
@@ -102,38 +110,25 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         }
         assert_eq!(book.get(launch.node_id.as_str()).unwrap().0.node.name, born, "a Busy node keeps publishing its birth's name");
 
-        // Drained, then every connection deleted: the name moves. One call in flight at the node holds
-        // the drain open, so its completion (`node-drained`, called at this admin side) comes after
-        // `DrainNode` is answered.
-        let operation = format!("drain-node:{born}");
-        let mut drained = admin.observer.commands.open(CommandKey { build_id: "bld_apply".into(), attempt: 1, operation: operation.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() });
+        // node.connections.delete { All }, held open by one call in flight at the node: it answers
+        // only once that call has its reply, its receipt counting it, and the route is closed.
         pull.hold();
         let held_call = async { client.call::<HydratePull>(&target, &PullRequest::Pull, &opts).await.0 };
         let steps = async {
             pull.entered(1).await;
-            let drain = StatusRequest::DrainNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_apply".into(), attempt: 1, operation: operation.clone() };
-            assert_eq!(call(drain).await, StatusReply::Applied);
+            let delete = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+            let deleting = call(delete);
+            tokio::pin!(deleting);
+            assert!(tokio::time::timeout(Duration::from_millis(300), &mut deleting).await.is_err(), "All is not answered while the call it admitted is in flight");
             pull.release();
+            deleting.await
         };
-        let (held_out, ()) = tokio::join!(held_call, steps);
+        let (held_out, deleted) = tokio::join!(held_call, steps);
         assert!(matches!(held_out, RpcOutcome::Reply(_)), "the held call answers once released: {held_out:?}");
-        // The commander has the drain's completion. The drain's two calls at the admin (that
-        // completion and the birth's own Draining declaration, made beside each other) have both had
-        // their answer at the node: neither is cut in flight, so neither dials the admin after the cut.
-        tokio::time::timeout(Duration::from_secs(20), drained.wait_for(|done| *done))
-            .await
-            .expect("the drained birth called node-drained at its commander")
-            .expect("the command book is held by the admin side");
-        let completed = |f: &std::collections::BTreeMap<String, String>| f.get("completion").map(String::as_str) == Some("node-drained") && f.get("answer").map(String::as_str) == Some("applied");
-        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-completion-call", completed))
-            .await
-            .expect("the drained birth had its commander's answer to node-drained");
-        let declared = |f: &std::collections::BTreeMap<String, String>| f.get("state").map(String::as_str) == Some("Draining") && f.get("definitive").map(String::as_str) == Some("true");
-        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_rpc.status.update.via-declare-own", declared))
-            .await
-            .expect("the drained birth's Draining declaration was answered by name");
-        let delete = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
-        assert!(matches!(call(delete).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
+        assert!(
+            matches!(&deleted, StatusReply::ConnectionsDeleted { held, receipt: Some(ConnectionsReceipt::Established { in_flight: 1, closed }), .. } if held.is_empty() && closed.len() == 1),
+            "every connection is deleted, the receipt counting the call in flight: {deleted:?}"
+        );
         assert_eq!(call(apply.clone()).await, StatusReply::Applied);
         assert_eq!(running.membership.held_name(&born), taken, "the node holds the applied name");
 

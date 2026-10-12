@@ -29,7 +29,7 @@ use std::time::Duration;
 
 type Log = Arc<Mutex<Vec<String>>>;
 
-/// The live observer, logging every drain it sends and every readiness it proves, in order. With
+/// The live observer, logging every command it sends and every readiness it proves, in order. With
 /// `stop_not_sent`, a `stop-node` never reaches the birth (`NotSent`): the birth keeps running,
 /// as a predecessor that never admits its stop does.
 struct Logged<'a> {
@@ -113,7 +113,7 @@ impl LifecycleEvents for Recorder<'_> {
             m.book.joined(op);
         }
     }
-    // The replace's order is asserted from its steps; the drain and leaving hooks and the mesh-leave
+    // The replace's order is asserted from its steps; the connections-deleting and leaving hooks and the mesh-leave
     // events are not part of what this recorder hears.
     async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
@@ -126,9 +126,7 @@ impl LifecycleEvents for Recorder<'_> {
 }
 
 /// Every step of a replace of a live birth, in order (node-replace.md 1-3).
-const REPLACE_ORDER: [&str; 18] = [
-    "DrainNode",
-    "AwaitNodeDrained",
+const REPLACE_ORDER: [&str; 16] = [
     "StopNode",
     "AwaitNodeLeft",
     "RenamePredecessor",
@@ -223,7 +221,7 @@ fn receipts(steps: &[rafka_node_admin_core::build_state::BuildStepReceipt], oper
 /// predecessor parked, with its incarnation and data retained", then "node[1].update renames name to
 /// `<name>.old` while parked", then "node.create claims the freed name and starts the successor with a
 /// new node.id/incarnation"; "Rafka transfers its data as its own recipe step"). The old birth is
-/// drained and stopped, and the stop's departure is published (`NodeStopped`, so every book drops it)
+/// stopped (its connections deleted inside the stop), and the stop's departure is published (`NodeStopped`, so every book drops it)
 /// before it is renamed `<path>.old` (spanned, its receipt naming the exact old birth) and before the
 /// successor's identity exists. The successor is created in its own new directory while the
 /// predecessor is still parked: at the successor's readiness, and after the operation completes, the
@@ -307,17 +305,15 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
         assert_eq!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Running, "the replace ends the predecessor parked, never exited");
         assert_eq!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Running);
 
-        // The events leave in order: the drain, the stop and its NodeStopped, then the successor's readiness.
+        // The events leave in order: the stop and its NodeStopped, then the successor's readiness.
         let log = rig.log.lock().unwrap().clone();
         let (old, new) = (first.node.node_id.to_string(), second.node.node_id.to_string());
         let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
-        let drain = at(&format!("drain-node:{old}"));
-        let drained = at(&format!("awaited:drain-node:{old}"));
         let stop = at(&format!("stop-node:{old}"));
         let left = at(&format!("awaited:stop-node:{old}"));
         let stopped = at(&format!("NodeStopped:{old}:stop-node:{}", path()));
         let ready = at(&format!("ready:{new}"));
-        assert!(drain < drained && drained < stop && stop < left && left < stopped && stopped < ready, "drain, node-drained, stop-node, node-left, its NodeStopped, then the successor's readiness: {log:?}");
+        assert!(stop < left && left < stopped && stopped < ready, "stop-node, node-left, its NodeStopped, then the successor's readiness: {log:?}");
         assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 1, "the stop's departure is published once: {log:?}");
         assert!(!log.iter().any(|l| l.starts_with("NodeDeleting") || l.starts_with("NodeDeleted")), "a replace deletes nothing: the predecessor's delete is the recipe's own later step: {log:?}");
 
@@ -351,10 +347,10 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
 }
 
 /// CONTRACT: a replace whose predecessor never admits stop-node (`NotSent`: the birth runs on,
-/// drained, never stopped) fails at the stop's wait step by name and renames nothing (node-replace.md
+/// never stopped) fails at the stop's wait step by name and renames nothing (node-replace.md
 /// step 2: "node[1].stop runs the complete stop and leaves the predecessor stopped"; node-update.md,
 /// "Rename precondition": the node is not ready-for-traffic and holds no connection; node-stop.md, the
-/// complete stop's only proof is the birth's `stopped`). The run is the drain, stop-node and its wait,
+/// complete stop's only proof is the birth's `stopped`). The run is stop-node and its wait,
 /// which fails naming the birth, stop-node and the admission it got. The predecessor keeps its
 /// path.name and its process runs; no successor identity is allocated and no `Complete` is
 /// receipted; no `NodeStopped` is published, as nothing parked. A birth that does not answer goes to
@@ -417,7 +413,7 @@ fn a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails
     })
 }
 
-/// CONTRACT: a replace of a birth the provider already proves terminal sends it nothing: no drain, no
+/// CONTRACT: a replace of a birth the provider already proves terminal sends it nothing: no stop, no
 /// Leaving, no admission wait (node-recovery.md). It is node.delete of the exited instance, then
 /// node.create (node-recovery.md "Steps"; step 3 then step 4): NodeDeleting, the terminal proof,
 /// rename (a predecessor that was never stopped is renamed only on its exit proof, node-update.md
@@ -428,8 +424,8 @@ fn a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails
 /// identity's delete keeps the predecessor's directory and its endpoint key (node-delete.md step 3:
 /// "Retain the data dir, node-identity.json and endpoint key").
 #[test]
-fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage() {
-    let cap = crate::common::capture("recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephemeral_storage");
+fn recovery_of_a_proven_terminal_birth_sends_it_no_command_and_hands_over_no_ephemeral_storage() {
+    let cap = crate::common::capture("recovery_of_a_proven_terminal_birth_sends_it_no_command_and_hands_over_no_ephemeral_storage");
     cap.run(crate::common::Threads::Workers(4), async move {
         let rig = rig().await;
         let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: false };

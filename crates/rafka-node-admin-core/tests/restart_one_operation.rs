@@ -195,7 +195,7 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
         lifecycle: &events,
         builds: &builds,
         template: &template,
-        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
+        timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-3093-restart".into()) };
     let deployed = rafka_node_admin_core::join::Deployed {
@@ -298,7 +298,7 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
         lifecycle: &events,
         builds: &builds,
         template: &template,
-        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
+        timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-3093-restart".into()) };
     let deployed = rafka_node_admin_core::join::Deployed {
@@ -441,7 +441,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         lifecycle: &events,
         builds: &builds,
         template: &template,
-        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
+        timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
     };
     let out = pipeline.restart(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
     assert!(out.is_ok(), "{out:?}");

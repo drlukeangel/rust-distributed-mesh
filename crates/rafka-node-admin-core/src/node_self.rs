@@ -230,8 +230,8 @@ pub struct NodeSelf {
     /// Declare the state this birth entered to its authority (a node-admin of its mesh); `None` for
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
-    /// Cancelled when `drain-node` or `stop-node` is admitted: the birth is retired, so its
-    /// `hydrate_before_ready` hook and any pull it has in flight end.
+    /// Cancelled when `node.connections.delete { All }` or `stop-node` is admitted: the birth is
+    /// retired, so its `hydrate_before_ready` hook and any pull it has in flight end.
     pub retire: Option<rafka_node_rpc::Retirement>,
     /// The backbone, for a node-admin: its round hooks go out on its mesh channel and the backbone.
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
@@ -241,6 +241,11 @@ pub struct NodeSelf {
     cycle: Mutex<Cycle>,
     /// How this process leaves and rejoins its mesh; filled once the process holds the parts.
     session: Mutex<Option<Arc<dyn Session>>>,
+    /// The client this birth originates its data-plane connections on, the ones its connections log
+    /// holds as Direct entries (connections.md "Two planes, two words"); `None` for a process whose
+    /// data plane is not a Node RPC client of its own. `node.connections.delete` closes its pooled
+    /// connection to the destination of each Direct entry it closes, and nothing of the Node RPC pool.
+    data_plane: Mutex<Option<Arc<NodeRpcClient>>>,
     /// The process's connections writer: what this birth holds (R-CR1) and where the drops of a
     /// `node.connections.delete` are written; filled once the process holds it.
     connections: Mutex<Option<Arc<crate::connections_writer::ConnectionsWriter>>>,
@@ -265,7 +270,7 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -281,7 +286,7 @@ impl NodeSelf {
         self
     }
 
-    /// This surface, cancelling `retire` when a drain or a stop is admitted.
+    /// This surface, cancelling `retire` when `node.connections.delete { All }` or a stop is admitted.
     pub fn with_retire(mut self, retire: rafka_node_rpc::Retirement) -> Self {
         self.retire = Some(retire);
         self
@@ -290,6 +295,12 @@ impl NodeSelf {
     /// This surface, leaving and rejoining its mesh through `session` when it is stopped and started.
     pub fn set_session(&self, session: Arc<dyn Session>) {
         *self.session.lock().unwrap() = Some(session);
+    }
+
+    /// This surface, closing the data-plane connections of the Direct entries a
+    /// `node.connections.delete` closes on `client`.
+    pub fn set_data_plane(&self, client: Arc<NodeRpcClient>) {
+        *self.data_plane.lock().unwrap() = Some(client);
     }
 
     /// This surface, holding the process's connections writer: what this birth holds and where a
@@ -334,8 +345,15 @@ impl NodeSelf {
         // `All` is graceful node-wide closure (node-connections-delete.md step 3): admission of new
         // application work is blocked, and the eligible work in flight (every dispatched handler but
         // this call's own) is let finish, bounded by `RDM_CONNECTIONS_DELETE_DEADLINE_MS`.
+        // The birth is retired at the admission of `All`: its `hydrate_before_ready` hook and any pull
+        // it has in flight end; it returns to service only through a stop and a start.
         let in_flight = match scope {
-            ConnectionScope::All => Some(self.await_in_flight().await),
+            ConnectionScope::All => {
+                if let Some(retire) = &self.retire {
+                    retire.cancel();
+                }
+                Some(self.await_in_flight().await)
+            }
             ConnectionScope::Connections(_) => None,
         };
         let (routes, not_open) = match scope {
@@ -352,6 +370,16 @@ impl NodeSelf {
                 (routes, not_open)
             }
         };
+        // Each Direct entry closed is its data-plane connection closed; a Proxy rides its carrier's
+        // Direct and only its route retires.
+        let data_plane = self.data_plane.lock().unwrap().clone();
+        if let Some(data_plane) = &data_plane {
+            for route in routes.iter().filter(|r| r.kind == rafka_mesh_entity::connections::ConnectionKind::Direct) {
+                if let Some(peer) = data_plane.endpoint_of(&route.destination.node_id) {
+                    data_plane.close_pooled_to(&peer, CONNECTIONS_DELETE);
+                }
+            }
+        }
         let (closed, refused) = match &writer {
             Some(w) => w.write_drops(&routes, CONNECTIONS_DELETE).await,
             None => (Vec::new(), Vec::new()),

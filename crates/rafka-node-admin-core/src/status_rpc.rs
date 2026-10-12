@@ -315,7 +315,7 @@ pub struct StatusAuthority {
     pub republish: Republish,
     /// The commands this admin sent (as an owning mesh-admin) and awaits a completion call for.
     pub commands: Arc<crate::node_commands::CommandBook>,
-    /// This admin as the subject of `drain-node` / `stop-node` from its own mesh-admin; filled once
+    /// This admin as the subject of `node.connections.delete` / `stop-node` from its own mesh-admin; filled once
     /// its digest and server exist.
     pub own: Arc<OnceLock<Arc<crate::node_self::NodeSelf>>>,
     /// What serves `LeaveMesh` (as a leaving mesh's primary) and `MeshLeave` (as the
@@ -948,7 +948,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition. While its
 /// `hydrate_before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
-/// re-publishes nothing. `ApplyNodeState` is not served: a drain is `drain-node` and a stop is `stop-node`.
+/// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connections.delete` and a stop is `stop-node`.
 #[allow(clippy::too_many_arguments)]
 async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, hydration: &Hydrating, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
@@ -998,10 +998,10 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             Some(StatusReply::Current { node_id: me.node_id.clone(), incarnation: held.clone(), state })
         }
         StatusRequest::ApplyNodeState { state, .. } => {
-            // Not a drain command and not a stop: the only drain path is drain-node. The reply
+            // Not node.connections.delete and not a stop: neither is set by apply-node-state. The reply
             // carries the state this node holds; the span names why.
             let current = node_state_of(me.status);
-            tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.name, sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state", "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.name, sender = %sender_name, requested = ?state, current = ?current, reason = "node.connections.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state", "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("apply-node-state refused"));
             Some(StatusReply::RejectedInvalidNodeTransition { current })
         }
@@ -1458,9 +1458,9 @@ mod tests {
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
         assert!(holding_me(&reply) && effect.is_none(), "the retired birth's seat is not this admin's: {reply:?}");
 
-        let drain = StatusRequest::DrainNode { node_id: reborn.node_id.clone(), incarnation: reborn.incarnation_id.clone().unwrap(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.admin.1".into() };
-        let reply = auth.apply(Some(owner.clone()), &drain).await;
-        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a drain-node naming this admin's node id reaches the subject's own door: {reply:?}");
+        let stop = StatusRequest::StopNode { node_id: reborn.node_id.clone(), incarnation: reborn.incarnation_id.clone().unwrap(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.admin.1".into() };
+        let reply = auth.apply(Some(owner.clone()), &stop).await;
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node naming this admin's node id reaches the subject's own door: {reply:?}");
     }
 
     /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who is calling; the fence is target
@@ -1484,13 +1484,13 @@ mod tests {
         };
         let auth = authority_of(&me, view);
         let incarnation = me.incarnation_id.clone().unwrap();
-        let drain = StatusRequest::DrainNode { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.admin.2".into() };
-        let reply = auth.apply(None, &drain).await;
-        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a drain-node from a stranger reaches the subject's own door: {reply:?}");
+        let stop = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.admin.2".into() };
+        let reply = auth.apply(None, &stop).await;
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node from a stranger reaches the subject's own door: {reply:?}");
         let probe = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: incarnation.clone() };
         let reply = auth.apply(None, &probe).await;
         assert!(matches!(&reply, R::Current { node_id, state: NodeState::ReadyForTraffic, .. } if *node_id == me.node_id), "a probe from a stranger is answered by the subject: {reply:?}");
-        let stale = StatusRequest::DrainNode { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 2, operation: "drain-node:mesh1.admin.2".into() };
+        let stale = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 2, operation: "stop-node:mesh1.admin.2".into() };
         assert_eq!(auth.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
     }
 

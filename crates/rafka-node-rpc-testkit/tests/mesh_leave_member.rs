@@ -108,7 +108,6 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
             events,
             vec![
                 "NodeDeleting:retire-node:mesh1.rpc.1".to_string(),
-                "NodeDraining:drain-node:mesh1.rpc.1".into(),
                 "NodeLeaving:stop-node:mesh1.rpc.1".into(),
                 "NodeStopped:stop-node:mesh1.rpc.1".into(),
                 "NodeDeleted:retire-node:mesh1.rpc.1".into()

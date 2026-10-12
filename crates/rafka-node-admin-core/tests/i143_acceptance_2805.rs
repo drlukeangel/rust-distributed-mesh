@@ -499,7 +499,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         lifecycle: &NoLifecycleEvents,
         builds: &builds,
         template: &template,
-        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
+        timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle {
         deployment_id: rafka_node_admin_core::model::DeploymentId::mint(),

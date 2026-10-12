@@ -379,7 +379,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     let data_plane = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
     // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
-    let seams = crate::originate::Seams { resolver: resolver.clone(), client: data_plane, connections: connections.clone(), fault };
+    let seams = crate::originate::Seams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), fault };
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
@@ -533,6 +533,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                 )
                             };
                             own.set_connections(connections.clone());
+                            own.set_data_plane(data_plane.clone());
                             let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
                             let hydration_cell: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>> = Arc::default();
                             let hydrating_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
