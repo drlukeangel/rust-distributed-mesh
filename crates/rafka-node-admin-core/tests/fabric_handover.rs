@@ -492,6 +492,30 @@ impl TraceCapture {
     }
 }
 
+/// A traced cell leaves its trace whether it passed or panicked: every span its capture holds
+/// (name, trace, attributes) goes to `target/i143-testkit/fabric_handover/<cell>.<pid>.spans.json`,
+/// so a red reads from its own spans and never from a rerun.
+impl Drop for TraceCapture {
+    fn drop(&mut self) {
+        let flushed = self.capture.flush(std::time::Duration::from_secs(10));
+        let spans: Vec<serde_json::Value> = self
+            .exporter
+            .get_finished_spans()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                let attributes: serde_json::Map<String, serde_json::Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.to_string()))).collect();
+                serde_json::json!({"name": s.name, "trace_id": s.span_context.trace_id().to_string(), "span_id": s.span_context.span_id().to_string(), "parent_span_id": s.parent_span_id.to_string(), "attributes": attributes})
+            })
+            .collect();
+        let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/fabric_handover");
+        let path = dir.join(format!("{cell}.{}.spans.json", std::process::id()));
+        let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&spans).unwrap()));
+        eprintln!("fabric_handover: the cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());
+    }
+}
+
 /// A drive's executor call that never answers: the cell reads the re-submit's admission, not a run.
 struct Held;
 
