@@ -1283,6 +1283,7 @@ mod tests {
     /// is keyed by node id); a `Deleted` row tombstones every label its row carries; a release of the
     /// only row a node holds tombstones its labels. A label no row ever carried reads as carried by
     /// none and makes no directory; a key that is not a label is refused by name and nothing is read.
+    /// A label opened while the mesh-primary seat's records are cut off is cut off at its open.
     #[tokio::test]
     async fn the_tags_index_is_one_file_per_label_and_node_kept_with_every_row_write_and_read_per_label() {
         let d = crate::record_store::tempdir("tags-index");
@@ -1320,6 +1321,12 @@ mod tests {
         assert!(other.tagged("blue").await.unwrap().is_empty());
         assert!(!root.dir().join("nodes").join("mesh1").join("tags").join("blue").exists(), "a read makes no directory");
         assert!(matches!(other.tagged("../rows").await, Err(StorageError::Unrecognised { reason, .. }) if reason.contains("\"../rows\"")), "a key that is not a label is refused by name");
+        // While a seat transfer cuts the mesh-primary seat's records off, a label's rows opened then
+        // are cut off at their open: the write of its index row is refused by name, never written.
+        n1.cut_off_own_labels(Some("the mesh-primary seat moves".into()));
+        let green = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), tags: tags(&["green"]), ..row("mesh1.rpc.2") };
+        assert!(matches!(n1.put_node_row(&green).await, Err(StorageError::CutOff { reason, .. }) if reason == "the mesh-primary seat moves"), "a label opened during the cut-off is cut off");
+        assert!(files("mesh1", "green").is_empty(), "nothing of the cut-off label is written");
     }
 
     /// CONTRACT (R14 items 1 and 9; acceptance "an ordinary node's connections rows land under
