@@ -2319,9 +2319,15 @@ impl View {
     /// the source from `held`, is a predecessor's publication (node-status-heartbeat-connections.md
     /// §A.3: "a delayed predecessor publication cannot switch receivers back"); `None` when it is
     /// not. Author ordering is the publisher epochs and the LeadershipView (§A.3; gossip.md §3.3:
-    /// "the source publisher's exact identity is its epoch"):
-    /// - the publisher's birth is held stopped or departed here ([`DigestBook::publisher_left`]): it
-    ///   publishes nothing, so the frame was delayed, on every side;
+    /// "the source publisher's exact identity is its epoch"). Only a frame that would switch this
+    /// node to another epoch than the one it holds is refused:
+    /// - a frame of the held epoch (`held` is `publisher`) switches nothing: the version orders it
+    ///   ([`SnapshotReceiver::take_chunk`], [`SnapshotReceiver::take_delta`]), even when its
+    ///   publisher is held stopped or departed here. A stopped birth publishes nothing (§A.4), so
+    ///   that frame was published before the stop: it is taken for what it carries and is ordered
+    ///   against nothing of another publisher ([`Fence::publisher_left`]);
+    /// - a frame of another epoch whose publisher's birth is held stopped or departed here
+    ///   ([`DigestBook::publisher_left`]): it was delayed, on every side;
     /// - on the backbone or the mesh channel, a frame of another epoch than the one held, from a
     ///   publisher the held seat record of `mesh` does not name and that is not the held
     ///   fabric-primary (the acting primary of a mesh with no primary, R-NS1): `not-seated`, naming
@@ -2331,10 +2337,13 @@ impl View {
     ///   A topology read is this node's own top-up from the primary it chose by that record, so a
     ///   read is refused only for a publisher that left.
     fn predecessor(&self, mesh: &str, publisher: &PublisherId, held: Option<&PublisherId>, side: Side) -> Option<(&'static str, Option<SeatHolder>)> {
+        if held == Some(publisher) {
+            return None;
+        }
         if let Some(reason) = self.book.publisher_left(&publisher.incarnation) {
             return Some((reason, None));
         }
-        if !matches!(side, Side::Backbone | Side::MeshChannel) || held == Some(publisher) {
+        if !matches!(side, Side::Backbone | Side::MeshChannel) {
             return None;
         }
         let holder = self.book.seats.mesh(mesh)?;
