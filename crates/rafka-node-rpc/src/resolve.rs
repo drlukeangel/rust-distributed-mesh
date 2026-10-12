@@ -49,6 +49,13 @@ pub trait NodeResolver: Send + Sync {
     /// The node `target` names now, or the named reason it cannot be reached.
     fn resolve(&self, target: &NodeTarget) -> Result<ResolvedNode, ResolveFailure>;
 
+    /// The birth this resolver names at `endpoint`, if it names one: what a connection to the process
+    /// at that endpoint is recorded under (connections.md §10). Never consulted to decide a call.
+    fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
+        let _ = endpoint;
+        None
+    }
+
     /// Ticks whenever an answer may have changed: a dial in flight re-resolves
     /// on each tick and is cancelled the moment its exact target moved. `None`:
     /// changes are seen on the next call only.
@@ -106,6 +113,10 @@ impl NodeResolver for StaticResolver {
             // An endpoint target names a process no record holds: the client dials it as named.
             NodeTarget::Endpoint { .. } => Err(ResolveFailure::Unknown),
         }
+    }
+
+    fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
+        self.nodes.read().unwrap().values().find(|n| &n.endpoint_id == endpoint).cloned()
     }
 
     fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {

@@ -153,6 +153,9 @@ pub(crate) enum Phase<R> {
 pub(crate) struct Reach {
     /// The birth the resolver named; `None` for an endpoint target.
     pub(crate) node: Option<ResolvedNode>,
+    /// The birth the call's connection facts are recorded under (connections.md §10): the resolved
+    /// birth, or for an endpoint target the birth the resolver names at that endpoint, if any.
+    pub(crate) observed: Option<ResolvedNode>,
     /// The process's Iroh key.
     pub(crate) peer: iroh::PublicKey,
     /// The address the call dials.
@@ -295,14 +298,14 @@ impl NodeRpcClient {
             // naming no node.
             NodeTarget::Endpoint { endpoint_id, addr } => {
                 tracing::info!(step = "endpoint", peer = %endpoint_id.fmt_short(), addr = %addr, "the target is the process at an endpoint, dialled as named");
-                Reach { node: None, peer: *endpoint_id, addr: *addr }
+                Reach { node: None, observed: self.resolver.by_endpoint(endpoint_id), peer: *endpoint_id, addr: *addr }
             }
             _ => match self.resolver.resolve(target) {
                 Ok(n) => {
                     tracing::info!(step = "resolved", node = %n.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.0, "the target resolved to one birth");
                     // Whatever this node's record no longer names leaves the pool now.
                     self.pool.purge_stale(&n);
-                    Reach { peer: n.endpoint_id, addr: n.transport_addr, node: Some(n) }
+                    Reach { peer: n.endpoint_id, addr: n.transport_addr, observed: Some(n.clone()), node: Some(n) }
                 }
                 Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
             },
@@ -326,7 +329,7 @@ impl NodeRpcClient {
             addr: node.addr,
             failpoint: opts.after_connect.clone(),
             // The dial that opens the connection reports it, once, whoever is waiting for it.
-            opened: match (self.observer.clone(), node.node.clone()) {
+            opened: match (self.observer.clone(), node.observed.clone()) {
                 (Some(o), Some(n)) => Some(Arc::new(move || o.direct_connected(&n)) as Arc<dyn Fn() + Send + Sync>),
                 _ => None,
             },
@@ -348,7 +351,7 @@ impl NodeRpcClient {
             Err(DialError::Deadline) => {
                 tracing::info!(step = "dial-deadline", waited_ms = dial_started.elapsed().as_millis() as u64, "no connection to the target within the send budget");
                 evidence.dial_failure = Some("dial deadline".to_string());
-                if let (Some(o), Some(n)) = (&self.observer, &node.node) {
+                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
                     o.direct_failed(n, "dial deadline");
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence));
@@ -356,7 +359,7 @@ impl NodeRpcClient {
             Err(DialError::Failed(e)) => {
                 tracing::info!(step = "dial-failed", waited_ms = dial_started.elapsed().as_millis() as u64, error = %e, "the dial to the target failed");
                 evidence.dial_failure = Some(e.clone());
-                if let (Some(o), Some(n)) = (&self.observer, &node.node) {
+                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
                     o.direct_failed(n, &e);
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(e)), Some(evidence));
@@ -370,7 +373,7 @@ impl NodeRpcClient {
             }
             Ok(Err(e)) => {
                 self.pool.broken(&key, &conn);
-                if let (Some(o), Some(n)) = (&self.observer, &node.node) {
+                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
                     o.direct_broken(n, &e.to_string());
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(e.to_string())), Some(evidence));
@@ -549,7 +552,7 @@ impl NodeRpcClient {
         // A reply deadline is no evidence about the connection: it stays pooled.
         if let Committed::Lost(IndeterminateReason::ReplyLost(why)) = &got {
             if self.pool.broken(&key, &conn) {
-                if let (Some(o), Some(n)) = (&self.observer, &node.node) {
+                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
                     o.direct_broken(n, why);
                 }
             }

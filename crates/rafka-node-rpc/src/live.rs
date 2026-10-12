@@ -294,6 +294,10 @@ impl NodeResolver for LiveNodeResolver {
         self.resolve_at(target, Instant::now())
     }
 
+    fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
+        LiveNodeResolver::by_endpoint(self, endpoint)
+    }
+
     fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         Some(self.changed.subscribe())
     }
