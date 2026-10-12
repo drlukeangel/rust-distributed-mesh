@@ -36,9 +36,25 @@ struct Failpoints {
     /// fails with nothing further done (no child registered, no watcher).
     #[cfg(test)]
     lost_after_spawn: Option<std::sync::Arc<Mutex<Option<u32>>>>,
+    /// The executor is lost while the child waits at the gate, before the launch record is
+    /// written: the pid is stored here and the spawn fails there.
+    #[cfg(test)]
+    lost_before_record: Option<std::sync::Arc<Mutex<Option<u32>>>>,
 }
 
 impl Failpoints {
+    /// The child `pid` waits at the gate and its launch record is not written: fail the spawn here
+    /// when a test lost the executor at this point.
+    fn before_record(&self, pid: u32) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(slot) = &self.lost_before_record {
+            *slot.lock().unwrap() = Some(pid);
+            return Err(format!("failpoint: the executor is lost before it records pid {pid}"));
+        }
+        let _ = pid;
+        Ok(())
+    }
+
     /// The spawn of child `pid` has returned: fail it here when a test lost the executor at this point.
     fn after_spawn(&self, pid: u32) -> Result<(), String> {
         #[cfg(test)]
@@ -76,7 +92,13 @@ impl ProcessDeploymentProvider {
     /// A provider whose executor is lost the instant a child exists ([`Failpoints::lost_after_spawn`]).
     #[cfg(test)]
     fn lost_after_spawn(slot: std::sync::Arc<Mutex<Option<u32>>>) -> Self {
-        Self { failpoints: Failpoints { lost_after_spawn: Some(slot) }, ..Self::new() }
+        Self { failpoints: Failpoints { lost_after_spawn: Some(slot), ..Default::default() }, ..Self::new() }
+    }
+
+    /// A provider whose executor is lost while a child waits at the gate ([`Failpoints::lost_before_record`]).
+    #[cfg(test)]
+    fn lost_before_record(slot: std::sync::Arc<Mutex<Option<u32>>>) -> Self {
+        Self { failpoints: Failpoints { lost_before_record: Some(slot), ..Default::default() }, ..Self::new() }
     }
 
     fn handle(&self, deployment_id: crate::model::DeploymentId, pid: u32, start: Option<u64>) -> DeploymentHandle {
@@ -121,6 +143,114 @@ fn is_zombie(stat: &str) -> bool {
     stat.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z'))
 }
 
+/// Gated spawns of this process, one at a time: a gate's write end is open in this process from its
+/// pipe until the child closes its copy, and a second gated child forked in that span would hold
+/// it, so the loss of this process would not release the first (each waiting on the other).
+static GATED_SPAWN: Mutex<()> = Mutex::new(());
+
+/// In the forked child, before its executable runs: announce the child's pid on `pid_w`, then wait
+/// on `gate_r` for the one byte that releases it. The gate's end of EOF (the executor that held the
+/// write end is gone, or gave it up) cancels the launch: the executable never runs. Only
+/// async-signal-safe calls (`close`, `getpid`, `write`, `read`), and no allocation.
+#[cfg(unix)]
+fn hold_at_gate(gate_r: i32, gate_w: i32, pid_w: i32) -> std::io::Result<()> {
+    // SAFETY: close(2), getpid(2), write(2) and read(2) on descriptors this child inherited; the
+    // buffers are on its stack. The child's copy of the gate's write end is closed first, so the
+    // executor's loss is what ends the wait.
+    unsafe {
+        libc::close(gate_w);
+        let pid = libc::getpid().to_ne_bytes();
+        loop {
+            match libc::write(pid_w, pid.as_ptr().cast(), pid.len()) {
+                4 => break,
+                n if n < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => continue,
+                _ => return Err(std::io::Error::last_os_error()),
+            }
+        }
+        let mut byte = 0u8;
+        loop {
+            match libc::read(gate_r, std::ptr::addr_of_mut!(byte).cast(), 1) {
+                1 => return Ok(()),
+                0 => return Err(std::io::Error::from_raw_os_error(libc::ECANCELED)),
+                _ if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => continue,
+                _ => return Err(std::io::Error::last_os_error()),
+            }
+        }
+    }
+}
+
+/// `cmd`'s child, whose executable does not run until `record(pid)` has returned `Ok`: the launch
+/// record is durable before the process it names runs, so a process that runs always has its record
+/// (lifecycles/node-create.md step 1: record the exact deployment, then launch its executable).
+/// The pid exists only once the child is forked, so the child is forked first and waits at a gate
+/// (a pipe) before it executes: it announces its pid on a second pipe, the executor records it, then
+/// releases the gate. `record` failing closes the gate and the child ends without running its
+/// executable; an executor lost anywhere in between closes the gate the same way. Nothing here
+/// times out: each read ends on the byte or on the end of the pipe.
+#[cfg(unix)]
+fn spawn_gated(cmd: &mut std::process::Command, record: impl FnOnce(u32) -> Result<(), String>) -> Result<std::process::Child, String> {
+    use std::io::Read as _;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::unix::process::CommandExt as _;
+    let pipe = || -> Result<(OwnedFd, OwnedFd), String> {
+        let mut fds = [0i32; 2];
+        // SAFETY: pipe2(2) fills the two-element array it is given; both ends are close-on-exec.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(format!("pipe: {}", std::io::Error::last_os_error()));
+        }
+        // SAFETY: two fresh descriptors pipe2 just opened, owned by nothing else.
+        Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+    };
+    let serial = GATED_SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    let (gate_r, gate_w) = pipe()?;
+    let (pid_r, pid_w) = pipe()?;
+    let (gr, gw, pw) = (gate_r.as_raw_fd(), gate_w.as_raw_fd(), pid_w.as_raw_fd());
+    // SAFETY: `hold_at_gate` is the whole closure and is async-signal-safe.
+    unsafe { cmd.pre_exec(move || hold_at_gate(gr, gw, pw)) };
+    std::thread::scope(|scope| {
+        // `spawn` returns only once the child has executed (or failed to), which is after the release
+        // below: it runs beside the executor's own steps. It gives up the executor's copies of the
+        // read end of the gate and the write end of the pid pipe when it returns, so a child that
+        // never announced a pid ends the executor's wait on that pipe.
+        let spawner = scope.spawn(move || {
+            let spawned = cmd.spawn();
+            drop((gate_r, pid_w));
+            spawned
+        });
+        let mut announced = [0u8; 4];
+        let heard = std::fs::File::from(pid_r).read_exact(&mut announced).is_ok().then(|| u32::from_ne_bytes(announced));
+        // The child closed its copy of the gate's write end before it announced: no other child can
+        // hold it now, and the lock has done its work.
+        drop(serial);
+        let recorded = match heard {
+            Some(pid) => Some(record(pid).map(|()| pid)),
+            None => None,
+        };
+        match &recorded {
+            // The release byte: the child's end of the gate may already be gone (it died), which the
+            // spawner's own result reports.
+            Some(Ok(_)) => {
+                let _ = std::io::Write::write_all(&mut std::fs::File::from(gate_w), &[1u8]);
+            }
+            Some(Err(_)) | None => drop(gate_w),
+        }
+        let spawned = spawner.join().map_err(|_| "the spawning thread panicked".to_string())?;
+        match (recorded, spawned) {
+            (Some(Err(recording)), _) => Err(recording),
+            (Some(Ok(pid)), Ok(child)) if child.id() == pid => Ok(child),
+            (Some(Ok(pid)), Ok(child)) => Err(format!("the child announced pid {pid} and pid {} was spawned", child.id())),
+            (Some(Ok(_)), Err(e)) | (None, Err(e)) => Err(e.to_string()),
+            (None, Ok(child)) => Err(format!("pid {} was spawned and never announced its pid", child.id())),
+        }
+    })
+}
+
+/// A host without the gate's primitives launches no process: refused by name.
+#[cfg(not(unix))]
+fn spawn_gated(_: &mut std::process::Command, _: impl FnOnce(u32) -> Result<(), String>) -> Result<std::process::Child, String> {
+    Err("the process provider holds a child at a pipe gate until its launch record is durable, which this host does not provide".into())
+}
+
 /// [`ProcessDeploymentProvider::spawn`] on the blocking pool: the launch's pid and start token.
 fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<HashMap<u32, Launched>>>, failpoints: &Failpoints) -> Result<(u32, Option<u64>), DeployError> {
     let err = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
@@ -158,13 +288,17 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let child = cmd.spawn().map_err(|e| err(format!("{}: {e}", spec.executable.display())))?;
+    // The record names the launch and its pid, so a re-run can find it: durable before the executable
+    // runs.
+    let mut start = None;
+    let child = spawn_gated(&mut cmd, |pid| {
+        failpoints.before_record(pid)?;
+        start = process_start_token(pid);
+        super::provider::write_launch_record(&spec.data_dir, DEPLOYMENT_FILE, &serde_json::json!({ "deployment_id": spec.deployment_id.0, "pid": pid, "start": start }))
+    })
+    .map_err(|reason| err(format!("{}: {reason}", spec.executable.display())))?;
     let pid = child.id();
     failpoints.after_spawn(pid).map_err(err)?;
-    let start = process_start_token(pid);
-    // Which deployment this pid realises, so a re-run can find it.
-    let record = serde_json::json!({ "deployment_id": spec.deployment_id.0, "pid": pid, "start": start });
-    std::fs::write(spec.data_dir.join(DEPLOYMENT_FILE), record.to_string()).map_err(|e| err(format!("{}: {e}", spec.data_dir.join(DEPLOYMENT_FILE).display())))?;
     children.lock().unwrap().insert(pid, Launched { deployment_id: spec.deployment_id.clone(), start, exit: None });
     let children = children.clone();
     std::thread::Builder::new()
@@ -467,6 +601,55 @@ mod tests {
             Found::Running(h) => assert_eq!(h.pid, Some(pid), "the runtime found is the child that was spawned"),
             other => panic!("the child {pid} runs, and find answered {other:?}"),
         }
+    }
+
+    /// CONTRACT (lifecycles/node-create.md step 1: record the exact deployment, then launch its
+    /// executable): the executable of a launch does not run before the launch's record is durable.
+    /// The executor is lost while the forked child waits at the gate, before the record is written:
+    /// the child ends without running its executable, no record names the launch, and `find` says it
+    /// was never launched. Must NOT happen: an executable that ran with no record of it.
+    #[tokio::test]
+    async fn a_process_whose_launching_executor_is_lost_before_its_record_never_runs_its_executable() {
+        let dir = crate::record_store::tempdir("process-lost-before-record");
+        let marker = dir.join("ran");
+        let spec = ResolvedNodeLaunch { executable: "/bin/sh".into(), args: vec!["-c".into(), "touch \"$0\"; sleep 30".into(), marker.display().to_string()], ..launch(&dir) };
+        let slot = std::sync::Arc::new(Mutex::new(None));
+        let refused = ProcessDeploymentProvider::lost_before_record(slot.clone()).spawn(&spec).await.expect_err("the executor is lost at the gate");
+        let pid = slot.lock().unwrap().expect("the child waited at the gate when the executor was lost");
+        assert!(refused.to_string().contains("failpoint"), "{refused}");
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists(), "the child at the gate ended and was reaped");
+        assert!(!marker.exists(), "its executable never ran");
+        assert_eq!(ProcessDeploymentProvider::new().find(&spec).await.unwrap(), Found::NeverLaunched, "no record names the launch");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT: a launch record that cannot be written ends the launch by name before its
+    /// executable runs; the child waiting at the gate is cancelled, never released.
+    #[tokio::test]
+    async fn a_launch_record_that_cannot_be_written_stops_the_launch_before_its_executable_runs() {
+        let dir = crate::record_store::tempdir("process-record-unwritable");
+        let marker = dir.join("ran");
+        let spec = ResolvedNodeLaunch { executable: "/bin/sh".into(), args: vec!["-c".into(), "touch \"$0\"; sleep 30".into(), marker.display().to_string()], ..launch(&dir) };
+        // The record's temporary file is a directory: it cannot be created.
+        std::fs::create_dir_all(dir.join(format!("{DEPLOYMENT_FILE}.tmp"))).unwrap();
+        let refused = ProcessDeploymentProvider::new().spawn(&spec).await.expect_err("no record, no launch");
+        assert!(refused.to_string().contains(DEPLOYMENT_FILE), "the refusal names the record: {refused}");
+        assert!(!marker.exists(), "its executable never ran");
+        assert_eq!(ProcessDeploymentProvider::new().find(&spec).await.unwrap(), Found::NeverLaunched);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT: a record with no live process reads as exited. A launch whose executable cannot run
+    /// fails by name, after its record is durable: the record names a pid that is gone, so `find`
+    /// answers `Exited`, never `Running` and never `NeverLaunched`.
+    #[tokio::test]
+    async fn a_launch_whose_executable_cannot_run_leaves_a_record_that_reads_exited() {
+        let dir = crate::record_store::tempdir("process-exec-fails");
+        let spec = ResolvedNodeLaunch { executable: dir.join("no-such-executable"), ..launch(&dir) };
+        let refused = ProcessDeploymentProvider::new().spawn(&spec).await.expect_err("the executable does not exist");
+        assert!(refused.to_string().contains("no-such-executable"), "{refused}");
+        assert_eq!(ProcessDeploymentProvider::new().find(&spec).await.unwrap(), Found::Exited, "its record names a process that is gone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// CONTRACT: a deployment record that cannot be read or parsed is an error naming it, never

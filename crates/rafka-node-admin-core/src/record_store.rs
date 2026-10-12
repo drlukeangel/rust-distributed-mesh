@@ -768,7 +768,7 @@ pub async fn cut_off_and_drain(stores: &[&FileRecords], reason: &str) {
     }
 }
 
-fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+pub(crate) fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     use std::io::Write as _;
     let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
     let mut f = std::fs::File::create(tmp).map_err(io)?;

@@ -349,7 +349,10 @@ pub trait DeploymentProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
     /// The provider control domain this provider's locators mean something in.
     fn control_domain(&self) -> String;
-    /// Start the launch `spec` and return the exact handle of its runtime.
+    /// Start the launch `spec` and return the exact handle of its runtime. The launch's record in
+    /// its data dir ([`write_launch_record`]) is durable before the runtime's executable runs, so a
+    /// runtime that runs always has its record and an executor lost at any point of the spawn
+    /// leaves [`find`](Self::find) a record to read.
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
     /// Stop the runtime `handle` as `mode` says.
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError>;
@@ -394,6 +397,15 @@ pub trait DeploymentProvider: Send + Sync {
         })
         .await
     }
+}
+
+/// Write the launch record `file` of a launch in `data_dir`: written to a temporary file, fsynced,
+/// renamed over `file`, and the directory fsynced, so a record that exists is whole and survives
+/// the loss of the executor that wrote it. Both providers write it before the runtime's executable
+/// runs. A blocking call: run it on the blocking pool.
+pub(crate) fn write_launch_record(data_dir: &std::path::Path, file: &str, record: &serde_json::Value) -> Result<(), String> {
+    let tmp = data_dir.join(format!("{file}.tmp"));
+    crate::record_store::write_file(data_dir, &tmp, &data_dir.join(file), record.to_string().as_bytes()).map_err(|e| e.to_string())
 }
 
 /// The last `n` lines of `text`, joined with ` | `.
