@@ -137,6 +137,9 @@ impl BuildStateAdapter for WireBuilds {
     async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.0.recovery_of(path, node_id, incarnation).await
     }
+    async fn exits_owed(&self, build_id: &rafka_node_admin_core::build::BuildId, mesh: &str) -> Result<Vec<rafka_node_admin_core::build_state::OwedExit>, BuildStateError> {
+        self.0.exits_owed(build_id, mesh).await
+    }
 }
 
 /// The host's runtimes: every termination, and the one inspection the provider cannot answer.

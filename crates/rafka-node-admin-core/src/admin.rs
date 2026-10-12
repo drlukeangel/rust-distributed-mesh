@@ -1156,54 +1156,11 @@ pub(crate) struct RecoverySubmitter {
     /// This admin's Build door: the fabric-primary's own, when this admin holds that seat too.
     pub door: crate::build_op::BuildSlot,
     pub client: Option<Arc<rafka_node_rpc::NodeRpcClient>>,
-    /// The exited births whose last submit ended Failed, by birth, until a submit of theirs ends
-    /// Complete (node-recovery.md "Failure and receipts"). The tick submits each again, keyed on the
-    /// birth as the first submit was ([`owed_submits`]): a workflow whose delete completed departed
-    /// the birth (its node.deleted), and no view holds it to be found unheard again.
-    pub failed: Arc<Mutex<HashMap<(NodeId, IncarnationId), FailedSubmit>>>,
-}
-
-/// An exited birth whose last submit ended Failed: what its next submit names, with the provider's
-/// exit proof the first submit recorded (its exit-proof row stands, so nothing is inspected or
-/// written again).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FailedSubmit {
-    /// The exited birth's record: its path.name, node.id and incarnation.
-    pub node: Node,
-    /// The exit code the provider proved, and where it came from.
-    pub code: Option<i32>,
-    pub source: &'static str,
-    /// The attempt whose Failed terminal the last submit followed.
-    pub attempt: u32,
-}
-
-/// Why a submit ended without the Build's terminal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotSettled {
-    /// What happened, named.
-    pub why: String,
-    /// The fabric-primary refused the submit by a topology rule (the path is no member of the
-    /// accepted Build, or the birth is a node-admin whose mesh holds no other live admin: mesh
-    /// recovery's), so submitting the birth again is refused again. Anything else (no fabric-primary
-    /// named, a Build in progress, a stream cut) settles nothing and the next tick submits again.
-    pub refused: bool,
-}
-
-impl From<String> for NotSettled {
-    fn from(why: String) -> Self {
-        Self { why, refused: false }
-    }
-}
-
-/// The births the tick submits again (node-recovery.md "Failure and receipts"): none unless this
-/// admin holds its mesh's primary seat and no fabric shutdown froze recovery (as [`recovery_due`]);
-/// else every kept birth of its own mesh whose last submit ended Failed, whether or not the view
-/// still holds it.
-pub(crate) fn owed_submits(holds_seat: bool, frozen: bool, mesh: &str, failed: &HashMap<(NodeId, IncarnationId), FailedSubmit>) -> Vec<FailedSubmit> {
-    if !holds_seat || frozen {
-        return Vec::new();
-    }
-    failed.values().filter(|f| f.node.mesh == mesh).cloned().collect()
+    /// This admin's Build state: the fabric's Build facts as its own log holds them. The tick reads
+    /// from it which exited births of its mesh are owed a submit ([`RecoverySubmitter::owed_submits`]).
+    pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
+    /// `Fabric.build_id` as this admin holds it: the accepted Build a submit opens its attempt on.
+    pub accepted: Arc<crate::accepted::AcceptedStore>,
 }
 
 /// What the provider's inspection of a TRUE OFFLINE member proved.
@@ -1290,45 +1247,83 @@ impl RecoverySubmitter {
             Ok(_) => self.submit_in(&span, node, &incarnation).instrument(span.clone()).await,
             Err(e) => Err(e.into()),
         };
-        self.settled(&span, node, &incarnation, code, source, end)
+        settled(&span, end)
     }
 
-    /// The submit of a birth whose last submit ended Failed (node-recovery.md "Failure and
-    /// receipts"), on the tick: the same submit, keyed on the exited birth, with no new inspection
-    /// and no new exit-proof row (the first submit's stands). The fabric-primary answers it as any
-    /// repeat: AlreadyApplied once a workflow completed for the birth, BuildInProgress while an
-    /// attempt runs, else the next attempt of the Build with this birth's action, whose plan runs only
-    /// what the receipts leave (a delete that completed is never run again).
-    pub(crate) async fn submit_again(&self, failed: &FailedSubmit) -> Result<(), String> {
-        let node = &failed.node;
-        let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
-        let span = submit_span(&self.me, node, &incarnation, failed.code, failed.source);
-        span.record("after_failed_attempt", failed.attempt);
-        let end = self.submit_in(&span, node, &incarnation).instrument(span.clone()).await;
-        self.settled(&span, node, &incarnation, failed.code, failed.source, end)
-    }
-
-    /// How a submit ended, on its span and in the keep of failed submits: a Failed terminal keeps the
-    /// birth for the next tick; Complete, or a refusal by a topology rule, releases it; anything else
-    /// leaves the keep as it was.
-    fn settled(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId, code: Option<i32>, source: &'static str, end: Result<RecoveryEnd, NotSettled>) -> Result<(), String> {
-        let birth = (node.node_id.clone(), incarnation.clone());
-        match &end {
-            Ok(RecoveryEnd::Failed { attempt, .. }) => {
-                self.failed.lock().unwrap().insert(birth, FailedSubmit { node: node.clone(), code, source, attempt: *attempt });
-            }
-            Ok(RecoveryEnd::Complete { .. }) | Err(NotSettled { refused: true, .. }) => {
-                self.failed.lock().unwrap().remove(&birth);
-            }
-            Err(NotSettled { refused: false, .. }) => {}
+    /// The exited births the tick submits again (node-recovery.md "Failure and receipts": "the
+    /// mesh-primary is the submitter that resubmits by `build_id` ... the mesh-primary's next tick
+    /// finds the member still proven exited and submits"): none unless this admin holds its mesh's
+    /// primary seat and no fabric shutdown froze recovery (as [`recovery_due`]); else every exited
+    /// birth of its own mesh whose node workflow in the accepted Build stopped at a Failed attempt and
+    /// is not done, read from the durable facts on every tick (the pointer `Fabric.build_id`, then the
+    /// Build log's index by that Build, `BuildStateAdapter::exits_owed`), whether or not the view still
+    /// holds the birth and whichever admin submitted it before. Nothing of it is held between ticks: an
+    /// admin that takes the seat, or restarts, reads the same facts. A refused read is named on its
+    /// own span and owes nothing this tick.
+    pub(crate) async fn owed_submits(&self, holds_seat: bool, frozen: bool, mesh: &str) -> Vec<crate::build_state::OwedExit> {
+        if !holds_seat || frozen {
+            return Vec::new();
         }
-        let (outcome, r) = settle(end.map_err(|n| n.why));
-        span.record("outcome", outcome.as_str());
-        span.in_scope(|| tracing::info!("the mesh primary submits the recovery of its proven-exited member to the fabric-primary"));
-        r
+        let unreadable = |store: &str, build_id: &str, error: String| {
+            tracing::info_span!("rdm.node_admin.build.reject.via-owed-exits-unreadable", reader = %self.me, mesh, store, build_id, error = %error)
+                .in_scope(|| tracing::info!("the durable facts of the exits owed a submit could not be read: none is submitted this tick"));
+        };
+        let build_id = match self.accepted.record().await {
+            Ok(Some(crate::fabric_storage::FabricRecord { build_id: Some(id), .. })) => id,
+            // No accepted Build is held: no attempt can have been opened on it.
+            Ok(_) => return Vec::new(),
+            Err(e) => {
+                unreadable("fabric.storage", "", e.to_string());
+                return Vec::new();
+            }
+        };
+        match self.builds.exits_owed(&build_id, mesh).await {
+            Ok(owed) => owed,
+            Err(e) => {
+                unreadable("builds.storage", &build_id.0, e.to_string());
+                Vec::new()
+            }
+        }
     }
 
-    async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<RecoveryEnd, NotSettled> {
+    /// The submit of an exited birth whose node workflow stopped at a Failed attempt (node-recovery.md
+    /// "Failure and receipts"), on the tick: the birth's exit-proof row is point-read (the provider's
+    /// proof the first submit recorded; nothing is inspected or written again), then the same submit,
+    /// keyed on the exited birth. A missing or unreadable row is no proof: named on its own span, and
+    /// nothing is submitted. The fabric-primary answers the submit as any repeat: AlreadyApplied once a
+    /// workflow completed for the birth, BuildInProgress while an attempt runs, else the next attempt
+    /// of the Build with this birth's action, whose plan runs only what the receipts leave (a delete
+    /// that completed is never run again).
+    pub(crate) async fn submit_owed(&self, owed: &crate::build_state::OwedExit) -> Result<(), String> {
+        let refused = |reason: &str, error: String| {
+            tracing::info_span!(
+                "rdm.node_admin.node.reject.via-exit-proof-unread",
+                node = %owed.path,
+                node_id = %owed.node_id,
+                incarnation_id = %owed.incarnation.0,
+                submitter = %self.me,
+                failed_attempt = owed.attempt,
+                reason,
+                error = %error,
+            )
+            .in_scope(|| tracing::info!("an exit owed a submit has no readable exit-proof row: nothing is submitted"));
+            format!("{}: no exit-proof row of {} at {} to submit on ({reason}{})", self.me, owed.node_id, owed.incarnation.0, if error.is_empty() { String::new() } else { format!(": {error}") })
+        };
+        let row = match self.status_storage.node_exit(&owed.node_id, &owed.incarnation).await {
+            Ok(Some(row)) => row,
+            Ok(None) => return Err(refused("missing", String::new())),
+            Err(e) => return Err(refused("unreadable", e.to_string())),
+        };
+        let mut node = Node::allocated(owed.path.clone());
+        node.node_id = owed.node_id.clone();
+        node.incarnation_id = Some(owed.incarnation.clone());
+        let span = submit_span(&self.me, &node, &owed.incarnation, row.exit_code, &row.proof);
+        span.record("after_failed_attempt", owed.attempt);
+        let end = self.submit_in(&span, &node, &owed.incarnation).instrument(span.clone()).await;
+        settled(&span, end)
+    }
+
+    async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<RecoveryEnd, String> {
         let fp = self.topology.read().await.fabric_primary().map(|n| n.name.clone()).ok_or_else(|| format!("{}'s view names no fabric-primary to submit the recovery of {} to", self.me, node.name))?;
         span.record("fabric_primary", fp.to_string().as_str());
         if fp == self.me {
@@ -1350,18 +1345,15 @@ impl RecoverySubmitter {
                     Ok(RecoveryEnd::Complete { attempt: o.attempt })
                 }
                 Err(r) => {
-                    let refused = matches!(r, crate::http::Refusal::Reject(_));
                     let reply = crate::build_op::refusal_reply(r);
-                    Err(NotSettled { why: format!("{}: {reply:?}", reply.name()), refused })
+                    Err(format!("{}: {reply:?}", reply.name()))
                 }
             };
         }
         let client = self.client.clone().ok_or_else(|| format!("{} has no Node RPC client to submit the recovery of {} with", self.me, node.name))?;
         let carrier = rafka_node_admin_client::BuildCarrier::new(client, fp);
         let change = rafka_node_rpc_contract::build::BuildChange::Recover { node: node.name.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-        let stream = carrier.create(change).await.map_err(|e| {
-            NotSettled { refused: refused_by_rule(&e), why: format!("build.create(recover {}) refused: {e}", node.name) }
-        })?;
+        let stream = carrier.create(change).await.map_err(|e| format!("build.create(recover {}) refused: {e}", node.name))?;
         span.record("build_id", stream.build_id().0.as_str());
         span.record("attempt", stream.attempt());
         span.record("disposition", disposition_name(stream.disposition()));
@@ -1369,21 +1361,18 @@ impl RecoverySubmitter {
     }
 }
 
-/// Whether a `build.create` for a proven exit was refused by one of the topology rules
-/// `ControlPlane::open_recovery` refuses a submit by (the path is no member of the accepted Build; a
-/// node-admin whose mesh holds no other live admin is mesh recovery's): the refusals
-/// `Refusal::Reject` carries in process, named over op `0x20` by their own reason (the client's
-/// `refusal`).
-fn refused_by_rule(e: &rafka_node_admin_client::CallEnd) -> bool {
-    use crate::build::BuildReject;
-    let rules = [BuildReject::UnknownNode { node: String::new() }.reason(), BuildReject::NodeAdminNotNodeRecovered { node: String::new() }.reason()];
-    matches!(e, rafka_node_admin_client::CallEnd::Rejected { reason, .. } if rules.contains(&reason.as_str()))
+/// How a submit ended, on its span: the outcome named, and the submit's result.
+fn settled(span: &tracing::Span, end: Result<RecoveryEnd, String>) -> Result<(), String> {
+    let (outcome, r) = settle(end);
+    span.record("outcome", outcome.as_str());
+    span.in_scope(|| tracing::info!("the mesh primary submits the recovery of its proven-exited member to the fabric-primary"));
+    r
 }
 
 /// The span of one submit of the exited birth `node` at `incarnation` by the mesh primary `me`
 /// (node-recovery.md "Observability contract": the submit has a span on the mesh-primary).
 /// `after_failed_attempt` is recorded on a submit that follows a Failed one of the same birth.
-fn submit_span(me: &PathName, node: &Node, incarnation: &IncarnationId, code: Option<i32>, source: &'static str) -> tracing::Span {
+fn submit_span(me: &PathName, node: &Node, incarnation: &IncarnationId, code: Option<i32>, source: &str) -> tracing::Span {
     tracing::info_span!(
         "rdm.node_admin.build.update.via-node-recovery",
         node = %node.name,
@@ -1552,8 +1541,9 @@ async fn follow(frames: &mut dyn RecoveryFrames) -> Result<RecoveryEnd, String> 
 }
 
 /// The submit span's `outcome` and the submit's result, from how the followed recovery ended.
-/// A Failed recovery ends the submit in an error, and the submitter keeps the birth: the next tick
-/// submits it again (node-recovery.md "Failure and receipts", `RecoverySubmitter::settled`).
+/// A Failed recovery ends the submit in an error: the Build holds the Failed attempt, and the next
+/// tick reads it and submits the birth again (node-recovery.md "Failure and receipts",
+/// `RecoverySubmitter::owed_submits`).
 fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), String>) {
     match end {
         Ok(RecoveryEnd::Complete { attempt }) => (format!("complete: attempt {attempt}"), Ok(())),
@@ -5251,7 +5241,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             status_storage: status_storage.clone(),
                                             door: build_slot.clone(),
                                             client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
-                                            failed: Arc::default(),
+                                            builds: control.builds.clone(),
+                                            accepted: control.accepted.clone(),
                                         };
                                         let park = park_gate.clone();
                                         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
@@ -5418,21 +5409,20 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                             recovery.recover_if_proven(&n, &verdicts).await;
                                                         });
                                                     }
-                                                    // node-recovery.md "Failure and receipts": a birth whose last submit ended Failed
-                                                    // is submitted again, whether or not the view still holds it (a workflow whose
-                                                    // delete completed departed it). One submit per birth in flight, whichever way
-                                                    // it is due.
-                                                    let owed = owed_submits(holds_seat, frozen.held().is_some(), &mesh, &recovery.failed.lock().unwrap());
-                                                    for failed in owed {
-                                                        let Some(incarnation) = failed.node.incarnation_id.clone() else { continue };
-                                                        let birth = (failed.node.node_id.clone(), incarnation);
+                                                    // node-recovery.md "Failure and receipts": an exited birth whose workflow in the
+                                                    // accepted Build stopped at a Failed attempt is submitted again, read from the
+                                                    // durable facts each tick, whether or not the view still holds it (a workflow
+                                                    // whose delete completed departed it) and whoever submitted it before. One submit
+                                                    // per birth in flight, whichever way it is due.
+                                                    for owed in recovery.owed_submits(holds_seat, frozen.held().is_some(), &mesh).await {
+                                                        let birth = (owed.node_id.clone(), owed.incarnation.clone());
                                                         if !in_flight.lock().unwrap().insert(birth.clone()) {
                                                             continue;
                                                         }
                                                         let recovery = recovery.clone();
                                                         crate::offline::spawn_recovery_follower(&park, in_flight.clone(), birth, async move {
-                                                            if let Err(e) = recovery.submit_again(&failed).await {
-                                                                tracing::info!(node = %failed.node.name, error = %e, "the submit again ended without the recovery");
+                                                            if let Err(e) = recovery.submit_owed(&owed).await {
+                                                                tracing::info!(node = %owed.path, error = %e, "the submit of an owed exit ended without the recovery");
                                                             }
                                                         });
                                                     }
@@ -6294,7 +6284,8 @@ mod tests {
             status_storage: status.clone(),
             door: Default::default(),
             client: None,
-            failed: Arc::default(),
+            builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
+            accepted: Arc::new(crate::accepted::AcceptedStore::new(Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "mesh2.admin.1")),
         };
         (recovery, status, member)
     }
@@ -6384,6 +6375,107 @@ mod tests {
         assert!(attr("outcome").contains("exit-proof row") && attr("outcome").contains("No space left on device (os error 28)"), "the outcome names the row and the store's cause: {a:?}");
         assert_eq!(attr("build_id"), "", "nothing reached the fabric-primary: {a:?}");
         eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {a:?}", submits[0].trace_id);
+    }
+
+    /// CONTRACT (node-recovery.md "Failure and receipts": "the mesh-primary is the submitter that
+    /// resubmits by `build_id` ... the mesh-primary's next tick finds the member still proven exited
+    /// and submits"; CLAUDE.md read rule: node-local state that should be the durable answer is
+    /// replaced by the read): a submitter that holds nothing in memory (an admin that just took the
+    /// seat, or restarted) is owed the exited birth mesh2.rpc.1 by the durable facts alone: the
+    /// accepted Build (`Fabric.build_id`) holds that birth's run, whose attempt ended Failed after its
+    /// delete, and the birth is in no view. Nothing is owed while this admin does not hold the seat or
+    /// a fabric shutdown froze recovery, nor to another mesh. With no exit-proof row the submit is
+    /// refused on `rdm.node_admin.node.reject.via-exit-proof-unread` (reason `missing`) and nothing is
+    /// submitted; once status.storage holds the row, the submit span carries the row's exit code and
+    /// proof and the Failed attempt it follows. Must NOT happen: an owed exit found only in a previous
+    /// submitter's memory, or a submit with no exit proof.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_submitter_that_holds_nothing_in_memory_reads_the_failed_exit_from_the_durable_facts() {
+        let book = DigestBook::default();
+        book.record(digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let (path, node_id, incarnation): (PathName, _, _) = ("mesh2.rpc.1".parse().unwrap(), NodeId::mint(), IncarnationId::mint());
+        assert!(view.node(&path).is_none(), "the exited birth departed: no view holds it");
+        let b1 = crate::build::BuildId("b1".into());
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let deleted = |step: &str| crate::build_state::BuildStepReceipt {
+            build_id: b1.clone(),
+            attempt: 2,
+            operation: format!("retire-node:{path}"),
+            step: step.into(),
+            outcome: crate::build_state::StepOutcome::Complete,
+            output: (step == "NodeDeleted").then(|| {
+                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 2, operation: format!("retire-node:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+            }),
+            executor: Some("mesh2.admin.2".into()),
+        };
+        builds.absorb(&[
+            crate::build_state::BuildFact::Accepted(crate::build_state::BuildAccepted { build_id: b1.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 1 }),
+            crate::build_state::BuildFact::Opened(crate::build_state::AttemptOpened {
+                build_id: b1.clone(),
+                attempt: 2,
+                reason: crate::build_state::AttemptReason::Recovery,
+                action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }),
+                opened_by: "mesh1.admin.1".into(),
+                opened_at_ms: 1,
+            }),
+            crate::build_state::BuildFact::Claim(crate::build_state::BuildAttemptClaim { build_id: b1.clone(), attempt: 2, executor: "mesh2.admin.2".into() }),
+            crate::build_state::BuildFact::Step(deleted("NodeDeleted")),
+            crate::build_state::BuildFact::Step(deleted("Complete")),
+            crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }),
+        ]);
+        let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
+        crate::fabric_storage::FabricStorage::put_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap();
+        crate::fabric_storage::FabricStorage::put_pointer(&*fabric, &crate::fabric_storage::FabricPointer { build_id: b1.clone(), submitted_at_ms: 1 }).await.unwrap();
+        let status = Arc::new(crate::status_storage::MemoryStatusStorage::default());
+        let recovery = RecoverySubmitter {
+            me: "mesh2.admin.1".parse().unwrap(),
+            topology: Arc::new(RwLock::new(view)),
+            book,
+            provider: Arc::new(Answers { domain: String::new(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() }),
+            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            status_storage: status.clone(),
+            door: Default::default(),
+            client: None,
+            builds,
+            accepted: Arc::new(crate::accepted::AcceptedStore::new(fabric, "mesh2.admin.1")),
+        };
+        assert_eq!(recovery.owed_submits(false, false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the seat");
+        assert_eq!(recovery.owed_submits(true, true, "mesh2").await, vec![], "nothing is owed while a fabric shutdown froze recovery");
+        assert_eq!(recovery.owed_submits(true, false, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");
+        let owed = recovery.owed_submits(true, false, "mesh2").await;
+        assert_eq!(owed, vec![crate::build_state::OwedExit { path: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), attempt: 2, reason: "create-node: PrepareStorage".into() }], "read from the durable facts alone");
+
+        let capture = crate::span_capture::Capture::new("i143-3088-owed-exit-from-durable-facts");
+        let (unproven, submitted) = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            let unproven = recovery.submit_owed(&owed[0]).await;
+            crate::offline::put_exit_proof(&*status, &{
+                let mut n = Node::allocated(path.clone());
+                n.node_id = node_id.clone();
+                n.incarnation_id = Some(incarnation.clone());
+                n
+            }, Some(137), "provider", 1)
+            .await
+            .unwrap();
+            (unproven, recovery.submit_owed(&owed[0]).await)
+        };
+        let refusals = capture.named("rdm.node_admin.node.reject.via-exit-proof-unread");
+        assert_eq!(refusals.len(), 1, "the submit with no exit-proof row is refused on its span: {refusals:?}");
+        let a = &refusals[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id"), attr("submitter"), attr("failed_attempt"), attr("reason")), (path.to_string(), node_id.to_string(), incarnation.0.clone(), "mesh2.admin.1".to_string(), "2".to_string(), "missing".to_string()), "{a:?}");
+        assert!(unproven.as_ref().is_err_and(|e| e.contains("no exit-proof row") && e.contains("missing")), "{unproven:?}");
+        let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+        assert_eq!(submits.len(), 1, "only the submit with its exit proof reached the submit span: {submits:?}");
+        let s = &submits[0].attributes;
+        let sattr = |k: &str| s.get(k).cloned().unwrap_or_default();
+        assert_eq!((sattr("node"), sattr("node_id"), sattr("incarnation_id"), sattr("submitter")), (path.to_string(), node_id.to_string(), incarnation.0.clone(), "mesh2.admin.1".to_string()), "keyed on the exact exited birth: {s:?}");
+        assert_eq!((sattr("exit_code"), sattr("exit_proof"), sattr("after_failed_attempt")), ("137".to_string(), "provider".to_string(), "2".to_string()), "the row's proof and the Failed attempt it follows: {s:?}");
+        assert!(submitted.is_err() && !sattr("outcome").is_empty(), "this cell has no fabric-primary door: the submit ends named: {s:?}");
+        eprintln!("span rdm.node_admin.node.reject.via-exit-proof-unread trace_id={} {a:?}", refusals[0].trace_id);
+        eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {s:?}", submits[0].trace_id);
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
