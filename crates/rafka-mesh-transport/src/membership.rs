@@ -6178,6 +6178,36 @@ mod tests {
         assert!(book.restart_of(id3.as_str(), &inc3).is_none(), "its own attempt Converged closes it");
     }
 
+    /// CONTRACT (gossip.md §3.1: a Digest "carries no status: a member's status comes only from its
+    /// mesh-primary"; states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// mesh-primary" from "the node's node.started report"): at the mesh-primary of mesh1, a member's
+    /// heartbeats move no status, whatever the member's own word. Its ready-for-traffic heartbeat
+    /// before node.started leaves it Pending, unroutable, and its projection entry Pending;
+    /// node.started sets it ready-for-traffic; a later heartbeat in which it says Draining, held from
+    /// memory or decoded from the wire, leaves it ready-for-traffic. Must NOT happen: the primary
+    /// setting a member's status from its heartbeat.
+    #[test]
+    fn a_members_heartbeat_moves_no_status_at_its_mesh_primary() {
+        let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
+        book.primary.store(true, Ordering::Relaxed);
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let status = |book: &DigestBook| book.get(id.as_str()).map(|(d, _)| d.status);
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)), "the heartbeat is taken as liveness");
+        assert_eq!(status(&book), Some(MemberStatus::Pending), "a ready-for-traffic heartbeat before node.started sets nothing");
+        assert!(!book.routable(id.as_str()), "the birth is Pending: not routable");
+        assert_eq!(book.current(book.staleness_floor()).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), Some(MemberStatus::Pending), "its projection entry is Pending");
+        node_started(&book, &id, &inc);
+        assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "node.started sets it ready-for-traffic");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)), "the heartbeat is taken as liveness");
+        assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "a heartbeat saying Draining moves nothing");
+        let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, MemberStatus::Draining, 120) }.encode()).unwrap() else { unreachable!() };
+        assert!(book.record(heard), "the heartbeat from the wire is taken as liveness");
+        assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "nor does one from the wire");
+        assert!(book.routable(id.as_str()));
+    }
+
     /// CONTRACT (states.md "Who sets each state": node pending is set by "the node's mesh-primary"
     /// from "the node's node.joined report on the start call"; gossip.md: "NodeRestarting stays until
     /// node.started of the same `(node.id, incarnation)` arrives"): at the mesh-primary of mesh1, a
