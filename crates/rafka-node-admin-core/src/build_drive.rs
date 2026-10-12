@@ -521,6 +521,11 @@ fn node_of_key(key: &str) -> Option<PathName> {
 /// is the authority: a remote executor's receipt reaches this admin's log by the Build topic, and
 /// nothing waits for that copy. A lost executor's run reported nothing: what it left is planned from
 /// the view again, and the create pipeline's fence decides against the world.
+/// Whether an attempt ended incomplete: it was handed back to `me` having moved nothing.
+fn ended_incomplete(me: &PathName, _executor: &PathName, to: &PathName, before: &str, after: &str) -> bool {
+    to == me && before == after
+}
+
 /// What the next claim of a Build decides on: the first operation left, the receipts the Build
 /// holds, and the members of the mesh that operation acts on, by birth, status and seat. An attempt
 /// that ended with this unchanged would end the same way again.
@@ -850,7 +855,7 @@ impl DriveEnv {
                     if next == self.me {
                         if let (Some(before), Ok(ended)) = (before, self.builds.read_build(&id).await) {
                             let after = world(drive, &ended, &self.topology.read().await.clone());
-                            if before == after {
+                            if ended_incomplete(&self.me, &executor, &next, &before, &after) {
                                 let why = format!(
                                     "{}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves",
                                     self.me
@@ -1098,5 +1103,28 @@ pub fn describe(r: &BuildReply) -> String {
         BuildReply::UnknownBuild { build_id } => format!("unknown-build ({build_id})"),
         BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::Draining { reason } | BuildReply::PeerUnresolved { reason } | BuildReply::Unauthorized { reason } => format!("{} ({reason})", r.name()),
         other => other.name().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CONTRACT (R-BI4; node-rpc-envelope.md TakeSeats: "N resumes the same attempt as the new
+    /// fabric-primary"): an attempt ended incomplete only when this admin ran it itself and it came
+    /// back to this admin having moved nothing. A hand-off to this admin that another executor
+    /// reported (the old fabric-primary's attempt, handed to the new seat before its operation ran, and
+    /// replayed from its run when the new seat's drive attaches to it) is that executor's end: the
+    /// drive claims the next attempt for the admin the view names, it does not idle.
+    /// Must NOT happen: the new seat's drive idling on the replay of an attempt it never ran, and
+    /// never claiming the attempt the old seat handed it.
+    #[test]
+    fn an_attempt_another_executor_handed_to_this_admin_is_not_an_attempt_that_ended_incomplete() {
+        let path = |p: &str| p.parse::<PathName>().unwrap();
+        let (me, old_seat) = (path("mesh2.admin.1"), path("mesh1.admin.1"));
+        assert!(!ended_incomplete(&me, &old_seat, &me, "w", "w"), "the old seat's attempt, replayed to the new seat's drive, moved nothing in this dispatch and is still not incomplete");
+        assert!(ended_incomplete(&me, &me, &me, "w", "w"), "an attempt this admin ran, handed back to it with nothing moved, ended incomplete");
+        assert!(!ended_incomplete(&me, &me, &me, "w", "w + a receipt"), "an attempt that moved something is progress, the next is claimed at once");
+        assert!(!ended_incomplete(&me, &me, &old_seat, "w", "w"), "an attempt handed to another admin is that admin's");
     }
 }
