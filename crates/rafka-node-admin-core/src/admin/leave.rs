@@ -323,9 +323,7 @@ impl AdminRunner {
         // fabric-primary is the acting primary of a mesh that has none left, as its view shows once
         // it reads the exit-proof rows of the proof set's births, the final primary's included
         // (R-EL1: the exited holder's seat is vacant).
-        self.refresh_view().await;
-        let records: Vec<Node> = self.topology.read().await.nodes.iter().filter(|n| n.mesh == mesh).cloned().collect();
-        crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &*self.mesh_storage, &self.records.declared, &self.me.to_string(), key, mesh, &records, &all.final_primary, &all.receipts).await?;
+        crate::mesh_leave::mesh_left(&self.records, || self.refresh_view(), &self.topology, &*self.status_storage, &*self.mesh_storage, &self.me.to_string(), key, mesh, &all).await?;
         self.builds
             .append_step_receipt(&BuildStepReceipt {
                 build_id: build_id.clone(),

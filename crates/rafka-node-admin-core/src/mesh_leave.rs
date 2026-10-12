@@ -823,6 +823,24 @@ pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &
     ensure_mesh_dead(status, meshes, declared, executor, key, mesh).await
 }
 
+/// mesh-left at the fabric-primary (mesh-delete.md step 7: "The fabric-primary is its executor,
+/// proves its exit and, as acting primary of a mesh that has no primary, writes its row deleted"),
+/// after exact coverage of the proof set `all` and before the `MeshLeft` receipt: `refresh` installs
+/// the view `view`, whose election reads the proof set's exits as proven losses (R-EL1), and the
+/// rows are written from that view's records of `mesh` ([`mesh_left_rows`]). `records` are the
+/// fabric-primary's (its node-rows writer and its declared rows).
+#[allow(clippy::too_many_arguments)]
+pub async fn mesh_left<F, Fut>(records: &crate::admin::Records, refresh: F, view: &tokio::sync::RwLock<crate::topology::Topology>, status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, executor: &str, key: &LeaveKey, mesh: &str, all: &ExitManifest) -> Result<(), String>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    use crate::deployment::pipeline::TopologySink;
+    refresh().await;
+    let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == mesh).cloned().collect();
+    mesh_left_rows(records.node_rows().as_deref(), status, meshes, &records.declared, executor, key, mesh, &nodes, &all.final_primary, &all.receipts).await
+}
+
 /// The Mesh row of `mesh_id` at `mesh` written Dead on mesh.storage (R-MN1 item 2: a mesh's name is
 /// released by its removal, the row Dead; R-MD1: the mesh-primary writes it at mesh.deleted, mesh-left's
 /// fabric-primary as acting primary when no primary survived), whole, through the claim of the name,
