@@ -1085,4 +1085,50 @@ mod tests {
         check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")), &IncarnationId::mint()).await.unwrap(), "file").await;
         let _ = std::fs::remove_dir_all(&d);
     }
+    /// CONTRACT (R14 item 3: "The name claim is the sole writer's conditional write"; item 9: "At
+    /// commit-state each writer writes what it holds to the shared root"; CLAUDE.md: a claim is
+    /// insert-and-fail and a refused claim writes nothing; node-identity-and-state.md §2.7: "A refused
+    /// write stays held, named"): two writers on one shared root, each before the fabric's first
+    /// state-commit with its own scratchpad, claim mesh2's name for two different MeshIds and the row
+    /// at mesh2.rpc.1 for two different nodes. Each claim wins against what its writer sees (its own
+    /// scratchpad over the disk). The first writer's publication writes its claims. The second's
+    /// publication re-runs each held claim as a conditional write against the row now standing at its
+    /// key: each is refused, naming the holder, and nothing of it is written, so the first writer's
+    /// rows stand; its commit-state span `rdm.node_admin.fabric.update.via-round-action` counts the
+    /// refusals and names each. Must NOT happen: a held claim written blindly over another writer's
+    /// row at publication.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_held_claim_is_re_run_at_publication_and_a_refused_one_is_named_and_writes_nothing() {
+        let d = crate::record_store::tempdir("held-claims");
+        let dir = d.join("root");
+        let (pad_a, pad_b) = (crate::record_store::Scratchpad::new(), crate::record_store::Scratchpad::new());
+        let (root_a, root_b) = (crate::store_root::StoreRoot::held_at(&dir, pad_a.clone()), crate::store_root::StoreRoot::held_at(&dir, pad_b.clone()));
+        let (meshes_a, meshes_b) = (FileMeshStorage::open(&root_a, &IncarnationId::mint()).await.unwrap(), FileMeshStorage::open(&root_b, &IncarnationId::mint()).await.unwrap());
+        let (nodes_a, nodes_b) = (FileNodesStorage::open(&d.join("a"), &root_a, "mesh2", &IncarnationId::mint()).await.unwrap(), FileNodesStorage::open(&d.join("b"), &root_b, "mesh2", &IncarnationId::mint()).await.unwrap());
+        let (mesh_a, mesh_b) = (MeshRecord { mesh_id: MeshId::mint(), name: "mesh2".into(), dead: false }, MeshRecord { mesh_id: MeshId::mint(), name: "mesh2".into(), dead: false });
+        let (row_a, row_b) = (row("mesh2.rpc.1"), row("mesh2.rpc.1"));
+        assert_eq!(meshes_a.claim_mesh(&mesh_a).await, Ok(Ok(MeshClaim::Written { over: None })), "writer A's claim wins against its scratchpad and the disk");
+        assert_eq!(meshes_b.claim_mesh(&mesh_b).await, Ok(Ok(MeshClaim::Written { over: None })), "writer B's claim wins against its scratchpad and the disk");
+        assert_eq!(nodes_a.put_node_row(&row_a).await, Ok(Ok(())));
+        assert_eq!(nodes_b.put_node_row(&row_b).await, Ok(Ok(())));
+        let capture = crate::span_capture::Capture::new("i143-3089-held-claim-refused");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let commit = |pad: std::sync::Arc<crate::record_store::Scratchpad>, node: &str| {
+            let node: PathName = node.parse().unwrap();
+            async move { crate::fabric_rounds::RoundActions::commit_state(&crate::fabric_rounds::StorePublication::new(Some(pad), None), &node).await }
+        };
+        commit(pad_a, "mesh1.admin.1").await.expect("writer A publishes its claims");
+        commit(pad_b, "mesh2.admin.1").await.expect("writer B's publication names its refused claims and is not a failed write");
+        let reader = crate::store_root::StoreRoot::at(&dir);
+        assert_eq!(FileMeshStorage::open(&reader, &IncarnationId::mint()).await.unwrap().mesh("mesh2").await.unwrap(), Some(mesh_a.clone()), "B's refused claim wrote nothing: mesh2's row is A's");
+        assert_eq!(FileNodesStorage::open(&d.join("r"), &reader, "mesh2", &IncarnationId::mint()).await.unwrap().node_row_at(&row_a.name).await.unwrap(), Some(row_a.clone()), "B's refused row claim wrote nothing: mesh2.rpc.1's row is A's");
+        let spans = capture.named("rdm.node_admin.fabric.update.via-round-action");
+        let b = spans.iter().find(|s| s.attributes.get("node").map(String::as_str) == Some("mesh2.admin.1")).unwrap_or_else(|| panic!("writer B's commit-state span: {spans:?}"));
+        assert_eq!(b.attributes.get("refused").map(String::as_str), Some("2"), "B's commit-state counts its two refused claims: {b:?}");
+        let stores = b.attributes.get("stores").cloned().unwrap_or_default();
+        assert!(stores.contains(&format!("meshes refused 1")) && stores.contains(&mesh_a.mesh_id.to_string()), "the refusal of mesh2's claim names its holder: {stores}");
+        assert!(stores.contains("nodes/mesh2/rows refused 1") && stores.contains(row_a.node_id.as_str()), "the refusal of mesh2.rpc.1's claim names its holder: {stores}");
+        eprintln!("span rdm.node_admin.fabric.update.via-round-action trace_id={} {:?}", b.trace_id, b.attributes);
+    }
 }
