@@ -102,6 +102,17 @@ fn command(launch: &Launch, start: bool) -> StatusRequest {
     }
 }
 
+/// `req` sent by `root` over Node RPC to the birth `launch` names, as its mesh's primary sends it:
+/// the commanded admin holds the call's endpoint key, which its start joins back through
+/// (node-start.md step 2).
+async fn call(root: &Running, launch: &Launch, req: &StatusRequest) -> StatusReply {
+    let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: WRONG }, ..Default::default() };
+    match root.node_rpc.client.call::<rafka_node_rpc_contract::status::Status>(&rafka_node_rpc::NodeTarget::ExactNode(launch.node_id.clone()), req, &opts).await.0 {
+        rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.into_value(),
+        other => panic!("{} to {} did not end in a reply: {other:?}", req.op(), launch.name),
+    }
+}
+
 /// The finished own-state declarations `node` sent: each one's target and outcome.
 fn own_declarations(spans: &crate::common::Spans, node: &str) -> Vec<BTreeMap<String, String>> {
     spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.node_admin.status.update.via-declare" && f.get("node").map(String::as_str) == Some(node) && f.get("key").is_some_and(|k| k.contains("OwnState")) && f.get("finished").map(String::as_str) == Some("true")).map(|(_, _, f)| f.clone()).collect()
@@ -126,10 +137,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-        let (root_id, root_name) = {
-            let d = root.digest.lock().unwrap();
-            (d.node.node_id.clone(), d.node.name.to_string())
-        };
+        let root_name = root.digest.lock().unwrap().node.name.to_string();
 
         let launch = launch_by(&root, "mesh1.admin.2", &admin_dir);
         let _ = root.runner.joins.expect(deployed(&launch, None));
@@ -151,11 +159,9 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         .expect("mesh1.admin.2 declares its first start's node.started");
         assert_eq!(first.iter().map(|f| f["to"].clone()).collect::<Vec<_>>(), vec![root_name.clone()], "to its mesh's primary: {first:#?}");
 
-        let own = admin.node_self();
-        assert!(matches!(own.serve(Some(&root_id), None, &command(&launch, false)).await, Some(StatusReply::Stopped { .. })), "the launched admin stops");
+        assert!(matches!(call(&root, &launch, &command(&launch, false)).await, StatusReply::Stopped { .. }), "the launched admin stops");
         let _ = root.runner.joins.expect(deployed(&launch, Some(&launch.name)));
-        let started = tokio::time::timeout(WRONG, own.serve(Some(&root_id), None, &command(&launch, true))).await.expect("the admin's start answers");
-        assert_eq!(started, Some(StatusReply::Started), "the launched admin starts after its stop");
+        assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         let again = tokio::time::timeout(DECLARED, async {
             loop {
