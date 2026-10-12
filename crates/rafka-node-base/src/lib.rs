@@ -115,10 +115,18 @@ impl Oracles {
         Ok(Self { store: Arc::new(store), declare_client: Arc::new(std::sync::OnceLock::new()) })
     }
 
-    /// Add the proof store, resolve probe and declare probe protocols to `b`.
+    /// Add the proof store, resolve probe and declare probe protocols to `b`, outside any
+    /// membership: the proof store names the birth by its launch name.
     pub fn serve(&self, b: ServerBuilder, launch: &Launch, resolver: Arc<rafka_node_rpc::LiveNodeResolver>) -> ServerBuilder {
         use rafka_node_rpc_testkit::{declare_probe, proof_store, resolve_probe};
         declare_probe::serve(resolve_probe::serve(proof_store::serve(b, self.store.clone(), launch), resolver, launch), self.declare_client.clone(), launch)
+    }
+
+    /// [`Self::serve`] for a running node: the proof store names the birth by the name the node
+    /// holds when it serves (`held`, R12).
+    pub fn serve_holding(&self, b: ServerBuilder, launch: &Launch, resolver: Arc<rafka_node_rpc::LiveNodeResolver>, held: impl Fn() -> rafka_mesh_entity::PathName + Send + Sync + 'static) -> ServerBuilder {
+        use rafka_node_rpc_testkit::{declare_probe, proof_store, resolve_probe};
+        declare_probe::serve(resolve_probe::serve(proof_store::serve_holding(b, self.store.clone(), launch, held), resolver, launch), self.declare_client.clone(), launch)
     }
 }
 
@@ -150,7 +158,11 @@ pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydrati
     let oracles = Oracles::open(&launch)?;
     let running = {
         use tracing::Instrument;
-        let started = rafka_node_rpc_testkit::node::start_hydrating(&launch, hydration, |b, seams| serve_app(oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver)))
+        let started = rafka_node_rpc_testkit::node::start_hydrating(&launch, hydration, |b, seams| {
+            // The node's connections writer follows the name it holds (R12): the proof store names it so.
+            let held = seams.connections.clone();
+            serve_app(oracles.serve_holding(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver, move || held.own().name))
+        })
             .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,

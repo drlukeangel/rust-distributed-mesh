@@ -54,7 +54,10 @@ async fn main() {
             None => rafka_node_rpc_testkit::app_hydration::Hydration::none(),
         };
         let started = node::start_hydrating(&launch, hydration, |b, seams| {
-            let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch), seams.resolver.clone(), &launch), declare_client.clone(), &launch);
+            // The proof store's replies name the node by the name it holds, which its connections
+            // writer follows (R12), never by its launch name.
+            let held = seams.connections.clone();
+            let b = declare_probe::serve(resolve_probe::serve(proof_store::serve_holding(b, store, &launch, move || held.own().name), seams.resolver.clone(), &launch), declare_client.clone(), &launch);
             rafka_node_rpc_testkit::originate::serve(b, seams, &launch)
         })
         .instrument(tracing::Span::none());
