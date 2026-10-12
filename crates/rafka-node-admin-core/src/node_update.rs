@@ -119,7 +119,9 @@ async fn put(
         return StatusReply::RejectedMetaFieldIsRdmOwned { field: e.field.name().into() };
     }
     if let Some(reason) = rafka_node_rpc_contract::status::tags_refusal(tags) {
-        return StatusReply::rejected_tags(&format!("{me}: the tags put on {} are refused and nothing is written: {reason}", held.name));
+        let why = format!("{me}: the tags put on {} are refused and nothing is written: {reason}", held.name);
+        span.record("detail", why.as_str());
+        return StatusReply::rejected_tags(&why);
     }
     let (traffic, quiet) = traffic_of(&held, deleted);
     span.record("traffic", traffic.0.as_str()).record("connections", traffic.1);
