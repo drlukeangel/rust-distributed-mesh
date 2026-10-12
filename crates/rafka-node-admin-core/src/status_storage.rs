@@ -401,6 +401,21 @@ impl FileStatusStorage {
         }
         first
     }
+
+    /// The seat transfer [`Self::cut_off_other_meshes`] was set for committed: every row the other
+    /// meshes' status stores still hold (written as acting primary before the fabric's first
+    /// state-commit) is dropped, never written. Returns each store that dropped rows, with how many.
+    pub async fn drop_other_meshes(&self) -> Vec<(String, usize)> {
+        let opened: Vec<std::sync::Arc<FileRecords>> = self.others.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+        let mut dropped = Vec::new();
+        for s in opened {
+            let n = s.drop_held().await;
+            if n > 0 {
+                dropped.push((s.store_name(), n));
+            }
+        }
+        dropped
+    }
 }
 
 #[async_trait]

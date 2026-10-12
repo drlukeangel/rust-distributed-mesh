@@ -348,6 +348,7 @@ impl SeatStores {
                 }
                 if fabric_seat {
                     dropped.extend(self.nodes.drop_other_meshes().await.into_iter().map(|(store, n)| format!("{store} {n}")));
+                    dropped.extend(self.status.drop_other_meshes().await.into_iter().map(|(store, n)| format!("{store} {n}")));
                 }
                 if !dropped.is_empty() {
                     tracing::info_span!("rdm.node_admin.seat.reject.via-held-rows", reason = %reason, fabric_seat, dropped = %dropped.join(","))
