@@ -178,7 +178,7 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
         }),
         ("no reconciliation", NO_RECONCILIATION, |e| e.reconciliation = None),
         ("empty reconciliation", NO_RECONCILIATION, |e| e.reconciliation = Some(Reconciliation::default())),
-        ("a reconciliation check fails", NO_RECONCILIATION, |e| e.reconciliation.as_mut().unwrap().check("fabric pointer names the Build", false, "names build-0, expected build-1")),
+        ("a reconciliation check fails", NO_RECONCILIATION, |e| e.reconciliation.as_mut().unwrap().check("the current Build is the Build", false, "names build-0, expected build-1")),
         ("dispatch to a superseded birth", SUPERSEDED_BIRTH_DISPATCHED, |e| {
             e.dispatches.push(Dispatch { birth: "inc-old".into(), current_birth: "inc-a".into(), after_supersession: true });
         }),
@@ -502,7 +502,7 @@ async fn read(run: &Run, door: &Door, build_id: &str, op: &Option<String>) -> (S
     let b = run.build(door, build_id).await;
     let attempt = b["attempt"].as_u64().unwrap_or(0);
     let done = op.as_ref().map(|o| done_steps(&b, o, attempt)).unwrap_or_default();
-    let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "pointer": s(&run.fabric().await["build_id"]), "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
+    let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "current_build": s(&run.fabric().await["build_id"]), "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
     (marker, b["state"] == "complete", attempt)
 }
 
@@ -514,7 +514,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let (seats_before, seats_detail_before) = seats(&nodes_before);
     let admin_view = |nodes: &[Value]| nodes.iter().find(|n| n["name"] == door.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), admin_view(&nodes_before));
-    let pointer_before = s(&run.fabric().await["build_id"]);
+    let current_before = s(&run.fabric().await["build_id"]);
     let pid_before = run.admin_pid(&door.name);
     let may_move = matches!(trigger, Trigger::CreateMesh(_));
 
@@ -541,7 +541,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
 
     // The acknowledgement that the fault is active, naming the exact call it holds.
     let held = door.wait_held(id).await;
-    let build_id = if build_id.is_empty() { held["hit"]["build_id"].as_str().or(held["hit"]["pointer_to_build_id"].as_str()).expect("the cut names the Build").to_string() } else { build_id };
+    let build_id = if build_id.is_empty() { held["hit"]["build_id"].as_str().expect("the cut names the Build").to_string() } else { build_id };
     if !held["hit"]["build_id"].is_null() {
         assert_eq!(held["hit"]["build_id"], build_id.as_str(), "`{id}` holds a call of the Build that triggered it: {held}");
     }
@@ -611,8 +611,8 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let attempt = done["attempt"].as_u64().unwrap_or(0);
     rec.check("the Build completed at one attempt", done["state"] == "complete" && attempt == 1, format!("state {} attempt {attempt}", done["state"]));
     let fabric = run.fabric().await;
-    rec.check("Fabric.build_id names the Build", fabric["build_id"] == build_id.as_str(), format!("{} vs {}", fabric["build_id"], build_id));
-    rec.check("the pointer moved off the previous Build", pointer_before != build_id, format!("previous {pointer_before}"));
+    rec.check("the current build_id names the Build", fabric["build_id"] == build_id.as_str(), format!("{} vs {}", fabric["build_id"], build_id));
+    rec.check("the Build is current, not the previous Build", current_before != build_id, format!("previous {current_before}"));
     match &shape {
         Shape::Create { .. } => create_checks(run, &mut rec, &done).await,
         Shape::Retire { node } => {
@@ -662,7 +662,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let nodes_before = run.estate.nodes().await;
     let (seats_before, detail_before) = seats(&nodes_before);
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
-    let pointer_before = s(&run.fabric().await["build_id"]);
+    let current_before = s(&run.fabric().await["build_id"]);
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
     let build_id = run.spawn("node_admin").await;
@@ -729,7 +729,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
     rec.check("the Build completed at one attempt", done["state"] == "complete" && attempt == 1, format!("state {} attempt {attempt}", done["state"]));
-    rec.check("Fabric.build_id names the Build", run.fabric().await["build_id"] == build_id.as_str() && pointer_before != build_id, format!("previous {pointer_before}"));
+    rec.check("the current build_id names the Build", run.fabric().await["build_id"] == build_id.as_str() && current_before != build_id, format!("previous {current_before}"));
     create_checks(run, &mut rec, &done).await;
     rec.check("the advertised seats equal the public candidates' after the release", seats_after, detail_after);
     ev.reconciliation = Some(rec);
@@ -827,7 +827,7 @@ async fn silent_case(run: &Run) {
     rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == incarnation.as_str() && kept["reply"]["executing_node"] == node_id.as_str(), kept.to_string());
     rec.check("the node keeps its process and its data dir", run.estate.pid_of(&name).await == pid && run.estate.data_dir_of(&name).await == data_dir, format!("pid {pid}, {data_dir}"));
     rec.check("exactly one runtime serves the node", run.runtimes(&name) == 1, format!("{}", run.runtimes(&name)));
-    rec.check("Fabric.build_id is the Build it was and that Build gained no attempt", s(&run.fabric().await["build_id"]) == fabric_build && attempt_of(&run.estate.get(&format!("/api/builds?id={fabric_build}")).await.1) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
+    rec.check("the current build_id is the Build it was and that Build gained no attempt", s(&run.fabric().await["build_id"]) == fabric_build && attempt_of(&run.estate.get(&format!("/api/builds?id={fabric_build}")).await.1) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
     rec.check("the advertised seats equal the public candidates' after the thaw", seats_after, detail_after);
     ev.reconciliation = Some(rec);
     run.rows.lock().unwrap().push(json!({
@@ -841,16 +841,16 @@ async fn silent_case(run: &Run) {
 /// faulted admin, and rpc nodes), each held and released through its own door or signal, are judged
 /// by the semantic detector, never by a timeout. Cuts: a deployment step (create `WaitForBind`), a
 /// removal step on a serving node (retire `NodeDeleting`), a lifecycle hook (`BeforeEligibility`),
-/// the accepted Build durable before `Fabric.build_id` names it and the pointer's own write (the
+/// the accepted Build durable, and current from then on (the
 /// fabric-primary admin held), and a non-primary rpc node frozen in place with SIGSTOP. Each: the
 /// injector acknowledged the active fault and named it; progress read three times (a Build's
-/// receipts and attempt on every admin, the pointer; a frozen node's process state, CPU use and the
+/// receipts and attempt on every admin, the current Build; a frozen node's process state, CPU use and the
 /// typed outcome of calls to it) stood still while held; the routing effect the cut's position
 /// implies; the seats equal what the public candidates compute and the held, running admin or
 /// frozen, running node was neither replaced, re-attempted nor re-born; the release; the work
-/// completed with its receipts once, one runtime, the pointer on the Build, and for the frozen node
+/// completed with its receipts once, one runtime, the Build current, and for the frozen node
 /// the value stored before the freeze served by the same birth afterwards. What must NOT happen: an
-/// election move or a new birth caused by silence, a Build executed before the pointer named it, a
+/// election move or a new birth caused by silence, a
 /// step receipt twice, a stalled-progress reading that moves while the fault is held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wedge_detector_proves_stall_and_stateful_recovery() {

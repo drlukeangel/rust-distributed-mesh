@@ -1437,7 +1437,7 @@ impl Driver {
                 writers.insert(p.to_string());
             }
             if f["build_id"].as_str() != Some(self.build_id.as_str()) {
-                return Err(broken("fabric-build-id-held", format!("round {round}: {base} holds Fabric.build_id {} not {}", f["build_id"], self.build_id)));
+                return Err(broken("fabric-build-id-held", format!("round {round}: {base} holds the current build_id {} not {}", f["build_id"], self.build_id)));
             }
             let heard: BTreeSet<String> = f["meshes"].as_array().into_iter().flatten().filter(|m| m["status"] == "ready-for-traffic").map(|m| s(&m["name"])).collect();
             for (mesh, _) in &self.cfg.shape {

@@ -154,7 +154,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     let p = builds.read_build(&build_id).await.unwrap();
     assert_eq!(p.submitted_change, Some(TopologyChange::RemoveNode { node: old.0.clone() }), "the ordinary node.delete Build");
     assert!(!p.topology.contains(&old.0) && p.topology.contains(&young.0), "only the expired node leaves the topology: {:?}", p.topology);
-    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(build_id.clone()), "Fabric.build_id names the delete");
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(build_id.clone()), "the current build_id names the delete");
 
     let collected = spans.spans("rdm.node_admin.node.delete.via-stopped-ttl");
     assert_eq!(collected.len(), 1, "{collected:?}");

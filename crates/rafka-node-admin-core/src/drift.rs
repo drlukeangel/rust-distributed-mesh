@@ -9,7 +9,7 @@
 //! another control domain is never proof.
 //!
 //! A path in the topology with no present birth and a proven exit is drift.
-//! The authority opens the next attempt of the same Build (`Fabric.build_id`
+//! The authority opens the next attempt of the same Build (the current Build
 //! is unchanged: the topology did not change); it never mints a Build.
 
 use crate::accepted::FabricTopology;

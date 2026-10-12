@@ -77,7 +77,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     }
     let base = estate.admin.clone();
     // Build A: three rpc nodes, launched by the bootstrap admin. The accepted Build is never
-    // history: it is forgotten only once a later Build holds the pointer.
+    // history: it is forgotten only once a later Build is current.
     let a = build(&estate, "POST", "/api/build", json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 3}]})).await;
     let nodes = estate.settled_shape(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     let incumbent = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").cloned().unwrap();
@@ -151,20 +151,19 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     estate.stop().await;
     let spans = estate.spans();
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap();
-    // Before Ready: Fabric.build_id (the fabric-primary's row on the fabric's store root, R14) and
-    // every held birth's runtime.
+    // Before Ready: the current Build and every held birth's runtime.
     let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["node"] == late_name.as_str() && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
         .cloned()
         .expect("the late admin is ready");
-    let pointer = ready["attributes"]["build_id"].as_str().unwrap_or_default().to_string();
+    let current = ready["attributes"]["build_id"].as_str().unwrap_or_default().to_string();
     assert!(
-        !pointer.is_empty()
+        !current.is_empty()
             && named(&spans, "rdm.node_admin.build.create.via-accepted")
                 .into_iter()
-                .any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == pointer.as_str() && at(sp) < at(&ready)),
-        "it held Fabric.build_id before Ready: {ready}"
+                .any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == current.as_str() && at(sp) < at(&ready)),
+        "it held the current build_id before Ready: {ready}"
     );
     let held = ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     assert!(held >= 4, "it held the incumbent's and A's three births' runtimes before Ready: {held}");

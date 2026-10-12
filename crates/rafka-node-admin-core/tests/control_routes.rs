@@ -135,7 +135,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
     let seed = h.facts().await.len();
 
-    // A change: the next complete Build, and Fabric.build_id names it.
+    // A change: the next complete Build, and the current build_id names it.
     let (status, v) = call(&h.app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     let b1 = v["build_id"].as_str().expect("build_id").to_string();
@@ -178,13 +178,13 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b2 && o.attempt == 2));
     assert!(h.span_with_build("rdm.node_admin.build.update.via-rest", &b2));
     let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
-    assert_eq!(f["build_id"], b2.as_str(), "Fabric.build_id is unchanged by a restart");
+    assert_eq!(f["build_id"], b2.as_str(), "the current build_id is unchanged by a restart");
     assert_eq!(*h.cp.topology.read().await, before, "no route touched the observed topology");
 }
 
 /// CONTRACT: `POST /api/nodes/{name}/replace` mints no Build. It opens the next attempt of the
 /// accepted Build, reason `replace`, fenced to the exact birth the view holds at the path, and
-/// leaves `Fabric.build_id` and the topology alone. An unknown path is refused by name.
+/// leaves the current build_id and the topology alone. An unknown path is refused by name.
 #[tokio::test]
 async fn a_replace_opens_the_next_attempt_of_the_accepted_build_fenced_to_the_live_birth() {
     let h = harness(Router::new()).await;
@@ -204,7 +204,7 @@ async fn a_replace_opens_the_next_attempt_of_the_accepted_build_fenced_to_the_li
     assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b0 && o.attempt == 2));
     assert!(h.span_with_build("rdm.node_admin.build.update.via-rest", &b0));
     let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
-    assert_eq!(f["build_id"], b0.as_str(), "Fabric.build_id is unchanged by a replace");
+    assert_eq!(f["build_id"], b0.as_str(), "the current build_id is unchanged by a replace");
 }
 
 #[tokio::test]
@@ -261,7 +261,7 @@ async fn build_history_is_readable_and_only_finished_builds_that_are_not_current
     h.settle(&b0).await;
     let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
     assert_eq!((b["state"].as_str(), b["attempt"].as_u64()), (Some("complete"), Some(2)));
-    // Complete, but the accepted topology: it leaves history only once the pointer moves.
+    // Complete, but the accepted topology: it leaves history only once a newer Build is current.
     let (s, v) = call(&h.app, "DELETE", &format!("/api/builds?id={b0}"), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     let (s, v) = call(&h.app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;

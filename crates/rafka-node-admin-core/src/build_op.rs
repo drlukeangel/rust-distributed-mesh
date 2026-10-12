@@ -39,7 +39,7 @@ use tracing::Instrument as _;
 pub struct BuildDoor {
     /// This admin's `path.name`.
     pub me: PathName,
-    /// The control plane: the Build state, the accepted pointer and the cores that accept a change.
+    /// The control plane: the Build state, the Fabric identity and the cores that accept a change.
     pub control: Arc<ControlPlane>,
     /// The drives this admin holds.
     pub drives: Arc<Drives>,

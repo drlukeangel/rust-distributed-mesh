@@ -135,7 +135,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     .await;
     let after = estate.settled(&want, Duration::from_secs(60)).await;
     let (_, fabric_after) = estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build: Fabric.build_id is unchanged");
+    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build: the current build_id is unchanged");
     let (_, lost_after) = estate.get(&format!("/api/meshes/{lost}")).await;
     assert_eq!(s(&lost_after["id"]), lost_mesh_id, "{lost} recovered under its own MeshId");
     let (old, new) = (births(&before), births(&after));
@@ -318,7 +318,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let after = estate.settled(&want, Duration::from_secs(240)).await;
 
     let (_, fabric_after) = estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new Build: Fabric.build_id is unchanged");
+    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new Build: the current build_id is unchanged");
     for (mesh, id) in &mesh_ids {
         let (_, v) = estate.get(&format!("/api/meshes/{mesh}")).await;
         assert_eq!(&s(&v["id"]), id, "{mesh} recovered under its own MeshId");

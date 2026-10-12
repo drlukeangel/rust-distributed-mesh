@@ -316,7 +316,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     .await;
     let seat_moved = seat_lost_or_five(&f.estate.spans()).1;
     let (_, fabric_after) = f.estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric_after["build_id"]), f.accepted, "no new Build: Fabric.build_id is unchanged");
+    assert_eq!(s(&fabric_after["build_id"]), f.accepted, "no new Build: the current build_id is unchanged");
     let (_, lost_after) = f.estate.get(&format!("/api/meshes/{}", f.lost)).await;
     assert_eq!(s(&lost_after["id"]), f.lost_mesh_id, "{} is reborn under its own MeshId", f.lost);
     let new_births = births(&after);

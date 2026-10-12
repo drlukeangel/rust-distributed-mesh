@@ -73,7 +73,7 @@ pub(crate) fn superseded_by(key: &RoundKey, accepted: &crate::build_state::Build
         return (accepted.attempt > key.attempt).then(|| format!("the accepted Build {} is at attempt {}, past this round's attempt {}", key.build_id, accepted.attempt, key.attempt));
     }
     // Another Build: superseded only by one accepted after the round's own. A round of a Build this
-    // admin's log has not learned, or of one accepted after the Build it holds, came ahead of the pointer.
+    // admin's log has not learned, or of one accepted after the Build it holds, came ahead of this admin's log.
     let own = key_build?;
     (own.submitted_at_ms < accepted.submitted_at_ms).then(|| format!("Build {} (accepted at {} ms) was accepted after this round's Build {} (accepted at {} ms)", accepted.build_id.0, accepted.submitted_at_ms, key.build_id, own.submitted_at_ms))
 }
@@ -1013,13 +1013,13 @@ mod tests {
     /// it: a later attempt of the same Build, or a Build accepted after the round's own. A round of the
     /// accepted Build and attempt is current, and so is a round ahead of what this admin holds (an
     /// attempt it has not seen claimed, a Build accepted after the one it holds, or one its log has not
-    /// learned): the command that opened it came ahead of the pointer. Must NOT happen: a superseded
+    /// learned): the command that opened it came ahead of this admin's log. Must NOT happen: a superseded
     /// round still commanding (gate red, tree b24a4303, fabric_states__rounds: bld-9abb attempt 1's
     /// mesh round, trace 95adb727, sent commit-state to mesh1.admin.2 at 816848 after the two-mesh
     /// Build bld-7c91 attempt 2 was accepted and its own round's commit-state was applied at 816816,
     /// trace a04036d1).
     #[tokio::test]
-    async fn a_round_the_accepted_build_moved_past_is_superseded_and_a_round_ahead_of_this_admins_pointer_is_not() {
+    async fn a_round_the_current_build_moved_past_is_superseded_and_a_round_ahead_of_this_admins_log_is_not() {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
         let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
@@ -1035,7 +1035,7 @@ mod tests {
         assert!(superseded_by(&key(&one, 1), &one_at_2, None).is_some(), "a later attempt of the same Build supersedes the round");
         assert_eq!(superseded_by(&key(&one, 3), &one_at_2, None), None, "an attempt ahead of the one this admin holds: its command came first");
         assert!(superseded_by(&key(&one, 1), &two_at_1, Some(&one_at_1)).is_some(), "a Build accepted after the round's own supersedes it");
-        assert_eq!(superseded_by(&key(&two, 1), &one_at_1, Some(&two_at_1)), None, "a round of a Build accepted after the one this admin holds: its pointer lags");
+        assert_eq!(superseded_by(&key(&two, 1), &one_at_1, Some(&two_at_1)), None, "a round of a Build accepted after the one this admin holds: its log lags");
         assert_eq!(superseded_by(&key(&crate::build::BuildId("bld-unlearned".into()), 1), &two_at_1, None), None, "a round of a Build this admin's log has not learned: its command came ahead");
     }
 

@@ -285,7 +285,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let seats_end = seats(&nodes_end);
     assert!(seats_end.0, "{}", seats_end.1);
     let build_end = s(&estate.get("/api/fabric").await.1["build_id"]);
-    assert_eq!(build_end, build_id, "Fabric.build_id is the Build it was");
+    assert_eq!(build_end, build_id, "the current build_id is the Build it was");
     estate.stop().await;
 
     // ---- Evidence: the estate's exported spans and this process's own.

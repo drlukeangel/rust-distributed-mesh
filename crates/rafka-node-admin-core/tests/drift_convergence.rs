@@ -1170,7 +1170,7 @@ mod one_attempt_number {
     /// CONTRACT: the proven-drift pass has read the accepted Build settled and computed attempt k+1
     /// for a lost node while a submitted topology change, past the same check, is inside its durable
     /// write. The submitted change is admitted as the next Build; the drift pass opens nothing on
-    /// the Build the pointer no longer names, writes no Opened fact, and returns no attempt to
+    /// the Build that is no longer current, writes no Opened fact, and returns no attempt to
     /// execute. One Build is active: the submitted one. Must NOT happen: an attempt of a superseded
     /// Build opened beside the new Build, two plans of two topologies in flight. Canon:
     /// ops-naming-proposal.md "Two topology changes ... never run together: one Build is in flight".

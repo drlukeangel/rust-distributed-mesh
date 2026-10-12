@@ -402,7 +402,8 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let holds = |prefix: &str| after.iter().any(|r| r.starts_with(prefix));
     assert!(holds("fabric/identity.json"), "the fabric-primary published the Fabric row: {after:#?}");
-    assert!(!holds("fabric/pointers"), "the Fabric row carries no pointer to the newest Build, so no pointer row reaches the store root: {after:#?}");
+    let only_identity_and_seats = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r == "fabric/identity.json" || r.starts_with("fabric/seats/"));
+    assert!(only_identity_and_seats(&after), "the Fabric row carries no pointer to the newest Build: the fabric-primary's rows are the identity and the seats and nothing else: {after:#?}");
     for mesh in ["mesh1", "mesh2"] {
         assert!(holds(&format!("meshes/{mesh}.json")), "{mesh}'s primary published its Mesh row: {after:#?}");
     }
@@ -427,7 +428,7 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     // The fabric-primary accepted the second Build after the first state-commit: the Build is its own
     // entity in the builds store, so no row under `fabric/` names it, and the other mesh's primary
     // reads it as the current Build.
-    assert!(!later.iter().any(|r| r.starts_with("fabric/pointers")), "accepting the second Build writes no pointer row to the store root: {later:#?}");
+    assert!(only_identity_and_seats(&later), "accepting the second Build writes no row under `fabric/` for it: {later:#?}");
     let mesh2_admin = nodes.iter().find(|n| n["name"] == "mesh2.admin.1").and_then(|n| n["admin_api_base"].as_str()).expect("mesh2.admin.1 advertises its control API").to_string();
     let (status, other_fabric) = estate.http_get(&mesh2_admin, "/api/fabric").await;
     estate.artifact("mesh2-admin-fabric-after-second-build.json", &other_fabric);

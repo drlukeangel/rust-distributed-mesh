@@ -142,7 +142,7 @@ struct Admin {
     builds: Arc<FabricBuildStateAdapter>,
     /// The admin's own Build log, which the Build topic feeds and the intent a call carries is absorbed into.
     local: Arc<rafka_node_admin_core::build_state::MemoryBuildStateAdapter>,
-    /// `Fabric.build_id` as the admin holds it: what its Build topic feeds.
+    /// The Fabric identity as the admin holds it: what its Build topic feeds.
     accepted: Arc<AcceptedStore>,
 }
 
@@ -199,7 +199,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
 
     // A accepts the Build through its control plane: grow mesh1 to 3 rpc nodes.
     // A holds a settled accepted Build of what is observed: the one the change compiles against.
-    // The settled Build A's pointer names is seeded into A's own fabric.storage, the store its
+    // The settled Build A is seeded into A's own builds store, the store its
     // Build topic adapter serves to a neighbour and its control plane moves.
     let seed = rafka_node_admin_core::build::BuildId::mint();
     a.builds

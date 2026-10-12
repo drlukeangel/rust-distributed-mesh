@@ -1989,7 +1989,7 @@ impl RecoverySubmitter {
     /// finds the member still proven exited and submits"): none unless this admin holds its mesh's
     /// primary seat and no fabric shutdown froze recovery (as [`recovery_due`]); else every exited
     /// birth of its own mesh whose node workflow in the accepted Build stopped at a Failed attempt and
-    /// is not done, read from the durable facts on every tick (the pointer `Fabric.build_id`, then the
+    /// is not done, read from the durable facts on every tick (the current Build, then the
     /// Build log's index by that Build, `BuildStateAdapter::exits_owed`), whether or not the view still
     /// holds the birth and whichever admin submitted it before. Nothing of it is held between ticks: an
     /// admin that takes the seat, or restarts, reads the same facts. A refused read is named on its
@@ -5134,7 +5134,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             fabric_primary = cfg.fabric_primary,
             seeds = seed_addrs.len(),
         )
-        .in_scope(|| tracing::info!("started to recover: Ready is held until the topology, Fabric.build_id and its Build are held"));
+        .in_scope(|| tracing::info!("started to recover: Ready is held until the topology and the current Build are held"));
     }
     // The control API listens now: the operating system assigns its port (a launched admin is
     // handed `<ip>:0`), and the admin reports the address it really holds in its join digest.
@@ -5324,12 +5324,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
                     membership.seats().take(row.seat, &row.holder);
                 }
-                // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
+                // The current Build: Day 0 accepts the first Build itself; every other admin hydrates it from
                 // its entry pull or the fabric control topic.
                 let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
                 let records = Arc::new(Records::default());
                 records.set_me(node_id.clone());
-                // Only the fabric seat holder puts a pointer, and only its held `fabric/` rows are published: the
+                // Only the fabric seat holder writes the Fabric rows, and only its held `fabric/` rows are published: the
                 // file store reads the committed fabric seat record, as the Build gate does.
                 fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
@@ -5396,7 +5396,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         Box::pin(async move {
                             let policy = match joined {
                                 Some(answer) => {
-                                    // Hydrate `Fabric.build_id` from the launching admin, and record the attempt floor its
+                                    // Hydrate the current Build from the launching admin, and record the attempt floor its
                                     // answer names; without them this admin is not started. The Build it names arrives on
                                     // the Build topic, or is fetched from a node-admin that holds it (`FetchBuildFacts`,
                                     // node.start's Build-floor step after the hook).
@@ -5411,7 +5411,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 }
                                 None => {
                                     // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
-                                    // own mesh with one node-admin, and points `Fabric.build_id` at it (Build first).
+                                    // own mesh with one node-admin; it is the current Build once written.
                                     if restart.is_some() {
                                         let build_id = builds.current_build().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.into_build_id().map(|b| b.0).unwrap_or_default();
                                         tracing::info_span!("rdm.node_admin.fabric.update.via-restart", node = %name, build_id = %build_id)
@@ -6122,7 +6122,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 if blocked.is_empty() {
                                                     // The current Build the hydration gate above found held: the Ready span names it,
                                                     // so "it held the current Build before Ready" is read off the Ready itself.
-                                                    let held_pointer = match hydrated.current_build().await {
+                                                    let held_build = match hydrated.current_build().await {
                                                         Ok(c) => c.into_build_id().map(|b| b.0).unwrap_or_default(),
                                                         Err(e) => format!("unreadable: {e}"),
                                                     };
@@ -6150,7 +6150,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                         runtime_locator_fingerprint = %runtime.locator_fingerprint(),
                                                         source = "self-published-membership",
                                                         runtime_facts_held = held.len(),
-                                                        build_id = %held_pointer,
+                                                        build_id = %held_build,
                                                     )
                                                     .in_scope(|| tracing::info!("ready for traffic: every held birth's runtime is adoptable"));
                                                     break;
@@ -6764,7 +6764,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // the mesh primary on the backbone; also sent at once on a material change"): its own
                                     // timer, never a step of the hierarchy's round. It reads the book and the roles the
                                     // hierarchy decided, nothing else, so no store read or write of the round (the
-                                    // accepted Build's pointer, the exit rows, the view's installation, the climb) delays
+                                    // current Build, the exit rows, the view's installation, the climb) delays
                                     // it: a peer's t of this mesh (mesh-investigation.md) is the publication's own
                                     // interval, never the store's. While this admin is its mesh's primary it publishes
                                     // its mesh's members on the backbone (and puts the same source into its own mesh);
@@ -8096,7 +8096,7 @@ mod tests {
     /// and submits"; CLAUDE.md read rule: node-local state that should be the durable answer is
     /// replaced by the read): a submitter that holds nothing in memory (an admin that just took the
     /// seat, or restarted) is owed the exited birth mesh2.rpc.1 by the durable facts alone: the
-    /// accepted Build (`Fabric.build_id`) holds that birth's run, whose attempt ended Failed after its
+    /// current Build holds that birth's run, whose attempt ended Failed after its
     /// delete, and the birth is in no view. Nothing is owed while this admin does not hold the seat or
     /// a fabric shutdown froze recovery, nor to another mesh. With no exit-proof row the submit is
     /// refused on `rdm.node_admin.node.reject.via-exit-proof-unread` (reason `missing`) and nothing is

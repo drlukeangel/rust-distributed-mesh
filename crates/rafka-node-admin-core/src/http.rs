@@ -2,7 +2,7 @@
 //!
 //! Every topology route is a front door that submits one [`TopologyChange`]
 //! to the fabric-primary, which compiles it once against the accepted topology
-//! into the next complete Build, persists it, moves `Fabric.build_id` and
+//! into the next complete Build, persists it, which makes it the current Build, and
 //! answers `202 {"build_id"}`. A restart or replacement changes no topology:
 //! it opens the next attempt of the current Build with its action. A route
 //! never spawns, kills or restarts anything itself: there is no lifecycle

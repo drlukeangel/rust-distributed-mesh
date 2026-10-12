@@ -100,7 +100,7 @@ impl Run {
         b
     }
 
-    /// `Fabric.build_id` as the fabric primary holds it.
+    /// the current build_id as the fabric primary holds it.
     async fn fabric_build_id(&self) -> String {
         let door = self.fabric_door().await;
         self.estate.http_get(&door.api, "/api/fabric").await.1["build_id"].as_str().unwrap_or_default().to_string()
@@ -243,7 +243,7 @@ impl Run {
     }
 
     /// After a released create: the Build is complete once, each documented step has one receipt,
-    /// one runtime serves the node and `Fabric.build_id` names this Build.
+    /// one runtime serves the node and the current build_id names this Build.
     async fn after_create(&self, door: &Door, build_id: &str, node: &str, order: &[String]) -> Value {
         let b = self.build(door, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
@@ -256,7 +256,7 @@ impl Run {
         let ident = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == op.as_str() && r["step"] == "AllocateIdentity").map(|r| r["output"]["node_id"].clone()).unwrap();
         assert_eq!(ident, view["node_id"], "the node the Build decided is the node that serves: one birth");
         assert_eq!(self.runtimes(node), 1, "exactly one runtime serves {node}: release made no second birth");
-        assert_eq!(self.fabric_build_id().await, build_id, "Fabric.build_id names the accepted Build");
+        assert_eq!(self.fabric_build_id().await, build_id, "the current build_id names the accepted Build");
         json!({"build_state": b["state"], "attempt": 1, "step_receipts": counts, "node": {"status": view["status"], "node_id": view["node_id"], "incarnation_id": view["incarnation_id"]}, "runtimes": 1, "fabric_build_id": build_id})
     }
 
@@ -271,7 +271,7 @@ impl Run {
         assert!(counts.values().all(|n| *n == 1) && counts.len() == order.len(), "no step receipt is recorded twice: {counts:?}");
         self.node_gone(node).await;
         assert_eq!(self.runtimes(node), 0, "no runtime of {node} is left");
-        assert_eq!(self.fabric_build_id().await, build_id, "Fabric.build_id names the accepted Build");
+        assert_eq!(self.fabric_build_id().await, build_id, "the current build_id names the accepted Build");
         json!({"build_state": b["state"], "attempt": 1, "step_receipts": counts, "node_in_view": false, "runtimes": 0, "fabric_build_id": build_id})
     }
 }
@@ -327,15 +327,15 @@ async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 /// node-admin is held independently at its one point and released. For each cut: the testkit door
 /// acknowledges the arming and then the active hold (naming the exact call that parked: Build,
 /// attempt, operation, step); while it holds, the Build holds exactly the receipts before the cut
-/// and is not complete, the later steps have not begun, no admin executes an unaccepted Build, and
+/// and is not complete, the later steps have not begun, and
 /// the runtime count is the one the cut position implies; release alone completes the Build with
-/// each step's receipt exactly once, one runtime (none after a retire), `Fabric.build_id` on the
+/// each step's receipt exactly once, one runtime (none after a retire), the current build_id on the
 /// Build that was accepted (a restart on the same Build, one attempt later) and no other Build or
 /// attempt. The exported spans put the held step's span before the hold and the next step's span
-/// after the release, and each witness event (a lifecycle event, the pointer move, a node's Ready)
+/// after the release, and each witness event (a lifecycle event, the Build's acceptance, a node's Ready)
 /// after the release. What must NOT happen: a step receipt recorded twice, a second runtime born by
-/// the release, a new unchanged-topology Build, a Build that completes while its cut holds, a
-/// Build executed before `Fabric.build_id` names it, or a hook skipped for a re-born node.
+/// the release, a new unchanged-topology Build, a Build that completes while its cut holds, or a hook
+/// skipped for a re-born node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     let dir = acceptance_dir();
@@ -458,7 +458,7 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
             "why": "no admin path runs a transition into Draining, so no hook of the drain phases can be reached; building one would be a new transition, not a stall."
         },
         {
-            "cuts": ["day-0 first Build acceptance and first pointer at boot"],
+            "cuts": ["day-0 first Build acceptance at boot"],
             "where": "crates/rafka-node-admin-core/src/admin.rs:1660-1661",
             "why": "runs inside the Day-0 admin's start(), before the estate harness can reach any door: crates/rafka-test-scenario/src/estate.rs `born` removes and recreates the estate root (so no boot cut can be placed before it) and blocks on the admin's control API (so a held Day-0 start stalls the harness itself)."
         }
@@ -494,7 +494,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
     let hold_cut = c["hold_cut"].as_str().unwrap_or(cut);
     let holds: Vec<&Value> = named(spans, "rdm.testkit.fault.update.via-hold").into_iter().filter(|s| attr(s, "cut") == hold_cut).collect();
     assert!(!holds.is_empty(), "`{cut}`: a hold span was exported for the cut");
-    // Every call a cut parks has its own hold span (a pointer cut may park two writers): the hold is
+    // Every call a cut parks has its own hold span (a cut may park several writers): the hold is
     // from the first one's start to the last one's end.
     let first = holds.iter().min_by_key(|s| span_start(s)).unwrap();
     let last = holds.iter().max_by_key(|s| span_end(s)).unwrap();
@@ -642,12 +642,12 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     let door = run.member_door("mesh1").await;
     let before = run.node_ready(node).await;
     let process_before = run.processes(node);
-    let pointer_before = run.fabric_build_id().await;
+    let current_before = run.fabric_build_id().await;
     let ack = door.arm(id, spec.clone()).await;
     let (status, a) = run.estate.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
     assert_eq!(status, 202, "restart {node}: {a}");
     let build_id = a["build_id"].as_str().unwrap().to_string();
-    assert_eq!(build_id, pointer_before, "a restart opens an attempt of the accepted Build; it makes no Build");
+    assert_eq!(build_id, current_before, "a restart opens an attempt of the accepted Build; it makes no Build");
     let op = format!("restart-node:{node}");
     let mut h = run.hold(&door, id, ack, &build_id, &op, Some(order[..receipts_before].to_vec()), Some((node, 1))).await;
     assert_eq!(h.attempt, attempt, "the restart is attempt {attempt} of the Build");
@@ -666,7 +666,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     assert_eq!(after_node["incarnation_id"], before["incarnation_id"], "a restart keeps the incarnation: it is stop then start on the parked birth");
     assert_eq!(run.processes(node), process_before, "a restart is stop then start on the same process");
     assert_eq!(run.runtimes(node), 1, "exactly one runtime serves {node} after the restart");
-    assert_eq!(run.fabric_build_id().await, pointer_before, "Fabric.build_id is unchanged by a restart");
+    assert_eq!(run.fabric_build_id().await, current_before, "the current build_id is unchanged by a restart");
     run.note_build(&build_id, attempt);
     // One restart pipeline span holds every step, in order (DeploymentPipeline::restart).
     let restart_steps: Vec<String> = order.clone();
@@ -676,7 +676,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     } else {
         run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "restart", "attempt": attempt, "steps": restart_steps, "held_step": RetireStep::NodeRestarting.name()}));
     }
-    let after = json!({"build_state": b["state"], "attempt": attempt, "operation": op, "steps": order, "node": {"node_id": after_node["node_id"], "incarnation_id": after_node["incarnation_id"]}, "processes": process_before, "runtimes": 1, "fabric_build_id": pointer_before});
+    let after = json!({"build_state": b["state"], "attempt": attempt, "operation": op, "steps": order, "node": {"node_id": after_node["node_id"], "incarnation_id": after_node["incarnation_id"]}, "processes": process_before, "runtimes": 1, "fabric_build_id": current_before});
     run.push(row(h, group, id, &spec, rel, after));
 }
 
@@ -700,7 +700,7 @@ async fn hook_cut(run: &Run, create_order: &[String], phase: &str, node: &str) {
     run.push(row(h, "lifecycle-hook", &id, &spec, rel, after));
 }
 
-// ---- accepted-Build persistence and the pointer ------------------------------------------------------
+// ---- accepted-Build persistence ------------------------------------------------------
 
 /// The Build is durable and is the current Build (nothing publishes it a second time): stalled at
 /// `spec`, with the accepting request unanswered. The request is made from a task, because it does
