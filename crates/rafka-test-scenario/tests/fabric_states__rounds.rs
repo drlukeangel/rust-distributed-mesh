@@ -564,3 +564,93 @@ async fn a_state_synced_for_a_foreign_build_is_refused_by_name() {
 async fn a_state_synced_for_an_old_attempt_is_refused_by_name() {
     refused_state_synced("a_state_synced_for_an_old_attempt_is_refused_by_name", "old-attempt", "attempt").await;
 }
+
+/// CONTRACT (R-PB1, R-PC1; states.md "The initial fabric before ready-for-traffic"; node-rpc-envelope.md
+/// "Build refusals"): while the initial fabric is held in state-sync, every Build that would move a seat
+/// (a restart, stop or drain of the fabric-primary, a replace of mesh2's primary) and every caller
+/// workflow that writes a row (a node stop, a node delete, mesh.delete) is refused 422
+/// `fabric-not-ready` at the fabric-primary, the detail naming the workflow and `state-sync`. None
+/// claims an attempt: the initial Build stays at its one attempt, `Fabric.build_id` does not move, and
+/// the fabric-primary keeps both seats. Once the application answers and the fabric is
+/// ready-for-traffic the same kind of workflow is admitted as usual, and is the only attempt ever
+/// opened. One `rdm.node_admin.build.reject.via-fabric-not-ready` span per refusal says the same, and
+/// no seat span (`seats-committed`, `seats-installed`) is ever written.
+/// What must NOT happen: a seat or a row moved while the Fabric row, the Mesh rows and the Node rows live
+/// only in their holders' scratchpads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt() {
+    let test = "a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt";
+    let mut estate = estate_with(test, "hold").await;
+    let door = Door::open(&estate.root, "mesh1.admin.1", "").await;
+    let shape = |m: &str| json!({"name": m, "node_admin": 1, "rpc_node": 1});
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [shape("mesh1"), shape("mesh2")]})).await;
+    assert_eq!(status, 202, "{a}");
+    let first = s(&a["build_id"]);
+    estate.await_build(&first, Duration::from_secs(120)).await;
+    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|n| n.to_string()).collect();
+    estate.settled(&want, Duration::from_secs(60)).await;
+    wait_for("the fabric is in state-sync under the Build, its answer held at the door", Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        let taken = named(&spans, "rdm.testkit.app.update.via-sync-state-taken").into_iter().any(|t| t["attributes"]["build_id"] == first.as_str());
+        let held = door.cut("state-sync").await["held"] == true;
+        (taken && held && fabric_state(&estate).await == "state-sync").then_some(())
+    })
+    .await;
+    let (_, build_before) = estate.get(&format!("/api/builds?id={first}")).await;
+    let (_, fabric_before) = estate.get("/api/fabric").await;
+
+    // Seat-moving Builds and caller workflows, each refused by name.
+    let refusals = [
+        ("POST", "/api/nodes/mesh1.admin.1/restart", "node.restart mesh1.admin.1"),
+        ("POST", "/api/nodes/mesh1.admin.1/stop", "node.stop mesh1.admin.1"),
+        ("POST", "/api/nodes/mesh1.admin.1/drain", "node.drain mesh1.admin.1 (a seat holder)"),
+        ("POST", "/api/nodes/mesh2.admin.1/replace", "node.replace mesh2.admin.1"),
+        ("POST", "/api/nodes/mesh2.rpc.1/stop", "node.stop mesh2.rpc.1"),
+        ("DELETE", "/api/nodes/mesh2.rpc.1", "node.delete mesh2.rpc.1"),
+        ("DELETE", "/api/meshes/mesh2", "mesh.delete mesh2"),
+    ];
+    for (method, path, workflow) in refusals {
+        let (status, v) = if method == "POST" { estate.post(path, &json!({})).await } else { estate.delete(path).await };
+        assert_eq!((status, v["error"].as_str()), (422, Some("fabric-not-ready")), "{method} {path}: {v}");
+        assert!(v["detail"].as_str().is_some_and(|d| d.contains(workflow) && d.contains("state-sync")), "the detail names the workflow ({workflow}) and the status: {v}");
+    }
+    let (_, build_after) = estate.get(&format!("/api/builds?id={first}")).await;
+    let (_, fabric_after) = estate.get("/api/fabric").await;
+    assert_eq!((build_after["attempt"].clone(), build_after["state"].clone()), (build_before["attempt"].clone(), build_before["state"].clone()), "no attempt is claimed: {build_before} -> {build_after}");
+    assert_eq!(fabric_after["build_id"], fabric_before["build_id"], "Fabric.build_id does not move");
+    assert_eq!(fabric_state(&estate).await, "state-sync", "the fabric is still held in state-sync");
+    let seats = |nodes: &[Value]| -> Vec<(String, bool, bool)> { nodes.iter().map(|n| (s(&n["name"]), n["is_primary"] == true, n["is_fabric_primary"] == true)).filter(|(_, p, f)| *p || *f).collect() };
+    let held = seats(&estate.nodes().await);
+    assert!(held.contains(&("mesh1.admin.1".to_string(), true, true)) && held.contains(&("mesh2.admin.1".to_string(), true, false)), "every seat is where it was: {held:?}");
+
+    // The application answers: the fabric climbs, and the same kind of workflow is admitted.
+    door.release("state-sync").await;
+    ready_under(&estate, &first).await;
+    let (status, admitted) = estate.post("/api/nodes/mesh2.rpc.1/restart", &json!({})).await;
+    assert_eq!(status, 202, "once the fabric is ready-for-traffic a restart is admitted: {admitted}");
+    estate.await_attempt(&first, Estate::attempt_of(&admitted), Duration::from_secs(120)).await;
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let mut rejects = named(&spans, "rdm.node_admin.build.reject.via-fabric-not-ready");
+    rejects.sort_by_key(|sp| start(sp));
+    assert_eq!(rejects.len(), refusals.len(), "one refusal span per refused workflow: {:?}", rejects.iter().map(|r| &r["attributes"]["workflow"]).collect::<Vec<_>>());
+    for (r, (_, _, workflow)) in rejects.iter().zip(refusals) {
+        assert_eq!((s(&r["attributes"]["workflow"]).as_str(), s(&r["attributes"]["status"]).as_str()), (workflow, "state-sync"), "{:?}", r["attributes"]);
+    }
+    // A request span names the Build and attempt it opened only once it opened one: the refused requests'
+    // spans carry neither.
+    let opened: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().filter(|o| o["attributes"].get("build_id").is_some()).collect();
+    assert_eq!(opened.len(), 1, "the one admitted restart is the only attempt ever opened: {:?}", opened.iter().map(|o| &o["attributes"]).collect::<Vec<_>>());
+    let accepted: Vec<&Value> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|o| o["attributes"].get("build_id").is_some()).collect();
+    assert_eq!(accepted.len(), 1, "the initial Build is the only Build ever accepted: {:?}", accepted.iter().map(|o| &o["attributes"]).collect::<Vec<_>>());
+    assert!(start(opened[0]) > rejects.iter().map(|r| start(r)).max().unwrap(), "the attempt opened after every refusal");
+    for seat_span in ["rdm.node_admin.seat.update.via-seats-committed", "rdm.node_admin.seat.update.via-seats-installed"] {
+        assert!(named(&spans, seat_span).is_empty(), "no seat moved: {seat_span} was written");
+    }
+    estate.record_trace_url(&s(&rejects[0]["trace_id"]));
+    for r in &rejects {
+        eprintln!("trace {}: rdm.node_admin.build.reject.via-fabric-not-ready workflow={} status=state-sync", s(&r["trace_id"]), s(&r["attributes"]["workflow"]));
+    }
+    eprintln!("trace {}: rdm.node_admin.build.update.via-rest (the restart admitted once ready-for-traffic)", s(&opened[0]["trace_id"]));
+}
