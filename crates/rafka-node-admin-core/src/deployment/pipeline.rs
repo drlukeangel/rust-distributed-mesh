@@ -1324,13 +1324,24 @@ impl DeploymentPipeline<'_> {
     /// The identity an earlier run of this operation claimed `req.node` with, for a run that holds
     /// none of that run's receipts: its executor was lost, and with it the only journal its receipts
     /// had reached (build.md §5.2). The claim row names the identity and the operation of the Build
-    /// that allocated it ([`crate::storage::NodeRow::allocated`]). Settled by the provider's exact
-    /// proof, which lifecycles/node-create.md requires even for a deployment that never joined:
-    /// - no runtime of that exact deployment exists: the birth was never launched, and this run
-    ///   continues it under the same identity (its claim is that birth's, `Claimed::HeldByNode`);
-    /// - one runs: the lost executor launched it and it never joined this one: the lost-executor
-    ///   rule ([`Self::stop_lost_launch`]) stops it through its exact handle, its claim is withdrawn
-    ///   (that birth's key only), and the birth is decided afresh (`None`).
+    /// that allocated it ([`crate::storage::NodeRow::allocated`]). Only a birth that was never launched
+    /// is continued; lifecycles/node-create.md requires exact provider proof of a runtime's state even
+    /// for a deployment that never joined:
+    /// - the provider finds no running runtime of that exact deployment and no runtime record in the
+    ///   birth's data dir names it (the record `MakeRuntimeFactAvailableToBirth` writes): the birth
+    ///   was never launched, and this run continues it under the same identity (its claim is that
+    ///   birth's, `Claimed::HeldByNode`). The provider's `find` answers a launched runtime that has
+    ///   exited as none, so a launch that exited between its spawn and its runtime record is read
+    ///   here as never launched: the one window left, closed only by a provider answer that keeps an
+    ///   exited deployment apart from one never launched;
+    /// - no running runtime, and the record names the deployment: it was launched and has exited, as
+    ///   the receipt arm's "the earlier attempt's runtime is gone": its claim is withdrawn (that
+    ///   birth's key only) and the birth is decided afresh (`None`);
+    /// - one runs and the birth has not joined membership: the lost executor launched it, and the
+    ///   lost-executor rule ([`Self::stop_lost_launch`]) stops it through its exact handle, its claim
+    ///   is withdrawn and the birth decided afresh (`None`);
+    /// - one runs and the birth has joined membership: refused by name, nothing stopped, withdrawn or
+    ///   minted, since this run holds none of that create's receipts past its claim.
     /// No such claim: `None`, and the identity is minted. One `via-claimed-allocation` span.
     async fn claimed_allocation(&self, run: &Run<'_>, req: &CreateRequest, rows: &crate::node_rows::NodeRows, bind_addr: SocketAddr) -> Result<Option<Identity>, PipelineError> {
         use tracing::Instrument;
@@ -1352,11 +1363,36 @@ impl DeploymentPipeline<'_> {
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
         );
+        let record_dir = spec.data_dir.clone();
         match self.provider.find(&spec).instrument(span.clone()).await {
-            Ok(None) => {
-                span.record("outcome", "never-launched");
-                span.in_scope(|| tracing::info!("the claim names a birth this operation allocated and no runtime of its deployment exists: this run continues it"));
-                Ok(Some(identity))
+            Ok(None) => match crate::record_store::blocking_io(move || RuntimeFact::read_record(&record_dir)).await {
+                Some(Ok(record)) if record.deployment_id == identity.deployment_id.0 => {
+                    span.record("outcome", "launched-exited");
+                    span.in_scope(|| tracing::info!("the claim names a birth this operation allocated whose runtime record names its deployment and none of it runs: it was launched and has exited, and the birth is decided afresh"));
+                    rows.withdraw(&req.node, &identity.node_id, &run.operation, "the birth its claim names was launched by a lost executor and has exited: a fresh birth claims the name").await;
+                    Ok(None)
+                }
+                Some(Err(e)) => {
+                    let reason = format!(
+                        "{}: the claim of {} (Build {}) names the birth {} at deployment {}, no runtime of it runs, and the runtime record in {} could not be read to say whether it was launched: {e}",
+                        req.node, run.operation, req.build_id, identity.node_id, identity.deployment_id, spec.data_dir.display()
+                    );
+                    span.record("outcome", "unproven").record("detail", reason.as_str());
+                    Err(PipelineError { step, reason })
+                }
+                _ => {
+                    span.record("outcome", "never-launched");
+                    span.in_scope(|| tracing::info!("the claim names a birth this operation allocated, no runtime of its deployment runs and no runtime record names it: this run continues it"));
+                    Ok(Some(identity))
+                }
+            },
+            Ok(Some(_)) if self.observer.joined(&identity.node_id, &identity.incarnation).await.is_some() => {
+                let reason = format!(
+                    "{}: the claim of {} (Build {}) names the birth {} at deployment {}, whose runtime runs and has joined fabric membership; this run holds none of that create's receipts past its claim, so the birth is neither stopped, withdrawn nor decided afresh",
+                    req.node, run.operation, req.build_id, identity.node_id, identity.deployment_id
+                );
+                span.record("outcome", "launched-and-joined").record("detail", reason.as_str());
+                Err(PipelineError { step, reason })
             }
             Ok(Some(stranded)) => {
                 span.record("outcome", "launched-by-lost-executor");
