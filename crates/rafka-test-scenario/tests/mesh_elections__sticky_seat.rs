@@ -403,9 +403,11 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     let _ = (before_build, build, p_id);
 }
 
-/// CONTRACT: the same hand-over while the fabric primary P is deciding claims of a running Build
-/// (mesh2 grows by two rpc nodes as P is replaced by the replace recipe). P's seat row is its fence: a claim P won
-/// committed wholly before the row moved its record, and P wins none after it. One winner per
+/// CONTRACT: the same hand-over right behind a Build whose claims the fabric primary P decided (mesh2
+/// grows by two rpc nodes, then P is replaced by the replace recipe). The recipe is submitted once the
+/// grow completed: build.md, "A second topology-changing request while the current Build is actively
+/// reconciling is refused with a named build-in-progress refusal". P's seat row is its fence: a claim
+/// P won committed wholly before the row moved its record, and P wins none after it. One winner per
 /// attempt, no birth twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_decided_after() {
@@ -422,6 +424,8 @@ async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_deci
     ]});
     let (status, g) = estate.post("/api/build", &grow).await;
     assert_eq!(status, 202, "{g}");
+    // The grow's claims are P's to decide; the recipe is a second Build, admitted once the grow ends.
+    estate.await_build(g["build_id"].as_str().expect("the grow's build id"), Duration::from_secs(120)).await;
     let (replace, _outer) = replace_by_recipe(&s(&node(&nodes, &n_name)["admin_api_base"]), &p).await;
     let all: BTreeSet<String> = names().into_iter().chain(["mesh2.rpc.4".to_string(), "mesh2.rpc.5".to_string()]).collect();
     // The replace is part of the story: the fabric is stopped only once P's path is ready again under
