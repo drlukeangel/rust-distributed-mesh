@@ -1302,6 +1302,76 @@ impl MeshRowsWriter {
     }
 }
 
+/// `fabric/` on the fabric's store root, written by the fabric-primary alone (R14 item 2): while this
+/// birth holds the fabric seat it writes the Fabric record it holds (the identity it is configured
+/// for, and the pointer it learned while another admin held the seat), so a seat that came to it
+/// before the fabric's first state-commit, from a holder whose held rows were dropped, still leaves
+/// the Fabric row on the store root, and every seat record it holds as its own row. While it does not
+/// hold the seat it writes nothing to `fabric/`.
+pub(crate) struct FabricRowsWriter {
+    /// This admin's exact birth: it writes only while the fabric seat names it.
+    me: (NodeId, IncarnationId),
+    identity: crate::fabric_storage::FabricIdentity,
+    storage: Arc<dyn crate::fabric_storage::FabricStorage>,
+    accepted: Arc<AcceptedStore>,
+    /// The seat records written (or held durable by a seat transfer's own row).
+    written: HashSet<(rafka_mesh_entity::Seat, String, u64)>,
+    fabric_row_written: bool,
+}
+
+impl FabricRowsWriter {
+    pub(crate) fn new(me: (NodeId, IncarnationId), identity: crate::fabric_storage::FabricIdentity, storage: Arc<dyn crate::fabric_storage::FabricStorage>, accepted: Arc<AcceptedStore>) -> Self {
+        Self { me, identity, storage, accepted, written: HashSet::new(), fabric_row_written: false }
+    }
+
+    /// One round over the seat records `seats` holds.
+    pub(crate) async fn round(&mut self, seats: &rafka_mesh_transport::membership::SeatBook) {
+        if !seats.fabric().is_some_and(|h| h.is_birth(&self.me.0, &self.me.1)) {
+            return;
+        }
+        let (storage, identity) = (&self.storage, &self.identity);
+        if !self.fabric_row_written {
+            let identity_held = match storage.put_identity(identity).await {
+                Ok(held) if held.fabric_id == identity.fabric_id => true,
+                Ok(held) => {
+                    tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, held = %held.fabric_id).in_scope(|| tracing::info!("fabric.storage holds another Fabric's identity"));
+                    false
+                }
+                Err(e) => {
+                    tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, error = %e).in_scope(|| tracing::info!("the Fabric identity could not be written to fabric.storage"));
+                    false
+                }
+            };
+            let pointer_held = match self.accepted.learned_pointer() {
+                None => true,
+                Some(p) => match storage.put_pointer(&p).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, build_id = %p.build_id, error = %e).in_scope(|| tracing::info!("the learned Fabric pointer could not be written to fabric.storage"));
+                        false
+                    }
+                },
+            };
+            self.fabric_row_written = identity_held && pointer_held;
+        }
+        let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
+        rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
+        for row in rows {
+            // A record a seat transfer's own row already holds is durable: nothing more is written for it.
+            if seats.is_durable(row.seat, &row.holder) {
+                self.written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch));
+                continue;
+            }
+            if self.written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch)) {
+                if let Err(e) = storage.put_seat(&row).await {
+                    self.written.remove(&(row.seat, row.holder.mesh.clone(), row.holder.epoch));
+                    tracing::info_span!("rdm.node_admin.seat.reject.via-storage", seat = row.seat.name(), holder = %row.holder, error = %e).in_scope(|| tracing::info!("a seat record could not be written to fabric.storage"));
+                }
+            }
+        }
+    }
+}
+
 /// The provider's proof that the exact birth a digest or a durable row names exited: the runtime
 /// fact is the digest's (when it is of this birth) or the row's, adopted in this provider's control
 /// domain and inspected, and only the runtime's own terminal status counts. `Ok` carries the exit
@@ -4838,69 +4908,18 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // Only the fabric seat holder puts a pointer, and only its held `fabric/` rows are published: the
                 // file store reads the committed fabric seat record, as the Build gate does.
                 fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
-                // `fabric/` has one writer, the fabric-primary (R14 item 2). While this admin holds the fabric
-                // seat it writes every seat record it holds as its own row, and the Fabric record it holds (the
-                // identity it is configured for, and the pointer it learned while another admin held the seat),
-                // so a seat that came to it before the fabric's first state-commit, from a holder whose held
-                // rows were dropped, still leaves the Fabric row on the store root. While it does not hold the
-                // seat it writes nothing to `fabric/`.
+                // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
+                // seat change.
                 {
-                    let (seats, storage, accepted, identity) = (membership.seats().clone(), fabric_storage.clone(), accepted.clone(), fabric_identity.clone());
-                    let me = (node_id.clone(), incarnation.clone());
+                    let seats = membership.seats().clone();
+                    let mut writer = FabricRowsWriter::new((node_id.clone(), incarnation.clone()), fabric_identity.clone(), fabric_storage.clone(), accepted.clone());
                     let mut changed = seats.subscribe();
                     let park = park_gate.clone();
                     tasks_early.push(tokio::spawn(async move {
-                        let mut written: HashSet<(rafka_mesh_entity::Seat, String, u64)> = HashSet::new();
-                        let mut fabric_row_written = false;
                         loop {
                             // Held here while the admin is parked: its own wait, outside every lock.
                             let turn = park.turn("seat-rows").await;
-                            if !seats.fabric().is_some_and(|h| h.is_birth(&me.0, &me.1)) {
-                                drop(turn);
-                                if changed.changed().await.is_err() {
-                                    return;
-                                }
-                                continue;
-                            }
-                            if !fabric_row_written {
-                                let identity_held = match storage.put_identity(&identity).await {
-                                    Ok(held) if held.fabric_id == identity.fabric_id => true,
-                                    Ok(held) => {
-                                        tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, held = %held.fabric_id).in_scope(|| tracing::info!("fabric.storage holds another Fabric's identity"));
-                                        false
-                                    }
-                                    Err(e) => {
-                                        tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, error = %e).in_scope(|| tracing::info!("the Fabric identity could not be written to fabric.storage"));
-                                        false
-                                    }
-                                };
-                                let pointer_held = match accepted.learned_pointer() {
-                                    None => true,
-                                    Some(p) => match storage.put_pointer(&p).await {
-                                        Ok(()) => true,
-                                        Err(e) => {
-                                            tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, build_id = %p.build_id, error = %e).in_scope(|| tracing::info!("the learned Fabric pointer could not be written to fabric.storage"));
-                                            false
-                                        }
-                                    },
-                                };
-                                fabric_row_written = identity_held && pointer_held;
-                            }
-                            let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
-                            rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
-                            for row in rows {
-                                // A record a seat transfer's own row already holds is durable: nothing more is written for it.
-                                if seats.is_durable(row.seat, &row.holder) {
-                                    written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch));
-                                    continue;
-                                }
-                                if written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch)) {
-                                    if let Err(e) = storage.put_seat(&row).await {
-                                        written.remove(&(row.seat, row.holder.mesh.clone(), row.holder.epoch));
-                                        tracing::info_span!("rdm.node_admin.seat.reject.via-storage", seat = row.seat.name(), holder = %row.holder, error = %e).in_scope(|| tracing::info!("a seat record could not be written to fabric.storage"));
-                                    }
-                                }
-                            }
+                            writer.round(&seats).await;
                             drop(turn);
                             if changed.changed().await.is_err() {
                                 return;
