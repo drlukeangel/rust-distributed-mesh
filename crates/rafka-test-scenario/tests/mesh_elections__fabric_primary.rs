@@ -15,8 +15,9 @@
 //!   endpoints alone (no hidden map): the surviving mesh's admin answers, its
 //!   fabric view names one new fabric primary (the surviving mesh's primary)
 //!   and advertises that admin's control API;
-//! - control has moved: that API accepts a change, which waits behind the lost mesh, and the
-//!   fabric then shuts down from the new primary; no runtime of the estate is left running.
+//! - control has moved: that API accepts a change and drives it to completion, the lost mesh
+//!   made whole again on the way, and the fabric then shuts down from the new primary; no runtime
+//!   of the estate is left running.
 //!
 //! A three-mesh fabric with shuffled names keeps the Day-0 holder whatever the other mesh
 //! primaries' NodeIds are; every mesh primary reports the same holder; losing every node-admin
@@ -25,11 +26,13 @@
 //! Evidence: the new fabric primary's election is announced as
 //! `rdm.mesh.election.resolve.via-fabric-recompute` (`election_level =
 //! fabric_primary`, the winner's NodeId, path and mesh) by a surviving mesh
-//! primary. The lost mesh is held, not recovered (R-D1, mesh-investigation.md step 5): no member
+//! primary. The lost mesh is fully crashed (mesh-investigation.md step 5, "Fully crashed"): no member
 //! of it answers either probe of the new primary's peer-mesh investigation, so its
-//! `rdm.node_admin.mesh.update.via-probe-verdict` is `outcome = unreachable`, its drive stops at
-//! `rdm.node_admin.build.reject.via-unheard-mesh-drive` (`rebirth_decided = false`) and claims and
-//! dispatches nothing for the lost mesh's nodes.
+//! `rdm.node_admin.mesh.update.via-probe-verdict` is `outcome = unreachable` and its drive stops at
+//! `rdm.node_admin.build.reject.via-unheard-mesh-drive` (`rebirth_decided = false`) until then; the
+//! provider's exit proof of every node-admin of the lost mesh is
+//! `rdm.node_admin.mesh.update.via-crash-proof` (`outcome = proven`), on which the new fabric primary
+//! runs the create of that mesh's first node-admin in process, and nothing else of that mesh.
 
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
 use rafka_test_scenario::estate::{named, own_fabric_at, wait_for, Estate, Owner};
@@ -57,15 +60,19 @@ fn kill(pid: u64) {
 }
 
 /// CONTRACT (R-A2; R-D1: loss of peer-mesh control-plane visibility fences lifecycle mutation for
-/// every node in that mesh; mesh-investigation.md step 5: "Recovery ONLY if the latest probe answers
-/// `carrier-edge-lost`: a mesh-x member reports that it cannot reach its own node-admin. No answer
-/// from any member in either probe means hold, with backbone refeed continuing. Timeout or
-/// unreachable alone grants no recovery"): every process of the fabric-primary's mesh is
-/// killed. Control moves to the surviving mesh's primary, found through the advertised endpoints
-/// alone; it accepts a change and drives it, and the lost mesh, of which no member answers, is held:
-/// both probes are `unreachable`, the verdict is `unreachable`, and the drive stops at the fence on
-/// the lost mesh's first node-admin with no recovery verdict. Must NOT happen: a recovery of the
-/// lost mesh, or any node of it created or replaced after the loss.
+/// every node in that mesh; mesh-investigation.md step 5, "Fully crashed": "Every node of mesh-x, its
+/// node-admins included, has crashed while the fabric is alive. No member answers, so
+/// carrier-edge-lost cannot arise. The fabric-primary acts on the provider's exact exit proof, never
+/// on silence, and creates mesh-x's node-admin in process ..., on the same accepted Build and mesh-x's
+/// own MeshId"): every process of the fabric-primary's mesh is killed. Control moves to the surviving
+/// mesh's primary, found through the advertised endpoints alone; it accepts a change and drives it.
+/// No member of the lost mesh answers: both probes and the verdict are `unreachable`, and the drive
+/// stops at the fence on the lost mesh's first node-admin until that decision. The provider then
+/// proves every node-admin of the lost mesh exited, and on that proof the new fabric primary runs the
+/// create of the lost mesh's first node-admin in process, on the change's Build; the lost mesh's new
+/// primary makes the rest of it, and the change completes. Must NOT happen: a carrier-edge-lost
+/// recovery of a mesh no member of which answers, the create before the provider's proof, or any
+/// other node of the lost mesh made by the new fabric primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn losing_the_fabric_primary_mesh_moves_control() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
@@ -149,47 +156,64 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     assert_eq!(s(&held["admin_api_base"]), new_base, "the surviving mesh advertises its live owning admin");
 
     // Control moved: the new primary accepts a change and drives it. What is left of the accepted
-    // topology begins with the lost mesh's first node-admin, and no member of the lost mesh answers
-    // either probe, so the drive stops at the fence with no recovery verdict, and the change waits.
+    // topology begins with the lost mesh's first node-admin, of which no member answers either probe:
+    // the drive stops at the fence until the decision, then runs that create on the provider's proof,
+    // and the lost mesh's own new primary makes the rest of it.
     let (status, a) = estate.post("/api/nodes/spawn", &json!({"mesh": survivor, "kind": "rpc_node"})).await;
     assert_eq!(status, 202, "{a}");
     let change = s(&a["build_id"]);
-    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    let (fence, verdict) = wait_for("the new primary holds the lost mesh: its verdict is unreachable and its drive stops at the fence", Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        let fence = named(&spans, "rdm.node_admin.build.reject.via-unheard-mesh-drive")
-            .into_iter()
-            .find(|sp| attr(sp, "build_id") == change && attr(sp, "node") == new_primary && attr(sp, "mesh") == lost)
-            .cloned()?;
-        let verdict = named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict")
-            .into_iter()
-            .find(|sp| attr(sp, "node") == new_primary && attr(sp, "mesh") == lost && attr(sp, "outcome") == "unreachable")
-            .cloned()?;
-        Some((fence, verdict))
-    })
-    .await;
-    assert_eq!(attr(&fence, "rebirth_decided"), "false", "the fence names no recovery verdict: {fence}");
-    assert!(attr(&fence, "target").starts_with(&format!("{lost}.")), "the fence holds a node of the lost mesh: {fence}");
-    let (_, b) = estate.get(&format!("/api/builds?id={change}")).await;
-    assert_ne!(b["state"], "complete", "the change waits behind the held mesh: {b}");
+    estate.await_build(&change, Duration::from_secs(180)).await;
+    estate.settled_shape(&[(lost.as_str(), 2, 3), (survivor.as_str(), 2, 4)], Duration::from_secs(60)).await;
 
     // And the whole fabric stops from the new primary.
     estate.stop().await;
     assert_eq!(estate.live_runtimes(), vec![], "no runtime of the estate is left running");
     let spans = estate.spans();
-    // Held, not recovered: both probes of the new primary found no member of the lost mesh, no
-    // recovery opened, and nothing of the lost mesh was created or replaced after the loss.
-    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "node") == new_primary && attr(p, "mesh") == lost).collect();
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    // No member answered: the verdict and every probe of the investigation that reached it are
+    // unreachable, and no carrier-edge-lost recovery opened. (The fabric's own stop later makes the
+    // recovered mesh unheard again; that investigation is the stop's.)
+    let verdict = named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict")
+        .into_iter()
+        .find(|sp| attr(sp, "node") == new_primary && attr(sp, "mesh") == lost && attr(sp, "outcome") == "unreachable")
+        .cloned()
+        .expect("the new primary's investigation decided the lost mesh unreachable");
+    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "node") == new_primary && attr(p, "mesh") == lost && at(p) < at(&verdict)).collect();
     assert!(!probes.is_empty() && probes.iter().all(|p| attr(p, "outcome") == "unreachable"), "every probe of the lost mesh is unreachable: {probes:#?}");
     let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|r| attr(r, "mesh") == lost).collect();
-    assert!(rebirths.is_empty(), "no recovery of a mesh no member of which answers: {rebirths:#?}");
-    let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
+    assert!(rebirths.is_empty(), "no carrier-edge-lost recovery of a mesh no member of which answers: {rebirths:#?}");
+    // Until the decision the drive stopped at the fence on the lost mesh's first node-admin.
+    let fence = named(&spans, "rdm.node_admin.build.reject.via-unheard-mesh-drive")
         .into_iter()
-        .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
-        .filter(|sp| attr(sp, "node").starts_with(&format!("{lost}.")) && sp["start_unix_nano"].as_u64().unwrap_or(0) > killed_ns)
-        .map(|sp| attr(sp, "node"))
-        .collect();
-    assert!(touched.is_empty(), "no node of the held mesh is created or replaced: {touched:?}");
+        .find(|sp| attr(sp, "build_id") == change && attr(sp, "node") == new_primary && attr(sp, "mesh") == lost)
+        .cloned()
+        .expect("the drive stopped at the fence on the lost mesh");
+    assert_eq!((attr(&fence, "rebirth_decided").as_str(), attr(&fence, "target")), ("false", format!("{lost}.admin.1")), "the fence held the lost mesh's first node-admin: {fence}");
+    assert!(at(&fence) < at(&verdict), "the fence stood before the decision: {fence} {verdict}");
+    // The provider proved every node-admin of the lost mesh exited, read by the drive of the change.
+    let proof = named(&spans, "rdm.node_admin.mesh.update.via-crash-proof")
+        .into_iter()
+        .find(|sp| attr(sp, "node") == new_primary && attr(sp, "mesh") == lost && attr(sp, "build_id") == change && attr(sp, "outcome") == "proven")
+        .cloned()
+        .expect("the provider's exit proof of every node-admin of the lost mesh was read");
+    assert_eq!((attr(&proof, "proven"), attr(&proof, "unproven")), (format!("{lost}.admin.1,{lost}.admin.2"), String::new()), "both node-admins proven exited: {proof}");
+    // On that proof the new fabric primary ran the create of the lost mesh's first node-admin in
+    // process; every other node of the lost mesh was made by the lost mesh's new primary.
+    let executor_of = |attempt: &str| {
+        named(&spans, "rdm.node_admin.build.update.via-claim-decision")
+            .into_iter()
+            .find(|sp| attr(sp, "build_id") == change && attr(sp, "attempt") == attempt && attr(sp, "outcome") == "won")
+            .map(|sp| attr(sp, "executor"))
+            .unwrap_or_default()
+    };
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| attr(sp, "build_id") == change && attr(sp, "node").starts_with(&format!("{lost}.")) && at(sp) > killed_ns).collect();
+    let first_admin = format!("{lost}.admin.1");
+    let first = creates.iter().find(|sp| attr(sp, "node") == first_admin).unwrap_or_else(|| panic!("the lost mesh's first node-admin was created: {creates:#?}"));
+    assert_eq!(executor_of(&attr(first, "attempt")), new_primary, "the new fabric primary ran the first node-admin's create in process: {first}");
+    assert!(at(first) > at(&proof), "the create followed the provider's proof: {first} {proof}");
+    let others: Vec<(String, String)> = creates.iter().filter(|sp| attr(sp, "node") != first_admin).map(|sp| (attr(sp, "node"), executor_of(&attr(sp, "attempt")))).collect();
+    assert!(!others.is_empty() && others.iter().all(|(_, executor)| *executor == first_admin), "the rest of the lost mesh was made by its new primary {first_admin}: {others:?}");
     // The new holder is announced by a surviving admin: a vacancy first (the lost mesh's holder is
     // silent, then proven gone), then the lowest remaining mesh primary takes the seat.
     let recomputes = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
@@ -209,8 +233,8 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
         recomputes.iter().any(|sp| sp["attributes"]["previous"].as_str().is_some_and(|p| p.starts_with(&format!("{lost}.admin.")))),
         "the lost mesh's holder was announced gone before the seat moved"
     );
-    eprintln!("hold: verdict trace {} | fence trace {}", s(&verdict["trace_id"]), s(&fence["trace_id"]));
-    estate.record_trace_url(&s(&fence["trace_id"]));
+    eprintln!("fully crashed: verdict trace {} | fence trace {} | proof trace {} | create trace {}", s(&verdict["trace_id"]), s(&fence["trace_id"]), s(&proof["trace_id"]), s(&first["trace_id"]));
+    estate.record_trace_url(&s(&proof["trace_id"]));
 }
 
 /// A member that is unheard (frozen: its process runs but says nothing) is dead in the view, but
