@@ -430,9 +430,9 @@ impl FabricStorage for FaultedFabricStorage {
     async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
         self.inner.fabric_rows().await
     }
-    async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
+    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<rafka_node_admin_core::fabric_storage::FabricClaim, rafka_node_admin_core::fabric_storage::FabricNameHeld>, FabricStorageError> {
         self.faults.hold(Probe::Pointer { build_id: None }).await;
-        self.inner.put_identity(identity).await
+        self.inner.claim_identity(identity).await
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         self.faults.hold(Probe::Pointer { build_id: Some(pointer.build_id.to_string()) }).await;

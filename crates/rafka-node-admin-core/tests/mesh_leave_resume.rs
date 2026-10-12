@@ -641,7 +641,7 @@ fn mesh_left_writes_the_final_primarys_row_deleted_and_the_mesh_row_dead_and_onl
         // The final primary stopped: the view shows no live primary of mesh2.
         view.write().await.nodes.iter_mut().filter(|n| n.name == last.name).for_each(|n| n.status = NodeStatus::Leaving);
         let exited = rafka_node_admin_core::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().0, runtime: None, exit_code: Some(0) };
-        let after = mesh_left_rows(Some(&rows), &status, &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&last), &RosterBirth::of(&last).unwrap(), std::slice::from_ref(&exited)).await;
+        let after = mesh_left_rows(Some(&rows), &status, &rafka_node_admin_core::storage::MemoryMeshStorage::default(), &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&last), &RosterBirth::of(&last).unwrap(), std::slice::from_ref(&exited)).await;
         let row = storage.node_row_at(&last.name).await.unwrap();
         let statuses = status.mesh_statuses().await.unwrap();
         let dead_held = status.mesh_status_held_of("mesh2", &rafka_node_admin_core::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();

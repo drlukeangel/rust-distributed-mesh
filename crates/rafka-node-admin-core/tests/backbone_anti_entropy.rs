@@ -1,0 +1,249 @@
+//! A mesh primary's Members anti-entropy is a perpetual timer (gossip.md §3.2: "PERPETUAL TIMERS …
+//! Members anti-entropy — the mesh primary on the backbone; a few seconds; also sent at once on a
+//! material change"). The fabric-primary reads a peer mesh's liveness from that publication alone:
+//! t is the time since its last direct backbone receipt from the mesh (mesh-investigation.md), and
+//! from the track rung (`investigate::Rungs::track`, twice the backbone interval) the mesh is held
+//! unheard and nothing of it is restarted, replaced or deleted (R-D1). A publisher that goes quiet
+//! for longer than that while it is live and serving fences its own mesh.
+//!
+//! The admin under test is a real Day-0 admin (`admin::start_with`), its mesh's primary, at the
+//! gate's cadence (`tools/test-runner` CADENCE), in a process of its own. Its `fabric.storage` is
+//! wrapped (`Wiring::fabric_storage`) so the cell can make every read of the Fabric rows take three
+//! backbone intervals, which is what a read of the shared store root does while the disk is held by
+//! another admin's state-commit publication. The observer is a peer mesh's place on the backbone.
+
+use iroh::protocol::Router;
+use iroh::SecretKey;
+use rafka_mesh_entity::{IncarnationId, MeshId, NodeId};
+use rafka_mesh_transport::membership::{gossip_addr, learn_addresses, Backbone, Membership};
+use rafka_node_admin_core::admin::{start_with, AdminConfig};
+use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, HandoverRow, SeatRow, SeatTransferRow};
+use rafka_node_admin_core::investigate::Rungs;
+use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
+use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
+
+/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
+const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
+/// What a step that is immediate on a correct admin is given before the cell fails by name.
+const NEVER: Duration = Duration::from_secs(20);
+/// How long one read of the Fabric rows takes while the store is held: three backbone intervals.
+const HELD_READ: Duration = Duration::from_millis(1500);
+/// How long the store stays held: two held reads end to end.
+const HELD_FOR: Duration = Duration::from_millis(3000);
+/// How often the observer reads its t of the publisher's mesh.
+const SAMPLE: Duration = Duration::from_millis(20);
+
+fn day0_config(dir: &std::path::Path) -> AdminConfig {
+    let dir = dir.display().to_string();
+    AdminConfig::from_env(|k| match k {
+        "RDM_DATA_DIR" | "RDM_STORE_DIR" => Some(dir.clone()),
+        "RDM_BIN_DIR" => Some(dir.clone()),
+        "RDM_NODE_ADMIN_API_BIND" => Some("127.0.0.1:0".into()),
+        "MESH_SPAWN_TYPE" => Some("process".into()),
+        _ => None,
+    })
+    .expect("a readable environment")
+}
+
+/// `fabric.storage` whose reads of the Fabric rows take [`HELD_READ`] while the cell holds it, each
+/// held read a `cell.store.update.via-held-read` span; every other call passes straight through.
+struct HeldStore {
+    inner: Arc<dyn FabricStorage>,
+    held: Arc<AtomicBool>,
+    reads: Arc<AtomicU64>,
+    began: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl FabricStorage for HeldStore {
+    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
+        self.inner.fabric().await
+    }
+    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
+        if self.held.load(Ordering::SeqCst) {
+            let span = tracing::info_span!("cell.store.update.via-held-read", held_ms = HELD_READ.as_millis() as u64);
+            self.began.notify_waiters();
+            tracing::Instrument::instrument(tokio::time::sleep(HELD_READ), span).await;
+            self.reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.fabric_rows().await
+    }
+    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
+        self.inner.claim_identity(identity).await
+    }
+    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
+        self.inner.put_pointer(pointer).await
+    }
+    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
+        self.inner.shutdown().await
+    }
+    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
+        self.inner.put_shutdown(shutdown).await
+    }
+    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError> {
+        self.inner.put_seat(row).await
+    }
+    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
+        self.inner.seats().await
+    }
+    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
+        self.inner.put_handover(row).await
+    }
+    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
+        self.inner.handovers().await
+    }
+    async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError> {
+        self.inner.put_seat_transfer(row).await
+    }
+    async fn seat_transfer(&self, holder_mesh: &str, operation: &str) -> Result<Option<SeatTransferRow>, FabricStorageError> {
+        self.inner.seat_transfer(holder_mesh, operation).await
+    }
+    async fn seat_transfers(&self) -> Result<Vec<SeatTransferRow>, FabricStorageError> {
+        self.inner.seat_transfers().await
+    }
+}
+
+/// The cell's own span capture: the product span pipeline in front of an in-memory exporter, behind
+/// a dispatcher installed on every thread of the cell's runtime.
+struct Capture {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    capture: rafka_mesh_telemetry::SpanCapture,
+    dispatch: tracing::Dispatch,
+}
+
+fn capture() -> Capture {
+    use tracing_subscriber::layer::SubscriberExt;
+    crate::enable_callsites();
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (capture, layer) = rafka_mesh_telemetry::span_capture("mesh1.admin.1", exporter.clone());
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+}
+
+impl Capture {
+    fn run<F: std::future::Future>(&self, f: F) -> F::Output {
+        let d = self.dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+            .build()
+            .unwrap();
+        let _g = tracing::dispatcher::set_default(&self.dispatch);
+        rt.block_on(f)
+    }
+
+    fn spans(&self) -> Vec<Value> {
+        self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let ns = |t: std::time::SystemTime| t.duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        self.exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .map(|s| {
+                let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
+                json!({ "name": s.name, "trace_id": s.span_context.trace_id().to_string(), "start_ns": ns(s.start_time), "end_ns": ns(s.end_time), "attributes": attributes })
+            })
+            .collect()
+    }
+}
+
+/// CONTRACT (gossip.md §3.2, the `Members` row: "on its anti-entropy timer and at once on a material
+/// change"; mesh-investigation.md: t from the last direct backbone receipt; R-D1): a mesh primary
+/// whose reads of the shared store take three backbone intervals each goes on publishing its mesh
+/// on the backbone every interval. A peer mesh's t of it stays under the track rung the whole time
+/// the store is held, so the fabric-primary never holds a live, serving mesh unheard. Must NOT
+/// happen: the publication waiting on a store read of the admin's round (the accepted Build's
+/// pointer, the exit rows, the view's installation), so a held disk reads as a silent mesh.
+#[test]
+fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_every_interval() {
+    let cell = "a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_every_interval";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    for (k, v) in CADENCE {
+        std::env::set_var(k, v);
+    }
+    let track = Rungs::configured().track;
+    let cap = capture();
+    let (worst, held_reads, during) = cap.run(async {
+        let dir = std::env::temp_dir().join(format!("backbone-anti-entropy-{}", NodeId::mint()));
+        let (held, reads, began) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU64::new(0)), Arc::new(tokio::sync::Notify::new()));
+        let wrap = {
+            let (held, reads, began) = (held.clone(), reads.clone(), began.clone());
+            move |inner: Arc<dyn FabricStorage>| -> Arc<dyn FabricStorage> { Arc::new(HeldStore { inner, held, reads, began }) }
+        };
+        let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), fabric_storage: Some(Box::new(wrap)), ..Wiring::no_certs() };
+        let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
+        tokio::time::timeout(NEVER, async {
+            while !running.publishes_its_mesh() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the Day-0 admin never became its mesh's publisher");
+        let root = running.digest.lock().unwrap().clone();
+
+        // A peer mesh's place on the backbone, seeded with the publisher's address.
+        let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let seed = gossip_addr(&root).expect("the publisher's digest names its gossip address");
+        learn_addresses(&ep, &[seed.clone()]).unwrap();
+        let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+        time.adopt(root.emitted_at_rafka_ms);
+        let observer = Membership::join(&gossip, &ep, &root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.admin.1", Arc::new(time), vec![]).await.unwrap();
+        let _observer_bb = Backbone::join(&gossip, &ep, &observer, "mesh2", "mesh2.admin.1", IncarnationId::mint(), vec![seed]).await.unwrap();
+        let unheard = || observer.book.mesh_unheard(&root.node.name.mesh, std::time::Instant::now());
+        tokio::time::timeout(NEVER, async {
+            while unheard().is_none() {
+                tokio::time::sleep(SAMPLE).await;
+            }
+        })
+        .await
+        .expect("the peer mesh never received the publisher's mesh on the backbone");
+
+        // The store is held: every read of the Fabric rows now takes three backbone intervals. The
+        // window opens once a held read has begun.
+        let first = began.notified();
+        held.store(true, Ordering::SeqCst);
+        tokio::time::timeout(NEVER, first).await.expect("no read of the Fabric rows began while the store was held");
+        let opened = std::time::Instant::now();
+        let mut worst = Duration::ZERO;
+        let mut during = 0u32;
+        while opened.elapsed() < HELD_FOR {
+            if let Some(t) = unheard() {
+                worst = worst.max(t);
+            }
+            during += 1;
+            tokio::time::sleep(SAMPLE).await;
+        }
+        held.store(false, Ordering::SeqCst);
+        let held_reads = reads.load(Ordering::SeqCst);
+
+        drop(_observer_bb);
+        ep.close().await;
+        running.leave().await;
+        let _ = std::fs::remove_dir_all(&dir);
+        (worst, held_reads, during)
+    });
+
+    let spans = cap.spans();
+    let artifact = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell);
+    std::fs::create_dir_all(&artifact).unwrap();
+    std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
+    let receipts: Vec<(u64, String)> = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.mesh.membership.update.via-snapshot-installed" && s["attributes"]["node"] == "mesh2.admin.1" && s["attributes"]["channel"] == "backbone" && s["attributes"]["mesh"] == "mesh1")
+        .map(|s| (s["start_ns"].as_u64().unwrap_or(0), s["attributes"]["snapshot_id"].as_str().unwrap_or_default().to_string()))
+        .collect();
+    let held_spans = spans.iter().filter(|s| s["name"] == "cell.store.update.via-held-read").count();
+    println!("{cell}: worst t {worst:?} over {during} samples while the store was held ({held_reads} held reads ended, {held_spans} held-read spans); track rung {track:?}; backbone receipts at the peer {receipts:?}; spans in {}", artifact.display());
+    assert!(held_reads >= 1, "the store was never held for a whole read inside the window: the cell proved nothing");
+    assert!(
+        worst < track,
+        "the peer mesh's t of the publisher reached {worst:?} while the publisher's store reads were held, at or past the track rung {track:?}: the fabric-primary would hold a live, serving mesh unheard (R-D1). The Members anti-entropy waited on the admin's store reads. Backbone receipts at the peer (start ns, snapshot id): {receipts:?}"
+    );
+}
