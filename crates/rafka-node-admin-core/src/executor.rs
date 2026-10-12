@@ -214,7 +214,10 @@ pub fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<PathName> {
 pub struct RunPlan {
     /// The operations to run, in plan order. Each is idempotent by its natural key.
     pub operations: Vec<BuildOperation>,
-    /// The executor of the operation after this run; `None` when the run is the rest of the plan.
+    /// `Some` when more of the plan follows this run (the planner's executor of the next operation,
+    /// in the planner's view); `None` when the run is the rest of the plan. It only marks that more
+    /// follows: the executor hands back to the fabric primary of the view its run ends with, since
+    /// the run's own operations can move a seat or stop the planner ([`BuildExecutor`]).
     pub hand_off_to: Option<String>,
 }
 
@@ -279,7 +282,9 @@ pub enum Reconciled {
 /// operations on that mesh's members, its node-admins included; the fabric primary runs everything
 /// else (mesh creation and retirement) and a mesh's members while that mesh has no admin primary.
 /// An attempt that reaches an operation another admin executes ends `HandedOff`, and the
-/// fabric-primary claims the next attempt of the same Build for that admin.
+/// fabric-primary claims the next attempt of the same Build for that admin. A run that ends with
+/// more of the plan to follow hands back to the fabric primary of the view it ends with, which
+/// claims the next attempt for the admin its view names for what is left.
 pub struct BuildExecutor {
     /// This node-admin's path.name: the executor on every attempt it runs.
     pub executor: String,
@@ -361,10 +366,24 @@ impl BuildExecutor {
                 return self.finish(&build, attempt, Err((op.key(), e))).await;
             }
         }
-        match &plan.hand_off_to {
-            Some(to) => self.hand_off(&build, attempt, operations.clone(), to.clone()).await,
-            None => self.finish(&build, attempt, Ok(operations.clone())).await,
+        // More of the plan follows the run. The planner named the next executor from its own view,
+        // taken before this run's operations, and they can move a seat or stop the planner itself
+        // (the fabric primary's replace: its same-mesh successor runs the stop that moves its seats
+        // and parks it). So the run hands back to the fabric primary of the view it ends with, the
+        // one driver of the Build, whose next claim names the executor of what is left in its own
+        // view (`build_drive` claim_next).
+        if plan.hand_off_to.is_some() {
+            let driver = self.topology.read().await.fabric_primary().map(|n| n.name.to_string());
+            return match driver {
+                Some(to) => self.hand_off(&build, attempt, operations.clone(), to).await,
+                None => {
+                    let last = operations.last().map(BuildOperation::key).unwrap_or_default();
+                    let reason = format!("{}: the run of attempt {attempt} ended after {:?} with more of the plan to follow, and this admin's view seats no fabric primary to hand it back to", self.executor, if last.is_empty() { "no operation" } else { last.as_str() });
+                    self.finish(&build, attempt, Err((last, reason))).await
+                }
+            };
         }
+        self.finish(&build, attempt, Ok(operations.clone())).await
     }
 
     async fn hand_off(&self, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {
