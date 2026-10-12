@@ -16,7 +16,7 @@
 use rafka_node_admin_client::{await_fact, BuildCarrier, CallEnd};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_facts_read::{fetch_build_facts, FetchFailure};
-use rafka_node_admin_core::build_state::{fold, BuildFact, BuildProjection};
+use rafka_node_admin_core::build_state::{fold, BuildFact, BuildProjection, StepOutcome};
 use rafka_node_rpc::NodeTarget;
 use std::time::Duration;
 
@@ -56,10 +56,21 @@ pub fn projection(facts: &[BuildFact], id: &str) -> Option<BuildProjection> {
 }
 
 /// Await the fact `holds` of the Build `id` as the Build log of the node-admin `carrier` starts at folds
-/// it: the Build as that admin holds it.
+/// it: the Build as that admin holds it. `fact` names it; an admin whose log does not fold to it within
+/// `within` ends the call `Indeterminate`, naming the fact, the admin and the Build it last held (attempt,
+/// state, receipts, every failed step with its reason) or how the last read ended.
 pub async fn build_fact(carrier: &BuildCarrier, id: &str, fact: &str, within: Duration, holds: impl Fn(&BuildProjection) -> bool) -> Result<BuildProjection, CallEnd> {
-    let facts = log_fact(carrier, id, fact, within, |facts| projection(facts, id).is_some_and(|p| holds(&p))).await?;
-    Ok(projection(&facts, id).expect("the facts that held the awaited fact fold to the Build"))
+    let at = carrier.fabric_primary().to_string();
+    let read = || async {
+        let facts = log_read(carrier, id).await?;
+        projection(&facts, id).ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} facts of the Build and no acceptance of it", facts.len()) })
+    };
+    let report = |p: &BuildProjection| {
+        let last = p.steps.last().map(|r| format!("{} {} of attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());
+        let failed: Vec<String> = p.steps.iter().filter_map(|r| if let StepOutcome::Failed { reason } = &r.outcome { Some(format!("{} {} of attempt {}: {reason}", r.operation, r.step, r.attempt)) } else { None }).collect();
+        format!("attempt {} state {:?}, {} step receipts, the last {last}; failed {failed:?}", p.attempt, p.state, p.steps.len())
+    };
+    await_fact("build log", &at, &format!("{fact} of Build {id}"), within, read, |p: &BuildProjection| holds(p), report).await
 }
 
 /// Build `id` as the node-admin `carrier` starts at holds it now, as the JSON the view serializes to; a
