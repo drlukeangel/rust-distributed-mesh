@@ -1145,6 +1145,41 @@ mod tests {
         assert!(stores.contains("nodes/mesh2/rows refused 1") && stores.contains(row_a.node_id.as_str()), "the refusal of mesh2.rpc.1's claim names its holder: {stores}");
         eprintln!("span rdm.node_admin.fabric.update.via-round-action trace_id={} {:?}", b.trace_id, b.attributes);
     }
+    /// CONTRACT (node-identity-and-state.md §2.7: "The same MeshId re-claiming its own name, at
+    /// state-commit, on a retry or from a replaced primary, is idempotent and accepted"; R13: the
+    /// fabric-primary writes as the acting primary of a mesh with no primary; R14 item 9: each writer
+    /// publishes what it holds at commit-state): before the fabric's first state-commit the
+    /// fabric-primary (writer A, at CreateMesh) and mesh2's primary (writer B, at its seat) each hold
+    /// mesh2's claim for the same MeshId. A publishes first and writes the row; B's publication finds
+    /// its own mesh's row standing and writes nothing, and names it: its commit-state span counts the
+    /// claim that stands (`stands`) and its stores name `meshes stands 1`. Must NOT happen: B's
+    /// publication of mesh2's row dropped from its record because the row was already there.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_held_claim_the_standing_row_already_holds_is_named_at_publication() {
+        let d = crate::record_store::tempdir("held-claim-stands");
+        let dir = d.join("root");
+        let (pad_a, pad_b) = (crate::record_store::Scratchpad::new(), crate::record_store::Scratchpad::new());
+        let meshes_a = FileMeshStorage::open(&crate::store_root::StoreRoot::held_at(&dir, pad_a.clone()), &IncarnationId::mint()).await.unwrap();
+        let meshes_b = FileMeshStorage::open(&crate::store_root::StoreRoot::held_at(&dir, pad_b.clone()), &IncarnationId::mint()).await.unwrap();
+        let mesh2 = MeshRecord { mesh_id: MeshId::mint(), name: "mesh2".into(), dead: false };
+        assert_eq!(meshes_a.claim_mesh(&mesh2).await, Ok(Ok(MeshClaim::Written { over: None })));
+        assert_eq!(meshes_b.claim_mesh(&mesh2).await, Ok(Ok(MeshClaim::Written { over: None })));
+        let capture = crate::span_capture::Capture::new("i143-3089-held-claim-stands");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let commit = |pad: std::sync::Arc<crate::record_store::Scratchpad>, node: &str| {
+            let node: PathName = node.parse().unwrap();
+            async move { crate::fabric_rounds::RoundActions::commit_state(&crate::fabric_rounds::StorePublication::new(Some(pad), None), &node).await }
+        };
+        commit(pad_a, "mesh1.admin.1").await.unwrap();
+        commit(pad_b, "mesh2.admin.1").await.unwrap();
+        let spans = capture.named("rdm.node_admin.fabric.update.via-round-action");
+        let b = spans.iter().find(|s| s.attributes.get("node").map(String::as_str) == Some("mesh2.admin.1")).unwrap_or_else(|| panic!("writer B's commit-state span: {spans:?}"));
+        assert_eq!(b.attributes.get("stands").map(String::as_str), Some("1"), "B's commit-state counts its claim that stands: {b:?}");
+        assert_eq!(b.attributes.get("stores").map(String::as_str), Some("meshes stands 1"), "B's stores name mesh2's row standing: {b:?}");
+        eprintln!("span rdm.node_admin.fabric.update.via-round-action trace_id={} {:?}", b.trace_id, b.attributes);
+    }
+
     /// CONTRACT (`NodesStorage::release_node_row`: "its row goes when it is `holder`'s ... a row of
     /// another node there (the name was released before and claimed since) is left as it is"; R14 item
     /// 9: each writer publishes what it holds at commit-state): before the fabric's first state-commit
