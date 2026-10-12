@@ -182,3 +182,101 @@ fn a_restarted_bootstrap_admin_opens_its_fabric_from_its_own_row() {
     assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(fabric.as_str()), "{opened}");
     assert_eq!(opened["attributes"]["restart"].as_str(), Some("true"), "{opened}");
 }
+
+/// CONTRACT (R-MN1: "a mesh created again under the same name is a new mesh with a new id"; R-ML2: "a
+/// dead mesh's path.name used again is mesh.create of a new mesh with a new MeshId", "a dead mesh is
+/// never restarted"; states.md: a mesh id is never reissued): a bootstrap node-admin restarted on its
+/// own data dir reads its mesh's row by its mesh's id, the one its own row holds, never by the name
+/// alone. Its mesh removed and a mesh created again under the name (mesh1's row on the store root now
+/// another MeshId's), the restart is refused by name, naming both mesh ids; its own mesh's row Dead,
+/// it is refused by name. Must NOT happen: the restart taking the recreated mesh's id as its own (the
+/// row at the name read as its mesh) and joining it.
+#[test]
+fn a_restarted_admin_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name() {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_restarted_admin_reads_its_mesh_row_by_its_mesh_id");
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = dir.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let data_dir = dir.join("mesh1.admin.1");
+    let run = || {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"));
+        cmd.env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("RDM_DATA_DIR", &data_dir)
+            .env("RDM_STORE_DIR", &store)
+            .env("RDM_EVIDENCE_DIR", &dir)
+            .env("MESH_SPAWN_TYPE", "process")
+            .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0");
+        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rafka-node-admin starts")
+    };
+    struct Reap(u32);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
+        }
+    }
+    let own = data_dir.join("nodes").join("self.json");
+    let own_incarnation = || std::fs::read_to_string(&own).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["record"]["incarnation_id"].as_str().map(str::to_string));
+    let stderr_of = |child: &mut std::process::Child| {
+        let mut err = String::new();
+        std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut err).unwrap();
+        err
+    };
+
+    // Day 0: the admin mints its fabric and mesh1, and writes its own row and mesh1's row.
+    let mut first = run();
+    let reap_first = Reap(first.id());
+    let until = Instant::now() + Duration::from_secs(20);
+    let (fabric, mesh_row) = loop {
+        if let (Some(_), [f]) = (own_incarnation(), fabric_dirs(&store).as_slice()) {
+            let row = store.join(f).join("meshes").join("mesh1.json");
+            if row.exists() {
+                break (f.clone(), row);
+            }
+        }
+        assert!(first.try_wait().unwrap().is_none(), "the Day-0 admin exited");
+        assert!(Instant::now() < until, "the Day-0 admin wrote no own row and mesh row in 20 s");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let day0 = own_incarnation().unwrap();
+    let removed: serde_json::Value = serde_json::from_slice(&std::fs::read(&mesh_row).unwrap()).unwrap();
+    let removed_id = removed["record"]["mesh_id"].as_str().unwrap().to_string();
+    unsafe { libc::kill(first.id() as i32, libc::SIGTERM) };
+    assert!(first.wait().unwrap().success(), "the Day-0 admin's stop");
+    std::mem::forget(reap_first);
+
+    // A restart against `row` on the store root: it must be refused by name before it writes its own
+    // row again (the boot fails at its storage step).
+    let restart = |row: serde_json::Value, what: &str| -> (String, u32) {
+        std::fs::write(&mesh_row, serde_json::to_vec(&row).unwrap()).unwrap();
+        let mut child = run();
+        let pid = child.id();
+        let reap = Reap(pid);
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                std::mem::forget(reap);
+                let err = stderr_of(&mut child);
+                assert!(!status.success(), "{what}: the restart exited {status:?} without a refusal: {err}");
+                return (err, pid);
+            }
+            if own_incarnation().is_some_and(|i| i != day0) {
+                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                let _ = child.wait();
+                std::mem::forget(reap);
+                panic!("{what}: the restart took the row at mesh1 as its mesh and booted (its own row rewritten under a new incarnation): {}", stderr_of(&mut child));
+            }
+            assert!(Instant::now() < until, "{what}: the restart neither refused nor booted in 10 s");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let recreated_id = rafka_node_admin_core::model::MeshId::mint().to_string();
+    let (err, pid) = restart(serde_json::json!({"format": removed["format"], "record": {"mesh_id": recreated_id, "name": "mesh1", "dead": false}}), "mesh1 created again");
+    assert!(err.contains("refusing to start") && err.contains(&removed_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
+    let spans = spans_of(&dir, pid);
+    let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused restart left no storage step: {spans:?}"));
+    println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
+    assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(fabric.as_str()), "{opened}");
+    let (err, _) = restart(serde_json::json!({"format": removed["format"], "record": {"mesh_id": removed_id, "name": "mesh1", "dead": true}}), "mesh1 Dead");
+    assert!(err.contains("refusing to start") && err.contains(&removed_id) && err.contains("Dead"), "the refusal names this admin's mesh as Dead: {err}");
+}
