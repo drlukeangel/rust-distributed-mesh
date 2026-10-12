@@ -104,11 +104,15 @@ impl SpanProcessor for CountingBatchProcessor {
         self.inner.on_start(span, cx);
     }
 
+    /// The span is counted once the inner processor has taken it (queued, or refused because its
+    /// queue is full: a loss the count then names). Counting it before would let a flush begun in
+    /// between owe a span its flush request is queued ahead of, and report it lost.
     fn on_end(&self, span: SpanData) {
-        if span.span_context.is_sampled() {
+        let sampled = span.span_context.is_sampled();
+        self.inner.on_end(span);
+        if sampled {
             self.loss.tally.handed.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner.on_end(span);
     }
 
     /// Blocks until the queue has drained into the exporter and returns the SDK's answer. It has
@@ -208,7 +212,9 @@ impl SpanCapture {
     /// return, returns an error, or leaves a span behind is an `Err` naming which.
     pub fn flush(&self, bound: Duration) -> Result<(), String> {
         // Spans other threads end while the flush runs are not owed by it: only those handed over
-        // before it began.
+        // before it began. A span is counted only once it is queued (`on_end`), so every span
+        // counted here is in the queue ahead of the flush request below, which the queue serves in
+        // order.
         let owed = self.loss.handed();
         let (tx, rx) = std::sync::mpsc::channel();
         let provider = self.provider.clone();
