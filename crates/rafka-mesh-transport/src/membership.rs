@@ -4412,12 +4412,11 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
 }
 
 /// How long a member has gone unheard at `now`: the time since its receipt, a member heard directly
-/// or on the backbone alike. A member known only from forwarded topology never ages (R-G2:
-/// forwarded topology carries topology, never liveness); one held `Leaving` ages from its receipt
-/// however it was heard.
-fn unheard(d: &MeshDigest, at: &Instant, heard: Heard, now: Instant) -> Duration {
+/// or on the backbone alike. A member known only from forwarded topology never ages, whatever status
+/// it is listed with (R-G2: forwarded topology carries topology, never liveness).
+fn unheard(at: &Instant, heard: Heard, now: Instant) -> Duration {
     match heard {
-        Heard::Topology if d.status != rafka_mesh_entity::MemberStatus::Leaving => Duration::ZERO,
+        Heard::Topology => Duration::ZERO,
         _ => now.saturating_duration_since(*at),
     }
 }
@@ -5726,7 +5725,7 @@ impl DigestBook {
     /// is current like any member (gossip.md §6.1: a stopped status by itself and silence are not
     /// departure proof), and every aggregate carries it as held.
     pub(crate) fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
-        self.inner.lock().unwrap().values().filter(|(d, at, fw)| unheard(d, at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
+        self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
     }
 
     /// The digests this node received straight from their members (their own word, on the channel
@@ -5743,7 +5742,7 @@ impl DigestBook {
 
     /// The member's latest digest and how long it has gone unheard at `now`.
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, now)))
+        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)))
     }
 
     /// Every digest held.
@@ -5788,7 +5787,7 @@ impl DigestBook {
 
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
     pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, now))).collect()
+        self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect()
     }
 }
 
