@@ -405,6 +405,9 @@ impl rafka_node_admin_core::build_state::BuildStateAdapter for RefusingAccept {
     async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
         self.0.recovery_of(path, node_id, incarnation).await
     }
+    async fn mesh_deleted_of(&self, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.mesh_deleted_of(node_id, incarnation).await
+    }
     async fn forget(&self, b: &BuildId) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
         self.0.forget(b).await
     }

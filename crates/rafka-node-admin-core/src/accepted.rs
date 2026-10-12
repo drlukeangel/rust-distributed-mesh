@@ -375,7 +375,7 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 /// what observed reality already satisfies is not planned. Creates come before retirements, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
-    plan_with(topology, observed, action, false, ReplaceProgress::default())
+    plan_with(topology, observed, action, false, ReplaceProgress::default(), &BTreeSet::new())
 }
 
 /// [`plan`] for an attempt of the Build's `reason`: a requested replacement (`Replace`) of a birth
@@ -383,7 +383,7 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 /// resolves from the durable records.
 #[cfg(test)]
 pub(crate) fn plan_for(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, reason: crate::build_state::AttemptReason) -> BuildPlan {
-    plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::default())
+    plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::default(), &BTreeSet::new())
 }
 
 /// How far the `replace-node:<path>` operation of a Replace attempt's exact birth got, from the
@@ -426,7 +426,9 @@ impl ReplaceProgress {
             let (operation, first) = match action {
                 AttemptAction::Drain { .. } => (format!("drain-node:{path}"), "DrainNode"),
                 AttemptAction::Start { .. } => (format!("start-node:{path}"), "StartNode"),
-                AttemptAction::Delete { .. } => (format!("delete-node:{path}"), "NodeDeleting"),
+                AttemptAction::Delete { .. } if path.old => (format!("delete-node:{path}"), "NodeDeleting"),
+                // The last admin of a deleted mesh: the ordinary node.delete (`plan_with`).
+                AttemptAction::Delete { .. } => (format!("retire-node:{path}"), "NodeDeleting"),
                 _ => (format!("stop-node:{path}"), "StopNode"),
             };
             let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action));
@@ -503,10 +505,25 @@ pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName
 
 /// [`plan`] for `build`'s current attempt, given what its receipts say already ran.
 pub(crate) fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
-    plan_with(&build.topology, observed, build.action.as_ref(), build.reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::of(build))
+    plan_with(&build.topology, observed, build.action.as_ref(), build.reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::of(build), &open_mesh_deletes(build, observed))
 }
 
-fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, decommission_unheard: bool, replace_progress: ReplaceProgress) -> BuildPlan {
+/// The meshes, by name, whose mesh.delete `build` admitted (its `AcceptedRoster` receipt) and has not
+/// completed (no `MeshDeleted` or `MeshLeft` receipt): a deleted mesh among them is still the Build's
+/// to resume from its receipts, a deleted mesh outside them is done.
+fn open_mesh_deletes(build: &crate::build_state::BuildProjection, observed: &Topology) -> BTreeSet<String> {
+    observed
+        .meshes
+        .iter()
+        .filter_map(|m| {
+            let op = crate::mesh_leave::operation(m.id.as_ref()?);
+            let open = crate::mesh_leave::admitted_of(&build.steps, &op).is_some() && matches!(crate::mesh_leave::owner_resume(&build.steps, &op), Ok(crate::mesh_leave::OwnerResume::Lead));
+            open.then(|| m.name.clone())
+        })
+        .collect()
+}
+
+fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, decommission_unheard: bool, replace_progress: ReplaceProgress, open_deletes: &BTreeSet<String>) -> BuildPlan {
     let mut ops = Vec::new();
     // A standalone drain or stop is its one operation and nothing else: the topology is unchanged,
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
@@ -518,15 +535,18 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     {
         // A delete of a parked `<path>.old` is admitted from the record the fabric-primary holds of
         // that exact birth, never from a view (only its replace's executor's view names the path):
-        // it is planned until its `Complete` names the birth.
-        let deleting = matches!(action, Some(AttemptAction::Delete { .. }));
-        let held = deleting || observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
+        // it is planned until its `Complete` names the birth. A delete of the last admin of a deleted
+        // mesh (mesh-delete.md step 7) is the ordinary node.delete of that exact birth, planned while
+        // the view holds it.
+        let parked_old = matches!(action, Some(AttemptAction::Delete { .. })) && path.old;
+        let held = parked_old || observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
         if !replace_progress.finished && (held || replace_progress.started) {
             let (node, from_incarnation) = (path.clone(), from_incarnation.clone());
             ops.push(match action {
                 Some(AttemptAction::Drain { .. }) => BuildOperation::DrainNode { node, from_incarnation },
                 Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, from_incarnation },
-                Some(AttemptAction::Delete { .. }) => BuildOperation::DeleteNode { node, from_incarnation },
+                Some(AttemptAction::Delete { .. }) if parked_old => BuildOperation::DeleteNode { node, from_incarnation },
+                Some(AttemptAction::Delete { .. }) => BuildOperation::RetireNode { node, exited: None },
                 _ => BuildOperation::StopNode { node, from_incarnation },
             });
         }
@@ -620,7 +640,10 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     for p in extra {
         ops.push(BuildOperation::RetireNode { node: p.clone(), exited: None });
     }
-    let mut gone: Vec<&String> = observed.meshes.iter().map(|m| &m.name).filter(|m| !topology.meshes.contains_key(*m)).collect();
+    // A deleted mesh (its row Dead at mesh.deleted) is done: its mesh.delete ended, and its last
+    // admin's end is a separate node.delete (mesh-delete.md steps 5-7), never planned from here. Only
+    // the Build that admitted its mesh.delete and holds no completion of it plans it again, to resume.
+    let mut gone: Vec<&String> = observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead || open_deletes.contains(&m.name)).map(|m| &m.name).filter(|m| !topology.meshes.contains_key(*m)).collect();
     gone.sort();
     for m in gone {
         // A mesh whose id no member has stated has no operation key: it is named, and the Build
@@ -902,6 +925,56 @@ mod tests {
         let id2 = MeshId::mint();
         o2.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
         assert_eq!(plan(&cur, &o2, None).operations, vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2 }]);
+    }
+
+    /// CONTRACT (mesh-delete.md steps 5-7): a deleted mesh (its row Dead at mesh.deleted) whose last
+    /// admin lives on is done for every Build: the plan names nothing of it, so no later Build runs
+    /// its mesh.delete again or deletes its last admin unasked. Only the Build that admitted its
+    /// mesh.delete and holds no completion of it plans it again, to resume from the receipts; a
+    /// deleting mesh (not yet Dead) is planned as before. Must NOT happen: a later Build re-running
+    /// mesh.delete on a deleted mesh, or retiring its last admin, whose end is a separate node.delete.
+    #[test]
+    fn a_deleted_mesh_is_planned_only_by_the_build_that_admitted_its_mesh_delete_and_holds_no_completion() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let id2 = MeshId::mint();
+        let mut o = mn();
+        o.nodes.push(n("mesh2.admin.1", NodeStatus::ReadyForTraffic, true));
+        o.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Dead });
+        assert_eq!(plan(&cur, &o, None).operations, vec![], "a deleted mesh with its last admin alive is planned by no Build");
+        let open: BTreeSet<String> = ["mesh2".to_string()].into();
+        assert_eq!(
+            plan_with(&cur, &o, None, false, ReplaceProgress::default(), &open).operations,
+            vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2.clone() }],
+            "the Build that admitted its mesh.delete and holds no completion resumes it"
+        );
+        o.meshes.iter_mut().filter(|m| m.name == "mesh2").for_each(|m| m.status = ScopeStatus::Leaving);
+        assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2 }], "a deleting mesh is planned as before");
+    }
+
+    /// CONTRACT (mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): the
+    /// fenced `Delete` action on a birth of a deleted mesh (no `.old` path: the topology names no
+    /// such mesh) is the ordinary node.delete of that exact birth, `RetireNode`, planned while the
+    /// view holds it, and nothing once it left or its `Complete` is receipted; a `Delete` of a parked
+    /// `.old` stays `DeleteNode`. Must NOT happen: the last admin of a deleted mesh deleted through a
+    /// copy that skips its stop (`DeleteNode` sends no command to a live process).
+    #[test]
+    fn a_delete_of_a_deleted_meshs_last_admin_is_the_ordinary_node_delete() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let mut o = mn();
+        let last = n("mesh2.admin.1", NodeStatus::ReadyForTraffic, true);
+        let birth = last.incarnation_id.clone().unwrap();
+        o.nodes.push(last);
+        o.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Dead });
+        let path: PathName = "mesh2.admin.1".parse().unwrap();
+        let delete = AttemptAction::Delete { path: path.clone(), from_incarnation: birth.clone() };
+        assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![BuildOperation::RetireNode { node: path.clone(), exited: None }]);
+        let finished = ReplaceProgress { started: true, finished: true, ..ReplaceProgress::default() };
+        assert_eq!(plan_with(&cur, &o, Some(&delete), false, finished, &BTreeSet::new()).operations, vec![], "nothing once its Complete names the birth");
+        o.nodes.retain(|n| n.name != path);
+        assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![], "nothing once the view no longer holds it");
+        let old: PathName = "mesh1.rpc.3.old".parse().unwrap();
+        let parked = AttemptAction::Delete { path: old.clone(), from_incarnation: birth.clone() };
+        assert_eq!(plan(&cur, &o, Some(&parked)).operations, vec![BuildOperation::DeleteNode { node: old, from_incarnation: birth }]);
     }
 
     /// CONTRACT (node-decommission.md, fabric-node-lifecycle.md 6.9 Effect): a stopped node (Leaving,

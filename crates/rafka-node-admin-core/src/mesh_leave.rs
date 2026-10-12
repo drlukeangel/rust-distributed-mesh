@@ -1,17 +1,20 @@
-//! The mesh-leave workflow's shared parts (mesh-leave.md; node-rpc-envelope.md, "Mesh leave
+//! The mesh-delete workflow's shared parts (mesh-delete.md; node-rpc-envelope.md, "Mesh delete
 //! command pair").
 //!
-//! The fabric-primary owns the outer workflow `shutdown-mesh:<mesh_id>`. The leaving mesh's primary
+//! The fabric-primary owns the outer workflow `shutdown-mesh:<mesh_id>`. The deleting mesh's primary
 //! drains and stops every other member (ordinary nodes first, the other node-admins after, each
 //! tier a set of parallel member workflows), records one exit manifest, hands it to the
-//! fabric-primary (`MeshLeave`) and keeps running. The fabric-primary validates the manifest
-//! against the roster it captured at admission, drains and stops the final primary itself, and only
-//! with every exact exit proven records `MeshLeft`.
+//! fabric-primary (`MeshLeave`, mesh.deleted) and keeps running. The fabric-primary validates the
+//! manifest against the roster it captured at admission and records mesh.deleted's completion
+//! (`MeshDeleted`): the mesh.delete ends there, its primary alive. The primary's end is a separate
+//! node.delete with the fabric-primary as executor; once that node.delete holds the final birth's
+//! exact exit proof, every birth of the mesh is proven exited and the fabric-primary records
+//! `MeshLeft` and publishes mesh-left (R-MD1 items 2-3).
 //!
-//! The manifest is one immutable step receipt of the accepted Build (`OtherMembersExited` at the
-//! mesh-primary, `MeshLeft` at the fabric-primary) under the outer operation; the `receipt_manifest`
-//! string of the messages is its reference. The fabric-primary reads it with a Build-facts read
-//! (`0x1F`) from the sender, never from a reference alone.
+//! Each manifest is one immutable step receipt of the accepted Build under the outer operation
+//! (`OtherMembersExited` at the mesh-primary; `MeshDeleted` and `MeshLeft` at the fabric-primary);
+//! the `receipt_manifest` string of the messages is its reference. The fabric-primary reads the
+//! mesh-primary's with a Build-facts read (`0x1F`) from the sender, never from a reference alone.
 
 use crate::build::BuildId;
 use crate::build_state::{BuildFact, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
@@ -27,7 +30,12 @@ use tokio::sync::watch;
 
 /// The step at the leaving mesh-primary that records every other member's exit.
 pub const STEP_OTHER_MEMBERS_EXITED: &str = "OtherMembersExited";
-/// The step at the fabric-primary that records the complete departure.
+/// The step at the fabric-primary that records mesh.deleted (mesh-delete.md step 5): the validated
+/// handoff's manifest, every birth of the mesh but its final primary, which is still running.
+pub const STEP_MESH_DELETED: &str = "MeshDeleted";
+/// The step at the fabric-primary that records the complete departure: every birth of the mesh, the
+/// final primary included, proven exited (R-MD1 item 2), once the final primary's own node.delete
+/// holds its exact exit proof.
 pub const STEP_MESH_LEFT: &str = "MeshLeft";
 /// The step at the fabric-primary that records the accepted roster it captured at admission
 /// (mesh-leave.md step 1).
@@ -86,8 +94,8 @@ impl RosterBirth {
 }
 
 /// The exit manifest: the accepted roster, and the provider's terminal receipt of every birth that
-/// exited. `OtherMembersExited` covers every birth but the final primary (whose exact runtime is
-/// named, still running); `MeshLeft` covers every birth.
+/// exited. `OtherMembersExited` and `MeshDeleted` cover every birth but the final primary (whose
+/// exact runtime is named, still running); `MeshLeft` covers every birth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExitManifest {
     /// The mesh's minted id.
@@ -96,8 +104,8 @@ pub struct ExitManifest {
     pub roster: Vec<RosterBirth>,
     /// The final mesh-primary.
     pub final_primary: RosterBirth,
-    /// The final primary's exact runtime by fingerprint, when `OtherMembersExited` names it still
-    /// running; `None` in `MeshLeft`, whose receipts include the final primary's exit.
+    /// The final primary's exact runtime by fingerprint, when `OtherMembersExited` or `MeshDeleted`
+    /// names it still running; `None` in `MeshLeft`, whose receipts include the final primary's exit.
     pub final_runtime: Option<RuntimeProof>,
     /// One terminal receipt per birth that exited.
     pub receipts: Vec<TerminalReceipt>,
@@ -208,24 +216,13 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[Rost
 pub enum OwnerResume {
     /// The `MeshLeft` receipt is recorded: the departure is the record.
     Left,
-    /// The final primary's exact exit is recorded (the owner stopped it, then `MeshLeft` was not
-    /// recorded): the complete proof set, from the receipts, that `MeshLeft` records. Nothing is
-    /// called: the final primary is gone and sends nothing.
-    FinalExited(ExitManifest),
-    /// Nothing recorded settles the leave: the owner leads it (admission, `LeaveMesh`, the
-    /// handoff, the final primary's stop).
+    /// mesh.deleted's completion receipt is recorded (`MeshDeleted`, its validated manifest): the
+    /// mesh.delete ended, its final primary alive. Nothing is called: its end is a separate
+    /// node.delete, and mesh-left follows that node.delete's exit proof.
+    Deleted(ExitManifest),
+    /// Nothing recorded settles the mesh.delete: the owner leads it (admission, `LeaveMesh`, the
+    /// handoff, the completion).
     Lead,
-}
-
-impl OwnerResume {
-    /// The complete proof set this resume records as `MeshLeft` without calling the mesh, when it
-    /// holds one.
-    pub fn mesh_left_manifest(&self) -> Option<&ExitManifest> {
-        match self {
-            OwnerResume::FinalExited(all) => Some(all),
-            OwnerResume::Left | OwnerResume::Lead => None,
-        }
-    }
 }
 
 /// [`OwnerResume`] for `operation` over `steps`.
@@ -233,42 +230,63 @@ pub fn owner_resume(steps: &[BuildStepReceipt], operation: &str) -> Result<Owner
     if steps.iter().any(|r| r.operation == operation && r.step == STEP_MESH_LEFT && r.outcome == StepOutcome::Complete) {
         return Ok(OwnerResume::Left);
     }
-    let Some(admitted) = admitted_of(steps, operation).transpose()? else {
-        return Ok(OwnerResume::Lead);
-    };
-    let last = &admitted.final_primary;
-    let Some(terminal) = exit_receipts(steps, operation, std::slice::from_ref(last)).remove(&(last.node_id.clone(), last.incarnation_id.clone())) else {
-        return Ok(OwnerResume::Lead);
-    };
-    // The final primary's exit with no exit manifest naming it as final primary is a primary lost
-    // mid-leave, never a stop by this owner: the resume amends the roster (mesh-leave.md, "Resume
-    // after the primary's loss").
-    let Some(manifest_row) = steps
-        .iter()
-        .filter(|r| r.operation == operation && r.step == STEP_OTHER_MEMBERS_EXITED && r.outcome == StepOutcome::Complete)
-        .filter(|r| r.output.clone().and_then(|v| serde_json::from_value::<ExitManifest>(v).ok()).is_some_and(|m| &m.final_primary == last))
-        .max_by_key(|r| r.attempt)
-    else {
-        return Ok(OwnerResume::Lead);
-    };
-    // The final primary's exact exit is recorded: the rest of the proof is in this log or nowhere.
+    match completion_of(steps, operation) {
+        Some(manifest) => Ok(OwnerResume::Deleted(manifest?)),
+        None => Ok(OwnerResume::Lead),
+    }
+}
+
+/// mesh.deleted's completion receipt (`MeshDeleted`) of `operation` in `steps`, decoded: `None` when
+/// none is recorded, `Err` naming the receipt when its manifest does not decode.
+pub fn completion_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Result<ExitManifest, String>> {
+    let r = steps.iter().filter(|r| r.operation == operation && r.step == STEP_MESH_DELETED && r.outcome == StepOutcome::Complete).min_by_key(|r| r.attempt)?;
+    Some(r.output.clone().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| format!("{operation}: the {STEP_MESH_DELETED} receipt (attempt {}) holds no readable manifest", r.attempt)))
+}
+
+/// Record mesh.deleted's completion (mesh-delete.md step 5) for the mesh.delete `key`: the validated
+/// manifest `manifest` (every birth of the mesh but its final primary) as the `MeshDeleted` step
+/// receipt, by `executor`, the fabric-primary that owns the mesh.delete. One
+/// `rdm.node_admin.mesh.update.via-mesh-deleted-receipt` span.
+pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, manifest: &ExitManifest) -> Result<(), String> {
+    builds
+        .append_step_receipt(&BuildStepReceipt {
+            build_id: BuildId(key.build_id.clone()),
+            attempt: key.attempt,
+            operation: key.operation.clone(),
+            step: STEP_MESH_DELETED.into(),
+            outcome: StepOutcome::Complete,
+            output: serde_json::to_value(manifest).ok(),
+            executor: Some(executor.to_string()),
+        })
+        .await
+        .map_err(|e| format!("{}: the {STEP_MESH_DELETED} receipt could not be recorded: {e}", key.operation))?;
+    tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-deleted-receipt", node = %executor, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len(), final_primary = %manifest.final_primary.node)
+        .in_scope(|| tracing::info!("mesh.deleted: every birth but the final primary is proven exited; the mesh.delete ends with its primary alive, whose end is its own node.delete"));
+    Ok(())
+}
+
+/// mesh-left's complete proof set (R-MD1 item 2: "MeshLeft still requires complete exact-birth
+/// terminal coverage"): mesh.deleted's validated manifest `completion` (every birth but the final
+/// primary) and `terminal`, the provider's exact Exited of the final primary that its node.delete
+/// proved. `terminal` must name the completion's final primary and the exact runtime it named still
+/// running; the set must then cover the roster exactly, the final primary included. Anything else
+/// refuses by name, the field and both values.
+pub fn mesh_left_proof(completion: &ExitManifest, terminal: &TerminalReceipt) -> Result<ExitManifest, String> {
+    let last = &completion.final_primary;
     let named = format!("{} {}", last.node, last.incarnation_id);
-    if terminal.runtime.as_ref() != Some(&admitted.final_runtime) {
-        return Err(format!("{operation}: the final primary {named}'s Exited receipt names the runtime {:?}, not the one admitted for it {:?}", terminal.runtime, admitted.final_runtime));
+    if terminal.node_id != last.node_id || terminal.incarnation_id != last.incarnation_id {
+        return Err(format!("final_primary: expected {named}, the Exited receipt names {} {}", terminal.node, terminal.incarnation_id));
     }
-    let manifest: ExitManifest = manifest_row.output.clone().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| format!("{operation}: the {STEP_OTHER_MEMBERS_EXITED} manifest held in this Build's facts does not decode: MeshLeft cannot be recorded"))?;
-    if manifest.final_runtime.as_ref() != Some(&admitted.final_runtime) {
-        return Err(format!("{operation}: the {STEP_OTHER_MEMBERS_EXITED} manifest names the final runtime {:?}, not the one admitted for it {:?}", manifest.final_runtime, admitted.final_runtime));
+    if completion.final_runtime.is_none() || terminal.runtime != completion.final_runtime {
+        return Err(format!("final_runtime: expected {:?}, the Exited receipt of {named} names {:?}", completion.final_runtime, terminal.runtime));
     }
-    let mut all = manifest;
+    let mut all = completion.clone();
     all.final_runtime = None;
-    all.receipts.push(terminal);
-    if let Some((field, expected, reported)) = first_mismatch(&all, &admitted.roster, last, true) {
-        return Err(format!("{operation}: the recorded proof set is not complete: {field}: expected {expected}, reported {reported}"));
+    all.receipts.push(terminal.clone());
+    if let Some((field, expected, reported)) = first_mismatch(&all, &completion.roster, last, true) {
+        return Err(format!("{field}: expected {expected}, reported {reported}"));
     }
-    tracing::info_span!("rdm.node_admin.mesh.resolve.via-recorded-final-exit", operation = %operation, final_primary = %named, receipts = all.receipts.len(), roster = admitted.roster.len(), amendments = admitted.amendments.len())
-        .in_scope(|| tracing::info!("the final primary's exact exit and every other member's are recorded: MeshLeft is recorded from the receipts, nothing is called"));
-    Ok(OwnerResume::FinalExited(all))
+    Ok(all)
 }
 
 /// The roster row recorded under `step` (`AcceptedRoster`, `LeavingRoster`) for `operation`, from
@@ -791,8 +809,8 @@ where
     Ok(manifest)
 }
 
-/// A roster birth's row `Deleted` on its exact Exited receipt (mesh-leave.md step 3 at the
-/// mesh-primary; step 7 for the final primary at the fabric-primary): written by `rows`, the
+/// A roster birth's row `Deleted` on its exact Exited receipt (mesh-delete.md step 3, at the
+/// mesh-primary; the final primary's is its own node.delete's, step 7): written by `rows`, the
 /// writer of the mesh's rows, from the record `records` hold of the exact birth, else from the
 /// record the writer holds of the node's row (a departed birth the view no longer names). A
 /// refusal names the birth and the writer's reason; `executor` is the admin writing.
@@ -810,22 +828,20 @@ pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, execut
     written.map_err(|e| format!("{} {}'s row is not written Deleted: {e}", b.node, b.incarnation_id))
 }
 
-/// mesh-left at the fabric-primary (mesh-leave.md step 7), after exact coverage and before the
-/// `MeshLeft` receipt: "At mesh-left the fabric-primary writes the final primary's row Deleted, as
-/// acting primary of a mesh that has none left, and the mesh row Dead". `rows` is the
-/// fabric-primary's writer, `records` its view's records of the mesh, `final_primary` the exact
-/// final birth; the Dead row is committed through `status` and held in `declared`.
+/// mesh-left at the fabric-primary, after exact coverage and before the `MeshLeft` receipt: the
+/// final birth's node.delete wrote its row `Deleted` and proved its exit, so every birth of the mesh
+/// is proven exited. `rows` is the fabric-primary's writer, writing as acting primary of a mesh that
+/// has none left; `proof` the complete proof set; the mesh row Dead is ensured through `status` and
+/// held in `declared` (R-MD1 item 2).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, records: &[Node], final_primary: &RosterBirth, proof: &[TerminalReceipt]) -> Result<(), String> {
-    birth_row_deleted(rows, executor, &key.operation, records, final_primary).await?;
+pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
     drop_departed_contacts(rows, executor, key, mesh, proof).await?;
     ensure_mesh_dead(status, declared, executor, key, mesh).await
 }
 
 /// mesh-left drops the contact of every birth the complete proof set `proof` names from the removed
 /// mesh's contacts (R-MN1; R14 item 2: the contacts are the mesh primary's rows, written here by the
-/// fabric-primary as acting primary of a mesh with none left, mesh-leave.md step 7): a departed
+/// fabric-primary as acting primary of a mesh with none left): a departed
 /// birth never answers, and a maker's stored map never hands it to a mesh created again under the
 /// name (`dropped_contacts`, as a seated primary drops a departed member's). A blind removal of each
 /// birth's own key; one `rdm.node_admin.node.remove.via-mesh-left-contact` span names them, and a
@@ -849,11 +865,11 @@ async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, execu
     Ok(())
 }
 
-/// mesh-left's ensure-Dead (R-MD1 = A): the mesh row Dead among the leaving mesh's own status rows
+/// mesh-left's ensure-Dead (R-MD1 = A): the mesh row Dead among the deleted mesh's own status rows
 /// (`status/<mesh>/`), read by its key. The row held is the mesh-primary's commit at mesh.deleted
 /// (or this fabric-primary's earlier write): AlreadyApplied, nothing written, no second transition.
 /// No row held means no primary survived to write it: this fabric-primary puts it as acting primary
-/// of a mesh with none left (mesh-leave.md step 7) and records it as applied. One
+/// of a mesh with none left and records it as applied. One
 /// `rdm.node_admin.mesh.update.via-dead-row` span names the outcome and who wrote the row.
 async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str) -> Result<(), String> {
     let dead = rafka_node_rpc_contract::status::MeshState::Dead;
@@ -975,6 +991,27 @@ pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts
         }),
         Err(e) => Err(format!("{reader}: the manifest {receipt_manifest} could not be read from {sender}: {e}")),
     }
+}
+
+/// The answer to a `MeshLeave` for `key` that holds no open leave, from the fabric-primary's own
+/// Build facts `steps`: once mesh.deleted's completion receipt is recorded, a repeated handoff of the
+/// same final birth (`final_node_id`, `final_incarnation`) is `AlreadyApplied` and records nothing; a
+/// handoff naming another birth is refused by name, both births named. `None` when no completion is
+/// recorded: the handoff matches no open mesh.delete.
+pub fn replayed_handoff(steps: &[BuildStepReceipt], key: &LeaveKey, final_node_id: &NodeId, final_incarnation: &str) -> Option<StatusReply> {
+    let completion = match completion_of(steps, &key.operation)? {
+        Ok(m) => m,
+        Err(reason) => return Some(StatusReply::NotReady { reason }),
+    };
+    let last = &completion.final_primary;
+    let reply = if last.node_id == final_node_id.as_str() && last.incarnation_id == final_incarnation {
+        StatusReply::AlreadyApplied
+    } else {
+        StatusReply::RejectedUnmatchedCompletion { field: "final_primary".into(), expected: format!("{} {}", last.node_id, last.incarnation_id), reported: format!("{final_node_id} {final_incarnation}") }
+    };
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-handoff-replayed", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", last.node, last.incarnation_id), outcome = reply.name())
+        .in_scope(|| tracing::info!("a handoff after mesh.deleted's completion receipt: answered from the receipt, nothing is recorded again"));
+    Some(reply)
 }
 
 /// The key of one open mesh leave at the fabric-primary.
@@ -1221,14 +1258,19 @@ where
     }
 }
 
-/// What serves `LeaveMesh` (at the leaving mesh's primary) and `MeshLeave` (at the
-/// fabric-primary); the status door hands each to it.
+/// What serves `LeaveMesh` (at the deleting mesh's primary) and `MeshLeave` (at the
+/// fabric-primary); the status door hands each to it. The executor's lifecycle hooks hand it every
+/// birth they publish deleted, so the fabric-primary's mesh.delete observes the final birth's exit
+/// proof (mesh-left), while node.delete stays the ordinary workflow it is.
 #[async_trait::async_trait]
 pub trait MeshLeaver: Send + Sync {
     /// `LeaveMesh` from `sender`: admit and run the member workflows.
     async fn leave_mesh(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
     /// `MeshLeave` from `sender`: validate the handoff.
     async fn mesh_leave(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
+    /// This admin, as an executor, published `op`'s birth deleted (NodeDeleted, from the provider's
+    /// exact exit proof).
+    async fn birth_deleted(&self, _op: &rafka_mesh_entity::LifecycleOp) {}
 }
 
 /// The door a running admin fills once its runner exists.

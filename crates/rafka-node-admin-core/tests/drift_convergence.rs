@@ -1026,6 +1026,9 @@ mod one_attempt_number {
         async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {
             self.inner.recovery_of(path, node_id, incarnation).await
         }
+        async fn mesh_deleted_of(&self, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {
+            self.inner.mesh_deleted_of(node_id, incarnation).await
+        }
         async fn forget(&self, b: &BuildId) -> Result<(), BuildStateError> {
             self.inner.forget(b).await
         }
@@ -1524,23 +1527,24 @@ async fn a_birth_whose_retirement_the_build_receipted_is_not_surplus() {
     }
 }
 
-/// CONTRACT: a removed mesh whose shutdown ended incomplete is resumed from evidence. The accepted
-/// Build's topology no longer names the leaving mesh (the one without the fabric seat), its attempt
-/// failed (the leaving primary's member workflows were incomplete), and the view still holds that
-/// mesh's births live (an incomplete leave leaves at least its final primary running and live).
-/// With no `MeshLeft` receipt under `shutdown-mesh:<mesh id>` the fabric-primary opens the next
-/// attempt of the same Build, with no action, and that attempt's plan is the mesh's shutdown again; once `MeshLeft` is recorded it opens
-/// nothing (mesh-leave.md, "Failure/certainty behavior": the workflow stays incomplete, resumed
-/// from its receipts).
+/// CONTRACT: a removed mesh whose mesh.delete ended incomplete is resumed from evidence. The accepted
+/// Build's topology no longer names the deleting mesh (the one without the fabric seat), its attempt
+/// failed (the deleting primary's member workflows were incomplete), and the view still holds that
+/// mesh's births live. With no completion receipt under `shutdown-mesh:<mesh id>` the fabric-primary
+/// opens the next attempt of the same Build, with no action, and that attempt's plan is the mesh's
+/// delete again; once mesh.deleted's completion (`MeshDeleted`) or `MeshLeft` is recorded it opens
+/// nothing (mesh-delete.md, "Failure and receipts": the workflow stays incomplete, resumed from its
+/// receipts; steps 5-7: the mesh.delete ends at mesh.deleted, its last admin alive).
 #[test]
-fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again() {
+fn a_removed_mesh_still_live_with_no_completion_receipt_opens_its_mesh_delete_again() {
     let cap = crate::mesh_leave_resume::capture();
     let trace_id = cap.run(async {
     let root = tracing::info_span!("cell.mesh-leave-reopen");
     let trace_id = crate::mesh_leave_resume::trace_id(&root);
     let _in_root = root.enter();
     use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, StepOutcome};
-    for left in [false, true] {
+    for settled in [None, Some(rafka_node_admin_core::mesh_leave::STEP_MESH_DELETED), Some(rafka_node_admin_core::mesh_leave::STEP_MESH_LEFT)] {
+        let left = settled.is_some();
         let e = estate().await;
         let fp = e.fabric_primary().await;
         // The leaving mesh is the one that does not hold the fabric seat (the seat is handed over first).
@@ -1552,9 +1556,13 @@ fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again(
         e.builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: fp.clone() }).await.unwrap();
         let leaving_id = e.view.read().await.meshes.iter().find(|m| m.name == leaving).and_then(|m| m.id.clone()).unwrap();
         let outer = rafka_node_admin_core::mesh_leave::operation(&leaving_id);
-        if left {
+        if let Some(step) = settled {
+            // The completion's manifest: every birth but the final primary, the one the drift's
+            // resume would read.
+            let births: Vec<rafka_node_admin_core::mesh_leave::RosterBirth> = e.view.read().await.nodes.iter().filter(|n| n.mesh == leaving).map(|n| rafka_node_admin_core::mesh_leave::RosterBirth::of(n).unwrap()).collect();
+            let manifest = rafka_node_admin_core::mesh_leave::ExitManifest { mesh_id: leaving_id.to_string(), roster: births.clone(), final_primary: births[0].clone(), final_runtime: None, receipts: Vec::new() };
             e.builds
-                .append_step_receipt(&BuildStepReceipt { build_id: build_id.clone(), attempt: 1, operation: outer.clone(), step: rafka_node_admin_core::mesh_leave::STEP_MESH_LEFT.into(), outcome: StepOutcome::Complete, output: None, executor: Some(fp.clone()) })
+                .append_step_receipt(&BuildStepReceipt { build_id: build_id.clone(), attempt: 1, operation: outer.clone(), step: step.into(), outcome: StepOutcome::Complete, output: serde_json::to_value(&manifest).ok(), executor: Some(fp.clone()) })
                 .await
                 .unwrap();
         }
@@ -1565,10 +1573,10 @@ fn a_removed_mesh_still_live_with_no_mesh_left_receipt_opens_its_shutdown_again(
         e.accepted.point(&build_id, 1, "test").await.unwrap();
         let opened = e.drift().await;
         if left {
-            assert_eq!(opened, None, "a mesh whose MeshLeft is recorded has left: nothing is opened");
+            assert_eq!(opened, None, "a mesh.delete whose {settled:?} is recorded ended: nothing is opened");
             continue;
         }
-        assert_eq!(opened, Some((build_id.clone(), 2)), "the removed mesh still live with no MeshLeft opens the next attempt of the same Build");
+        assert_eq!(opened, Some((build_id.clone(), 2)), "the removed mesh still live with no completion opens the next attempt of the same Build");
         let current = e.accepted.current(&*e.builds).await.unwrap();
         assert_eq!(current.state, rafka_node_admin_core::build_state::BuildState::Pending, "attempt 2 is open to be claimed");
         let view = e.view.read().await.clone();
@@ -1737,13 +1745,13 @@ fn a_resumed_leave_that_fails_with_nothing_changed_is_not_opened_again() {
     assert!(named.iter().any(|s| s["attributes"]["failed_attempt"] == "2" && s["attributes"]["scope"].as_str().is_some_and(|x| x.contains("shutdown-mesh:"))), "the unchanged pass names the failed attempt and the inputs it decided on: {named:?}");
 }
 
-/// CONTRACT: a removed mesh whose final primary's exact exit is recorded, but whose `MeshLeft` is
-/// not (the attempt failed after the owner's stop of the final primary), is resumed from its
-/// receipts although the view holds no birth of it live: the fabric-primary opens the next attempt
-/// of the same Build with no action, and that attempt's plan is the mesh's shutdown, which records
-/// `MeshLeft` from the receipts (`mesh_leave::owner_resume`).
+/// CONTRACT: a removed mesh whose final primary was lost after its members exited and before
+/// mesh.deleted's completion (its exact Exited recorded as its roster receipt, R11 step 1) is resumed
+/// from its receipts although the view holds no birth of it live: the fabric-primary opens the next
+/// attempt of the same Build with no action, and that attempt's plan is the mesh's delete, which the
+/// resume finishes under the amended primary (mesh-delete.md, "Resume after the primary's loss").
 #[test]
-fn a_removed_mesh_whose_final_primary_exited_without_mesh_left_opens_its_shutdown_again() {
+fn a_removed_mesh_whose_final_primary_was_lost_before_mesh_deleted_opens_its_mesh_delete_again() {
     use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, StepOutcome};
     use rafka_node_admin_core::deployment::pipeline::{RetireStep, RuntimeProof, TerminalReceipt};
     use rafka_node_admin_core::mesh_leave::{member_operation, operation, ExitManifest, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_OTHER_MEMBERS_EXITED};
@@ -1785,7 +1793,7 @@ fn a_removed_mesh_whose_final_primary_exited_without_mesh_left_opens_its_shutdow
             e.builds.append_step_receipt(&r).await.unwrap();
         }
         e.builds
-            .append_attempt_receipt(&BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: format!("{outer}: the MeshLeft receipt could not be recorded") } })
+            .append_attempt_receipt(&BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: format!("{outer}: the final primary was lost before its handoff") } })
             .await
             .unwrap();
         e.accepted.point(&build_id, 1, "test").await.unwrap();
@@ -1796,7 +1804,7 @@ fn a_removed_mesh_whose_final_primary_exited_without_mesh_left_opens_its_shutdow
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
-    assert_eq!(opened, Some((build_id, 2)), "the recorded final exit with no MeshLeft opens the next attempt of the same Build");
+    assert_eq!(opened, Some((build_id, 2)), "the lost final primary's recorded exit with no completion opens the next attempt of the same Build");
     let drift: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-proven-drift" && s["trace_id"] == trace_id.as_str()).collect();
     assert!(drift.iter().any(|s| s["attributes"]["action"] == "none" && s["attributes"]["scope"].as_str().is_some_and(|x| x.contains("shutdown-mesh:"))), "{drift:?}");
 }

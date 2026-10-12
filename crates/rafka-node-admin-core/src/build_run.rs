@@ -279,6 +279,9 @@ impl BuildStateAdapter for FramedBuilds {
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
+    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
@@ -566,6 +569,9 @@ mod tests {
         async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
             self.0.recovery_of(path, node_id, incarnation).await
         }
+        async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
+            self.0.mesh_deleted_of(node_id, incarnation).await
+        }
         async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
             self.0.forget(id).await
         }
@@ -605,6 +611,9 @@ mod tests {
         }
         async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
             self.0.recovery_of(path, node_id, incarnation).await
+        }
+        async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+            self.0.mesh_deleted_of(node_id, incarnation).await
         }
         async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
             self.0.forget(id).await

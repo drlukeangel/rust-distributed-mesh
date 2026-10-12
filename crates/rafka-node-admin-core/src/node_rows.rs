@@ -23,10 +23,10 @@
 //!   of `<path>` ([`NodeRows::moved_to_old`]).
 //! - `NodeDeleted`: the row with status `Deleted`, the record and its config kept
 //!   ([`NodeRows::deleted`]).
-//! - A mesh leave (R-MN1, mesh-leave.md steps 3 and 7): each member's row `Deleted` on its exact
-//!   Exited receipt, by the leaving mesh's primary, and the final primary's at mesh-left, by the
-//!   fabric-primary as acting primary of a mesh with none left; a birth the view no longer names is
-//!   written from this writer's record of its row ([`NodeRows::deleted_birth`]).
+//! - A mesh delete (R-MN1, mesh-delete.md steps 3 and 7): each member's row `Deleted` on its exact
+//!   Exited receipt, by the deleting mesh's primary, and the final primary's in its own node.delete,
+//!   by the fabric-primary as acting primary of a mesh with no primary; a birth the view no longer
+//!   names is written from this writer's record of its row ([`NodeRows::deleted_birth`]).
 //! - A birth no create of this writer claimed (the bootstrap admin, a birth made before this
 //!   admin took its mesh's seat): written when the writer's view first holds it
 //!   ([`NodeRows::arrivals`]); an admin that takes a mesh's seat writes every member's row of that
@@ -152,9 +152,12 @@ pub enum Claimed {
 }
 
 /// Whether `me_id` writes `mesh`'s node rows in view `t`: the mesh's primary node-admin, or the
-/// fabric-primary while the mesh has no primary.
+/// fabric-primary while the mesh has no primary. A stopped seat holder is no primary (R-NS1 item 2:
+/// from the stop of a mesh's last admin the fabric-primary is the writer of a mesh with no primary):
+/// it writes nothing, stopped, and the fabric-primary writes as acting primary (mesh-delete.md step
+/// 7, the final primary's own row Deleted in its node.delete).
 pub fn writes_for(t: &Topology, me_id: &NodeId, mesh: &str) -> bool {
-    t.holds_mesh_seat(mesh, me_id) || (t.holds_fabric_seat(me_id) && t.cohort_primary(mesh, NodeKind::NodeAdmin).is_none())
+    t.holds_mesh_seat(mesh, me_id) || (t.holds_fabric_seat(me_id) && t.cohort_primary(mesh, NodeKind::NodeAdmin).filter(|p| !p.parked).is_none())
 }
 
 impl NodeRows {

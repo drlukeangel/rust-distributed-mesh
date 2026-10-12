@@ -1848,14 +1848,15 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// Retire `req.node` through every step.
-    pub async fn retire(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    /// Retire `req.node` through every step (node.delete): the provider's exact terminal receipt of
+    /// the birth's runtime, the proof its NodeDeleted was published from.
+    pub async fn retire(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
         self.retire_steps(req).instrument(span).await
     }
 
-    async fn retire_steps(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    async fn retire_steps(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         let name = &req.node.name;
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await;
         let mut node = req.node.clone();
@@ -1892,7 +1893,7 @@ impl DeploymentPipeline<'_> {
         // moment it is announced, so a successor derives it from the same facts.
         let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
         self.lifecycle.deleting(&op).await;
-        let _terminal = if node.parked || req.exit.is_some() {
+        let terminal = if node.parked || req.exit.is_some() {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
@@ -1946,8 +1947,7 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
-        Ok(())
-
+        Ok(terminal)
     }
 
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
