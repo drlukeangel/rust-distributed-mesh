@@ -2618,7 +2618,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rafka_mesh_transport::membership::Frame::NodeDraining { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-draining", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
         async {
-            self.backbone.publish_command_hook(&f).await;
+            if let Err(e) = self.backbone.publish_command_hook(&f).await {
+                tracing::info!(error = %e, "node-draining not sent on every channel");
+            }
             tracing::info!("the drain command was accepted: node-draining published on the mesh channel and the backbone");
         }
         .instrument(span)
@@ -2628,7 +2630,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rafka_mesh_transport::membership::Frame::NodeLeaving { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-leaving", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
         async {
-            self.backbone.publish_command_hook(&f).await;
+            if let Err(e) = self.backbone.publish_command_hook(&f).await {
+                tracing::info!(error = %e, "node-leaving not sent on every channel");
+            }
             tracing::info!("the stop command was accepted: node-leaving published on the mesh channel and the backbone");
         }
         .instrument(span)
@@ -2639,7 +2643,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = Frame::MeshLeaving { mesh_id: e.mesh_id.clone(), build_id: e.build_id.clone(), attempt: e.attempt, operation: e.operation.clone(), publisher: self.me.to_string(), event_at_rafka_ms: self.membership.clock().now_rafka_ms(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-leaving", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, channels = "mesh,backbone");
         async {
-            self.backbone.publish_command_hook(&f).await;
+            if let Err(e) = self.backbone.publish_command_hook(&f).await {
+                tracing::info!(error = %e, "mesh-leaving not sent on every channel");
+            }
             tracing::info!("the leave-mesh command was accepted: mesh-leaving published on the backbone and this mesh's channel");
         }
         .instrument(span)
@@ -2662,7 +2668,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         };
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-leave", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, receipt_manifest = e.receipt_manifest.as_deref().unwrap_or(""), channels = "mesh,backbone");
         async {
-            self.backbone.publish_command_hook(&f).await;
+            if let Err(e) = self.backbone.publish_command_hook(&f).await {
+                tracing::info!(error = %e, "mesh-leave not sent on every channel");
+            }
             tracing::info!("the mesh-leave handoff was called: mesh-leave published on the backbone and this mesh's channel");
         }
         .instrument(span)
@@ -2673,7 +2681,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = Frame::MeshLeft { mesh_id: e.mesh_id.clone(), build_id: e.build_id.clone(), attempt: e.attempt, operation: e.operation.clone(), receipt_manifest: e.receipt_manifest.clone().unwrap_or_default(), publisher: self.me.to_string(), event_at_rafka_ms: self.membership.clock().now_rafka_ms(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, receipt_manifest = e.receipt_manifest.as_deref().unwrap_or(""), channels = "mesh,backbone");
         async {
-            self.backbone.publish_command_hook(&f).await;
+            if let Err(e) = self.backbone.publish_command_hook(&f).await {
+                tracing::info!(error = %e, "mesh-left not sent on every channel");
+            }
             tracing::info!("every exact exit is proven: mesh-left published on the backbone and this mesh's channel");
         }
         .instrument(span)

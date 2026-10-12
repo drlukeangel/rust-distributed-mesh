@@ -3417,11 +3417,17 @@ impl Backbone {
 
     /// Publish a hook (`node-draining`, `node-leaving`, or a fabric round hook) this admin authored: the backbone,
     /// its own mesh channel and its own view, once. The accepted command's hook, never a separately
-    /// coordinated publication.
-    pub async fn publish_command_hook(&self, f: &Frame) {
-        let _ = self.channel.broadcast(f).await;
-        let _ = self.membership.forward(f).await;
-        let _ = self.membership.view.take(f, &self.fabric, "mesh-channel");
+    /// coordinated publication. An error names each channel the frame was not handed to, and why.
+    pub async fn publish_command_hook(&self, f: &Frame) -> Result<()> {
+        let backbone = self.channel.broadcast(f).await;
+        let mesh = self.membership.forward(f).await;
+        self.membership.view.take(f, &self.fabric, "mesh-channel");
+        let failed: Vec<String> = [("backbone", backbone), ("mesh channel", mesh)].into_iter().filter_map(|(channel, r)| r.err().map(|e| format!("{channel}: {e}"))).collect();
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("{} not handed to {}", self.node, failed.join("; ")))
+        }
     }
 
     /// Carry a node's own completion frame (`node-drained`, `node-left`) onto the backbone,
