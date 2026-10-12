@@ -3830,7 +3830,7 @@ impl AdminRunner {
         // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
         // Pending hand-off before it is asked to be Ready (e4.s11; mesh-investigation.md "A node-admin
         // joins the live mesh").
-        let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live());
+        let first_admin = self.topology.read().await.first_admin_of(node);
         let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
         // The launch is the kind's template, as every create's: the new node's config is seeded
         // from the exited birth's Deleted row by the create's name claim (`NodeRows::claim`) and told

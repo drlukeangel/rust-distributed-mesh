@@ -148,10 +148,12 @@ impl Topology {
     }
 
     /// Whether a node.create of the node-admin `node` makes it its mesh's first admin: it is a node-admin
-    /// and no node-admin of its mesh is live. The one rule of every node.create of a node-admin
-    /// (e4.s11; mesh-investigation.md "A node-admin joins the live mesh").
+    /// and no OTHER node-admin of its mesh is live, a live birth the view holds at its own path (a
+    /// view that has not heard the mesh lost, or the exited birth a recovery creates over) never
+    /// counting against it. The one rule of every node.create of a node-admin (e4.s11;
+    /// mesh-investigation.md "A node-admin joins the live mesh").
     pub fn first_admin_of(&self, node: &PathName) -> bool {
-        node.kind == NodeKind::NodeAdmin && self.cohort(&node.mesh, NodeKind::NodeAdmin).all(|n| !n.status.is_live())
+        node.kind == NodeKind::NodeAdmin && self.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live())
     }
 
     /// Why `mesh` is not ready-for-traffic: a mesh is ready when it has a primary node-admin and
