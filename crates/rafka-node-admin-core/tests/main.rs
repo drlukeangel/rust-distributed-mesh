@@ -45,6 +45,7 @@ mod build_drive;
 mod build_facts_read;
 mod build_takeover;
 mod client_contract;
+mod command_admission_status;
 mod connections_writer;
 mod container_proof;
 mod container_unsupported;
