@@ -193,9 +193,10 @@ pub async fn run_replayable(
                 continue;
             }
             estate.await_attempt(r["build_id"].as_str().expect("build_id"), Estate::attempt_of(&r), SETTLE).await;
-            let after = wait_for(&format!("{node} reborn ready under a new incarnation"), SETTLE, || async {
+            // A restart keeps the birth (node-restart.md: "Same node.id, incarnation, ..."): the node is ready again.
+            let after = wait_for(&format!("{node} ready again after its restart"), SETTLE, || async {
                 let n = estate.node_opt(node).await?;
-                (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+                (n["status"] == "ready-for-traffic").then_some(n)
             })
             .await;
             outcomes.push(StepOutcome {
@@ -204,7 +205,7 @@ pub async fn run_replayable(
                 target: node.clone(),
                 key: None,
                 outcome: "Restarted".into(),
-                result: json!({ "same_node_id": after["node_id"] == before["node_id"], "new_incarnation": after["incarnation_id"] != before["incarnation_id"] }),
+                result: json!({ "same_node_id": after["node_id"] == before["node_id"], "same_incarnation": after["incarnation_id"] == before["incarnation_id"] }),
             });
         }
         let Some(op) = sc.operations.get(i) else { break };

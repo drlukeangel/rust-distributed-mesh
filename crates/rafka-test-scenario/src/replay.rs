@@ -71,7 +71,7 @@ pub struct StepOutcome {
     /// The call's outcome (`Reply`, ...), or `Restarted` for a fault.
     pub outcome: String,
     /// The typed result the scenario asserts on (`swapped`, `found`, `value`), or the restart's
-    /// facts (`same_node_id`, `new_incarnation`).
+    /// facts (`same_node_id`, `same_incarnation`).
     pub result: Value,
 }
 

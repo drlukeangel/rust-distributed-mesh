@@ -60,12 +60,13 @@ async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>
     let (status, r) = estate.post(&format!("/api/nodes/{NODE}/restart"), &Value::Null).await;
     assert_eq!(status, 202, "{r}");
     estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
-    let after = wait_for("the restarted birth is ready under a new incarnation", Duration::from_secs(30), || async {
+    // A restart keeps the birth (node-restart.md: "Same node.id, incarnation, ..."): the node is ready again.
+    let after = wait_for("the restarted node is ready again", Duration::from_secs(30), || async {
         let n = estate.node_opt(NODE).await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+        (n["status"] == "ready-for-traffic").then_some(n)
     })
     .await;
-    assert_eq!(after["node_id"], before["node_id"], "a restart keeps the NodeId");
+    assert_eq!((&after["node_id"], &after["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "a restart keeps the NodeId and the birth");
     estate.stop().await;
     let spans = estate.spans();
     (admin, before, after, restart_at, spans)
@@ -104,7 +105,7 @@ async fn restarted_member_pulls_current_admin_within_staleness_window() {
     let result = json!({
         "cell": cell,
         "launching_admin": { "name": admin["name"], "node_id": admin["node_id"], "endpoint_id": admin["endpoint_id"], "transport_addr": admin["transport_addr"], "incarnation_id": admin["incarnation_id"] },
-        "node": { "name": NODE, "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"], "transport_addr": after["transport_addr"] },
+        "node": { "name": NODE, "node_id": before["node_id"], "incarnation_id": after["incarnation_id"], "transport_addr": after["transport_addr"] },
         "restart_at_unix_nano": restart_at,
         "staleness_ms": staleness_ms,
         "pull_attempts": attempts.iter().map(|sp| json!({ "start_unix_nano": at(sp), "attempt": sp["attributes"]["attempt"], "anchor": sp["attributes"]["anchor"], "step": sp["attributes"]["step"], "elapsed_ms": sp["attributes"]["elapsed_ms"], "outcome": sp["attributes"]["outcome"], "trace_id": sp["trace_id"], "span_id": sp["span_id"] })).collect::<Vec<_>>(),
@@ -126,12 +127,14 @@ async fn restarted_member_joins_mesh_channel_within_gossip_interval() {
     let (admin, before, after, restart_at, spans) = restart_one_member(cell).await;
     let gossip_ms: u64 = std::env::var("RDM_GOSSIP_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
 
-    let joined = named(&spans, "rdm.mesh.membership.update.via-subscribe")
+    // A restart keeps the process (node-restart.md): its mesh channel is parked by the stop and joined again
+    // by the start's join, whose `membership-joined` is the join this cell measures from.
+    let joined = named(&spans, "rdm.mesh.node.update.via-membership-joined")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == NODE && sp["attributes"]["channel"] == "mesh:mesh1" && at(sp) > restart_at)
+        .filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at)
         .min_by_key(|sp| at(sp))
         .cloned()
-        .expect("the reborn birth joined its mesh channel");
+        .expect("the restarted node joined its mesh channel again");
     let up = named(&spans, "rdm.mesh.connection.update.via-neighbour-up")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == NODE && sp["attributes"]["channel"] == "mesh:mesh1" && at(sp) >= at(&joined))
@@ -148,7 +151,7 @@ async fn restarted_member_joins_mesh_channel_within_gossip_interval() {
     let result = json!({
         "cell": cell,
         "launching_admin": { "name": admin["name"], "node_id": admin["node_id"], "endpoint_id": admin["endpoint_id"] },
-        "node": { "name": NODE, "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"] },
+        "node": { "name": NODE, "node_id": before["node_id"], "incarnation_id": after["incarnation_id"] },
         "restart_at_unix_nano": restart_at,
         "gossip_interval_ms": gossip_ms,
         "join": { "start_unix_nano": at(&joined), "peers": joined["attributes"]["peers"], "trace_id": joined["trace_id"], "span_id": joined["span_id"] },

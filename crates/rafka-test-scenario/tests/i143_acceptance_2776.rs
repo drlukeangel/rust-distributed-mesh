@@ -217,7 +217,7 @@ fn launched_path(o: &Value) -> PathBuf {
 /// starts the Day-0 admin, a second admin and the broker, gateway and compute the admin launches;
 /// each runs the bound path with the bound hash (read from the provider, not a span); a proof
 /// round-trip through the launched nodes succeeds; restarting a node and the second admin launches
-/// the same binding under a new incarnation and the same NodeId; the estate's spans carry the
+/// the same binding as the same birth (same incarnation, same NodeId); the estate's spans carry the
 /// consumer admin's service and never the built-in admin's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scenario_runner_launches_explicit_external_binary_set() {
@@ -285,17 +285,18 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         let (status, r) = estate.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
         assert_eq!(status, 202, "{node}: {r}");
         estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
-        let after = rafka_test_scenario::estate::wait_for(&format!("{node} reborn ready under a new incarnation"), Duration::from_secs(60), || async {
+        // A restart keeps the birth (node-restart.md: "Same node.id, incarnation, ...").
+        let after = rafka_test_scenario::estate::wait_for(&format!("{node} ready again after its restart"), Duration::from_secs(60), || async {
             let n = estate.node_opt(node).await?;
-            (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+            (n["status"] == "ready-for-traffic").then_some(n)
         })
         .await;
-        assert_eq!(after["node_id"], before["node_id"], "{node}: a restart keeps the NodeId");
+        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{node}: a restart keeps the NodeId and the birth");
         let o = observe_launch(&estate, node).await;
         let b = expect_for(node);
         assert_eq!(launched_path(&o), b.executable, "{node} restarts on the bound executable: {o}");
         assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{node} restarts on the bound bytes: {o}");
-        restarts.push(json!({ "node": node, "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"], "launch": o }));
+        restarts.push(json!({ "node": node, "incarnation_id": after["incarnation_id"], "launch": o }));
     }
     let get = estate.probe(&["get", "--target", "path:mesh1.broker.1", "--key", "7"]);
     assert_eq!(get["outcome"], "Reply", "the restarted broker answers: {get}");
@@ -462,7 +463,7 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
 /// written replay manifest alone, on a fresh estate - repeats the same ordered actions, the same
 /// typed semantic outcomes and the same final proof state, with the exact seed and fault schedule
 /// retained. The seeded fault is a restart through the node-admin Build rectifier: the restarted
-/// node keeps its NodeId under a new incarnation in both runs. Each run leaves its complete
+/// node keeps its NodeId and its birth in both runs. Each run leaves its complete
 /// manifest, its per-host spans and its RPC ledger under its own estate directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
@@ -495,7 +496,7 @@ async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
     assert_eq!(a.final_state, b.final_state, "the same final proof state");
     let restarts: Vec<&StepOutcome> = a.outcomes.iter().filter(|o| o.action == "restart_node").collect();
     assert_eq!(restarts.len(), 1, "the seeded fault ran: {:?}", a.outcomes);
-    assert_eq!(restarts[0].result, json!({"same_node_id": true, "new_incarnation": true}), "a restart keeps the NodeId under a new incarnation");
+    assert_eq!(restarts[0].result, json!({"same_node_id": true, "same_incarnation": true}), "a restart keeps the NodeId and the birth");
     assert_eq!(a.final_state["mesh1.rpc.1/10"]["value"], "a2");
     assert_eq!(a.final_state["mesh1.rpc.2/11"]["found"], false);
 
