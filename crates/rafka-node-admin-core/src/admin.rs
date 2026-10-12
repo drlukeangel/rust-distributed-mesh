@@ -1146,6 +1146,11 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
+        // Its held digest states its mesh's id as a heard one does: a mesh whose births are all
+        // stopped keeps its id, and with it its state (states.md: a mesh's deleted is final).
+        if let Some(id) = d.mesh_id.clone() {
+            mesh_ids.entry(name.mesh.clone()).or_insert(id);
+        }
         let mut n = Node::allocated(name.clone());
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
@@ -3503,7 +3508,8 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
             // This admin executed the stop and holds its matching stopped reply: the event carries the
-            // version at which its stop changed the birth.
+            // version at which its stop changed the birth. The stop of a deleted mesh's last admin
+            // makes this fabric-primary that mesh's publisher of record (gossip.md "Mesh delete").
             self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Stopped, op).await;
             tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
         }
@@ -3600,9 +3606,14 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rafka_mesh_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
+            // Read before the departure is taken: the delete of a deleted mesh's birth moves that
+            // birth to `deleted` in the aggregate this fabric-primary publishes for the mesh
+            // (mesh-delete.md step 7, gossip.md "Mesh delete").
+            let of_deleted_mesh = self.backbone.publishes_deleted_mesh_of(op);
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
             }
+            self.backbone.executed_delete(op, of_deleted_mesh);
             tracing::info!("the exact birth is proven terminal: it has left");
         }
         .instrument(span)
@@ -6658,6 +6669,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 was_mesh_primary = mesh_primary;
                                                 backbone.set_mesh_primary(mesh_primary);
                                                 backbone.set_fabric_primary(fabric_primary);
+                                                // The meshes this view names, each deleted or not: the fabric-primary publishes
+                                                // a deleted mesh's aggregate from its last admin's stop on (mesh-delete.md step 7),
+                                                // and never a live mesh's (R-RX4).
+                                                backbone.set_view_meshes(t.meshes.iter().map(|m| (m.name.clone(), m.status == crate::model::ScopeStatus::Dead)).collect());
                                                 // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
                                                 // new holder authors no ready on a topology reading.
                                                 if fabric_primary && !was_fabric_primary {
@@ -6766,8 +6781,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // it: a peer's t of this mesh (mesh-investigation.md) is the publication's own
                                     // interval, never the store's. While this admin is its mesh's primary it publishes
                                     // its mesh's members on the backbone (and puts the same source into its own mesh);
-                                    // no admin publishes another mesh on its behalf (R-RX4). Held at its own wait while
-                                    // the admin is parked.
+                                    // no admin publishes a live mesh on its behalf (R-RX4). While it is the fabric
+                                    // primary it publishes each deleted mesh whose last admin it stopped or deleted
+                                    // (mesh-delete.md step 7). Held at its own wait while the admin is parked.
                                     {
                                         let (backbone, membership, park) = (backbone.clone(), membership.clone(), park_gate.clone());
                                         anti_entropy = tokio::spawn(async move {
@@ -6776,6 +6792,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 {
                                                     let _announced = roles.read().await;
                                                     backbone.publish(&membership, backbone.own_members(&membership)).await;
+                                                    backbone.publish_deleted_meshes(&membership).await;
                                                 }
                                                 drop(turn);
                                                 tokio::select! {

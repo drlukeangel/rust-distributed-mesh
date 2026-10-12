@@ -425,12 +425,18 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let deleted_aggregate = published.iter().copied().find(|sp| attr_u(sp, "digests") == 0 && attr_u(sp, "in_flight") == 0 && attr_u(sp, "departed") == 1 && start_ns(sp) >= start_ns(&node_deleted));
     let deleted_aggregate = deleted_aggregate.unwrap_or_else(|| panic!("after NodeDeleted the fabric-primary {fabric_primary} published mesh1's aggregate with the deleted birth in departed: {published:?}"));
     // A peer holds it: an admin of each surviving mesh installs mesh1 from the fabric-primary, no
-    // digests, after the stop.
+    // digests, after the stop: from the backbone, or, in the fabric-primary's own mesh, from the
+    // source its primary puts into the mesh (gossip.md "External topology when a mesh is deleted"),
+    // whichever arrives first.
     for m in survivors {
-        let held: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "backbone" && at_mesh(sp, m, "admin") && by_fabric_primary(sp) && attr_u(sp, "members") == 0 && start_ns(sp) >= stop_answered).collect();
+        let held: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && at_mesh(sp, m, "admin") && by_fabric_primary(sp) && attr_u(sp, "members") == 0 && start_ns(sp) >= stop_answered).collect();
         assert!(!held.is_empty(), "an admin of {m} held mesh1 from the fabric-primary {fabric_primary}'s aggregate, no digests, after {final_name}'s stop (fabric-primary's mesh {fp_mesh})");
-        eprintln!("bullet 2: {m} held mesh1 from {fabric_primary}: trace {} at {} (in_flight {}, departed {})", s(&held[0]["trace_id"]), s(&held[0]["attributes"]["node"]), attr_u(held[0], "in_flight"), attr_u(held[0], "departed"));
+        eprintln!("bullet 2: {m} held mesh1 from {fabric_primary}: trace {} at {} on the {} (in_flight {}, departed {})", s(&held[0]["trace_id"]), s(&held[0]["attributes"]["node"]), s(&held[0]["attributes"]["channel"]), attr_u(held[0], "in_flight"), attr_u(held[0], "departed"));
     }
+    // An aggregate with no digests carries no rafka-time sample: no mesh primary refuses the
+    // fabric-primary's stamp as missing from its own aggregate.
+    let unsampled: Vec<&Value> = named(&spans, "rdm.mesh.entry.reject.via-rafka-time-sample").into_iter().filter(|sp| sp["attributes"]["reason"] == "authority-not-in-its-aggregate").collect();
+    assert!(unsampled.is_empty(), "the deleted mesh's aggregate was offered as a clock sample: {unsampled:?}");
     // The other surviving mesh hears the stop only in that aggregate: NodeStopped rides the
     // executor's own mesh channel and, on the backbone, the aggregate's in_flight (gossip.md §3.1).
     let parked_at_other: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state")
