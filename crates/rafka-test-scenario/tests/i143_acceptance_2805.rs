@@ -3,11 +3,13 @@
 //! cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans land under it, feature `i143-2805`).
 //!
-//! A real two-mesh birth through the Build rectifier: `POST /api/build` adds mesh2; the fabric
+//! A real two-mesh birth through the Build rectifier: `build.create` adds mesh2; the fabric
 //! primary births mesh2's bootstrap admin, which hydrates the Fabric identity and the current Build, then
 //! receives MeshStatus::Pending from the fabric primary, and only then does any of mesh2's own
 //! membership get created; election alone supplies mesh2's primary afterwards.
 
+use rafka_mesh_entity::NodeKind;
+use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -70,27 +72,22 @@ async fn pending_contract(cell: &str) {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let mesh = |m: &str| json!({"name": m, "node_admin": 2, "rpc_node": 2});
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1")]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(&s(&a["build_id"]), Duration::from_secs(120)).await;
+    let mesh = |m: &'static str| (m, 2, 2);
+    estate.reconcile_shape("fabric1", &[mesh("mesh1")]).await;
     // {mesh1} -> {mesh1, mesh2}, through the rectifier.
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
-    assert_eq!(status, 202, "{a}");
-    let create = s(&a["build_id"]);
-    let build = estate.await_build(&create, Duration::from_secs(120)).await;
-    let want: std::collections::BTreeSet<String> =
-        ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
-    let nodes = estate.settled(&want, Duration::from_secs(30)).await;
-    let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("mesh2 elects a primary");
-    let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let created = estate.reconcile_shape("fabric1", &[mesh("mesh1"), mesh("mesh2")]).await;
+    let create = created.build_id.0.clone();
+    let build = estate.builds_obj().await.get(&created.build_id).await.expect("build.get of the creation Build");
+    let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
+    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh2 elects a primary");
+    let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
     // The provider every mesh2 member actually ran on, from the view (and, on containers, its
     // immutable container id).
     let provider = estate.owner.provider.clone();
     let mesh2_runtimes: Vec<Value> = nodes
         .iter()
-        .filter(|n| n["mesh"] == "mesh2" && n["kind"] != "node_admin")
-        .map(|n| json!({"node": n["name"], "provider": n["provider"], "container": estate.container_of(&s(&n["name"]))}))
+        .filter(|n| n.mesh == "mesh2" && n.kind != NodeKind::NodeAdmin)
+        .map(|n| json!({"node": n.name.to_string(), "provider": n.provider, "container": estate.container_of(&n.name.to_string())}))
         .collect();
     for r in &mesh2_runtimes {
         assert_eq!(r["provider"], provider.as_str(), "{r}");
@@ -160,7 +157,7 @@ async fn pending_contract(cell: &str) {
     }
     // Every attempt the accepting fabric-primary decides descends from the REST request (the
     // rectifier); an attempt decided after the seat moved starts its own trace.
-    let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's REST span");
+    let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's build.create span");
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()).collect();
     assert!(!reconciles.is_empty(), "the creation Build was reconciled");
     let accepting = claim_decider(&spans, create.as_str(), "1").expect("attempt 1 of the creation Build was claimed");
@@ -175,8 +172,8 @@ async fn pending_contract(cell: &str) {
     let result = json!({
         "cell": cell,
         "build_id": create,
-        "attempt": build["attempt"],
-        "executor": build["executor"],
+        "attempt": build.attempt,
+        "executor": build.executor,
         "mesh2_primary": mesh2_primary,
         "provider": provider,
         "mesh2_runtimes": mesh2_runtimes,
@@ -198,15 +195,11 @@ async fn pending_contract(cell: &str) {
 }
 
 
-fn three_meshes() -> std::collections::BTreeSet<String> {
-    ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1", "mesh3.admin.1", "mesh3.rpc.1"].iter().map(|s| s.to_string()).collect()
-}
-
 /// The sole admin of mesh2 or mesh3 that does not hold the fabric seat.
-fn sole_admin_off_the_seat(settled: &[Value]) -> String {
+fn sole_admin_off_the_seat(settled: &[NodeView]) -> String {
     ["mesh2.admin.1", "mesh3.admin.1"]
         .into_iter()
-        .find(|a| settled.iter().any(|n| n["name"] == *a && n["is_fabric_primary"] != true))
+        .find(|a| settled.iter().any(|n| n.name.to_string() == *a && !n.is_fabric_primary))
         .expect("at most one admin holds the seat, so one of the two sole admins is off it")
         .to_string()
 }
@@ -225,35 +218,28 @@ async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let mesh = |m: &str, admins: u32| json!({"name": m, "node_admin": admins, "rpc_node": 1});
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2)]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(&s(&a["build_id"]), Duration::from_secs(120)).await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)]})).await;
-    assert_eq!(status, 202, "{a}");
-    let create = s(&a["build_id"]);
-    estate.await_build(&create, Duration::from_secs(120)).await;
-    let want = three_meshes();
-    let settled = estate.settled(&want, Duration::from_secs(30)).await;
+    let mesh = |m: &'static str, admins: u32| (m, admins, 1);
+    estate.reconcile_shape("fabric1", &[mesh("mesh1", 2)]).await;
+    let shape = [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    let settled = estate.settled_views(&shape).await;
     // The sole admin restarted is one that does not hold the fabric seat (the seat goes to the
     // lowest node id fabric-wide, and the fabric primary is never restarted by this cell).
     let target = sole_admin_off_the_seat(&settled);
-    let before = estate.node(&target).await;
+    let before = estate.node_view(&target).await;
 
     // The restart, through the rectifier: an attempt of the accepted Build.
-    let (status, restart) = estate.post(&format!("/api/nodes/{target}/restart"), &json!({})).await;
-    assert_eq!(status, 202, "restart route: {restart}");
-    let restart_build = s(&restart["build_id"]);
-    estate.await_attempt(&restart_build, Estate::attempt_of(&restart), Duration::from_secs(120)).await;
-    let after = estate.settled(&want, Duration::from_secs(60)).await;
-    let after = after.iter().find(|n| n["name"] == target.as_str()).cloned().expect("the restarted admin in the view");
+    let mut restart = estate.nodes_obj().await.restart(&target.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
+    let restart_build = Estate::complete(&mut restart).await.build_id.0;
+    let after = estate.settled_views(&shape).await;
+    let after = after.iter().find(|n| n.name.to_string() == target).cloned().expect("the restarted admin in the view");
     let mesh_name = target.split('.').next().unwrap().to_string();
     estate.stop().await;
     let spans = estate.spans();
 
-    assert_eq!(after["node_id"], before["node_id"], "the same node");
-    assert_eq!(after["incarnation_id"], before["incarnation_id"], "the same incarnation: a restart keeps the birth (node-restart.md, Kept: same node.id, incarnation)");
-    assert_eq!(after["status"], "ready-for-traffic", "{after}");
+    assert_eq!(after.node_id, before.node_id, "the same node");
+    assert_eq!(after.incarnation_id, before.incarnation_id, "the same incarnation: a restart keeps the birth (node-restart.md, Kept: same node.id, incarnation)");
+    assert_eq!(after.status, NodeStatus::ReadyForTraffic, "{after:?}");
     let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| r["attributes"]["node"] == target.as_str()).collect();
     assert_eq!(readies.len(), 2, "Ready at birth and again after the restart: {readies:?}");
     let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == mesh_name.as_str()).collect();
@@ -267,8 +253,8 @@ async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
         "cell": cell,
         "target": target,
         "restart_build": restart_build,
-        "before_incarnation": before["incarnation_id"],
-        "after_incarnation": after["incarnation_id"],
+        "before_incarnation": before.incarnation_id,
+        "after_incarnation": after.incarnation_id,
         "ready_spans": readies.len(),
         "handoff_spans": handoffs.len(),
         "mesh_ids": mesh_ids,
@@ -289,24 +275,19 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let mesh = |m: &str, admins: u32| json!({"name": m, "node_admin": admins, "rpc_node": 1});
-    let shape = json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)]});
-    let (status, a) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{a}");
-    let accepted = s(&a["build_id"]);
-    estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let want = three_meshes();
-    let before = estate.settled(&want, Duration::from_secs(30)).await;
-    let fabric_holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let mesh = |m: &'static str, admins: u32| (m, admins, 1);
+    let shape = [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)];
+    let built = estate.reconcile_shape("fabric1", &shape).await;
+    let accepted = built.build_id.0.clone();
+    let before = estate.settled_views(&shape).await;
+    let fabric_holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
     // The lost mesh is a sole-admin mesh that does not hold the fabric seat.
     let lost_admin = sole_admin_off_the_seat(&before);
     let lost = lost_admin.split('.').next().unwrap().to_string();
-    let (_, mesh_before) = estate.get(&format!("/api/meshes/{lost}")).await;
-    let mesh_id = s(&mesh_before["id"]);
-    let admin_before = before.iter().find(|n| n["name"] == lost_admin.as_str()).cloned().unwrap();
-    let (_, b0) = estate.get(&format!("/api/builds?id={accepted}")).await;
-    let attempt_before = b0["attempt"].as_u64().unwrap_or(0);
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_holder).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
+    let admin_before = before.iter().find(|n| n.name.to_string() == lost_admin).cloned().unwrap();
+    let attempt_before = u64::from(estate.builds_obj().await.get(&built.build_id).await.expect("build.get of the accepted Build").attempt);
+    estate.admin = before.iter().find(|n| n.name.to_string() == fabric_holder).and_then(|n| n.admin_api_base.clone()).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
 
     // The fault: mesh2's only admin runtime, exactly.
     let mut killed = 0;
@@ -318,20 +299,15 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     }
     assert_eq!(killed, 1, "the lost mesh's only admin was killed");
 
-    let admin_inc = admin_before["incarnation_id"].clone();
-    let recovered = rafka_test_scenario::estate::wait_for("the lost mesh's admin is reborn and ready", Duration::from_secs(240), || {
-        let estate = &estate;
-        let (admin_inc, lost_admin) = (admin_inc.clone(), lost_admin.clone());
-        async move {
-            let n = estate.node_opt(&lost_admin).await?;
-            (n["incarnation_id"] != admin_inc && n["status"] == "ready-for-traffic").then_some(n)
-        }
-    })
-    .await;
-    let (_, mesh_after) = estate.get(&format!("/api/meshes/{lost}")).await;
-    assert_eq!(s(&mesh_after["id"]), mesh_id, "the lost mesh recovered under its own MeshId");
-    let (_, fabric_after) = estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build");
+    let admin_inc = serde_json::to_value(&admin_before.incarnation_id).expect("an incarnation serializes");
+    let recovered = estate
+        .until_node(&lost_admin, "the lost mesh's admin is reborn and ready", Duration::from_secs(240), |n| {
+            let n = n?;
+            (n.incarnation_id != admin_before.incarnation_id && n.status == NodeStatus::ReadyForTraffic).then(|| serde_json::to_value(n).expect("a view serializes"))
+        })
+        .await;
+    assert_eq!(estate.mesh_view(&lost).await.id.expect("the lost mesh still has its id").to_string(), mesh_id, "the lost mesh recovered under its own MeshId");
+    assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build");
     estate.stop().await;
     let spans = estate.spans();
 

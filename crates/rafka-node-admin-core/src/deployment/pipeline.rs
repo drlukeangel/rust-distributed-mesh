@@ -56,7 +56,7 @@ use super::endpoint::KindSpec;
 use crate::join::{Deployed, Joins};
 use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use crate::build::BuildId;
-use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
+use crate::build_state::{BuildStateAdapter, BuildStateError, BuildStepReceipt, StepOutcome};
 use crate::model::{DeploymentId, EndpointId, IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::meta::StorageMeta;
@@ -1165,18 +1165,30 @@ impl DeploymentPipeline<'_> {
     /// on: the `Complete` receipts of runs that were cut short (the executor
     /// died mid-run), after the last attempt whose run ended
     /// ([`last_ended_attempt`]): failed, or finished.
-    async fn begin<'r>(&self, build_id: &'r BuildId, attempt: u32, node: &'r PathName, operation: String) -> Run<'r> {
-        let (done, owner) = match self.builds.read_build(build_id).await {
-            Ok(view) => {
-                let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.operation == operation && r.attempt < attempt).collect();
-                let ended = last_ended_attempt(&earlier.iter().collect::<Vec<_>>(), &operation, attempt);
-                let handed_on: Vec<BuildStepReceipt> = earlier.into_iter().filter(|r| r.attempt > ended && r.outcome == StepOutcome::Complete).collect();
-                let owner = handed_on.iter().map(|r| (r.step.clone(), r.executor.clone())).collect();
-                (handed_on.into_iter().map(|r| (r.step, r.output)).collect(), owner)
+    ///
+    /// A Build this node cannot read fails the run by name, before any step: an unreadable Build is
+    /// never a Build with no earlier receipts, whose run would decide afresh what an earlier attempt
+    /// already decided. A Build this node holds no fact of is its own error.
+    async fn begin<'r>(&self, build_id: &'r BuildId, attempt: u32, node: &'r PathName, operation: String) -> Result<Run<'r>, PipelineError> {
+        let view = match self.builds.read_build(build_id).await {
+            Ok(view) => view,
+            Err(e) => {
+                let executor = self.template.executor();
+                let reason = match &e {
+                    BuildStateError::UnknownBuild(_) => format!("{executor}: this node holds no fact of Build {build_id}, so {operation} (attempt {attempt}, node {node}) has no log to run from: {e}"),
+                    _ => format!("{executor}: Build {build_id} cannot be read for {operation} (attempt {attempt}, node {node}): {e}"),
+                };
+                tracing::info_span!("rdm.node_admin.deployment.reject.via-build-unreadable", build_id = %build_id, attempt, operation = %operation, node = %node, detail = %reason)
+                    .in_scope(|| tracing::info!("the Build cannot be read: the run stops before its first step"));
+                return Err(PipelineError { step: "ReadBuild", reason });
             }
-            Err(_) => (HashMap::new(), HashMap::new()),
         };
-        Run { build_id, attempt, node, operation, done, owner, reusing: true }
+        let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.operation == operation && r.attempt < attempt).collect();
+        let ended = last_ended_attempt(&earlier.iter().collect::<Vec<_>>(), &operation, attempt);
+        let handed_on: Vec<BuildStepReceipt> = earlier.into_iter().filter(|r| r.attempt > ended && r.outcome == StepOutcome::Complete).collect();
+        let owner = handed_on.iter().map(|r| (r.step.clone(), r.executor.clone())).collect();
+        let done = handed_on.into_iter().map(|r| (r.step, r.output)).collect();
+        Ok(Run { build_id, attempt, node, operation, done, owner, reusing: true })
     }
 
     fn pipeline_span(&self, kind: &'static str, build_id: &BuildId, node: &PathName, attempt: u32) -> tracing::Span {
@@ -1280,7 +1292,7 @@ impl DeploymentPipeline<'_> {
     }
 
     async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("create-node:{}", req.node)).await;
+        let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("create-node:{}", req.node)).await?;
         let mut created = self.create_to_ready(&mut run, req, before_ready, None, before_launch).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         self.step(&mut run, CreateStep::Complete.name(), async {
@@ -1759,7 +1771,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("drain", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("drain-node:{name}")).await;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("drain-node:{name}")).await?;
             let mut node = req.node.clone();
             self.seat_transfer_step(&mut run, &node).await?;
             self.drain_steps_with(&mut run, &mut node, &req.handle, true).await?;
@@ -1779,7 +1791,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await?;
             let mut node = req.node.clone();
             self.seat_transfer_step(&mut run, &node).await?;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
@@ -1802,7 +1814,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("start", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("start-node:{name}")).await;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("start-node:{name}")).await?;
             let mut node = req.node.clone();
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
             self.complete(&mut run).await?;
@@ -1823,7 +1835,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("restart", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("restart-node:{name}")).await;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("restart-node:{name}")).await?;
             let mut node = req.node.clone();
             // The pre-event: the receipt first, then the publish, so the Build facts carry the hold
             // from the moment it is announced and a successor derives it from the same facts.
@@ -1968,7 +1980,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("delete-node:{name}")).await;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("delete-node:{name}")).await?;
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?;
             let op = LifecycleOp {
                 build_id: req.build_id.to_string(),
@@ -2001,7 +2013,7 @@ impl DeploymentPipeline<'_> {
 
     async fn retire_steps(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         let name = &req.node.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await;
+        let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await?;
         let mut node = req.node.clone();
         let handle = &req.handle;
         // A crashed target is deleted only on the exit proof of exactly its birth: a proof of
@@ -2376,7 +2388,7 @@ impl DeploymentPipeline<'_> {
         Fut: std::future::Future<Output = Result<(), String>>,
     {
         let name = &req.predecessor.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("replace-node:{name}")).await;
+        let mut run = self.begin(&req.build_id, req.attempt, name, format!("replace-node:{name}")).await?;
         let mut old = req.predecessor.clone();
         let birth = old.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?;
         // The exact old birth, named by every receipt that identifies it (an exited predecessor's
@@ -2480,7 +2492,7 @@ impl DeploymentPipeline<'_> {
 
     async fn update_steps(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
         let name = &req.node.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("update-node:{name}")).await;
+        let mut run = self.begin(&req.build_id, req.attempt, name, format!("update-node:{name}")).await?;
         let (onto, from) = (&req.node, &req.from);
         self.step(&mut run, UpdateStep::UpdateNode.name(), async {
             if onto.node_id == from.node_id || onto.incarnation_id.is_none() {

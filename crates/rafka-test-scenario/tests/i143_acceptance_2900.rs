@@ -23,10 +23,12 @@ use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
-use rafka_mesh_entity::{FabricId, MemberStatus, MeshDigest, MeshId};
+use rafka_mesh_entity::{FabricId, MemberStatus, MeshDigest, MeshId, NodeKind};
+use rafka_node_admin_client::NodeView;
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
+use rafka_test_scenario::typed::until_arrival;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -93,6 +95,8 @@ struct Observer {
     endpoint: Endpoint,
     _router: iroh::protocol::Router,
     seen: Arc<Mutex<Vec<Seen>>>,
+    /// Woken by every frame the observer records.
+    arrivals: Arc<tokio::sync::Notify>,
     mesh_sender: GossipSender,
 }
 
@@ -104,6 +108,7 @@ impl Observer {
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
         let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
+        let arrivals = Arc::new(tokio::sync::Notify::new());
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
         let mut mesh_sender = None;
         for (channel, topic) in [("backbone", backbone_topic(fabric)), ("mesh1", mesh_topic(fabric, mesh_id))] {
@@ -111,19 +116,20 @@ impl Observer {
             if channel == "mesh1" {
                 mesh_sender = Some(sender.clone());
             }
-            let seen = seen.clone();
+            let (seen, arrivals) = (seen.clone(), arrivals.clone());
             tokio::spawn(async move {
                 let _keep = sender;
                 while let Some(ev) = receiver.next().await {
                     if let Ok(Event::Received(m)) = ev {
                         if let Ok(frame) = Frame::decode(&Bytes::copy_from_slice(&m.content)) {
                             seen.lock().unwrap().push(Seen { heard_at_ns: now_ns(), channel, bytes: m.content.len(), frame });
+                            arrivals.notify_waiters();
                         }
                     }
                 }
             });
         }
-        Self { endpoint, _router: router, seen, mesh_sender: mesh_sender.unwrap() }
+        Self { endpoint, _router: router, seen, arrivals, mesh_sender: mesh_sender.unwrap() }
     }
 
     fn all(&self) -> Vec<Seen> {
@@ -152,14 +158,13 @@ impl Observer {
     }
 }
 
-fn seeds_of(nodes: &[Value]) -> Vec<EndpointAddr> {
+fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
     nodes
         .iter()
-        .filter(|n| n["kind"] == "node_admin" && n["mesh"] == "mesh1")
+        .filter(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1")
         .filter_map(|n| {
-            let key = s(&n["endpoint_id"]).parse::<iroh::PublicKey>().ok()?;
-            let addr = s(&n["transport_addr"]).parse::<std::net::SocketAddr>().ok()?;
-            Some(EndpointAddr::new(key).with_ip_addr(addr))
+            let key = n.endpoint_id.as_deref()?.parse::<iroh::PublicKey>().ok()?;
+            Some(EndpointAddr::new(key).with_ip_addr(n.transport_addr?))
         })
         .collect()
 }
@@ -195,25 +200,19 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [
-            {"name": "mesh1", "node_admin": 1, "rpc_node": 1},
-            {"name": "mesh2", "node_admin": 1, "rpc_node": 2},
-        ]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let nodes = estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 1, 2)], Duration::from_secs(60)).await;
-    let (_, fabric_view) = estate.get("/api/fabric").await;
-    let fabric = FabricId::parse(&s(&fabric_view["id"])).expect("the fabric id");
-    let mesh1_id = MeshId::parse(&s(&fabric_view["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh1").expect("mesh1")["id"])).expect("the mesh1 id");
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    let nodes = estate.settled_views(&shape).await;
+    let fabric_view = estate.fabric_view().await;
+    let fabric = fabric_view.id.clone();
+    let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
 
     let observer = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
     let mut hold = Held { pid: estate.pid_of(HELD).await, held: false };
 
     // Joined: the observer is a new neighbour of mesh1's primary, which puts the stripped full of
     // every source it has published into the Mesh.
-    wait_for("the observer hears mesh2's forwarded full on mesh1's channel and the backbone aggregate", Duration::from_secs(60), || async {
+    until_arrival("the observer hears mesh2's forwarded full on mesh1's channel and the backbone aggregate", Duration::from_secs(60), &observer.arrivals, || {
         let backbone = observer.all().iter().any(|x| x.channel == "backbone" && matches!(&x.frame, Frame::Members { mesh, .. } if mesh == "mesh2"));
         (!observer.forwarded_fulls_of("mesh2").is_empty() && backbone).then_some(())
     })
@@ -258,7 +257,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let deltas_before = observer.deltas_of("mesh2").len();
     let t_change_a = now_ns();
     hold.signal("-STOP", true);
-    let delta_a = wait_for("the observer hears the delta for the held rpc node", Duration::from_secs(30), || async { observer.deltas_of("mesh2").get(deltas_before).copied() }).await;
+    let delta_a = until_arrival("the observer hears the delta for the held rpc node", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").get(deltas_before).copied()).await;
     // Stay a while longer: nothing else changes, so nothing else is sent.
     tokio::time::sleep(Duration::from_secs(5)).await;
     let after_a = observer.deltas_of("mesh2");
@@ -324,7 +323,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // ---- resumed: the next real change is a delta that applies at the baseline
     let t_resume = now_ns();
     hold.signal("-CONT", false);
-    let delta_c = wait_for("the observer hears the next delta", Duration::from_secs(30), || async { observer.deltas_of("mesh2").into_iter().find(|d| d.0 > t_resume) }).await;
+    let delta_c = until_arrival("the observer hears the next delta", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > t_resume)).await;
     assert_eq!(delta_c.1, latest, "the next delta continues from the baseline the member holds");
     let applied_c = wait_for("the member applies the next delta at the baseline", Duration::from_secs(30), || async {
         let spans = estate.spans();
@@ -334,13 +333,14 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     assert_eq!(num(&applied_c, "base_version"), latest);
 
     // ---- a member cut off from every other process hears the full when it is heard again
-    let ports_of = |names: &[&str]| udp_ports(&nodes, &names.iter().map(|n| n.to_string()).collect::<Vec<_>>());
+    let nodes_json: Vec<Value> = nodes.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
+    let ports_of = |names: &[&str]| udp_ports(&nodes_json, &names.iter().map(|n| n.to_string()).collect::<Vec<_>>());
     let mut others = ports_of(&["mesh1.admin.1", "mesh2.admin.1", "mesh2.rpc.1", HELD]);
     others.push(observer.endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port());
     let cut = Partition::start(&ports_of(&[MEMBER]), &others).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the member's traffic: {why}"));
     let cut_at = now_ns();
     hold.signal("-STOP", true);
-    let delta_e = wait_for("the observer hears the delta for the held rpc node while the member is cut", Duration::from_secs(30), || async { observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at) }).await;
+    let delta_e = until_arrival("the observer hears the delta for the held rpc node while the member is cut", Duration::from_secs(30), &observer.arrivals, || observer.deltas_of("mesh2").into_iter().find(|d| d.0 > cut_at)).await;
     assert_eq!(delta_e.1, delta_c.2, "the delta follows the one the member applied");
     // Past the idle timeout, so the member's connections are gone, not delayed.
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -358,7 +358,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // what it holds when the member came up as its neighbour.
     let spans = estate.spans();
     assert!(spans_of(&spans, "rdm.mesh.membership.update.via-version-gap", MEMBER, cut_at).is_empty(), "the full the primary replays on a heal repaired the member: no gap");
-    let member_peer = nodes.iter().find(|n| n["name"] == MEMBER).map(|n| s(&n["endpoint_id"])).unwrap();
+    let member_peer = nodes.iter().find(|n| n.name.to_string() == MEMBER).and_then(|n| n.endpoint_id.clone()).unwrap();
     let replays: Vec<&Value> = spans_of(&spans, "rdm.mesh.membership.update.via-neighbour-replay", "mesh1.admin.1", healed_at).into_iter().filter(|sp| attr(sp, "channel") == "mesh:mesh1" && member_peer.starts_with(&attr(sp, "peer"))).collect();
     assert!(replays.iter().any(|sp| num(sp, "full_chunks") >= 1), "mesh1's primary replayed its forwarded fulls to the member when it came back as a neighbour: {replays:?}");
     hold.signal("-CONT", false);

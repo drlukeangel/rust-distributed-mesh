@@ -886,8 +886,12 @@ mod writer {
             mesh_issuer: None,
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
+        // The Build the create runs for: a run over a Build its node holds no fact of is refused at its start.
+        let build_id = BuildId("build-node-rows".into());
+        let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
+        rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let req = CreateRequest { build_id: BuildId("build-node-rows".into()), attempt: 1, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id, attempt: 1, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
         let r = pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string());
         let _ = std::fs::remove_dir_all(&data_root);
         r

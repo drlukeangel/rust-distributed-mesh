@@ -112,6 +112,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         row_moved: Default::default(),
         loads: None,
         book: None,
+        builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
     });
     // The rig's view stands for the admin's projection: a moved row moves the birth's entry.
     let moved_view = topology.clone();
@@ -1473,4 +1474,103 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     );
     assert!(cap.spans("rdm.node_admin.status.update.via-completion-accepted").is_empty(), "no completion is accepted");
     eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)");
+}
+
+/// CONTRACT (build.md §4: the current Build is the first in progress or completed, read last in,
+/// first out; R-BI3, docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md: "Each accepted Build is its
+/// own entity in the builds store, written once" and "The Fabric row carries no pointer to the newest
+/// Build"; node-rpc-envelope.md typed objects: `fabric.get` answers the fabric): `fabric.get` (op 0x1B
+/// `GetFabric`) at a node-admin answers the fabric's `build_id`, the current Build its own builds store
+/// returns, skipping a failed Build, and an admin whose builds store holds no Build in progress or
+/// completed answers none. Must NOT happen: a caller that needs the current Build reading it from
+/// anywhere but the fabric's own read, or `fabric.get` naming a failed Build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips_a_failed_one() {
+    use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology};
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
+    let admin = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+    let view = Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: Vec::new(),
+        nodes: vec![admin.node.clone()],
+    };
+    let builds = Arc::new(MemoryBuildStateAdapter::default());
+    AcceptedStore::seeded(&*builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), "mesh1.admin.1").await.unwrap();
+    let held = builds.current_build().await.unwrap().into_build_id().expect("the seeded Build is current").0;
+    let empty = Arc::new(MemoryBuildStateAdapter::default());
+    let answer = |builds: Arc<dyn BuildStateAdapter>| {
+        let view = view.clone();
+        let admin = admin.node.clone();
+        async move {
+            let authority = StatusAuthority {
+                me: admin.name.clone(),
+                node_id: admin.node_id.clone(),
+                fabric_id: view.fabric.id.clone(),
+                topology: Arc::new(tokio::sync::RwLock::new(view)),
+                declared: Arc::new(Mutex::new(Declared::default())),
+                status_storage: Arc::new(MemoryStatusStorage::default()),
+                nodes_storage: Arc::new(MemoryNodesStorage::default()),
+                mesh_ids: Arc::new(BTreeMap::new),
+                republish: Arc::new(std::sync::OnceLock::new()),
+                commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
+                own: Arc::new(std::sync::OnceLock::new()),
+                leaver: Arc::new(std::sync::OnceLock::new()),
+                hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                wake: Default::default(),
+                rounds: Default::default(),
+                configs: Default::default(),
+                configure: Default::default(),
+                hydration: Default::default(),
+                rename: Default::default(),
+                row_moved: Default::default(),
+                loads: Some(Arc::new(BTreeMap::new)),
+                book: None,
+                builds,
+            };
+            match authority.apply(None, &StatusRequest::GetFabric).await {
+                StatusReply::Fabric { fabric } => fabric,
+                other => panic!("fabric.get answered {other:?}"),
+            }
+        }
+    };
+    assert_eq!(answer(builds.clone()).await.build_id, Some(held.clone()), "fabric.get answers the current Build the admin's builds store returns");
+    // A newer Build that failed is skipped: the older completed one is still the current Build.
+    let newer = rafka_node_admin_core::build::BuildId::mint();
+    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: newer.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    assert_eq!(answer(builds.clone()).await.build_id, Some(newer.0.clone()), "the newer Build in progress is the current Build");
+    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }).await.unwrap();
+    assert_eq!(answer(builds).await.build_id, Some(held), "a failed Build is skipped: fabric.get answers the Build before it");
+    assert_eq!(answer(empty).await.build_id, None, "an admin whose builds store holds no Build in progress or completed answers none");
+}
+
+/// CONTRACT (node-rpc-envelope.md Status: "`RejectedNotAuthority` says the receiver is not the
+/// authority for the call: ... `SubjectUnknown` when the receiver does not hold the subject at all.
+/// ... a caller-side `PeerUnresolved` likewise [keeps its codec position and a mesh receiver never
+/// sends it]"; node-rpc.md §14): mesh1's primary asked to put the config of, put the record of, or
+/// delete the connections of a node its view does not hold, or of a node whose birth it does not
+/// know, answers `RejectedNotAuthority { SubjectUnknown }` each time: the fact is the receiver's own.
+/// Must NOT happen: `PeerUnresolved`, which names a peer the caller could not resolve.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_never_peer_unresolved() {
+    let (rig, others) = rig().await;
+    quiet_door(&rig).await;
+    let rpc2 = &others["rpc2"];
+    if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == rpc2.node.node_id) {
+        n.incarnation_id = None;
+    }
+    let caller = &others["rpc1"];
+    let unknown = (NodeId::mint(), IncarnationId::mint());
+    let no_birth = (rpc2.node.node_id.clone(), IncarnationId::mint());
+    for (case, (node_id, incarnation)) in [("not in the view", unknown), ("no known birth", no_birth)] {
+        let requests = [
+            StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: [("zone".to_string(), "a".to_string())].into() },
+            StatusRequest::UpdateNode { node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.rpc.2".into(), tags: Default::default() },
+            StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All },
+        ];
+        for req in requests {
+            let got = reply(&call(&rig, caller, &req).await);
+            assert_eq!(got, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "{case}: {} answers the receiver's own fact", req.op());
+        }
+    }
 }

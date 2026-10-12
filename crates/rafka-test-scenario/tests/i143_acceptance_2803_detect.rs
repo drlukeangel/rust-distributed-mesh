@@ -10,10 +10,12 @@
 //! (`Rungs::configured`, from the staleness floor `RDM_STALENESS_MS`): probe 1, the silent mark,
 //! probe 2 and the decision at 20 s, 30 s, 40 s and 60 s at the 30 s default floor.
 
+use rafka_node_admin_client::{NodeView, ScopeStatus};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::typed::fabric_view_of;
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -54,13 +56,14 @@ fn at_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
-fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for (m, a, r) in meshes {
-        out.extend((1..=*a).map(|i| format!("{m}.admin.{i}")));
-        out.extend((1..=*r).map(|i| format!("{m}.rpc.{i}")));
-    }
-    out
+/// The views as the JSON the cell records.
+fn values(views: &[NodeView]) -> Vec<Value> {
+    views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
+}
+
+/// The fabric's lifecycle state as `fabric.get` words it (`ready-for-traffic`, `degraded`, ...).
+fn status_word(status: ScopeStatus) -> String {
+    s(&serde_json::to_value(status).expect("a status serializes"))
 }
 
 fn births(nodes: &[Value]) -> BTreeMap<String, String> {
@@ -84,30 +87,21 @@ struct Fixture {
 
 async fn fixture(cell: &str) -> Fixture {
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let shape = json!({"fabric": "fabric1", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": 3},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 3},
-    ]});
-    let (status, a) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{a}");
-    let accepted = s(&a["build_id"]);
-    estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let before = estate.settled(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(30)).await;
+    let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
+    let built = estate.reconcile_shape("fabric1", &shape).await;
+    let accepted = built.build_id.0.clone();
+    let before = values(&estate.settled_views(&shape).await);
     let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let lost = if fabric_primary.starts_with("mesh1.") { "mesh2" } else { "mesh1" }.to_string();
-    let (_, lost_view) = estate.get(&format!("/api/meshes/{lost}")).await;
-    let (_, b0) = estate.get(&format!("/api/builds?id={accepted}")).await;
+    let lost_mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
+    let attempt_before = estate.attempt_of_build(&accepted).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
     estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_primary).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
     // The fault falls on an established fabric: a cut that falls while the commit-state or
     // open-traffic round runs holds that round on the planned birth it cuts (states.md, "The round
     // checklist"), so the cells that assert the fabric stays ready start from ready-for-traffic.
-    wait_for("the fabric is ready-for-traffic before the fault", Duration::from_secs(60), || async {
-        let (_, f) = estate.get("/api/fabric").await;
-        (s(&f["status"]) == "ready-for-traffic").then_some(())
-    })
-    .await;
-    Fixture { estate, accepted, attempt_before: b0["attempt"].as_u64().unwrap_or(0), fabric_primary, lost, lost_mesh_id: s(&lost_view["id"]), before }
+    wait_for("the fabric is ready-for-traffic before the fault", Duration::from_secs(60), || async { (estate.fabric_view().await.status == ScopeStatus::ReadyForTraffic).then_some(()) }).await;
+    Fixture { estate, accepted, attempt_before, fabric_primary, lost, lost_mesh_id, before }
 }
 
 impl Fixture {
@@ -178,8 +172,7 @@ impl Fixture {
     }
 
     async fn fabric_status(&self) -> String {
-        let (_, f) = self.estate.get("/api/fabric").await;
-        s(&f["status"])
+        status_word(self.estate.fabric_view().await.status)
     }
 }
 
@@ -259,12 +252,11 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     let (accepted, attempt_before, lost_births_w) = (f.accepted.clone(), f.attempt_before, lost_births.clone());
     let statuses = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, u64)>::new()));
     let sampler = {
-        let (base, http, statuses) = (f.estate.admin.clone(), reqwest::Client::new(), statuses.clone());
+        let (peers, entry, fabric_id, statuses) = (f.estate.peers().await, f.estate.entry().await, f.estate.fabric_id.clone(), statuses.clone());
         tokio::spawn(async move {
             loop {
-                if let Ok(r) = http.get(format!("{base}/api/fabric")).send().await {
-                    let v: Value = r.json().await.unwrap_or(Value::Null);
-                    let st = s(&v["status"]);
+                if let Some(view) = fabric_view_of(&peers, &entry, &fabric_id).await {
+                    let st = status_word(view.status);
                     let mut seen = statuses.lock().unwrap();
                     if seen.last().map(|(l, _)| l != &st).unwrap_or(true) {
                         seen.push((st, now_ms()));
@@ -278,14 +270,14 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
         let estate = &f.estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births_w.clone());
         async move {
-            let (_, b) = estate.get(&format!("/api/builds?id={accepted}")).await;
-            let later = b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) > attempt_before;
-            let reborn = births(&estate.nodes().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
+            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId(accepted.clone())).await.expect("build.get of the accepted Build");
+            let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
+            let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
             (later && reborn).then_some(b)
         }
     })
     .await;
-    let after = f.estate.settled(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(90)).await;
+    let after = values(&f.estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(90)).await);
     wait_for("the fabric is ready again", Duration::from_secs(30), || async { (f.fabric_status().await == "ready-for-traffic").then_some(()) }).await;
     // The sampler polls on its own cadence: stop it only once it has recorded the return to ready.
     wait_for("the sampler records the return to ready", Duration::from_secs(10), || {
@@ -315,10 +307,8 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     })
     .await;
     let seat_moved = seat_lost_or_five(&f.estate.spans()).1;
-    let (_, fabric_after) = f.estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric_after["build_id"]), f.accepted, "no new Build: the current build_id is unchanged");
-    let (_, lost_after) = f.estate.get(&format!("/api/meshes/{}", f.lost)).await;
-    assert_eq!(s(&lost_after["id"]), f.lost_mesh_id, "{} is reborn under its own MeshId", f.lost);
+    assert_eq!(f.estate.accepted_build_id().await, f.accepted, "no new Build: the current build_id is unchanged");
+    assert_eq!(f.estate.mesh_view(&f.lost).await.id.expect("the lost mesh still has its id").to_string(), f.lost_mesh_id, "{} is reborn under its own MeshId", f.lost);
     let new_births = births(&after);
     for m in &survivors {
         assert_eq!(new_births[m], before_births[m], "{m} answered the probes and is never created again");
@@ -673,24 +663,15 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let shape = json!({"fabric": "fabric1", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
-        {"name": "mesh3", "node_admin": 2, "rpc_node": 2},
-    ]});
-    let (status, a) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{a}");
-    let accepted = s(&a["build_id"]);
-    estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(180)).await;
-    let want = names(&[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]);
-    let before = estate.settled(&want, Duration::from_secs(60)).await;
+    let shape = [("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    let before = values(&estate.settled_views(&shape).await);
     let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let fp_mesh = fp.split('.').next().unwrap().to_string();
     let lost: Vec<String> = ["mesh1", "mesh2", "mesh3"].iter().filter(|m| **m != fp_mesh).map(|m| m.to_string()).collect();
     let mut mesh_ids = BTreeMap::new();
     for m in &lost {
-        let (_, v) = estate.get(&format!("/api/meshes/{m}")).await;
-        mesh_ids.insert(m.clone(), s(&v["id"]));
+        mesh_ids.insert(m.clone(), estate.mesh_view(m).await.id.expect("the mesh has its id").to_string());
     }
     estate.admin = before.iter().find(|n| s(&n["name"]) == fp).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
     let old = births(&before);
@@ -706,15 +687,14 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     wait_for("both meshes are reborn", Duration::from_secs(300), || {
         let (estate, old, lost) = (&estate, old.clone(), lost.clone());
         async move {
-            let now = births(&estate.nodes().await);
+            let now = births(&estate.node_values().await);
             lost.iter().all(|m| (1..=2).any(|i| { let n = format!("{m}.admin.{i}"); now.get(&n).is_some_and(|inc| old.get(&n) != Some(inc)) })).then_some(())
         }
     })
     .await;
-    let after = estate.settled(&want, Duration::from_secs(120)).await;
+    let after = estate.settles_to(&shape, Duration::from_secs(120)).await;
     for m in &lost {
-        let (_, v) = estate.get(&format!("/api/meshes/{m}")).await;
-        assert_eq!(s(&v["id"]), mesh_ids[m], "{m} is reborn under its own MeshId");
+        assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} is reborn under its own MeshId");
     }
     let _ = after;
     let fabric_admin = estate.admin.clone();
@@ -864,7 +844,7 @@ async fn reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degrade
     wait_for("the mesh shows a ready primary of a newer birth", Duration::from_secs(120), || {
         let (estate, lost_births, lost) = (&f.estate, lost_births.clone(), lost.clone());
         async move {
-            let nodes = estate.nodes().await;
+            let nodes = estate.node_values().await;
             nodes.iter().any(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready-for-traffic" && lost_births.get(&s(&n["name"])).is_some_and(|old| *old != s(&n["incarnation_id"]))).then_some(())
         }
     })

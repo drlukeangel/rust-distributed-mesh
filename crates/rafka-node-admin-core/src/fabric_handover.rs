@@ -36,8 +36,8 @@
 //! ```text
 //! N (executor)                                   P (holder)
 //!   TakeSeats { holder: P, successor: N, seats } ->
-//!                                                validate: N is the Won claim's executor and the
-//!                                                admin seated once P is gone; births; epochs
+//!                                                validate: P's own birth; N inside P's mesh;
+//!                                                the seats and their epochs (never who calls)
 //!                                                ONE durable row (the fence and the commit)
 //!                                                install both seats under one lock; fence Builds
 //!                                                SeatedTogether on the mesh channel and backbone
@@ -181,36 +181,6 @@ impl std::fmt::Display for SourceFailure {
     }
 }
 
-/// The executor an attempt's Won claim names, as the fabric-primary decided it: what a holder checks a
-/// TakeSeats caller against.
-#[async_trait::async_trait]
-pub trait WonClaims: Send + Sync {
-    /// The path.name of the executor of `attempt` of `build_id`; `None` when no claim of it was ever
-    /// written where it was looked for; a read that failed is the [`SourceFailure`].
-    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, SourceFailure>;
-}
-
-/// The executor the Won claim of `attempt` of `build_id` names among `facts`, if any.
-pub fn won_claim_in(facts: &[crate::build_state::BuildFact], build_id: &str, attempt: u32) -> Option<String> {
-    facts.iter().find_map(|f| match f {
-        crate::build_state::BuildFact::Claim(c) if c.build_id.0 == build_id && c.attempt == attempt => Some(c.executor.clone()),
-        _ => None,
-    })
-}
-
-/// The executor the Won claim of `attempt` of `build_id` names, from the fabric-primary `fabric_primary`'s
-/// Build facts as `read` over FetchBuildFacts returned them. A fabric-primary that holds no fact of
-/// the Build holds no claim of it: none was ever written there, and the answer is no claim (`None`),
-/// never a failed read. A read that failed is the [`SourceFailure`] naming the fabric-primary's Build
-/// log, the fetch and the read's own failure.
-pub fn won_claim_from_read(read: Result<Vec<crate::build_state::BuildFact>, crate::build_facts_read::FetchFailure>, build_id: &str, attempt: u32, fabric_primary: &str) -> Result<Option<String>, SourceFailure> {
-    match read {
-        Ok(facts) => Ok(won_claim_in(&facts, build_id, attempt)),
-        Err(crate::build_facts_read::FetchFailure::UnknownBuild(_)) => Ok(None),
-        Err(e) => Err(SourceFailure { source: format!("the Build log of the fabric-primary {fabric_primary}, read over fetch-build-facts"), op: format!("fetch-build-facts {build_id} for the claim of attempt {attempt}"), cause: e.to_string() }),
-    }
-}
-
 /// What a SeatTransfer step established at the executor: its receipt.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "outcome")]
@@ -304,8 +274,6 @@ pub struct HandoverDoor {
     /// commit here holds it across the record's move, so a decision in flight commits wholly before
     /// the record moves. The moved record is the fence; nothing else is written.
     pub decisions: Arc<tokio::sync::Mutex<()>>,
-    /// The executors the fabric-primary's claims name: what a TakeSeats caller is checked against.
-    pub claims: Arc<dyn WonClaims>,
     /// Projects this admin's view from the records it holds now. Run once a committed seat record is
     /// held, before the call that depends on it is answered: the committed record is the resolver's
     /// authoritative input (fabric-node-lifecycle-elections.md §4.4), and every reader of the view
@@ -613,18 +581,6 @@ impl HandoverDoor {
         Reply::record_absent(&record, &holder)
     }
 
-    /// The birth a payload names as `role`, checked against the birth of that node this admin's view
-    /// holds: the exact-birth check a handover makes on the births it names. Nothing checks who is
-    /// calling (node-rpc.md §14). `None` when they match; else the refusal detail.
-    async fn named_birth_not_held(&self, named: &HandoverBirth) -> Option<String> {
-        let held = self.topology.read().await.births().find(|n| n.node_id == named.node_id).cloned();
-        match held.as_ref().and_then(birth_of) {
-            Some(b) if &b == named => None,
-            Some(b) => Some(format!("names {}, this admin's view holds {}", births(named), births(&b))),
-            None => Some(format!("names {}, a node this admin's view holds no birth of", births(named))),
-        }
-    }
-
     /// Make `stage` of `payload`'s handover durable, then hold it. A stage that could not be made
     /// durable is not held: the caller answers the failure by name.
     async fn record(&self, payload: &Payload, stage: Stage) -> Result<(), SourceFailure> {
@@ -749,9 +705,8 @@ impl HandoverDoor {
         if payload.successor != self.me_birth() {
             return refuse("wrong-birth", format!("the command names successor {}:{}:{}, this admin is {}:{}:{}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.0, self.me.mesh, self.node_id, self.incarnation.0), Reply::RejectedWrongBirth { role: "successor".into() });
         }
-        if let Some(detail) = self.named_birth_not_held(&payload.incumbent).await {
-            return refuse("wrong-birth", format!("the command's incumbent {detail}"), Reply::RejectedWrongBirth { role: "incumbent".into() });
-        }
+        // The incumbent the command names is data, never checked as the caller (R-RX1, node-rpc.md
+        // §14): the command is judged by this admin's own birth and the epoch it names.
         // Replay lookup precedes stale-epoch rejection.
         if let Some((recorded, stage)) = self.handovers.get(&payload.operation) {
             if recorded != payload {
@@ -772,9 +727,6 @@ impl HandoverDoor {
             // Never written here, which is not a read that failed.
             return self.refuse_fabric_record_absent("take", side, &format!("the epoch {} the command names cannot be compared with it", payload.expected_epoch), &payload);
         };
-        if !held.is_birth(&payload.incumbent.node_id, &payload.incumbent.incarnation) {
-            return refuse("not-authority", format!("the fabric seat is held by {held}, not the caller"), Reply::RejectedNotAuthority);
-        }
         if held.epoch != payload.expected_epoch {
             return refuse("stale-epoch", format!("the seat is at epoch {}", held.epoch), Reply::RejectedStaleEpoch { expected: payload.expected_epoch, current: held.epoch });
         }
@@ -907,9 +859,7 @@ impl HandoverDoor {
         if payload.incumbent != self.me_birth() {
             return refuse("wrong-birth", format!("the completion names incumbent {}:{}:{}, this admin is {}:{}:{}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.0, self.me.mesh, self.node_id, self.incarnation.0), Reply::RejectedWrongBirth { role: "incumbent".into() });
         }
-        if let Some(detail) = self.named_birth_not_held(&payload.successor).await {
-            return refuse("wrong-birth", format!("the completion's successor {detail}"), Reply::RejectedWrongBirth { role: "successor".into() });
-        }
+        // The successor the completion names is data, never checked as the caller (R-RX1).
         let recorded = self.handovers.get(&payload.operation);
         if let Some((rec, stage)) = &recorded {
             if rec != &payload {
@@ -984,13 +934,6 @@ impl HandoverDoor {
         if t.holder != self.me_birth() {
             return refuse("wrong-birth", format!("the call names holder {}, this admin is {}", births(&t.holder), births(&self.me_birth())), Reply::RejectedWrongBirth { role: "holder".into() });
         }
-        // The successor the call names, at its exact birth as this admin's view holds it: N, whose
-        // path.name the Won claim names. Nothing checks who is calling (node-rpc.md §14).
-        let successor = self.topology.read().await.births().find(|n| n.node_id == t.successor.node_id).cloned();
-        let Some(successor) = successor.filter(|n| birth_of(n).as_ref() == Some(&t.successor)) else {
-            let detail = self.named_birth_not_held(&t.successor).await.unwrap_or_default();
-            return refuse("wrong-birth", format!("the call's successor {detail}"), Reply::RejectedWrongBirth { role: "successor".into() });
-        };
         // An identical retry is answered from the row before any other check: a point read of the
         // operation's row under this holder's mesh.
         let recorded = match self.storage.seat_transfer(&self.me.mesh, &t.operation).await {
@@ -1004,25 +947,12 @@ impl HandoverDoor {
             self.committed_span(&t, &row.seats, true);
             return Reply::SeatsCommitted { seats: row.seats };
         }
-        // N must be the executor the attempt's Won claim names ...
-        match self.claims.executor(&t.build_id, t.attempt).await {
-            Ok(Some(e)) if e == successor.name.to_string() => {}
-            Ok(Some(e)) => {
-                let detail = format!("the Won claim of attempt {} of Build {} names {e}, not {}", t.attempt, t.build_id, successor.name);
-                return refuse("not-the-claimed-executor", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
-            }
-            Ok(None) => {
-                let detail = format!("no Won claim of attempt {} of Build {} is known to this admin or its fabric-primary", t.attempt, t.build_id);
-                return refuse("not-the-claimed-executor", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
-            }
-            Err(failed) => return refuse_failed(failed),
-        }
-        // ... and the admin the election seats once this birth is gone, inside this mesh.
-        let view = self.topology.read().await.clone();
-        let seated = crate::executor::seat_successor(&self.me, &view);
-        if seated.as_ref().and_then(birth_of).as_ref() != Some(&t.successor) {
-            let detail = format!("the election seats {} once {} is gone, not {}", seated.map(|n| n.name.to_string()).unwrap_or_else(|| "no admin of its mesh".into()), self.me, successor.name);
-            return refuse("not-seated-once-gone", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
+        // Boundary (node-rpc-envelope.md "TakeSeats"): TakeSeats moves seats inside this holder's
+        // mesh. The successor the call names is the seats' destination, judged as data; nothing checks
+        // who is calling (R-RX1, node-rpc.md §14).
+        if t.successor.mesh != self.me.mesh {
+            let detail = format!("the call moves the seats of {} to {}, a node of mesh {}: TakeSeats moves seats inside mesh {} only", self.me, births(&t.successor), t.successor.mesh, self.me.mesh);
+            return refuse("successor-outside-mesh", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
         }
         // Every seat this birth holds is named, at the epoch it holds.
         let book = self.membership.seats();

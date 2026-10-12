@@ -6,7 +6,9 @@
 //! it runs. A receipt written to the local log whose Build-topic broadcast fails is committed: the
 //! step completes and the broadcast failure is named (node-rpc-envelope.md "Build carrier":
 //! "Progress waits on no gossip; Build-topic facts remain durability and recovery evidence through
-//! the existing publication path"); the neighbour-up catch-up and `FetchBuildFacts` repair it.
+//! the existing publication path"); the neighbour-up catch-up and `FetchBuildFacts` repair it. A Build
+//! the run cannot read at its start fails the run by name before any step (CLAUDE.md: "never written"
+//! and "could not be read" are different errors, and neither is an empty answer).
 
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{
@@ -76,6 +78,8 @@ struct Refuses {
     inner: MemoryBuildStateAdapter,
     step: &'static str,
     local: bool,
+    /// The Build cannot be read: the journal read fails with this.
+    unreadable: Option<&'static str>,
 }
 
 #[async_trait::async_trait]
@@ -97,6 +101,9 @@ impl BuildStateAdapter for Refuses {
         self.inner.open_attempt(o).await
     }
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        if let Some(why) = self.unreadable {
+            return Err(BuildStateError::Io(format!("journal read of Build {id}: {why}")));
+        }
         self.inner.read_build(id).await
     }
     async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
@@ -155,7 +162,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let (spans_pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-3051-receipt-refusal", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
-    let builds = Refuses { inner: MemoryBuildStateAdapter::new(), step: "DrainNode", local: false };
+    let builds = Refuses { inner: MemoryBuildStateAdapter::new(), step: "DrainNode", local: false, unreadable: None };
     let build_id = BuildId::mint();
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
@@ -199,6 +206,50 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     assert_eq!(attrs.get("build_id"), Some(&build_id.to_string()), "{attrs:?}");
     assert!(attrs.get("detail").is_some_and(|d| d.contains("has no wire shape")), "{attrs:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
+}
+
+/// CONTRACT (CLAUDE.md "an error state carries every non-leaking detail": "Never written" and "could
+/// not be read" are different errors, and neither is an empty answer; node-recovery.md "Failure and
+/// receipts": a run hands on the decisions its earlier attempts made): a standalone drain of a Build
+/// whose journal cannot be read fails the run at its start by name, the error naming the node, the
+/// Build, the operation and the read failure, under a
+/// `rdm.node_admin.deployment.reject.via-build-unreadable` span, and no step runs or writes a receipt.
+/// A Build this node holds no fact of is refused the same way, its own error. Must NOT happen: the
+/// unreadable Build taken for one with no earlier receipts, so that the run goes on from its first
+/// step and decides afresh what an earlier attempt had already decided.
+#[tokio::test]
+async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
+    let (capture, _guard) = Capture::new("i143-s42-build-unreadable");
+    let builds = Refuses { inner: MemoryBuildStateAdapter::new(), step: "", local: false, unreadable: Some("this cell's disk refuses it") };
+    let build_id = BuildId::mint();
+    accepted_and_claimed(&builds.inner, &build_id).await;
+
+    let err = match standalone_through(&builds, &build_id, &Drains, false).await {
+        Err(e) => e,
+        Ok(()) => panic!("the Build could not be read and the drain still reported complete: the read failure was taken for no earlier receipts"),
+    };
+    assert_eq!(err.step, "ReadBuild", "the run stops at its start: {err:?}");
+    for named in ["mesh1.rpc.1", &build_id.to_string(), "drain-node:mesh1.rpc.1", "this cell's disk refuses it"] {
+        assert!(err.reason.contains(named), "the error names {named}: {err:?}");
+    }
+    let steps: Vec<String> = builds.inner.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
+    assert!(steps.is_empty(), "no step ran and no receipt was written: {steps:?}");
+    let spans = capture.spans("rdm.node_admin.deployment.reject.via-build-unreadable");
+    assert_eq!(spans.len(), 1, "one rejection span: {spans:?}");
+    assert_eq!(spans[0].1.get("build_id"), Some(&build_id.to_string()), "{spans:?}");
+    assert_eq!(spans[0].1.get("operation").map(String::as_str), Some("drain-node:mesh1.rpc.1"), "{spans:?}");
+    assert!(spans[0].1.get("detail").is_some_and(|d| d.contains("this cell's disk refuses it")), "{spans:?}");
+    eprintln!("span rdm.node_admin.deployment.reject.via-build-unreadable trace_id={} {:?}", spans[0].0, spans[0].1);
+
+    let never_written = MemoryBuildStateAdapter::new();
+    let unwritten = BuildId::mint();
+    let err = match standalone_through(&never_written, &unwritten, &Drains, false).await {
+        Err(e) => e,
+        Ok(()) => panic!("the Build was never written on this node and the drain still reported complete"),
+    };
+    assert_eq!(err.step, "ReadBuild", "{err:?}");
+    assert!(err.reason.contains(&format!("no Build {unwritten}")), "a Build never written is named as such, not as an unreadable journal: {err:?}");
+    assert!(!err.reason.contains("journal"), "{err:?}");
 }
 
 /// The birth is never reached: every command ends `NotSent` (the client's dial deadline).
@@ -381,7 +432,7 @@ async fn a_step_whose_receipt_is_written_locally_completes_when_its_broadcast_fa
 #[tokio::test]
 async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
     let (capture, _guard) = Capture::new("i143-3051-local-write-refused");
-    let local = std::sync::Arc::new(Refuses { inner: MemoryBuildStateAdapter::new(), step: "DrainNode", local: true });
+    let local = std::sync::Arc::new(Refuses { inner: MemoryBuildStateAdapter::new(), step: "DrainNode", local: true, unreadable: None });
     let (_endpoint, _gossip, _router, builds) = fabric_builds("mesh1.admin.1", local.clone()).await;
     let build_id = BuildId::mint();
     accepted_and_claimed(&builds, &build_id).await;

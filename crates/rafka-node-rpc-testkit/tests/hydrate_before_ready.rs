@@ -394,6 +394,47 @@ fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
     })
 }
 
+/// CONTRACT (fabric-node-hooks.md "Outcomes and the gate": `Blocked { reason, retry_on }` "the reason
+/// is named in the blocker evidence and answered to the executor's ProbeNodeState"): a hook that
+/// returns `Blocked` with no reason names no blocker, so it is no Blocked outcome: the node ends by
+/// name, saying its hook was blocked with no reason, the attempt span records `failed` with that
+/// reason, no `via-hydration-blocked` span is opened, no `via-ready` is emitted and the authority
+/// never hears the node Ready. What must NOT happen: the node staying up Pending and answering its
+/// executor's probe `Blocked` with an empty reason, which the executor frames as a Build stream's
+/// `Blocked { WaitForNodeReady, reason }` that names nothing.
+#[test]
+fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready() {
+    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
+    // cells that run the same callsites without one.
+    if crate::own_process::delegated(module_path!(), "a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready") {
+        return;
+    }
+    let cap = crate::common::capture("a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Current, async move {
+        let b = birth(MemberStatus::ReadyForTraffic).await;
+        let seen = observe(&b);
+        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Blocked { reason: String::new(), retry_on: RetryOn::AuthorityAddressed }));
+        let why = match start(&b, &hydrator).await.unwrap() {
+            Ok(running) => {
+                let state = running.hydration().map(|h| h.state());
+                running.stop(Duration::ZERO).await;
+                panic!("a node whose hook was blocked with no reason must end by name, not come up: its hook state {state:?}");
+            }
+            Err(e) => e.to_string(),
+        };
+        assert!(why.contains("mesh1.rpc.1") && why.contains("hydrate_before_ready") && why.contains("no reason"), "the end names the node, the hook and that it gave no reason: {why}");
+        let attempts = spans_named(&spans, "rdm.mesh.node.update.via-hydrate-attempt");
+        assert_eq!(attempts.len(), 1, "the hook ran once: {attempts:?}");
+        assert_eq!(attempts[0]["outcome"], "failed");
+        assert!(attempts[0]["reason"].contains("no reason") && attempts[0]["reason"].contains("authority-addressed"), "the attempt names the refusal and the event the hook asked for: {attempts:?}");
+        assert!(spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked").is_empty(), "no blocker was opened for a reason that names nothing");
+        assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
+        assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
+        let _ = std::fs::remove_dir_all(&b.dir);
+    })
+}
+
 /// CONTRACT: the hook is handed the exact birth and the admin that accepted its join; nothing
 /// about the context is the app's to guess. What must NOT happen: an authority-less context for a
 /// node a launcher admitted.
