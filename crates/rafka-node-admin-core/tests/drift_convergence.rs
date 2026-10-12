@@ -215,7 +215,8 @@ fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, sup
     n
 }
 
-/// Realises `CreateNode` as the admin does: the real fence first; a birth only when it clears.
+/// Realises `CreateNode` as the admin does (a recipe's node.create is the create workflow,
+/// `AdminRunner::recipe_step`): the real fence first; a birth only when it clears.
 struct Runner {
     world: Arc<World>,
     view: Arc<RwLock<Topology>>,
@@ -252,6 +253,14 @@ impl OperationRunner for Runner {
             executor: None,
         };
         use rafka_node_admin_core::build_state::BuildStateAdapter as _;
+        let created;
+        let op = match op {
+            BuildOperation::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Create { node }, .. } => {
+                created = BuildOperation::CreateNode { node: node.clone(), over: None };
+                &created
+            }
+            other => other,
+        };
         match op {
             // node.delete of the exited instance (node-delete.md "Crashed target"): no RPC, no stop
             // frames, no probe; the provider's exit proof is the fence. A runtime that still runs is

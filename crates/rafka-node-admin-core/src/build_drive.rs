@@ -508,13 +508,29 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
 /// outside the mesh held its attempt.
 pub(crate) fn crossed_admin(p: &BuildProjection, mesh: &str) -> Option<PathName> {
     let holder = |attempt: u32| p.attempt_executors.get(&attempt).and_then(|e| parse_path(e));
-    let own = p.attempt_executors.iter().filter(|(_, e)| parse_path(e).is_some_and(|e| e.mesh == mesh)).map(|(a, _)| *a).max().unwrap_or(0);
+    let own = own_attempt(p, mesh);
     let mut steps: Vec<&crate::build_state::BuildStepReceipt> = p.steps.iter().filter(|s| s.attempt > own).collect();
     steps.sort_by_key(|s| s.attempt);
     steps.into_iter().find_map(|s| {
         let node = node_of_key(&s.operation).filter(|n| n.kind == NodeKind::NodeAdmin && n.mesh == mesh)?;
         holder(s.attempt).filter(|h| h.mesh != mesh).map(|_| node)
     })
+}
+
+/// The last attempt of the Build an admin of `mesh` held; `0` when none did.
+fn own_attempt(p: &BuildProjection, mesh: &str) -> u32 {
+    p.attempt_executors.iter().filter(|(_, e)| parse_path(e).is_some_and(|e| e.mesh == mesh)).map(|(a, _)| *a).max().unwrap_or(0)
+}
+
+/// The node-admin the carrier-edge-lost verdict of `mesh` still owes a node.create (mesh-investigation.md
+/// step 6), when the investigation decided the mesh's rebirth: the node-admin the Build already carried
+/// across the fence ([`crossed_admin`]) until its create completed since the mesh last executed its own
+/// work, and `first` (the mesh's first node-admin in path order) while the Build carried none.
+pub(crate) fn rebirth_owed(p: &BuildProjection, mesh: &str, first: &PathName) -> Option<PathName> {
+    let Some(crossed) = crossed_admin(p, mesh) else { return Some(first.clone()) };
+    let (own, key) = (own_attempt(p, mesh), format!("create-node:{crossed}"));
+    let created = p.steps.iter().any(|s| s.attempt > own && s.operation == key && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete);
+    (!created).then_some(crossed)
 }
 
 enum Inner {
