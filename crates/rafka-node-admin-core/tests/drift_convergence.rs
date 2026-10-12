@@ -1627,7 +1627,7 @@ mod fully_crashed_mesh {
 
     /// CONTRACT (R-DG1; mesh-investigation.md steps 5-7): the fabric-primary gives a fully crashed
     /// mesh a new node-admin and, at that same moment, authors the fabric `degraded` (the fabric-primary's
-    /// `peer_recovery`, the one slot the carrier-edge-lost verdict sets and the status projection
+    /// `peer_recovery` book the carrier-edge-lost verdict opens a recovery in and the status projection
     /// reads): not before the create is opened (an exit proof held for the decision opens nothing and
     /// degrades nothing), naming the mesh and every node-admin the proof found. It is cleared only on the
     /// report of the new mesh-primary after that moment: not by the reborn mesh's view alone, not by
@@ -1658,10 +1658,10 @@ mod fully_crashed_mesh {
             let peer = peer_mesh.clone();
             let decided = move |m: &str| (m == peer).then_some(DECIDED_UNREACHABLE).flatten();
             assert_eq!(pass_with(&e, &mut started, &mut held, &|_| BEFORE_THE_DECISION, &records).await, None, "no decision yet: nothing opens");
-            assert_eq!(records.peer_recovery(), None, "nothing was given to the mesh: the fabric is not degraded");
+            assert!(!records.peer_recovering(), "nothing was given to the mesh: the fabric is not degraded");
             let before = e.accepted.current(&*e.builds).await.unwrap();
             assert_eq!(pass_with(&e, &mut started, &mut held, &decided, &records).await, Some((before.build_id.clone(), before.attempt + 1)), "the decision plus the proof opens the create of {}", admins[0]);
-            let recovery = records.peer_recovery().expect("the create of the mesh's node-admin opened: the fabric-primary authors degraded");
+            let recovery = records.peer_recovery_of(&peer_mesh).expect("the create of the mesh's node-admin opened: the fabric-primary authors degraded");
             assert_eq!(recovery.mesh, peer_mesh, "degraded names the mesh given a node-admin");
             assert_eq!(recovery.lost.iter().cloned().collect::<HashSet<_>>(), found, "it names every node-admin the proof found");
             // The mesh's new primary: a birth the proof did not find, in the view the fabric-primary reads.
@@ -1676,13 +1676,13 @@ mod fully_crashed_mesh {
             }
             let clear = || rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &view);
             clear();
-            assert!(records.peer_recovery().is_some(), "the view of a reborn primary alone clears nothing");
+            assert!(records.peer_recovering(), "the view of a reborn primary alone clears nothing");
             records.declared.lock().unwrap().record_report(&peer_mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(found.iter().next().unwrap().clone()), std::time::Instant::now());
             clear();
-            assert!(records.peer_recovery().is_some(), "a report of a node-admin the proof found is not the new primary's");
+            assert!(records.peer_recovering(), "a report of a node-admin the proof found is not the new primary's");
             records.declared.lock().unwrap().record_report(&peer_mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(reborn), std::time::Instant::now());
             clear();
-            assert_eq!(records.peer_recovery(), None, "the new mesh-primary reported after the create opened: degraded clears");
+            assert!(!records.peer_recovering(), "the new mesh-primary reported after the create opened: degraded clears");
         }
         .instrument(root.clone())
         .await;
@@ -1781,6 +1781,44 @@ mod fully_crashed_mesh {
         assert_eq!(after.attempt, before.attempt, "no attempt was opened");
         assert!(e.born().is_empty(), "no node was created: {:?}", e.born());
     }
+}
+
+/// CONTRACT (R-DG1; mesh-investigation.md step 7: "Only on that report, the fabric-primary clears the
+/// degraded health observation"): the fabric is `degraded` for each peer mesh the fabric-primary gave a new
+/// node-admin, and each is cleared by its own new mesh-primary's report, so two meshes given node-admins
+/// keep the fabric degraded until BOTH new primaries have reported. Must NOT happen: the second mesh's
+/// recovery replacing the first's, so that the fabric reads ready while the first mesh has no primary
+/// that reported.
+#[tokio::test]
+async fn two_meshes_given_new_node_admins_keep_the_fabric_degraded_until_each_new_primary_has_reported() {
+    let e = estate().await;
+    let me: PathName = e.fabric_primary().await.parse().unwrap();
+    let records = exit_records();
+    let view = e.view.read().await.clone();
+    for mesh in ["mesh1", "mesh2"] {
+        let lost = view.cohort(mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
+        records.open_peer_recovery(rafka_node_admin_core::admin::PeerRecovery { mesh: mesh.into(), verdict_rafka_ms: 1, opened_at: std::time::Instant::now(), lost });
+    }
+    assert_eq!(records.peer_recoveries().len(), 2, "a recovery is open for each mesh: {:?}", records.peer_recoveries());
+    // Each mesh's first node-admin is reborn and primary in the view the fabric-primary reads.
+    let mut reborn_view = view.clone();
+    let mut reborn: BTreeMap<String, IncarnationId> = BTreeMap::new();
+    for n in reborn_view.nodes.iter_mut().filter(|n| n.kind == NodeKind::NodeAdmin) {
+        n.is_primary = n.name.to_string().ends_with(".admin.1");
+        if n.is_primary {
+            let inc = IncarnationId::mint();
+            n.incarnation_id = Some(inc.clone());
+            reborn.insert(n.mesh.clone(), inc);
+        }
+    }
+    let report = |mesh: &str| records.declared.lock().unwrap().record_report(mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(reborn[mesh].clone()), std::time::Instant::now());
+    report("mesh2");
+    rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &reborn_view);
+    assert_eq!(records.peer_recoveries().iter().map(|r| r.mesh.clone()).collect::<Vec<_>>(), vec!["mesh1".to_string()], "mesh2's new primary reported: only mesh1's recovery is left");
+    assert!(records.peer_recovering(), "the fabric stays degraded while mesh1's new primary has not reported");
+    report("mesh1");
+    rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &reborn_view);
+    assert!(!records.peer_recovering(), "both new primaries reported: the fabric is ready again");
 }
 
 /// R-D1: a peer mesh the fabric primary holds unheard is held as a mesh. The provider's proof that one of

@@ -535,14 +535,37 @@ impl Records {
         *self.fabric_blocker.lock().unwrap() = blocker;
     }
 
-    /// The peer mesh being reborn after the investigation's decision (`None`: no recovery is open).
-    pub fn peer_recovery(&self) -> Option<PeerRecovery> {
-        self.peer_recovery.lock().unwrap().clone()
+    /// Every peer mesh the fabric primary gave a new node-admin that has not yet reported its round.
+    pub fn peer_recoveries(&self) -> Vec<PeerRecovery> {
+        self.peer_recovery.lock().unwrap().iter().cloned().collect()
     }
 
-    /// Hold (or clear) the peer mesh being reborn.
-    pub fn set_peer_recovery(&self, recovery: Option<PeerRecovery>) {
-        *self.peer_recovery.lock().unwrap() = recovery;
+    /// The recovery open for `mesh`, if one is.
+    pub fn peer_recovery_of(&self, mesh: &str) -> Option<PeerRecovery> {
+        self.peer_recovery.lock().unwrap().clone().filter(|r| r.mesh == mesh)
+    }
+
+    /// Whether any peer mesh is being reborn: the fabric is `degraded` while one is.
+    pub fn peer_recovering(&self) -> bool {
+        self.peer_recovery.lock().unwrap().is_some()
+    }
+
+    /// Open the recovery of `recovery.mesh`: the fabric primary gave it a new node-admin.
+    pub fn open_peer_recovery(&self, recovery: PeerRecovery) {
+        *self.peer_recovery.lock().unwrap() = Some(recovery);
+    }
+
+    /// Close the recovery of `mesh`: its new primary reported its round.
+    pub fn close_peer_recovery(&self, mesh: &str) {
+        let mut open = self.peer_recovery.lock().unwrap();
+        if open.as_ref().is_some_and(|r| r.mesh == mesh) {
+            *open = None;
+        }
+    }
+
+    /// Close every recovery: this admin no longer holds the fabric-primary role.
+    pub fn clear_peer_recoveries(&self) {
+        *self.peer_recovery.lock().unwrap() = None;
     }
 
     /// The fabric is `degraded` because this admin took the fabric-primary role while it was.
@@ -1317,7 +1340,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         // keeps an adopted `degraded` until every mesh primary reports (`crate::round`). An admin
         // that holds no seat serves the `degraded` the holder published.
         let held = records.fabric_state();
-        let degraded = records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() || records.published_degraded();
+        let degraded = records.peer_recovering() || records.adopted_degraded() || records.published_degraded();
         topology.fabric.status = if held == crate::fabric_state::FabricState::ReadyForTraffic && degraded { ScopeStatus::Degraded } else { held.scope() };
     }
     let declared_meshes = records.declared.lock().unwrap().meshes.clone();
@@ -2898,13 +2921,13 @@ pub async fn reconcile_drift(
         Ok(()) => {
             // R-DG1 (mesh-investigation.md steps 5-7): the fabric-primary gives the fully crashed mesh a new
             // node-admin and, at that same moment, authors the fabric `degraded` as it does for the
-            // carrier-edge-lost verdict: the one `peer_recovery` slot the status projection reads
+            // carrier-edge-lost verdict: the `peer_recovery` book the status projection reads
             // ([`project_with`]) and [`crate::investigate::restore_peer_recovery`] clears on the new
             // mesh-primary's report ("Only on that report, the fabric-primary clears the degraded
             // health observation"). It is set once the attempt is open, never for a create that did not open.
             if let Some((mesh, _, _)) = &crashed {
                 let lost = t.cohort(mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
-                exits.set_peer_recovery(Some(PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: time.now_ms(), opened_at: degraded_from, lost }));
+                exits.open_peer_recovery(PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: time.now_ms(), opened_at: degraded_from, lost });
                 span.record("fabric_status", "degraded");
             }
             span.in_scope(|| {
@@ -6863,7 +6886,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                     // held before the authority records it replaces are cleared, so no projection
                                                     // between the two answers ready for a fabric the holder published degraded.
                                                     records.set_published_degraded(membership.fabric_status().is_some_and(|s| s.status == "degraded"));
-                                                    records.set_peer_recovery(None);
+                                                    records.clear_peer_recoveries();
                                                     records.set_adopted_degraded(false);
                                                 }
                                                 was_fabric_primary = fabric_primary;
@@ -6893,7 +6916,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                     let basis = if fabric_primary { held_state.scope() } else { t.fabric.status };
                                                     match basis {
                                                         crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::ReadyForTraffic => {
-                                                            status_of(if records.adopted_degraded() || records.peer_recovery().is_some() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::ReadyForTraffic })
+                                                            status_of(if records.adopted_degraded() || records.peer_recovering() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::ReadyForTraffic })
                                                         }
                                                         other => status_of(other),
                                                     }
