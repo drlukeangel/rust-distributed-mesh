@@ -7080,6 +7080,41 @@ mod tests {
         }
     }
 
+    /// CONTRACT (lifecycles/states.md: "Mesh: `pending` → `ready-for-traffic` → `deleting` →
+    /// `deleted` ... deleted is final"; mesh-delete.md step 7: the fabric-primary stops the deleted
+    /// mesh's last admin, "from that admin's stop on it publishes the deleted mesh's aggregate"): the
+    /// fabric-primary accepted mesh.deleted for mesh1 and holds mesh1's last admin, mesh1.admin.1, from
+    /// that admin's own digest. The admin is stopped: the book holds it parked. The view still states
+    /// mesh1 deleted, under its id, with the parked admin its one node. Must NOT happen: the parked
+    /// birth carrying no mesh id into the view, so mesh1 loses its id and is projected
+    /// ready-for-traffic again (handover stem: the fabric-primary re-sent mesh1 the down op for the id
+    /// its view lost, 410 ms after the stop, and its view named mesh1 live).
+    #[test]
+    fn a_deleted_mesh_whose_last_admin_is_stopped_stays_deleted_under_its_id() {
+        let book = DigestBook::default();
+        let records = Records::default();
+        let last = digest("mesh1.admin.1", MemberStatus::ReadyForTraffic);
+        assert!(book.record(last.clone()));
+        let id = last.mesh_id.clone().expect("a node-admin's digest states its mesh id");
+        records.hold_mesh_deleted(&id);
+        let mesh1 = |t: &Topology| t.meshes.iter().find(|m| m.name == "mesh1").map(|m| (m.id.clone(), m.status));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(mesh1(&t), Some((Some(id.clone()), ScopeStatus::Dead)), "mesh.deleted accepted: mesh1 is deleted");
+        assert!(book.stopped(rafka_mesh_entity::LifecycleOp {
+            build_id: "b7".into(),
+            attempt: 1,
+            operation: "stop-node:mesh1.admin.1".into(),
+            node_id: last.node.node_id.clone(),
+            incarnation: last.node.incarnation.clone(),
+            name: last.node.name.clone(),
+            event_at_rafka_ms: 1,
+        }));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        let n = t.node(&last.node.name).expect("the stopped admin is listed");
+        assert!(n.parked, "listed parked: {n:?}");
+        assert_eq!(mesh1(&t), Some((Some(id), ScopeStatus::Dead)), "a deleted mesh whose last admin is stopped stays deleted, under its id");
+    }
+
     /// CONTRACT (mesh-leave.md step 7: "Departed births resolve Gone"; R-MN1: "a mesh created again
     /// is a new mesh"): a contact is a bootstrap hint for a birth this admin holds, never a record of
     /// one that is gone. A birth the book holds departed (node.delete's NodeDeleted, or mesh-left,
