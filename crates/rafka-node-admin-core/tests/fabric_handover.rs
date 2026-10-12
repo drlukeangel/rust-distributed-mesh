@@ -9,8 +9,9 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolde
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::election::{resolve_with, Incumbency};
-use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, Stage, WonClaims, WriteCutOff};
-use rafka_node_admin_core::fabric_storage::{FabricStorage, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage};
+use rafka_node_admin_core::build_facts_read::FetchFailure;
+use rafka_node_admin_core::fabric_handover::{won_claim_from_read, HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, SourceFailure, Stage, WonClaims, WriteCutOff};
+use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage, SeatRow, SeatTransferRow};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -84,14 +85,94 @@ struct Admin {
     _router: Router,
 }
 
-/// The won claims a cell names: (build, attempt) -> executor path.name.
+/// The won claims a cell names: (build, attempt) -> executor path.name; and the reads of the
+/// fabric-primary's Build facts a cell plants for a (build, attempt), answered as the admin's own
+/// claims read answers them (`won_claim_from_read`).
 #[derive(Default)]
-struct TestClaims(Mutex<BTreeMap<(String, u32), String>>);
+struct TestClaims(Mutex<BTreeMap<(String, u32), String>>, Mutex<BTreeMap<(String, u32), FetchFailure>>);
 
 #[async_trait::async_trait]
 impl WonClaims for TestClaims {
-    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, String> {
+    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, SourceFailure> {
+        if let Some(failed) = self.1.lock().unwrap().get(&(build_id.to_string(), attempt)).cloned() {
+            return won_claim_from_read(Err(failed), build_id, attempt, "mesh1.admin.1 (000000000002)");
+        }
         Ok(self.0.lock().unwrap().get(&(build_id.to_string(), attempt)).cloned())
+    }
+}
+
+/// The error a [`FailingStorage`] answers for a method it is told to fail.
+const PLANTED: &str = "planted: the disk refused";
+
+/// A `fabric.storage` held in memory that fails each method named in `fail` with an Io error naming
+/// the method: what a store whose disk refuses answers.
+#[derive(Default)]
+struct FailingStorage {
+    inner: MemoryFabricStorage,
+    fail: Mutex<std::collections::BTreeSet<&'static str>>,
+}
+
+impl FailingStorage {
+    fn failing(&self, method: &'static str) {
+        self.fail.lock().unwrap().insert(method);
+    }
+    fn check(&self, method: &'static str) -> Result<(), FabricStorageError> {
+        if self.fail.lock().unwrap().contains(method) {
+            return Err(FabricStorageError::Io { file: format!("fabric/{method}"), reason: PLANTED.into() });
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl FabricStorage for FailingStorage {
+    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
+        self.check("fabric")?;
+        self.inner.fabric().await
+    }
+    async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
+        self.check("put_identity")?;
+        self.inner.put_identity(identity).await
+    }
+    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
+        self.check("put_pointer")?;
+        self.inner.put_pointer(pointer).await
+    }
+    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
+        self.check("shutdown")?;
+        self.inner.shutdown().await
+    }
+    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
+        self.check("put_shutdown")?;
+        self.inner.put_shutdown(shutdown).await
+    }
+    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError> {
+        self.check("put_seat")?;
+        self.inner.put_seat(row).await
+    }
+    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
+        self.check("seats")?;
+        self.inner.seats().await
+    }
+    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
+        self.check("put_handover")?;
+        self.inner.put_handover(row).await
+    }
+    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
+        self.check("handovers")?;
+        self.inner.handovers().await
+    }
+    async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError> {
+        self.check("put_seat_transfer")?;
+        self.inner.put_seat_transfer(row).await
+    }
+    async fn seat_transfer(&self, holder_mesh: &str, operation: &str) -> Result<Option<SeatTransferRow>, FabricStorageError> {
+        self.check("seat_transfer")?;
+        self.inner.seat_transfer(holder_mesh, operation).await
+    }
+    async fn seat_transfers(&self) -> Result<Vec<SeatTransferRow>, FabricStorageError> {
+        self.check("seat_transfers")?;
+        self.inner.seat_transfers().await
     }
 }
 
@@ -1212,4 +1293,237 @@ async fn epoch_overflow(op: &'static str, seats_op: &'static str) -> Vec<(&'stat
     assert_eq!((s.p.door.membership.seats().mesh("mesh1"), s.p.door.membership.seats().fabric()), (Some(holder_of(&s.p, u64::MAX)), Some(holder_of(&s.p, 7))), "P's seats did not move");
     let _ = (&s.m, &s.x);
     replies
+}
+
+/// The cell's spans, written to `target/cells/fabric_handover/<cell>/spans.json`; its trace id and
+/// that path are printed.
+fn keep_cell(cell: &str, trace_id: &str, spans: &[serde_json::Value]) {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cells/fabric_handover").join(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(spans).unwrap()).unwrap();
+    println!("cell={cell} trace_id={trace_id} spans={}", dir.join("spans.json").display());
+}
+
+/// The spans named `name` in the cell's own trace.
+fn in_trace(spans: &[serde_json::Value], trace_id: &str, name: &str) -> Vec<serde_json::Value> {
+    spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id).cloned().collect()
+}
+
+/// The `(source, op, cause)` of a `RejectedSourceFailed`; any other reply panics, naming it.
+fn source_failed(r: &Reply) -> (String, String, String) {
+    match r {
+        Reply::RejectedSourceFailed { source, op, cause } => (source.clone(), op.clone(), cause.clone()),
+        other => panic!("refused by name, RejectedSourceFailed naming what failed, the operation and the cause: {other:?}"),
+    }
+}
+
+/// The `(reason, source, op, cause)` a reject span carries.
+fn source_fields(span: &serde_json::Value) -> (String, String, String, String) {
+    let a = |k: &str| span["attributes"][k].as_str().unwrap_or_default().to_string();
+    (a("reason"), a("source"), a("op"), a("cause"))
+}
+
+/// CONTRACT (node-rpc-envelope.md, TakeSeats: "The commit is one durable row holding every seat P
+/// transfers"; "Each seat's `expected_epoch` must be the seat's current epoch, else
+/// RejectedStaleSeat"): a TakeSeats that leaves out a seat the holder holds names no epoch for it,
+/// stale or current. P holds the mesh1 mesh-primary seat at 3 and the fabric seat at 7; N names the
+/// mesh1 seat alone. It is refused `RejectedSeatOmitted { seat: FabricPrimary, current: 7 }`, the
+/// holder's reject span naming the reason `seat-omitted`, the seat and the epoch it holds. Nothing
+/// commits: no seat-transfer row, no write cut-off, both seats where they were. What must NOT
+/// happen: `RejectedStaleSeat { expected: 0, .. }`, a 0 standing for "not named".
+#[test]
+fn a_take_seats_that_leaves_out_a_held_seat_is_refused_by_name_and_nothing_commits() {
+    let cap = crate::mesh_leave_resume::capture();
+    let (reply, trace_id) = cap.run(async {
+        let root = tracing::info_span!("rdm.test.seat.reject.via-seat-omitted");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let reply = tracing::Instrument::instrument(
+            async {
+                let s = seats_fabric().await;
+                let mut req = take_seats(&s.p, &s.n, 3, 7, "b1", "drain-node:mesh1.admin.1");
+                if let Request::TakeSeats { seats, .. } = &mut req {
+                    seats.retain(|e| e.seat != WireSeat::FabricPrimary);
+                }
+                let reply = send(&s.n, &s.p, req).await;
+                assert!(s.p.storage.seat_transfers().await.unwrap().is_empty(), "no seat-transfer row is written");
+                assert!(s.p.cut_offs.lock().unwrap().is_empty(), "no write is cut off: {:?}", s.p.cut_offs.lock().unwrap());
+                assert_eq!((s.p.door.membership.seats().mesh("mesh1"), s.p.door.membership.seats().fabric()), (Some(holder_of(&s.p, 3)), Some(holder_of(&s.p, 7))), "P's seats did not move");
+                let _ = (&s.m, &s.x);
+                reply
+            },
+            root,
+        )
+        .await;
+        (reply, trace_id)
+    });
+    let spans = cap.spans();
+    keep_cell("seat_omitted", &trace_id, &spans);
+    assert_eq!(reply, Reply::RejectedSeatOmitted { seat: WireSeat::FabricPrimary, current: 7 }, "the seat left out is named with the epoch the holder holds it at");
+    let refused = in_trace(&spans, &trace_id, SEATS_REJECTED);
+    let holder = refused.iter().find(|s| s["attributes"]["side"] == "holder").unwrap_or_else(|| panic!("no holder reject span: {refused:?}"));
+    let a = |k: &str| holder["attributes"][k].as_str().unwrap_or_default().to_string();
+    assert_eq!((a("reason"), a("seat"), a("current")), ("seat-omitted".to_string(), "fabric-primary".to_string(), "7".to_string()), "{holder:?}");
+    assert!(in_trace(&spans, &trace_id, SEATS_COMMITTED).is_empty(), "nothing commits");
+}
+
+/// mesh1's admin holds the fabric seat at 7 and mesh2's admin is the only other mesh-primary, as
+/// [`fabric`], each over its own [`FailingStorage`] (returned incumbent's, successor's). With
+/// `successor_holds_fabric_seat` false the successor holds no fabric seat record.
+async fn failing_pair(successor_holds_fabric_seat: bool) -> (Pair, Arc<FailingStorage>, Arc<FailingStorage>) {
+    let fabric_id = FabricId::mint();
+    let (incumbent_store, successor_store) = (Arc::new(FailingStorage::default()), Arc::new(FailingStorage::default()));
+    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, incumbent_store.clone()).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, successor_store.clone()).await;
+    let nodes = vec![node_of(&incumbent, NodeStatus::ReadyForTraffic, true), node_of(&successor, NodeStatus::ReadyForTraffic, false)];
+    for a in [&incumbent, &successor] {
+        *a.door.topology.write().await = view(nodes.clone());
+        for p in [&incumbent, &successor] {
+            a.resolver.insert(p.resolved.clone());
+        }
+        if successor_holds_fabric_seat || a.resolved.name.mesh == "mesh1" {
+            a.door.membership.seats().take(Seat::FabricPrimary, &holder_of(&incumbent, 7));
+        }
+        a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&incumbent, 1));
+        a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&successor, 1));
+    }
+    (Pair { incumbent, successor, mesh1_id: MeshId::mint() }, incumbent_store, successor_store)
+}
+
+/// CONTRACT (CLAUDE.md error rule: "Name what failed and where ... 'Never written' and 'could not be
+/// read' are different errors"; node-rpc-envelope.md "Node RPC readiness gate": NotReady means "the
+/// door or the handler cannot serve this call yet"): a handover call whose decision or commit needs
+/// a record that is absent or a `fabric.storage` write that fails is refused `RejectedSourceFailed`
+/// naming what failed, the operation and the cause, never NotReady. Four calls, each on a fresh pair:
+/// a TakeFabricPrimary to a successor that holds no fabric seat record (never written there); one
+/// whose successor's store refuses the handover row at Committed(8); one whose successor's store
+/// refuses the fabric seat row; and a FabricPrimaryTaken whose incumbent's store refuses the handover
+/// row at Confirmed(8). Each is the receiver's reject span with reason `source-failed` and the same
+/// three fields; the successor's fabric seat never moves for a commit it could not make durable.
+#[test]
+fn a_handover_call_whose_seat_record_is_absent_or_whose_store_refuses_a_row_is_refused_by_name() {
+    let cap = crate::mesh_leave_resume::capture();
+    let op = "fabric-primary-handover:source-failed";
+    let (replies, trace_id) = cap.run(async {
+        let root = tracing::info_span!("rdm.test.fabric.reject.via-source-failed");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let replies = tracing::Instrument::instrument(
+            async {
+                let mut replies = Vec::new();
+                let (f, _, _) = failing_pair(false).await;
+                replies.push(("absent-seat-record", send(&f.incumbent, &f.successor, take(&f, 7, op)).await));
+                let (f, _, successor_store) = failing_pair(true).await;
+                successor_store.failing("put_handover");
+                replies.push(("handover-row", send(&f.incumbent, &f.successor, take(&f, 7, op)).await));
+                assert_eq!(f.successor.door.membership.seats().fabric(), Some(holder_of(&f.incumbent, 7)), "the successor's fabric seat did not move");
+                let (f, _, successor_store) = failing_pair(true).await;
+                successor_store.failing("put_seat");
+                replies.push(("seat-row", send(&f.incumbent, &f.successor, take(&f, 7, op)).await));
+                assert_eq!(f.successor.door.membership.seats().fabric(), Some(holder_of(&f.incumbent, 7)), "the successor's fabric seat did not move");
+                let (f, incumbent_store, _) = failing_pair(true).await;
+                incumbent_store.failing("put_handover");
+                replies.push(("confirmed-row", send(&f.successor, &f.incumbent, taken(&f, 7, 8, op)).await));
+                replies
+            },
+            root,
+        )
+        .await;
+        (replies, trace_id)
+    });
+    let spans = cap.spans();
+    keep_cell("source_failed", &trace_id, &spans);
+    let fields: BTreeMap<&str, (String, String, String)> = replies.iter().map(|(case, r)| (*case, source_failed(r))).collect();
+    let (source, op_, cause) = &fields["absent-seat-record"];
+    assert!(source.contains("seat records") && source.contains("mesh2.admin.1") && op_.contains("fabric seat") && cause.contains("no fabric seat record"), "an absent record is named as never written: {:?}", fields["absent-seat-record"]);
+    let (source, op_, cause) = &fields["handover-row"];
+    assert!(source.contains("fabric.storage") && source.contains("mesh2.admin.1") && source.contains("handover row") && op_.contains("put") && op_.contains("Committed") && cause.contains(PLANTED), "{:?}", fields["handover-row"]);
+    let (source, op_, cause) = &fields["seat-row"];
+    assert!(source.contains("fabric.storage") && source.contains("mesh2.admin.1") && source.contains("seat row") && op_.contains("put") && op_.contains("fabric-primary") && op_.contains('8') && cause.contains(PLANTED), "{:?}", fields["seat-row"]);
+    let (source, op_, cause) = &fields["confirmed-row"];
+    assert!(source.contains("fabric.storage") && source.contains("mesh1.admin.1") && source.contains("handover row") && op_.contains("put") && op_.contains("Confirmed") && cause.contains(PLANTED), "{:?}", fields["confirmed-row"]);
+    let refused = in_trace(&spans, &trace_id, REJECTED);
+    for (case, call, side) in [("absent-seat-record", "take", "successor"), ("handover-row", "take", "successor"), ("seat-row", "take", "successor"), ("confirmed-row", "taken", "incumbent")] {
+        let (source, op_, cause) = fields[case].clone();
+        let named = refused.iter().filter(|s| s["attributes"]["call"] == call && s["attributes"]["side"] == side).map(source_fields).collect::<Vec<_>>();
+        assert!(named.contains(&("source-failed".to_string(), source, op_, cause)), "{case}: the {side}'s reject span names the reason source-failed and the three fields: {named:?}");
+    }
+    assert!(in_trace(&spans, &trace_id, COMMITTED).is_empty(), "no commit is announced for a row that was not made durable");
+}
+
+/// The seats fabric with each admin over its own [`FailingStorage`]; P's is returned.
+async fn failing_seats() -> (Seats, Arc<FailingStorage>) {
+    let made: Arc<Mutex<Vec<Arc<FailingStorage>>>> = Arc::default();
+    let s = seats_fabric_with({
+        let made = made.clone();
+        move || {
+            let store = Arc::new(FailingStorage::default());
+            made.lock().unwrap().push(store.clone());
+            store as Arc<dyn FabricStorage>
+        }
+    })
+    .await;
+    let p_store = made.lock().unwrap()[0].clone();
+    (s, p_store)
+}
+
+/// CONTRACT (CLAUDE.md error rule; node-rpc-envelope.md TakeSeats: N "is the executor the attempt's
+/// Won claim names ... else RejectedNotEligible"): a TakeSeats whose checks read something that fails
+/// is refused `RejectedSourceFailed` naming it, never NotReady, and a claim the fabric-primary never
+/// wrote is no claim. Four calls, each on a fresh seats fabric: P's store cannot read the
+/// operation's seat-transfer row; P cannot read the fabric-primary's Build facts for the claim
+/// (unreached); the fabric-primary holds no fact of the Build (never written), answered
+/// `RejectedNotEligible` "no Won claim"; P's store refuses the seat-transfer row, and the write
+/// cut-off it set is lifted. Each is P's reject span (`source-failed` with the three fields, or
+/// `not-the-claimed-executor`); no seat moves.
+#[test]
+fn a_take_seats_whose_row_or_claim_read_fails_or_whose_row_put_fails_is_refused_by_name() {
+    let cap = crate::mesh_leave_resume::capture();
+    let seats_op = "drain-node:mesh1.admin.1";
+    let (replies, trace_id) = cap.run(async {
+        let root = tracing::info_span!("rdm.test.seat.reject.via-source-failed");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let replies = tracing::Instrument::instrument(
+            async {
+                let mut replies = Vec::new();
+                let unmoved = |s: &Seats| (s.p.door.membership.seats().mesh("mesh1"), s.p.door.membership.seats().fabric()) == (Some(holder_of(&s.p, 3)), Some(holder_of(&s.p, 7)));
+                let (s, p_store) = failing_seats().await;
+                p_store.failing("seat_transfer");
+                replies.push(("row-read", send(&s.n, &s.p, take_seats(&s.p, &s.n, 3, 7, "b1", seats_op)).await));
+                assert!(s.p.cut_offs.lock().unwrap().is_empty() && unmoved(&s), "nothing is cut off or moved");
+                let (s, _) = failing_seats().await;
+                s.p.claims.1.lock().unwrap().insert(("b1".into(), 1), FetchFailure::Unreached("no path to the fabric-primary".into()));
+                replies.push(("claim-read", send(&s.n, &s.p, take_seats(&s.p, &s.n, 3, 7, "b1", seats_op)).await));
+                assert!(s.p.cut_offs.lock().unwrap().is_empty() && unmoved(&s), "nothing is cut off or moved");
+                let (s, _) = failing_seats().await;
+                s.p.claims.1.lock().unwrap().insert(("b1".into(), 1), FetchFailure::UnknownBuild("the responder holds no fact of b1".into()));
+                replies.push(("claim-never-written", send(&s.n, &s.p, take_seats(&s.p, &s.n, 3, 7, "b1", seats_op)).await));
+                assert!(s.p.cut_offs.lock().unwrap().is_empty() && unmoved(&s), "nothing is cut off or moved");
+                let (s, p_store) = failing_seats().await;
+                p_store.failing("put_seat_transfer");
+                replies.push(("row-put", send(&s.n, &s.p, take_seats(&s.p, &s.n, 3, 7, "b1", seats_op)).await));
+                assert!(matches!(s.p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Lift]), "the cut-off is lifted when the row was not written: {:?}", s.p.cut_offs.lock().unwrap());
+                assert!(unmoved(&s), "no seat moves");
+                replies
+            },
+            root,
+        )
+        .await;
+        (replies, trace_id)
+    });
+    let spans = cap.spans();
+    keep_cell("take_seats_source_failed", &trace_id, &spans);
+    let reply = |case: &str| replies.iter().find(|(c, _)| *c == case).map(|(_, r)| r.clone()).unwrap();
+    let (source, op_, cause) = source_failed(&reply("row-read"));
+    assert!(source.contains("fabric.storage") && source.contains("mesh1.admin.1") && source.contains("seat-transfer row") && op_.contains("read") && op_.contains(seats_op) && cause.contains(PLANTED), "{source} | {op_} | {cause}");
+    let (source, op_, cause) = source_failed(&reply("claim-read"));
+    assert!(source.contains("Build log of the fabric-primary") && op_.contains("fetch-build-facts b1") && cause.contains("unreached"), "{source} | {op_} | {cause}");
+    assert!(matches!(reply("claim-never-written"), Reply::RejectedNotEligible { ref reason } if reason.contains("no Won claim of attempt 1 of Build b1")), "a claim never written is no claim: {:?}", reply("claim-never-written"));
+    let (source, op_, cause) = source_failed(&reply("row-put"));
+    assert!(source.contains("fabric.storage") && source.contains("mesh1.admin.1") && source.contains("seat-transfer row") && op_.contains("put") && op_.contains(seats_op) && cause.contains(PLANTED), "{source} | {op_} | {cause}");
+    let named = in_trace(&spans, &trace_id, SEATS_REJECTED).iter().filter(|s| s["attributes"]["side"] == "holder").map(source_fields).collect::<Vec<_>>();
+    for case in ["row-read", "claim-read", "row-put"] {
+        let (source, op_, cause) = source_failed(&reply(case));
+        assert!(named.contains(&("source-failed".to_string(), source, op_, cause)), "{case}: P's reject span names the reason source-failed and the three fields: {named:?}");
+    }
+    assert!(named.iter().any(|(reason, ..)| reason == "not-the-claimed-executor"), "a claim never written is refused as no claim: {named:?}");
+    assert!(in_trace(&spans, &trace_id, SEATS_COMMITTED).is_empty(), "nothing commits");
 }

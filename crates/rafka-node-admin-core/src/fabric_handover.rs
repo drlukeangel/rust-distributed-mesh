@@ -149,12 +149,48 @@ impl HandoverBook {
     }
 }
 
+/// What a receiver had to read or write to decide or commit a call, and why it failed: the fields a
+/// `RejectedSourceFailed` reply names (node-rpc-envelope.md: a runtime refusal, never `NotReady`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFailure {
+    /// What failed, named with its owner and row.
+    pub source: String,
+    /// The operation on it that failed, with its subject.
+    pub op: String,
+    /// Why it failed: the store's or the peer's own error, or what was absent.
+    pub cause: String,
+}
+
+impl std::fmt::Display for SourceFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}: {}", self.source, self.op, self.cause)
+    }
+}
+
 /// The executor an attempt's Won claim names, as the fabric-primary decided it: what a holder checks a
 /// TakeSeats caller against.
 #[async_trait::async_trait]
 pub trait WonClaims: Send + Sync {
-    /// The path.name of the executor of `attempt` of `build_id`; `None` when no claim of it is known.
-    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, String>;
+    /// The path.name of the executor of `attempt` of `build_id`; `None` when no claim of it was ever
+    /// written where it was looked for; a read that failed is the [`SourceFailure`].
+    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, SourceFailure>;
+}
+
+/// The executor the Won claim of `attempt` of `build_id` names among `facts`, if any.
+pub fn won_claim_in(facts: &[crate::build_state::BuildFact], build_id: &str, attempt: u32) -> Option<String> {
+    facts.iter().find_map(|f| match f {
+        crate::build_state::BuildFact::Claim(c) if c.build_id.0 == build_id && c.attempt == attempt => Some(c.executor.clone()),
+        _ => None,
+    })
+}
+
+/// The executor the Won claim of `attempt` of `build_id` names, from the fabric-primary `fabric_primary`'s
+/// Build facts as `read` over FetchBuildFacts returned them.
+pub fn won_claim_from_read(read: Result<Vec<crate::build_state::BuildFact>, crate::build_facts_read::FetchFailure>, build_id: &str, attempt: u32, fabric_primary: &str) -> Result<Option<String>, SourceFailure> {
+    match read {
+        Ok(facts) => Ok(won_claim_in(&facts, build_id, attempt)),
+        Err(e) => Err(SourceFailure { source: format!("the Build log of the fabric-primary {fabric_primary}, read over fetch-build-facts"), op: format!("fetch-build-facts {build_id} for the claim of attempt {attempt}"), cause: e.to_string() }),
+    }
 }
 
 /// What a SeatTransfer step established at the executor: its receipt.
@@ -800,7 +836,7 @@ impl HandoverDoor {
                 let detail = format!("no Won claim of attempt {} of Build {} is known to this admin or its fabric-primary", t.attempt, t.build_id);
                 return refuse("not-the-claimed-executor", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
             }
-            Err(e) => return refuse("not-ready", e.clone(), Reply::NotReady { reason: format!("{}: the claim of attempt {} of Build {} could not be read: {e}", self.me, t.attempt, t.build_id) }),
+            Err(e) => return refuse("not-ready", e.to_string(), Reply::NotReady { reason: format!("{}: the claim of attempt {} of Build {} could not be read: {e}", self.me, t.attempt, t.build_id) }),
         }
         // ... and the admin the election seats once this birth is gone, inside this mesh.
         let view = self.topology.read().await.clone();

@@ -330,12 +330,13 @@ impl AdminRunner {
         // the fabric-primary this admin's view names (LeaveMesh is the fabric-primary's command,
         // node-rpc-envelope.md "Mesh delete command pair"). Nothing checks who is calling
         // (node-rpc.md §14).
-        let Some(owner) = sender.map(|n| n.node_id.clone()).or_else(|| view.fabric_primary().map(|n| n.node_id.clone())) else {
-            return StatusReply::NotReady { reason: format!("{}: leave-mesh for {mesh_id} came from an endpoint this admin holds no birth for, and its view names no fabric-primary to hand the leave back to", self.me) };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
+        let owner = match crate::mesh_leave::leave_owner(sender.map(|n| &n.node_id), view.fabric_primary().map(|n| &n.node_id), &self.me.to_string(), &key) {
+            Ok(owner) => owner,
+            Err(refused) => return refused,
         };
         // The mesh row Leaving and the round's admission (the command hook's mesh-leaving is the
         // owner's): [`crate::mesh_leave::admit_leave_mesh`].
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
         let crate::mesh_leave::LeaveMeshAdmission { leaving_row, admission } = crate::mesh_leave::admit_leave_mesh(&self.leave_runs, &*self.status_storage, &self.records.declared, &key, &owner).await;
         if let Some(committed) = &leaving_row {
             tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
@@ -548,8 +549,8 @@ impl AdminRunner {
         if RuntimeProof::of(final_runtime) != admitted.final_runtime {
             return unmatched("final_runtime", format!("{:?}", admitted.final_runtime), format!("{:?}", RuntimeProof::of(final_runtime)));
         }
-        if let Err(refusal) = crate::deployment::provider::adopt(&*self.provider, final_runtime) {
-            return StatusReply::NotReady { reason: format!("{}: no provider proof path to the final primary's runtime {}: {refusal}", self.me, final_runtime.deployment_id) };
+        if let Err(refused) = crate::mesh_leave::adopt_final_runtime(&*self.provider, final_runtime, &self.me.to_string(), &key) {
+            return refused;
         }
         // The manifest: the sender's Build facts, read now.
         let Some(node_rpc) = self.node_rpc.as_ref() else {
@@ -558,7 +559,7 @@ impl AdminRunner {
         let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(build_id.to_string())).await.map(|f| f.facts);
         let verdict = match crate::mesh_leave::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &self.me.to_string(), &final_node_id.to_string()) {
             Ok(v) => v,
-            Err(reason) => return StatusReply::NotReady { reason },
+            Err(refused) => return refused,
         };
         let manifest = match verdict {
             crate::mesh_leave::HandoffVerdict::Accept(m) => m,

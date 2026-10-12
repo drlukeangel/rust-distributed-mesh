@@ -770,14 +770,37 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
 /// and the open leave ends now (mesh-leave.md: "Missing receipts ... leave the workflow
 /// incomplete"). `Err` is a read that decides nothing (not ready, unreached, interrupted, refused
 /// or an incomplete stream): the reply is not-ready by that name and the open leave stays open.
-pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, String> {
+pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, StatusReply> {
     match read {
         Ok(facts) => Ok(handoff_verdict(&facts, key, admitted, receipt_manifest)),
         Err(crate::build_facts_read::FetchFailure::UnknownBuild(detail)) => Ok(match handoff_verdict(&[], key, admitted, receipt_manifest) {
             HandoffVerdict::Incomplete { reason, without_exit } => HandoffVerdict::Incomplete { reason: format!("{reader}: the final primary {sender} holds no fact of the Build ({detail}): {reason}"), without_exit },
             other => other,
         }),
-        Err(e) => Err(format!("{reader}: the manifest {receipt_manifest} could not be read from {sender}: {e}")),
+        Err(e) => Err(StatusReply::NotReady { reason: format!("{reader}: the manifest {receipt_manifest} could not be read from {sender}: {e}") }),
+    }
+}
+
+/// The admin a `leave-mesh`'s handoff goes back to, the owner of the workflow: the admin that sent
+/// the command (`sender`, the birth this admin holds for the calling endpoint), else the
+/// fabric-primary its view names (LeaveMesh is the fabric-primary's command, node-rpc-envelope.md
+/// "Mesh delete command pair"). Nothing checks who is calling (node-rpc.md §14). With neither, the
+/// leave has no owner to hand back to and is refused by name.
+pub fn leave_owner(sender: Option<&NodeId>, fabric_primary: Option<&NodeId>, me: &str, key: &LeaveKey) -> Result<NodeId, StatusReply> {
+    match sender.or(fabric_primary) {
+        Some(owner) => Ok(owner.clone()),
+        None => Err(StatusReply::NotReady { reason: format!("{me}: leave-mesh for {} came from an endpoint this admin holds no birth for, and its view names no fabric-primary to hand the leave back to", key.mesh_id) }),
+    }
+}
+
+/// The final primary's runtime, as a `MeshLeave` names it, adopted by this admin's provider: the
+/// provider proof path the owner stops it through (mesh-leave.md step 5). A runtime the provider
+/// refuses is refused by name.
+pub fn adopt_final_runtime(provider: &dyn crate::deployment::provider::DeploymentProvider, final_runtime: &rafka_mesh_entity::RuntimeFact, me: &str, key: &LeaveKey) -> Result<(), StatusReply> {
+    let _ = key;
+    match crate::deployment::provider::adopt(provider, final_runtime) {
+        Ok(_) => Ok(()),
+        Err(refusal) => Err(StatusReply::NotReady { reason: format!("{me}: no provider proof path to the final primary's runtime {}: {refusal}", final_runtime.deployment_id) }),
     }
 }
 

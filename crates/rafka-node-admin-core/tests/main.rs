@@ -37,6 +37,7 @@ mod boot_stop;
 mod loopback;
 mod mesh_leave_resume;
 mod mesh_delete_round;
+mod mesh_delete_source;
 mod build_catch_up;
 mod build_admission;
 mod build_claim;

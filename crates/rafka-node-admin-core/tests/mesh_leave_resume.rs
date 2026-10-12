@@ -1055,7 +1055,8 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
 /// manifest, so the fabric-primary's verdict is Incomplete at once, naming every roster birth but
 /// the final primary as without an Exited receipt and naming the unknown Build; the open leave ends
 /// inside the call instead of waiting out its handoff bound (gate 044519ab canonical_ids: 120 s).
-/// A read that could not decide (not ready, unreached) stays undecided and the leave stays open.
+/// A read that could not decide (not ready, unreached) stays undecided and the leave stays open: it is
+/// refused `RejectedSourceFailed` naming the read, never answered as this admin's own `NotReady`.
 #[test]
 fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplete() {
     let records: Vec<Node> = [FINAL, EXITING, FAILING].iter().map(|n| node(n)).collect();
@@ -1095,7 +1096,7 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
         }
         other => panic!("a final primary that holds no fact of the Build ends the leave incomplete, not undecided: {other:?}"),
     }
-    assert!(matches!(&not_ready, Err(r) if r.contains("hydrating")), "a read that could not decide leaves the leave open: {not_ready:?}");
+    assert!(matches!(&not_ready, Err(StatusReply::RejectedSourceFailed { cause, .. }) if cause.contains("hydrating")), "a read that could not decide leaves the leave open, refused by name as a read that failed: {not_ready:?}");
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     assert_eq!(named("rdm.node_admin.mesh.reject.via-incomplete-handoff").iter().filter(|s| s["attributes"]["roster"] == "3" && s["attributes"]["exited"] == "0").count(), 1, "one incomplete handoff is refused, for the unknown Build only");
 }
