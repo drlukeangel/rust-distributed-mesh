@@ -357,7 +357,7 @@ async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 }
 
 /// CONTRACT (#2780): every documented Build/deployment step, lifecycle hook, accepted-Build
-/// persist-before-pointer cut, runtime publication/hydration cut and Pending gate of a real
+/// persist-before-pointer cut, runtime publication cut and Pending gate of a real
 /// node-admin is held independently at its one point and released. For each cut: the testkit door
 /// acknowledges the arming and then the active hold (naming the exact call that parked: Build,
 /// attempt, operation, step); while it holds, the Build holds exactly the receipts before the cut
@@ -793,7 +793,7 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     run.push(row(h, group, id, &spec, rel, after));
 }
 
-// ---- the Pending gate, hydration and the whole-mesh retire --------------------------------------------
+// ---- the Pending gate and the joining admin's Ready gate --------------------------------------------
 
 /// A mesh's first admin is born and bound and published, and the fabric primary has not yet applied
 /// its mesh's Pending: stalled before the `ApplyMeshPending` step. The admin must not reach Ready
