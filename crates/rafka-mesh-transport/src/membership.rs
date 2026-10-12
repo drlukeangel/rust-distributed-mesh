@@ -7232,4 +7232,25 @@ mod tests {
         let ended = spans.named("rdm.mesh.membership.update.via-stop-ended-in-projection");
         assert_eq!(ended.iter().map(|f| (f["stop_carried_at"].clone(), f["held_again"].clone(), f["held_digest_seq"].clone())).collect::<Vec<_>>(), vec![("11".to_string(), "true".to_string(), "6".to_string())], "ended once: {ended:#?}");
     }
+
+    /// CONTRACT (gossip.md §3.1 `MembersDelta` carries "overlay and departed changes"; §3.3 a delta is
+    /// "the complete difference between the two projections"; node_restart gate 6c64abe1: mesh1.rpc.1
+    /// and mesh1.rpc.3 ended mesh1.rpc.2's restart at v15, two versions after the primary's node.started
+    /// closed it at v13, because the delta 12→14 carried no entry of mesh1.rpc.2, whose digest had not
+    /// changed): a restart that ended at the source while its birth's digest stayed the same still
+    /// ends at the receiver: the delta names the birth whose restart ended. Must NOT happen: a
+    /// receiver's held projection keeping a restart its source no longer carries.
+    #[test]
+    fn a_delta_ends_a_restart_whose_birth_did_not_change() {
+        use crate::snapshot::Full;
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let restart = op(&id, &inc, "restart-node:mesh1.rpc.2");
+        let ready = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 9);
+        let restarting = Full::new(vec![ready.clone()], vec![restart], Vec::new());
+        let started = Full::new(vec![ready], Vec::new(), Vec::new());
+        let delta = restarting.delta_to(&started);
+        let mut receiver = restarting.clone();
+        receiver.apply(&delta);
+        assert!(receiver.same_topology(&started), "the receiver holds what the source holds: {delta:?}");
+    }
 }
