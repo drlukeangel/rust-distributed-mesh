@@ -80,3 +80,83 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     lifecycle.draining(&op(&peer, "drain-node:mesh2.rpc.1")).await;
     assert_eq!(status(&peer), None, "a member of another mesh is not this primary's to set");
 }
+
+// @feature: node-lifecycle
+/// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets its
+/// status"; gossip.md §3.1: a Digest "carries no status"): a member's `DeclareNodeState` applied by its
+/// mesh-primary's status authority sets the member's status in that primary's book, which its member
+/// projection carries: its ReadyForTraffic (node.started), then its Draining (a node-admin frozen by the
+/// fabric shutdown says it so, and the shutdown's freeze barrier reads it from the projection). A
+/// refused report sets nothing. Must NOT happen: a member's reported state applied to its declared row
+/// and nowhere else, so every other node holds it as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
+    use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
+    use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
+    use rafka_node_rpc_contract::status::{NodeState, StatusReply, StatusRequest};
+    let fabric = FabricId::mint();
+    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+    let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    time.adopt(5_000_000);
+    let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
+    membership.set_mesh_primary(true);
+
+    let member = member(&fabric, "mesh1.admin.2", 10);
+    assert!(membership.book.record(member.clone()), "the member's heartbeat is held");
+    let node = |name: &str, primary: bool, id: NodeId, inc: IncarnationId| {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.kind = rafka_mesh_entity::NodeKind::NodeAdmin;
+        n.mesh = "mesh1".into();
+        n.node_id = id;
+        n.incarnation_id = Some(inc);
+        n.provider = Some(ProviderKind::Process);
+        n.status = NodeStatus::ReadyForTraffic;
+        n.is_primary = primary;
+        n.is_fabric_primary = primary;
+        n
+    };
+    let me = node("mesh1.admin.1", true, NodeId::mint(), IncarnationId::mint());
+    let subject = node("mesh1.admin.2", false, member.node.node_id.clone(), member.node.incarnation.clone());
+    let topology = Arc::new(tokio::sync::RwLock::new(rafka_node_admin_core::topology::Topology {
+        fabric: Fabric { id: fabric.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: Vec::new(),
+        nodes: vec![me.clone(), subject.clone()],
+    }));
+    let authority = StatusAuthority {
+        me: me.name.clone(),
+        node_id: me.node_id.clone(),
+        fabric_id: fabric.clone(),
+        topology,
+        declared: Arc::new(std::sync::Mutex::new(Declared::default())),
+        status_storage: Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default()),
+        nodes_storage: Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()),
+        mesh_ids: Arc::new(std::collections::BTreeMap::new),
+        republish: Arc::new(std::sync::OnceLock::new()),
+        commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
+        own: Arc::new(std::sync::OnceLock::new()),
+        leaver: Arc::new(std::sync::OnceLock::new()),
+        hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        wake: Default::default(),
+        rounds: Default::default(),
+        configs: Default::default(),
+        configure: Default::default(),
+        hydration: Default::default(),
+        rename: Default::default(),
+        row_moved: Default::default(),
+        loads: None,
+        book: Some(membership.book.clone()),
+    };
+    let status = || membership.book.get(member.node.node_id.as_str()).map(|(h, _)| h.status);
+    let declare = |state| StatusRequest::DeclareNodeState { node_id: member.node.node_id.clone(), incarnation: member.node.incarnation.clone(), state };
+    assert_eq!(status(), Some(MemberStatus::Pending));
+    assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::ReadyForTraffic)).await, StatusReply::Applied);
+    assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "its node.started sets it ready-for-traffic");
+    assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::Draining)).await, StatusReply::Applied);
+    assert_eq!(status(), Some(MemberStatus::Draining), "its reported Draining sets it Draining");
+    let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.1", me.incarnation_id.clone().unwrap(), vec![]).await.unwrap();
+    assert_eq!(backbone.own_members(&membership).into_iter().find(|d| d.node.node_id == member.node.node_id).map(|d| d.status), Some(MemberStatus::Draining), "its projection carries it");
+    assert!(matches!(authority.apply(Some(subject.clone()), &declare(NodeState::Pending)).await, StatusReply::RejectedInvalidNodeTransition { .. }), "a backward report is refused");
+    assert_eq!(status(), Some(MemberStatus::Draining), "and sets nothing");
+}
