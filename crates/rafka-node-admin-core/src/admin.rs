@@ -7337,7 +7337,7 @@ mod tests {
             crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }),
         ]);
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
-        crate::fabric_storage::FabricStorage::put_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap();
+        crate::fabric_storage::FabricStorage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
         crate::fabric_storage::FabricStorage::put_pointer(&*fabric, &crate::fabric_storage::FabricPointer { build_id: b1.clone(), submitted_at_ms: 1 }).await.unwrap();
         let status = Arc::new(crate::status_storage::MemoryStatusStorage::default());
         let recovery = RecoverySubmitter {

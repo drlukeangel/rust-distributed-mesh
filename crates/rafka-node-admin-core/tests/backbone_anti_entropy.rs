@@ -17,7 +17,7 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, MeshId, NodeId};
 use rafka_mesh_transport::membership::{gossip_addr, learn_addresses, Backbone, Membership};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
-use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, HandoverRow, SeatRow, SeatTransferRow};
+use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, HandoverRow, SeatRow, SeatTransferRow};
 use rafka_node_admin_core::investigate::Rungs;
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use serde_json::{json, Value};
@@ -71,8 +71,8 @@ impl FabricStorage for HeldStore {
         }
         self.inner.fabric_rows().await
     }
-    async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
-        self.inner.put_identity(identity).await
+    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
+        self.inner.claim_identity(identity).await
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         self.inner.put_pointer(pointer).await
