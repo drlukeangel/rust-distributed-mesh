@@ -879,6 +879,24 @@ pub enum StatusReply {
         /// What the receiver read and found missing, within [`MAX_INCOMPLETE_REASON_BYTES`].
         reason: String,
     },
+    /// The call is refused because what the receiver had to read or write to decide or commit it
+    /// failed: a durable store refused a put or could not be read, a record it holds is absent (never
+    /// written), its view names no party the call needs, its provider refused the runtime, or a peer's
+    /// Build log could not be read. It is a runtime fact of the receiver, never a readiness answer
+    /// (`NotReady` is the door's, node-rpc-envelope.md "Node RPC readiness gate"), and nothing the call
+    /// would have done was done.
+    RejectedSourceFailed {
+        /// What failed, named with its owner and row: `fabric.storage of mesh2.admin.1, handover row
+        /// <operation>`, `the seat records of mesh2.admin.1`, `the Build log of mesh1.admin.1 (the final
+        /// primary), read over fetch-build-facts`. Within [`MAX_SOURCE_FAILED_SOURCE_BYTES`].
+        source: String,
+        /// The operation on it that failed (`put`, `read`, `fetch-build-facts`, `adopt`, `resolve`),
+        /// with its subject. Within [`MAX_SOURCE_FAILED_OP_BYTES`].
+        op: String,
+        /// Why it failed: the store's or the peer's own error, or what was absent. Within
+        /// [`MAX_SOURCE_FAILED_CAUSE_BYTES`].
+        cause: String,
+    },
 }
 
 /// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -939,6 +957,21 @@ pub const MAX_WITHOUT_EXIT_BIRTH_BYTES: usize = 192;
 /// with a two-byte length prefix.
 pub const MAX_WITHOUT_EXIT_BIRTHS: usize = (64 * 1024 - 1 - 5 - 3 - (2 + MAX_INCOMPLETE_REASON_BYTES)) / (2 + MAX_WITHOUT_EXIT_BIRTH_BYTES);
 
+/// The most bytes of the `source` a `RejectedSourceFailed` names.
+pub const MAX_SOURCE_FAILED_SOURCE_BYTES: usize = 256;
+/// The most bytes of the `op` a `RejectedSourceFailed` names.
+pub const MAX_SOURCE_FAILED_OP_BYTES: usize = 192;
+/// The most bytes of the `cause` a `RejectedSourceFailed` carries: what is left of a 1024-byte reply
+/// after the variant (one byte), the other two fields at their budgets and a two-byte length prefix on
+/// each string. The fabric-primary handover's reply bound is 1024 bytes, so the same three fields fit
+/// both families.
+pub const MAX_SOURCE_FAILED_CAUSE_BYTES: usize = 1024 - 1 - (2 + MAX_SOURCE_FAILED_SOURCE_BYTES) - (2 + MAX_SOURCE_FAILED_OP_BYTES) - 2;
+
+/// `(source, op, cause)` each cut to its `RejectedSourceFailed` budget.
+pub fn source_failed_fields(source: &str, op: &str, cause: &str) -> (String, String, String) {
+    (within(source, MAX_SOURCE_FAILED_SOURCE_BYTES), within(op, MAX_SOURCE_FAILED_OP_BYTES), within(cause, MAX_SOURCE_FAILED_CAUSE_BYTES))
+}
+
 /// `s` cut to at most `max` bytes at a character boundary; a cut detail ends with `…` so the reader
 /// knows it was cut.
 fn within(s: &str, max: usize) -> String {
@@ -990,6 +1023,13 @@ impl StatusReply {
             Ok(bytes) if bytes.len() > Status::MAX_REPLY_FRAME_BYTES => Self::ReadOverBound { read: read.to_string(), bytes: bytes.len() as u64, max: Status::MAX_REPLY_FRAME_BYTES as u64 },
             _ => answer,
         }
+    }
+
+    /// `RejectedSourceFailed` naming what failed (`source`), the operation on it (`op`) and why
+    /// (`cause`), each within its budget so the reply always fits the reply bound.
+    pub fn source_failed(source: &str, op: &str, cause: &str) -> Self {
+        let (source, op, cause) = source_failed_fields(source, op, cause);
+        Self::RejectedSourceFailed { source, op, cause }
     }
 
     /// `RejectedIncompleteManifest` naming every birth in `without_exit` (each a roster birth
@@ -1048,6 +1088,7 @@ impl StatusReply {
             Self::RejectedStaleRound { .. } => "rejected-stale-round",
             Self::RejectedConflictingRound { .. } => "rejected-conflicting-round",
             Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
+            Self::RejectedSourceFailed { .. } => "rejected-source-failed",
         }
     }
 }
@@ -1066,7 +1107,7 @@ impl NodeProtocol for Status {
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 26;
-    const REPLY_VARIANTS: u32 = 42;
+    const REPLY_VARIANTS: u32 = 43;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1108,7 +1149,8 @@ impl NodeProtocol for Status {
             | StatusReply::ReadOverBound { .. }
             | StatusReply::RejectedStaleRound { .. }
             | StatusReply::RejectedConflictingRound { .. }
-            | StatusReply::RejectedIncompleteManifest { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::RejectedIncompleteManifest { .. }
+            | StatusReply::RejectedSourceFailed { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -1211,6 +1253,7 @@ mod tests {
             (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "bld_1".into(), attempt: 2, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
             (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "bld_2".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::ProtocolRefusal),
+            (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts bld_1", "unreached: no path"), ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1294,6 +1337,22 @@ mod tests {
         }
         let short = StatusReply::config_not_applied("mesh1.rpc.1", "busy", "at its admission bound");
         assert_eq!(short, StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "at its admission bound".into() }, "a detail within its budget is kept whole");
+    }
+
+    /// CONTRACT (an error carries every detail it can, and still reaches the caller): a
+    /// `RejectedSourceFailed` whose source, operation and cause are each longer than the reply bound
+    /// is still a reply within 1024 bytes (the smaller of the two families that carry it), each field
+    /// cut at its budget and ending `…`; fields within their budgets are kept whole.
+    #[test]
+    fn a_source_failure_with_long_fields_encodes_within_the_reply_bound() {
+        let long = "x".repeat(4 * Status::MAX_REPLY_FRAME_BYTES);
+        let r = StatusReply::source_failed(&long, &long, &long);
+        let len = Status::encode_reply(&r).unwrap().len();
+        assert!(len <= 1024, "{} encodes to {len}, over 1024", r.name());
+        let StatusReply::RejectedSourceFailed { source, op, cause } = &r else { unreachable!() };
+        assert!(source.ends_with('…') && op.ends_with('…') && cause.ends_with('…'), "a cut field says it was cut");
+        let short = StatusReply::source_failed("fabric.storage of mesh1.admin.1", "put", "disk full");
+        assert_eq!(short, StatusReply::RejectedSourceFailed { source: "fabric.storage of mesh1.admin.1".into(), op: "put".into(), cause: "disk full".into() }, "fields within their budgets are kept whole");
     }
 
     /// CONTRACT (a hook's blocker reaches its executor whole or cut, never as a reset): a `Blocked`

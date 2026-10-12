@@ -11,7 +11,8 @@
 //! P it is about to drain, inside P's mesh ("TakeSeats: Build-driven seat transfer"): P commits one
 //! durable row holding every seat it transfers at each seat's next epoch and answers
 //! [`FabricPrimaryHandoverReply::SeatsCommitted`]; a seat epoch that is not P's is
-//! [`FabricPrimaryHandoverReply::RejectedStaleSeat`]. [`Seat`], [`CommittedSeat`] and
+//! [`FabricPrimaryHandoverReply::RejectedStaleSeat`], and a seat P holds that the call leaves out is
+//! [`FabricPrimaryHandoverReply::RejectedSeatOmitted`]. [`Seat`], [`CommittedSeat`] and
 //! [`HandoverBirth`] are the doc's shapes (`rafka_mesh_entity::seat::transfer`, which the
 //! `SeatedTogether` gossip frame carries too).
 //!
@@ -19,7 +20,9 @@
 //! `PeerUnresolved`, `Busy`, `Draining` and `Unauthorized` are appended after the doc's nine;
 //! positions 0..=8 are the doc's order, and the seat transfer's two replies follow at 13 and 14.
 //! A seat epoch at `u64::MAX` that a call would advance is [`FabricPrimaryHandoverReply::RejectedEpochOverflow`],
-//! at 15.
+//! at 15; a seat the holder holds that a TakeSeats leaves out is [`FabricPrimaryHandoverReply::RejectedSeatOmitted`],
+//! at 16; a store, a held record or a read the receiver needed that failed is
+//! [`FabricPrimaryHandoverReply::RejectedSourceFailed`], at 17.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
@@ -185,9 +188,39 @@ pub enum FabricPrimaryHandoverReply {
         /// The epoch it is at.
         epoch: u64,
     },
+    /// A TakeSeats leaves out a seat the holder holds: every seat P holds moves in the one row, so a
+    /// call that does not name one cannot commit (node-rpc-envelope.md, TakeSeats: the row holds "every
+    /// seat P transfers"). Nothing is written.
+    RejectedSeatOmitted {
+        /// The seat the call does not name.
+        seat: Seat,
+        /// The epoch the holder holds it at.
+        current: u64,
+    },
+    /// What the receiver had to read or write to decide or commit the call failed: its `fabric.storage`
+    /// refused a put or could not be read, a record it holds is absent (never written), or a Build log
+    /// it reads could not be read. A runtime fact of the receiver, never a readiness answer; nothing
+    /// the call would have done was done. The fields are the Status arm's, within the same budgets
+    /// ([`crate::status::source_failed_fields`]).
+    RejectedSourceFailed {
+        /// What failed, named with its owner and row.
+        source: String,
+        /// The operation on it that failed, with its subject.
+        op: String,
+        /// Why it failed: the store's or the peer's own error, or what was absent.
+        cause: String,
+    },
 }
 
 impl FabricPrimaryHandoverReply {
+    /// `RejectedSourceFailed` naming what failed (`source`), the operation on it (`op`) and why
+    /// (`cause`), each within its budget so the reply always fits [`FabricPrimaryHandover`]'s reply
+    /// bound.
+    pub fn source_failed(source: &str, op: &str, cause: &str) -> Self {
+        let (source, op, cause) = crate::status::source_failed_fields(source, op, cause);
+        Self::RejectedSourceFailed { source, op, cause }
+    }
+
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -207,6 +240,8 @@ impl FabricPrimaryHandoverReply {
             Self::SeatsCommitted { .. } => "seats-committed",
             Self::RejectedStaleSeat { .. } => "rejected-stale-seat",
             Self::RejectedEpochOverflow { .. } => "rejected-epoch-overflow",
+            Self::RejectedSeatOmitted { .. } => "rejected-seat-omitted",
+            Self::RejectedSourceFailed { .. } => "rejected-source-failed",
         }
     }
 }
@@ -217,8 +252,8 @@ impl NodeProtocol for FabricPrimaryHandover {
     /// A fabric name, two exact births, at most two seat epochs (or two epochs), a Build id and an
     /// operation identity.
     const MAX_REQUEST_FRAME_BYTES: usize = 2048;
-    /// One reply: an enum tag and at most one reason string, or two committed seats (a seat, an
-    /// exact birth and an epoch each).
+    /// One reply: an enum tag and at most one reason string, two committed seats (a seat, an exact
+    /// birth and an epoch each), or a source failure's three fields within their budgets.
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// A handover is decided by the two exact births themselves; a carried call is decided by no one.
     const FORWARDABLE: bool = false;
@@ -226,7 +261,7 @@ impl NodeProtocol for FabricPrimaryHandover {
     /// identical retry is answered from the row.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 3;
-    const REPLY_VARIANTS: u32 = 16;
+    const REPLY_VARIANTS: u32 = 18;
 
     type Request = FabricPrimaryHandoverRequest;
     type Reply = FabricPrimaryHandoverReply;
@@ -235,7 +270,7 @@ impl NodeProtocol for FabricPrimaryHandover {
         use FabricPrimaryHandoverReply::*;
         match reply {
             Applied | AlreadyApplied | SeatsCommitted { .. } => ReplyKind::Success,
-            RejectedStaleEpoch { .. } | RejectedWrongBirth { .. } | RejectedNotAuthority | RejectedNotEligible { .. } | RejectedConflict { .. } | RejectedStaleSeat { .. } | RejectedEpochOverflow { .. } => ReplyKind::ProtocolRefusal,
+            RejectedStaleEpoch { .. } | RejectedWrongBirth { .. } | RejectedNotAuthority | RejectedNotEligible { .. } | RejectedConflict { .. } | RejectedStaleSeat { .. } | RejectedEpochOverflow { .. } | RejectedSeatOmitted { .. } | RejectedSourceFailed { .. } => ReplyKind::ProtocolRefusal,
             NotReady { .. } => ReplyKind::NotReady,
             Malformed { kind } => ReplyKind::Malformed(*kind),
             PeerUnresolved { .. } => ReplyKind::PeerUnresolved,

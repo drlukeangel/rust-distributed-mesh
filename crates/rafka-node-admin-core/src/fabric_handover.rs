@@ -1038,6 +1038,8 @@ fn refusal_reason(r: &Reply) -> (&'static str, String) {
         Reply::Malformed { kind } => ("malformed", format!("{kind:?}")),
         Reply::RejectedStaleSeat { seat, expected, current } => ("stale-seat", format!("{}: expected {expected}, current {current}", seat.name())),
         Reply::RejectedEpochOverflow { seat, epoch } => ("epoch-overflow", format!("{}: epoch {epoch} cannot advance", seat.name())),
+        Reply::RejectedSeatOmitted { seat, current } => ("seat-omitted", format!("{}: held at epoch {current}, not named", seat.name())),
+        Reply::RejectedSourceFailed { source, op, cause } => ("source-failed", format!("{source}: {op}: {cause}")),
         Reply::Applied | Reply::AlreadyApplied | Reply::SeatsCommitted { .. } => ("applied", String::new()),
     }
 }

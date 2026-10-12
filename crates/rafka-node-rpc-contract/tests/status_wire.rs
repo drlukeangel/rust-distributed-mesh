@@ -78,7 +78,7 @@ fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_forty_two_variant_wire_schema() {
+fn replies_match_the_frozen_forty_three_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -145,6 +145,8 @@ fn replies_match_the_frozen_forty_two_variant_wire_schema() {
         (RejectedConflictingRound { held: round("b", 1), offered: round("c", 1) }, "28016201016f016301016f"),
         // missing 1 | without_exit (len 1: "n i") | reason "r"
         (RejectedIncompleteManifest { missing: 1, without_exit: vec!["n i".into()], reason: "r".into() }, "290101036e20690172"),
+        // source "s" | op "o" | cause "c"
+        (RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, "2a0173016f0163"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
