@@ -134,3 +134,33 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
+
+/// CONTRACT: `DrainNode` and `NodeDrained` are reserved Status positions, never sent (R-CR4;
+/// node-rpc-envelope.md "Node stop command pair": "a receiver refuses them by name"). A live node
+/// sent `DrainNode` refuses it by name (`RejectedUnmatchedCompletion`, field `command`) and starts
+/// nothing: it still answers `All` with `ConnectionsDeleted`. What must NOT happen: `Applied`, or a
+/// `NodeDrained` call back to the commander.
+#[test]
+fn a_retired_drain_node_is_refused_by_name_and_starts_nothing() {
+    let cap = crate::common::capture("a_retired_drain_node_is_refused_by_name_and_starts_nothing");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), "a_retired_drain_node_is_refused_by_name_and_starts_nothing") {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let dir = std::env::temp_dir().join(format!("connections-all-retired-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (launch, _running) = live_node(&admin, &dir, &fabric).await;
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
+        let retired = StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_retired".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1.new".into() };
+        let reply = call_on(&admin, &target, &retired, None).await;
+        assert!(matches!(&reply, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name: {reply:?}");
+        let all = StatusRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };
+        assert!(matches!(call_on(&admin, &target, &all, None).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the node deletes its connections afterwards");
+        assert_eq!(named(&spans, "rdm.node_admin.status.update.via-drain-node"), 0, "nothing ran for the reserved position");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
