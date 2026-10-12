@@ -1,7 +1,7 @@
 //! i143 process E2E: removing one node is a lifecycle op with two events (i143.e6.s10).
 //!
 //! From public surfaces and span evidence only, on an MM estate: mesh1 (two admins, two rpc
-//! nodes) and mesh2 (one admin, two rpc nodes). `DELETE /api/nodes/mesh2.rpc.2` reaches the
+//! nodes) and mesh2 (one admin, two rpc nodes). `node.delete` of mesh2.rpc.2 reaches the
 //! fabric-primary, which accepts a Build without the node; mesh2's primary claims the attempt
 //! and executes the retirement.
 //!
@@ -18,11 +18,12 @@
 //!    endpoint key; a later spec can inherit them"): the victim's data dir and its endpoint key
 //!    stay, and no step of the delete releases storage.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, ScopeStatus};
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
-use std::time::Duration;
 
 const VICTIM: &str = "mesh2.rpc.2";
+const WITNESS_NODE: &str = "mesh1.rpc.1";
 const WITNESS: &str = "path:mesh1.rpc.1";
 
 fn owner(test: &str) -> Owner {
@@ -47,49 +48,46 @@ fn resolution(r: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hears() {
     let mut estate = Estate::bootstrap(owner("deleting_a_node_is_a_pre_notice_then_a_proven_departure"), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 2}, {"name": "mesh2", "node_admin": 1, "rpc_node": 2}]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
-    let before = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 1, 2)], Duration::from_secs(60)).await;
+    let shape = |a1: u32, r1: u32, a2: u32, r2: u32| FabricDesired {
+        fabric: "fabric1".into(),
+        meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, a1), (NodeKind::RpcNode, r1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, a2), (NodeKind::RpcNode, r2)])],
+    };
+    estate.reconcile(&shape(2, 2, 1, 2)).await;
+    let before = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 2)]).await);
     let victim = before.iter().find(|n| n["name"] == VICTIM).cloned().unwrap();
     let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation_id"]));
     let exact_victim = format!("exact:{victim_id}");
     estate.artifact("nodes-before.json", &json!(before));
 
     // The peer mesh's rpc node holds mesh2's nodes through the forwarded aggregate.
-    let found = wait_for("mesh1.rpc.1 resolves mesh2.rpc.2", Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
-        (resolution(&r) == "found").then_some(r)
-    })
-    .await;
+    estate.witness_holds_birth(WITNESS_NODE, VICTIM).await;
+    let found = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
+    assert_eq!(resolution(&found), "found", "{found}");
     assert_eq!(found["reply"]["incarnation_id"], victim["incarnation_id"], "{found}");
-    assert!(before.iter().all(|n| n["routable"] == true), "every live node is routable before the delete: {before:#?}");
+    // States.md "Routing": application routing selects a birth only while it is ready-for-traffic and its
+    // mesh is ready-for-traffic.
+    let meshes = estate.fabric_view().await.meshes;
+    assert!(before.iter().all(|n| n["status"] == "ready-for-traffic") && meshes.iter().all(|m| m.status == ScopeStatus::ReadyForTraffic), "every live node is routable before the delete: {before:#?} {meshes:?}");
     // The victim's data dir, read while an admin still advertises it.
-    let victim_dir = std::path::PathBuf::from(estate.data_dir_of(VICTIM).await);
+    let victim_dir = std::path::PathBuf::from(estate.data_dir(VICTIM).await);
     assert!(victim_dir.join("node-key").is_file(), "the victim's data dir holds its endpoint key before the delete: {victim_dir:?}");
 
     // 1. The removal.
-    let (status, d) = estate.delete(&format!("/api/nodes/{VICTIM}")).await;
-    assert_eq!(status, 202, "{d}");
-    let build_id = s(&d["build_id"]);
+    let mut removal = estate.nodes_obj().await.delete(&VICTIM.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {VICTIM}: {e}"));
     // The pre-notice is read from each receiver's overlay span below, not from a poll: the window
     // in which the node is live and not routable is the drain and stop legs, and a poll's cadence
     // is not evidence of it.
-    estate.await_build(&build_id, Duration::from_secs(120)).await;
-    let after = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
+    let build_id = Estate::complete(&mut removal).await.build_id.0;
+    let after = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 1)]).await);
     assert!(after.iter().all(|n| n["name"] != VICTIM), "the current topology no longer lists the node: {after:#?}");
     estate.artifact("nodes-after.json", &json!(after));
     // 4. node-delete.md step 3: "Retain the data dir, node-identity.json and endpoint key."
     assert!(victim_dir.is_dir(), "the delete keeps the victim's data dir: {victim_dir:?}");
     assert!(victim_dir.join("node-key").is_file(), "the delete keeps the victim's endpoint key in its data dir: {victim_dir:?}");
 
-    let gone = wait_for("mesh1.rpc.1 holds the departure", Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
-        (resolution(&r) == "gone").then_some(r)
-    })
-    .await;
+    estate.holds_departure(WITNESS_NODE, "mesh2", &victim_id).await;
+    let gone = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
+    assert_eq!(resolution(&gone), "gone", "{gone}");
     let path = estate.probe(&["resolve", "--target", WITNESS, "--query", &format!("path:{VICTIM}")]);
     assert_eq!(resolution(&path), "unknown", "the path has no holder: {path}");
     let survivor = estate.probe(&["resolve", "--target", WITNESS, "--query", "path:mesh2.rpc.1"]);
@@ -99,28 +97,22 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     estate.artifact("resolutions.json", &json!({"gone": gone, "path": path, "survivor": survivor, "never": never}));
 
     // 2. A node born after the events learns the departure from the retained aggregate.
-    let (status, sp) = estate.post("/api/nodes/spawn", &json!({"mesh": "mesh1", "kind": "rpc_node"})).await;
-    assert_eq!(status, 202, "{sp}");
-    estate.await_build(sp["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let late = estate.settled_shape(&[("mesh1", 2, 3), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
+    let mut spawn = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
+    Estate::complete(&mut spawn).await;
+    let late = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 1)]).await);
     let newcomer = late.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
-    let late_gone = wait_for("the newcomer holds the departure it never heard as an event", Duration::from_secs(45), || async {
-        let r = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer["name"])), "--query", &exact_victim]);
-        (resolution(&r) == "gone").then_some(r)
-    })
-    .await;
+    estate.holds_departure(&s(&newcomer["name"]), "mesh2", &victim_id).await;
+    let late_gone = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer["name"])), "--query", &exact_victim]);
+    assert_eq!(resolution(&late_gone), "gone", "the newcomer holds the departure it never heard as an event: {late_gone}");
     // And one born into the executor's own mesh, which learns it from its own primary's
     // overlays rather than a forwarded aggregate.
-    let (status, sp2) = estate.post("/api/nodes/spawn", &json!({"mesh": "mesh2", "kind": "rpc_node"})).await;
-    assert_eq!(status, 202, "{sp2}");
-    estate.await_build(sp2["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let late2 = estate.settled_shape(&[("mesh1", 2, 3), ("mesh2", 1, 2)], Duration::from_secs(60)).await;
+    let mut spawn2 = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh2".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    Estate::complete(&mut spawn2).await;
+    let late2 = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 2)]).await);
     let newcomer2 = late2.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
-    let own_mesh_gone = wait_for("the newcomer in the executor's own mesh holds the departure", Duration::from_secs(45), || async {
-        let r = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer2["name"])), "--query", &exact_victim]);
-        (resolution(&r) == "gone").then_some(r)
-    })
-    .await;
+    estate.holds_departure(&s(&newcomer2["name"]), "mesh2", &victim_id).await;
+    let own_mesh_gone = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer2["name"])), "--query", &exact_victim]);
+    assert_eq!(resolution(&own_mesh_gone), "gone", "the newcomer in the executor's own mesh holds the departure: {own_mesh_gone}");
     estate.artifact("late-joiner.json", &json!({"peer_mesh": late_gone, "own_mesh": own_mesh_gone}));
 
     estate.stop().await;

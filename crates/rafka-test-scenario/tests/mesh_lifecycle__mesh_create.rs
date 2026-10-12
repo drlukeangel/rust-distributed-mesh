@@ -5,15 +5,17 @@
 //!   first admin) creates mesh2's second;
 //! - mesh2's own admin primary creates mesh2's members (the same Build, a
 //!   later attempt claimed by that admin);
-//! - the test reads mesh2's control endpoint from the advertised topology and
-//!   grows and shrinks mesh2 there; mesh2's admin primary executes those
-//!   Builds.
+//! - the test reads mesh2's control endpoint from the advertised topology, asks
+//!   from there to grow and shrink mesh2 (`node.create`, `node.delete`, which the
+//!   fabric-primary accepts); mesh2's admin primary executes those Builds.
 //!
-//! "Who executed" is read from each Build's public view (`executor` of the
+//! "Who executed" is read from each Build as the Build log holds it (`executor` of the
 //! attempt) and from the evidence: every `node.create.via-build` /
 //! `node.delete.via-build` span sits under a `build.update.via-reconcile`
 //! whose `executor` is the expected admin, by parent span id.
 
+use crate::build_log;
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus};
 use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -69,55 +71,56 @@ fn executed_by(spans: &[Value], span_name: &str, node: &str, build_id: &str) -> 
     s(&reconcile["attributes"]["executor"])
 }
 
+/// Build `id` complete in the Build log of the admin the estate asks, as the JSON the view serializes to.
+async fn built(estate: &Estate, id: &str) -> Value {
+    let build = build_log::build_fact(&estate.carrier().await, id, "complete", Duration::from_secs(120), |b| b.state == rafka_node_admin_core::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    serde_json::to_value(build).expect("a Build view serializes")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let mesh = |m: &str| json!({"name": m, "node_admin": 2, "rpc_node": 3});
-    let (_, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1")]})).await;
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)]);
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
 
     // {mesh1} -> {mesh1, mesh2}
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
-    assert_eq!(status, 202, "{a}");
-    let create = s(&a["build_id"]);
-    let build = estate.await_build(&create, Duration::from_secs(120)).await;
+    let create = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.0;
+    let build = built(&estate, &create).await;
     let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"]
         .iter()
         .flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=3).map(move |i| format!("{m}.rpc.{i}"))))
         .collect();
-    let nodes = estate.settled(&want, Duration::from_secs(15)).await;
+    let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     assert_eq!(nodes.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1, "one fabric primary once the view settles");
     let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).unwrap();
     assert_eq!(build["executor"], mesh2_primary.as_str(), "the Build's last attempt ran on mesh2's own primary: {build:#}");
 
     // mesh2's control endpoint, from the advertised topology only.
-    let (_, fabric) = estate.get("/api/fabric").await;
+    let fabric = serde_json::to_value(estate.fabric_view().await).expect("a view serializes");
     let mesh2_base = fabric["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh2").map(|m| s(&m["admin_api_base"])).unwrap();
-    let (_, mesh2_view) = estate.get("/api/meshes/mesh2").await;
+    let mesh2_view = serde_json::to_value(estate.mesh_view("mesh2").await).expect("a view serializes");
     assert_eq!(s(&mesh2_view["admin_api_base"]), mesh2_base);
     assert_eq!(s(&mesh2_view["primary_admin"]), mesh2_primary);
     // The created mesh is a new identity, distinct from every mesh the fabric already had.
-    let (_, m1) = estate.get("/api/meshes/mesh1").await;
+    let m1 = serde_json::to_value(estate.mesh_view("mesh1").await).expect("a view serializes");
     let mesh2_id = s(&mesh2_view["id"]);
     assert!(!mesh2_id.is_empty() && mesh2_id != s(&m1["id"]), "mesh2 is a new identity: {mesh2_view}");
     let fabric_base = estate.admin.clone();
     estate.admin = mesh2_base.clone();
 
-    // Grow and shrink mesh2 directly.
-    let (status, a) = estate.post("/api/nodes/spawn", &json!({"mesh": "mesh2", "kind": "rpc_node"})).await;
-    assert_eq!(status, 202, "{a}");
-    let grow = s(&a["build_id"]);
-    let b = estate.await_build(&grow, Duration::from_secs(120)).await;
+    // Grow and shrink mesh2 from its own endpoint: the fabric-primary accepts the call, mesh2's primary executes the Build.
+    let mut growing = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh2".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    let grow = Estate::complete(&mut growing).await.build_id.0;
+    let b = built(&estate, &grow).await;
     assert_eq!(b["executor"], mesh2_primary.as_str(), "{b:#}");
-    assert_eq!(estate.node("mesh2.rpc.4").await["status"], "ready-for-traffic");
-    let (status, a) = estate.delete("/api/nodes/mesh2.rpc.4").await;
-    assert_eq!(status, 202, "{a}");
-    let shrink = s(&a["build_id"]);
-    let b = estate.await_build(&shrink, Duration::from_secs(120)).await;
+    estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 ready for traffic", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
+    let mut shrinking = estate.nodes_obj().await.delete(&"mesh2.rpc.4".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.rpc.4: {e}"));
+    let shrink = Estate::complete(&mut shrinking).await.build_id.0;
+    let b = built(&estate, &shrink).await;
     assert_eq!(b["executor"], mesh2_primary.as_str(), "{b:#}");
-    assert!(!estate.nodes().await.iter().any(|n| n["name"] == "mesh2.rpc.4"), "mesh2.rpc.4 retired");
+    estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 retired", Duration::from_secs(30), |n| n.is_none().then_some(())).await;
 
-    estate.artifact("nodes.json", &json!(estate.nodes().await));
+    estate.artifact("nodes.json", &json!(estate.node_values().await));
     estate.admin = fabric_base;
     estate.stop().await;
     let spans = estate.spans();
@@ -163,7 +166,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
         .collect();
     assert_eq!(decided.len(), 1, "{decided:?}");
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election: {}", decided[0]);
-    let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).unwrap().clone();
+    let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).unwrap().clone();
     // The accepting fabric-primary holds the request's context: every attempt it decides descends
     // from the request. The seat moves to mesh2's lower NodeId during the creation; an attempt the
     // new fabric-primary decides starts its own trace (the context is the old primary's local record).

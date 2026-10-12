@@ -298,6 +298,14 @@ impl Estate {
         self.peers().await.fact(&witness_view, &birth.mesh, &format!("{witness} holds incarnation {incarnation:?} of {node}"), |v| v.birth(&birth.node_id).is_some_and(|d| d.node.incarnation == incarnation)).await;
     }
 
+    /// Wait until the node `witness` retains the departure of `node_id` in its held view of `mesh`
+    /// (`node.topology.get`): a node learns a departure by gossip or from the retained aggregate, never
+    /// from a reply stream it holds, so the witness reports it and one that never does is named.
+    pub async fn holds_departure(&self, witness: &str, mesh: &str, node_id: &str) {
+        let witness_view = self.node_view(witness).await;
+        self.peers().await.fact(&witness_view, mesh, &format!("{witness} retains the departure of {node_id}"), |v| v.departed.iter().any(|d| d.node_id.as_str() == node_id)).await;
+    }
+
     /// Wait for the answering admin's node view to hold a state no stream announces: `check` reads the
     /// `node.get` of every mesh until it yields `Some`. A fact a reply stream carries is awaited on the
     /// stream; this is only for a state the admin learns by gossip or by its own detection (a node
@@ -319,6 +327,26 @@ impl Estate {
                 }
             };
             assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; last view: {last}");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// [`Self::until_view`] at the node-admin `admin`: `check` reads what `node.get` of every mesh that admin
+    /// holds lists, as that admin's own view holds it, until it yields `Some`. An admin that does not answer
+    /// for this Fabric within 2 s is a read that ended, and the wait goes on to its own bound.
+    pub async fn until_view_at<T>(&self, admin: &PathName, what: &str, within: std::time::Duration, mut check: impl FnMut(&[NodeView]) -> Option<T>) -> T {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let last = match self.node_views_at(admin).await {
+                Some(views) => {
+                    if let Some(v) = check(&views) {
+                        return v;
+                    }
+                    format!("{:?}", views.iter().map(|n| format!("{}={:?}/{}", n.name, n.status, n.node_id)).collect::<Vec<_>>())
+                }
+                None => format!("{admin} did not answer node.get for {}", self.fabric_id),
+            };
+            assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what} (as {admin} holds its view); last view: {last}");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
