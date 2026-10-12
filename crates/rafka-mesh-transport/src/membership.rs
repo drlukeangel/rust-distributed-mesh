@@ -6371,6 +6371,67 @@ mod tests {
         assert!(view.book.all().iter().all(|d| d.node.name.mesh != "mesh1"));
     }
 
+    /// CONTRACT (R-MD1 item 3: "MeshLeft applies Gone and the terminal topology removal"; R-NS1
+    /// item 3: the fabric-primary publishes the deleted mesh's own aggregate until departed
+    /// retention): a receiver that applied mesh-left for a MeshId refuses every later `Members` and
+    /// `MembersDelta` of that MeshId by name, for its departed retention, whether or not it holds the
+    /// accepted Build. The fabric-primary's republish of the deleted mesh's aggregate (publisher
+    /// itself, no digests, the final birth in `departed`) installs nothing on the backbone, nor
+    /// forwarded on the mesh channel. A mesh created again at that path.name has a new MeshId and is
+    /// taken. Must NOT happen: the re-install the s49 acceptance cell saw at mesh2.admin.2,
+    /// mesh3.admin.2 and mesh2.rpc.1/.2 0.37 s after mesh-left (traces
+    /// fad0ff1bad18289a2c9e7734417dd456, 646ff8a73db798989f1208931f0fff1c).
+    #[test]
+    fn a_receiver_that_applied_mesh_left_refuses_every_later_aggregate_of_that_mesh_id() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let m1 = MeshId::mint();
+        let last = born("mesh1", "admin.1", Some(&m1), 1);
+        let primary = PublisherId { node: "mesh1.admin.1".into(), incarnation: last.node.incarnation.clone() };
+        let fp = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::mint() };
+        let deleted = op_at("mesh1.admin.1", &last.node.node_id, &last.node.incarnation, "retire-node:mesh1.admin.1");
+        let members = |publisher: &PublisherId, forwarded_by: Option<&str>, version: u64, snapshot_id: u64, digests: Vec<MeshDigest>, departed: Vec<LifecycleOp>| Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: publisher.clone(),
+            forwarded_by: forwarded_by.map(str::to_string),
+            topology_version: version,
+            published_at_rafka_ms: 1,
+            snapshot_id,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests,
+            in_flight: Vec::new(),
+            departed,
+        };
+        let left = Frame::MeshLeft { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), receipt_manifest: "m".into(), publisher: "mesh2.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None };
+        // An admin of a peer mesh that holds no accepted Build, and an ordinary node of the
+        // fabric-primary's mesh: each held the deleted mesh from its last admin, then applied mesh-left.
+        let admin = View::new("mesh3", "mesh3.admin.2");
+        let rpc = View::new("mesh2", "mesh2.rpc.1");
+        assert!(!admin.take_snapshot(&members(&primary, None, 1, 1, vec![last.clone()], Vec::new()), &fabric, Side::Backbone).carried.is_empty(), "the deleted mesh is held with its last admin");
+        assert!(!rpc.take_snapshot(&members(&primary, Some("mesh2.admin.1"), 1, 1, vec![last.clone()], Vec::new()), &fabric, Side::MeshChannel).carried.is_empty());
+        admin.take(&left, &fabric, "backbone");
+        rpc.take(&left, &fabric, "mesh-channel");
+        assert!(admin.backbone_rx.lock().unwrap().held_full("mesh1").is_none() && rpc.mesh_rx.lock().unwrap().held_full("mesh1").is_none(), "mesh-left removed the mesh");
+        // The fabric-primary's republishes of the deleted mesh's own aggregate, until retention.
+        for (v, id) in [(2, 2), (2, 3), (3, 4)] {
+            admin.take_snapshot(&members(&fp, None, v, id, Vec::new(), vec![deleted.clone()]), &fabric, Side::Backbone);
+            rpc.take_snapshot(&members(&fp, Some("mesh2.admin.1"), v, id, Vec::new(), vec![deleted.clone()]), &fabric, Side::MeshChannel);
+            assert!(admin.backbone_rx.lock().unwrap().held_full("mesh1").is_none(), "version {v}: no node re-installs a mesh it applied mesh-left for (backbone)");
+            assert!(rpc.mesh_rx.lock().unwrap().held_full("mesh1").is_none(), "version {v}: no node re-installs a mesh it applied mesh-left for (mesh channel)");
+        }
+        let refused = spans.named("rdm.mesh.membership.reject.via-mesh-left");
+        assert!(refused.iter().any(|f| f.get("node").map(String::as_str) == Some("mesh3.admin.2") && f.get("mesh_id").map(String::as_str) == Some(m1.as_str()) && f.get("left_operation").is_some_and(|o| o.contains(m1.as_str()))), "the refusal names the mesh id and the mesh-left it applied: {refused:?}");
+        assert!(refused.iter().any(|f| f.get("node").map(String::as_str) == Some("mesh2.rpc.1") && f.get("channel").map(String::as_str) == Some("mesh-channel")), "{refused:?}");
+        // mesh1 created again: a new mesh with a new MeshId, taken.
+        let m1b = MeshId::mint();
+        let reborn = born("mesh1", "admin.1", Some(&m1b), 1);
+        let new_primary = PublisherId { node: "mesh1.admin.1".into(), incarnation: reborn.node.incarnation.clone() };
+        assert!(!admin.take_snapshot(&members(&new_primary, None, 1, 9, vec![reborn.clone()], Vec::new()), &fabric, Side::Backbone).carried.is_empty(), "a mesh created again at that path.name, under a new MeshId, is taken");
+    }
+
     /// Two node-admins of mesh1, both Ready: `(lower NodeId, higher NodeId)`, named admin.2 and
     /// admin.1 so the seat can sit on either.
     fn two_admins(book: &DigestBook, at: Instant) -> (MeshDigest, MeshDigest) {
