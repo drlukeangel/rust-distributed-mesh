@@ -278,6 +278,25 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     assert!(m.book.get(id.as_str()).is_none(), "no heartbeat brought the stopped birth back");
     assert!(m.book.in_flight().contains(&stop), "only the mesh-primary's projection ends the stop");
 
+    // node.joined at the mesh-primary (its start workflow took `Started`): its own book ends the stop
+    // and holds the birth Pending; v3, its next projection, lists the birth again.
+    let start = LifecycleOp { operation: "start-node:mesh1.rpc.1".into(), ..stop.clone() };
+    assert!(p.book.joined(&start), "the mesh-primary ends the stop at node.joined");
+    assert_eq!(p.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the primary holds the birth Pending");
+    round().await;
+    until("the member to end the stop from the primary's projection", || !m.book.in_flight().contains(&stop)).await;
+    let v3 = version_at_m().unwrap();
+    assert!(v3 > v2, "the stop ended at a newer version than the one carrying it");
+    assert!(m.book.get(id.as_str()).is_none(), "the projection gives the status, not liveness: the birth is held once its own heartbeat is heard");
+    assert!(m.book.record(b(MemberStatus::ReadyForTraffic, 4)), "the birth's heartbeat is taken once the stop is over");
+    assert_eq!(m.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "its status is the projection's Pending, not the heartbeat's ReadyForTraffic");
+
+    // node.started: the primary takes the birth's report; its next projection says ready.
+    assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 4)));
+    round().await;
+    until("the member to take ready-for-traffic from the projection", || m.book.get(id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
+    let v4 = version_at_m().unwrap();
+
     drop(bb);
     for n in [&p_node, &m_node] {
         n.ep.close().await;
@@ -287,5 +306,19 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     let refused: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-stopped-birth").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
     assert!(refused.iter().any(|s| attr(s, "door") == "heartbeat" && attr(s, "digest_seq") == "2"), "the late heartbeat is refused by name: {refused:#?}");
     assert!(refused.iter().any(|s| attr(s, "door") == "projection" && attr(s, "held_version") == v1.to_string() && attr(s, "topology_version") == v1.to_string()), "the projection entry from before the stop is refused naming both versions: {refused:#?}");
-    let _ = v2;
+    let ended: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-stop-ended-in-projection").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
+    assert_eq!(ended.len(), 1, "the member ended the stop once, at the ordered move: {ended:#?}");
+    assert_eq!((attr(ended[0], "node"), attr(ended[0], "held_version"), attr(ended[0], "topology_version"), attr(ended[0], "status")), ("mesh1.rpc.2".to_string(), v2.to_string(), v3.to_string(), "Pending".to_string()));
+    let joined: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-node-joined").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
+    assert_eq!((joined.len(), joined.first().map(|s| attr(s, "node"))), (1, Some("mesh1.admin.1".to_string())), "the mesh-primary took node.joined once: {joined:#?}");
+    let delta: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|s| attr(s, "node") == "mesh1.admin.1" && attr(s, "mesh") == "mesh1" && attr(s, "topology_version") == v3.to_string()).collect();
+    assert_eq!(delta.len(), 1, "the primary published the projection that clears the stop on its own channel: {delta:#?}");
+    assert_eq!((attr(delta[0], "base_version"), attr(delta[0], "changed"), attr(delta[0], "in_flight")), (v2.to_string(), "1".to_string(), "0".to_string()), "the clear travels as the birth's own changed entry");
+    let statuses: Vec<String> = named(&spans, "rdm.mesh.membership.update.via-projected-status").into_iter().filter(|s| attr(s, "member_id") == id.as_str() && attr(s, "node") == "mesh1.rpc.2").map(|s| format!("{}@{}", attr(s, "status"), attr(s, "topology_version"))).collect();
+    assert_eq!(statuses, vec![format!("ReadyForTraffic@{v1}"), format!("Pending@{v3}"), format!("ReadyForTraffic@{v4}")], "the member's statuses of the birth come from the projection alone");
+    let mut lines = String::new();
+    for (what, s) in refused.iter().map(|s| ("refused", *s)).chain(ended.iter().map(|s| ("ended", *s))).chain(joined.iter().map(|s| ("joined", *s))).chain(delta.iter().map(|s| ("delta", *s))) {
+        lines.push_str(&format!("{what} {} {} door={} held_version={} topology_version={} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "door"), attr(s, "held_version"), attr(s, "topology_version"), attr(s, "digest_seq")));
+    }
+    std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
 }

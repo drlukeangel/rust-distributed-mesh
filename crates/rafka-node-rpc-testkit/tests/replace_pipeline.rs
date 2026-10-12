@@ -93,6 +93,12 @@ impl LifecycleEvents for Recorder<'_> {
         self.log.lock().unwrap().push(format!("NodeStopped:{}:{}", op.node_id, op.operation));
         self.hear(rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None }).await;
     }
+    async fn joined(&self, op: &LifecycleOp) {
+        self.log.lock().unwrap().push(format!("node.joined:{}:{}", op.node_id, op.operation));
+        if let Some(m) = self.peer {
+            m.book.joined(op);
+        }
+    }
     // The replace's order is asserted from its steps; the drain and leaving hooks and the mesh-leave
     // events are not part of what this recorder hears.
     async fn draining(&self, _op: &LifecycleOp) {}
