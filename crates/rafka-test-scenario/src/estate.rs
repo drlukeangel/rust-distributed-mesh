@@ -37,6 +37,10 @@ pub fn artifacts_root() -> PathBuf {
     }
 }
 
+/// The fabrics' name index beside the per-fabric roots under a store_dir (R-FN1,
+/// `rafka_node_admin_core::store_root::FABRIC_NAMES`): not a fabric root.
+const FABRIC_NAMES: &str = "fabrics";
+
 /// Directory holding the built binaries: `RDM_BIN_DIR`, else the cargo
 /// target dir's profile directory this test binary was built into.
 pub fn bin_dir() -> PathBuf {
@@ -874,10 +878,16 @@ impl Estate {
     /// and that is whichever admin executed its creation, so every live
     /// admin's view is asked.
     /// The fabric's store root, `<estate store_dir>/<fabric id>/` (R14): the one fabric directory the
-    /// estate's store_dir holds.
+    /// estate's store_dir holds beside the fabrics' name index (`fabrics/`, R-FN1).
     pub fn fabric_store_root(&self) -> PathBuf {
         let store = estate_store_dir(&self.root);
-        let fabrics: Vec<PathBuf> = std::fs::read_dir(&store).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        let fabrics: Vec<PathBuf> = std::fs::read_dir(&store)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && p.file_name().is_none_or(|n| n != FABRIC_NAMES))
+            .collect();
         match fabrics.as_slice() {
             [one] => one.clone(),
             other => panic!("the estate's store_dir {} holds {} fabric roots, not one: {other:?}", store.display(), other.len()),
