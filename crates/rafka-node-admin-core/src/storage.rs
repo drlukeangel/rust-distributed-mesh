@@ -215,7 +215,7 @@ pub struct NodeRecord {
     /// a restarting node-admin reads its mesh's row by it, never by the name alone, since a mesh
     /// created again under the name is another mesh with another id (R-MN1).
     pub mesh_id: MeshId,
-    /// The incarnation this birth last ran (a restart supersedes it).
+    /// The incarnation this birth runs (a relaunch on this data dir is a new birth).
     pub incarnation_id: IncarnationId,
     /// The node's fabric endpoint id.
     pub endpoint_id: EndpointId,

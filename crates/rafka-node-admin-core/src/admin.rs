@@ -2738,6 +2738,14 @@ pub async fn hydration_blocker(me: &PathName, accepted: &AcceptedStore, builds: 
     }
 }
 
+/// Whether `id` is this admin itself: its own node.id, or, on a relaunch, the former birth it
+/// relaunched over (`relaunched_over`, the own row its data dir held). The seat records, contacts and
+/// durable map that data dir holds name the former birth; they are this admin's own and not another
+/// node's.
+fn is_self(id: &NodeId, node_id: &NodeId, relaunched_over: Option<&crate::storage::NodeRecord>) -> bool {
+    id == node_id || relaunched_over.is_some_and(|former| &former.node_id == id)
+}
+
 /// A person-started admin that is not a restart (no row of its own in nodes.storage): what it
 /// is must be stated by its parameters, and contradictory inputs are refused by name. Day 0 is
 /// the start with no mesh, no seed and no flag on a data dir that holds nothing; a recovery start
@@ -4913,9 +4921,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
     // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
     // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage
-    // was here before: it restarts as the same logical node, in the same Mesh and Fabric, holding the
-    // same Builds. Every store's temp files carry this process's incarnation, decided here, before
-    // any store opens: the launch's, else a new one (a restart supersedes the one it last ran).
+    // was here before: it relaunches as a new node over that data dir, in the same Mesh and Fabric,
+    // holding the same Builds. Every store's temp files carry this process's incarnation, decided here,
+    // before any store opens: the launch's, else a new one (a relaunch is a new birth).
     let storage_err = |e: crate::record_store::StorageError| e.to_string();
     let incarnation = cfg.launch.as_ref().map(|l| l.incarnation.clone()).unwrap_or_else(IncarnationId::mint);
     if let (None, Ok(p)) = (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
@@ -4995,7 +5003,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     }
     drop(storage_step);
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
-    // or (a restart) its own row, under a new incarnation that supersedes the one it last ran.
+    // or (a relaunch) a new node.id and incarnation over the own row's path.name, which supersedes none.
     // Its bootstrap contacts are the births it last heard, its own Mesh first: hints, any one of
     // which answering is enough.
     let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &restart) {
@@ -5009,23 +5017,32 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             contacts.retain(|c| c.node_id != own.node_id);
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
             let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).collect();
+            // A relaunch on a data dir that holds an own row is a new node over it
+            // (node-admin-lifecycle.md section 3, "Fabric recovery"; fabric-recovery.md): a new
+            // node.id and incarnation, the same path.name and endpoint key (the key is the data dir's),
+            // a new port, and no supersedes (node-recovery.md "Lineage"). The row it read names the
+            // former birth; nothing of the former node.id is carried on.
+            let node_id = NodeId::mint();
             tracing::info_span!(
-                "rdm.node_admin.node.update.via-restart",
+                "rdm.node_admin.node.create.via-relaunch",
                 node = %own.name,
-                node_id = %own.node_id,
-                supersedes = %own.incarnation_id,
+                node_id = %node_id,
+                incarnation_id = %incarnation.0,
+                former_node_id = %own.node_id,
+                former_incarnation_id = %own.incarnation_id,
+                endpoint_id = %own.endpoint_id,
                 fabric_id = %cfg.fabric_id,
                 contacts = contacts.len(),
             )
-            .in_scope(|| tracing::info!("restarting as the same logical node from nodes.storage"));
+            .in_scope(|| tracing::info!("relaunching over this data dir as a new node: a new node.id and incarnation, the same path.name and endpoint key"));
             (
                 own.name.clone(),
-                own.node_id.clone(),
+                node_id,
                 incarnation.clone(),
-                Some(own.incarnation_id.clone()),
-                // A restart reuses identity and data dir and binds a fresh port (the operating
-                // system assigns it), never the one it last held: its peers learn the new address
-                // from its digest.
+                None,
+                // A relaunch keeps the data dir and binds a fresh port (the operating system assigns
+                // it), never the one the former birth held: its peers learn the new address from its
+                // digest.
                 SocketAddr::new(own.transport_addr.ip(), 0),
                 addr_of("control").unwrap_or(cfg.api_bind),
                 seeds,
@@ -5297,12 +5314,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         .await
                         .map_err(|e| e.to_string())?
                         .iter()
-                        .any(|row| row.seat == rafka_mesh_entity::Seat::FabricPrimary && row.holder.node_id == node_id);
+                        .any(|row| row.seat == rafka_mesh_entity::Seat::FabricPrimary && is_self(&row.holder.node_id, &node_id, restart.as_ref()));
                     if holds_fabric_seat {
                         crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_FABRIC_SEAT);
                     } else {
                         let mut contacts = Vec::new();
-                        for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
+                        for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| !is_self(&r.node_id, &node_id, restart.as_ref())) {
                             contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, transition: None, ready: false, data_dir: None, admin_api_base: None });
                         }
                         crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN, &boot)
@@ -5456,12 +5473,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             if restart.is_some() && cfg.launch.is_none() {
                                 // A fabric primary reborn into its mesh has no maker: its durable map is the topology.
                                 let mut rows = nodes_storage.contacts().await.map_err(storage_err)?;
-                                rows.retain(|r| r.node_id != node_id);
+                                rows.retain(|r| !is_self(&r.node_id, &node_id, restart.as_ref()));
                                 if let Ok(map) = crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&rows)).await {
                                     entry_map = Some(("durable-map", map));
                                 }
                             }
-                            let entering_existing_mesh = entry_map.as_ref().is_some_and(|(_, m)| m.iter().any(|n| n.name.mesh == cfg.mesh && n.node_id != node_id));
+                            let entering_existing_mesh = entry_map.as_ref().is_some_and(|(_, m)| m.iter().any(|n| n.name.mesh == cfg.mesh && !is_self(&n.node_id, &node_id, restart.as_ref())));
                             // Whether this admin enters an existing mesh: from its durable map here, or from the maker's
                             // topology at node.start's topology step. The Ready check waits for that entry's sweep.
                             let entering = Arc::new(std::sync::atomic::AtomicBool::new(entering_existing_mesh));
@@ -5481,7 +5498,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             if restart.is_some() && cfg.launch.is_none() {
                                 let desired = accepted.current(&*builds_dyn).await.map(|b| b.topology);
                                 for r in nodes_storage.contacts().await.map_err(storage_err)? {
-                                    if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
+                                    if !is_self(&r.node_id, &node_id, restart.as_ref()) && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
                                         let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, transition: None, ready: false, data_dir: None, admin_api_base: None };
                                         records.publish(m.as_node(NodeStatus::PendingReconnect, policy.provider));
                                     }
@@ -5784,8 +5801,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 gossip: None,
                                 data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
                             }));
-                            // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
-                            // the same logical node in the same Mesh.
+                            // nodes.storage and mesh.storage: this birth and its Mesh, so a relaunch on this data dir
+                            // is a new node in the same Mesh.
                             {
                                 let d = digest.lock().unwrap().clone();
                                 nodes_storage
