@@ -137,7 +137,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         };
         let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 1, operation: format!("stop-node:{born}") };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
-        admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default() });
+        admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None });
         let key = node::load_or_mint_key(&root.join(born.to_string())).unwrap();
         admin.deployed_as(&renamed, &key, taken.clone(), Some(born.clone()));
         let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 2, operation: format!("start-node:{taken}") };
@@ -303,7 +303,7 @@ fn a_node_renamed_while_stopped_records_its_join_connection_under_the_handed_nam
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         seams.connections.drain().await;
         let at_stop = kept_log(&store, &fabric, &born).len();
-        admin.put_row(NodeRow { name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default() });
+        admin.put_row(NodeRow { name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(born.clone()));
         let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_join_row".into(), attempt: 2, operation: format!("start-node:{taken}") };
         assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");

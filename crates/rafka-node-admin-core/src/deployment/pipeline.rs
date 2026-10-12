@@ -1298,6 +1298,84 @@ impl DeploymentPipeline<'_> {
         }
     }
 
+    /// A runtime launched by an executor that is not this one and never joined this one (`recorded`:
+    /// the executor that launched it, as far as this run knows): stopped through its exact handle,
+    /// so the birth can be decided afresh under this executor's endpoint. One `via-lost-executor`
+    /// span; a stop that fails ends the run by name.
+    async fn stop_lost_launch(&self, req: &CreateRequest, stranded: &DeploymentHandle, recorded: &str) -> Result<(), PipelineError> {
+        use tracing::Instrument;
+        let span = tracing::info_span!(
+            "rdm.node_admin.deployment.reject.via-lost-executor",
+            node = %req.node,
+            build_id = %req.build_id,
+            attempt = req.attempt,
+            step = CreateStep::DeployRuntime.name(),
+            deployment_id = %stranded.deployment_id,
+            recorded_executor = recorded,
+            executor = %self.template.executor(),
+        );
+        self.provider
+            .terminate(stranded, TerminationMode::Graceful { grace: self.timeouts.stop_grace })
+            .instrument(span)
+            .await
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", req.node) })
+    }
+
+    /// The identity an earlier run of this operation claimed `req.node` with, for a run that holds
+    /// none of that run's receipts: its executor was lost, and with it the only journal its receipts
+    /// had reached (build.md §5.2). The claim row names the identity and the operation of the Build
+    /// that allocated it ([`crate::storage::NodeRow::allocated`]). Settled by the provider's exact
+    /// proof, which lifecycles/node-create.md requires even for a deployment that never joined:
+    /// - no runtime of that exact deployment exists: the birth was never launched, and this run
+    ///   continues it under the same identity (its claim is that birth's, `Claimed::HeldByNode`);
+    /// - one runs: the lost executor launched it and it never joined this one: the lost-executor
+    ///   rule ([`Self::stop_lost_launch`]) stops it through its exact handle, its claim is withdrawn
+    ///   (that birth's key only), and the birth is decided afresh (`None`).
+    /// No such claim: `None`, and the identity is minted. One `via-claimed-allocation` span.
+    async fn claimed_allocation(&self, run: &Run<'_>, req: &CreateRequest, rows: &crate::node_rows::NodeRows, bind_addr: SocketAddr) -> Result<Option<Identity>, PipelineError> {
+        use tracing::Instrument;
+        let step = CreateStep::AllocateIdentity.name();
+        let Some((node_id, a)) = rows.allocation_at(&req.node, &req.build_id, &run.operation).await.map_err(|reason| PipelineError { step, reason })? else { return Ok(None) };
+        let identity = Identity { node_id, incarnation: a.incarnation, supersedes: None, deployment_id: a.deployment_id };
+        let data_dir = req.data_dir.clone().unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", req.node, identity.node_id)));
+        let spec = ResolvedNodeLaunch { node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: bind_addr, listeners: vec![] };
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.resolve.via-claimed-allocation",
+            node = %req.node,
+            build_id = %req.build_id,
+            attempt = req.attempt,
+            operation = %run.operation,
+            node_id = %identity.node_id,
+            incarnation_id = %identity.incarnation.0,
+            deployment_id = %identity.deployment_id,
+            executor = %self.template.executor(),
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+        );
+        match self.provider.find(&spec).instrument(span.clone()).await {
+            Ok(None) => {
+                span.record("outcome", "never-launched");
+                span.in_scope(|| tracing::info!("the claim names a birth this operation allocated and no runtime of its deployment exists: this run continues it"));
+                Ok(Some(identity))
+            }
+            Ok(Some(stranded)) => {
+                span.record("outcome", "launched-by-lost-executor");
+                span.in_scope(|| tracing::info!("the claim names a birth this operation allocated whose runtime the lost executor launched: it is stopped and the birth decided afresh"));
+                self.stop_lost_launch(req, &stranded, "the executor whose claim names the birth").instrument(span.clone()).await?;
+                rows.withdraw(&req.node, &identity.node_id, &run.operation, "the birth its claim names was launched by a lost executor and never joined this one: a fresh birth claims the name").await;
+                Ok(None)
+            }
+            Err(e) => {
+                let reason = format!(
+                    "{}: the claim of {} (Build {}) names the birth {} at deployment {}, and the provider could not prove whether a runtime of that deployment exists, so the birth is neither continued nor decided afresh: {e}",
+                    req.node, run.operation, req.build_id, identity.node_id, identity.deployment_id
+                );
+                span.record("outcome", "unproven").record("detail", reason.as_str());
+                Err(PipelineError { step, reason })
+            }
+        }
+    }
+
     async fn create_to_ready_claimed(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, exited_predecessor: Option<&ExitedPredecessor<'_>>, before_launch: Option<BeforeLaunch<'_>>, claimed: &mut Option<NodeId>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
@@ -1322,30 +1400,13 @@ impl DeploymentPipeline<'_> {
                 // address may answer as another process). The birth is stopped and decided afresh
                 // under this executor's endpoint; a birth that joined has used its seed and stands.
                 let stranded = earlier.expect("alive implies a decoded handle");
-                let span = tracing::info_span!(
-                    "rdm.node_admin.deployment.reject.via-lost-executor",
-                    node = %req.node,
-                    build_id = %req.build_id,
-                    attempt = req.attempt,
-                    step = CreateStep::DeployRuntime.name(),
-                    deployment_id = %stranded.deployment_id,
-                    recorded_executor = run.owner.get(CreateStep::DeployRuntime.name()).and_then(|o| o.as_deref()).unwrap_or("not recorded"),
-                    executor = %executor,
-                );
-                use tracing::Instrument;
-                self.provider
-                    .terminate(&stranded, TerminationMode::Graceful { grace: self.timeouts.stop_grace })
-                    .instrument(span)
-                    .await
-                    .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", req.node) })?;
+                let recorded = run.owner.get(CreateStep::DeployRuntime.name()).and_then(|o| o.clone()).unwrap_or_else(|| "not recorded".into());
+                self.stop_lost_launch(req, &stranded, &recorded).await?;
                 self.withdraw_earlier(run, req, "the earlier attempt's runtime was launched by another executor and never joined: a fresh birth claims the name").await;
                 run.done.clear();
             }
         }
         let rows = self.sink.node_rows();
-        let id: Identity = self
-            .step(run, CreateStep::AllocateIdentity.name(), async { Ok(Identity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() }) })
-            .await?;
         // The node binds port 0 and the operating system assigns the port; the address it
         // reports at its join is the one this admin publishes for the birth.
         let bind_ip = self
@@ -1354,6 +1415,18 @@ impl DeploymentPipeline<'_> {
             .await
             .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: no address to bind: {e}", req.node) })?;
         let bind_addr = SocketAddr::new(bind_ip, 0);
+        // A run holding no AllocateIdentity receipt of this operation continues the birth an earlier
+        // run claimed the name for, when the claim row names one ([`Self::claimed_allocation`]); any
+        // other run mints.
+        let claimed_before = match &rows {
+            Some(rows) if !run.done.contains_key(CreateStep::AllocateIdentity.name()) => self.claimed_allocation(run, req, rows, bind_addr).await?,
+            _ => None,
+        };
+        let id: Identity = self
+            .step(run, CreateStep::AllocateIdentity.name(), async {
+                Ok(claimed_before.unwrap_or_else(|| Identity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() }))
+            })
+            .await?;
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
         let inherits = req.data_dir.is_some();
         let data_dir = match req.data_dir.clone() {
@@ -1368,7 +1441,11 @@ impl DeploymentPipeline<'_> {
             // only a claim that receipt names: a rerun reuses the identity and its claim holds the row
             // (`Claimed::HeldByNode`), or decides afresh and withdraws it (`withdraw_earlier`).
             if let Some(rows) = &rows {
-                rows.claim(&req.node, &id.node_id, &run_operation)
+                // The identity is written into the claim row with it, so it is durable wherever the
+                // claim is (`NodeRow::allocated`): a later run of this operation that never heard
+                // this one's receipts continues the same birth rather than being refused by it.
+                let allocated = crate::storage::Allocation { build_id: req.build_id.clone(), operation: run_operation.clone(), incarnation: id.incarnation.clone(), deployment_id: id.deployment_id.clone() };
+                rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated))
                     .await
                     .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
                 *claiming = Some(id.node_id.clone());

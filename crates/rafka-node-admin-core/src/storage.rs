@@ -281,6 +281,32 @@ pub struct NodeRow {
     /// a row written before tags existed carries none.
     #[serde(default)]
     pub tags: BTreeSet<String>,
+    /// What the create that claimed the name allocated (lifecycles/node-create.md step 1: the claim
+    /// precedes everything prepared or launched for the birth): the claim row only. The claim is the
+    /// one write of the create that outlives a lost executor (its Build receipts are in that
+    /// executor's own journal, build.md §5.2), so the identity the claim was made with is durable in
+    /// it, and a later attempt of the same operation of the same Build that never heard the
+    /// `AllocateIdentity` receipt continues under that identity: its claim is the same birth's
+    /// (`crate::node_rows::Claimed::HeldByNode`). Every later row of the node is written after its
+    /// launch and carries none; a row written before allocations existed carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocated: Option<Allocation>,
+}
+
+/// The identity a create's `AllocateIdentity` decided for the birth its claim names (beside the
+/// row's `node_id`), and the operation of the Build that decided it: keyed by `(build_id,
+/// operation)`, never by attempt, because every attempt of the operation continues the same birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Allocation {
+    /// The Build whose operation claimed the name.
+    pub build_id: crate::build::BuildId,
+    /// The operation that claimed it (`create-node:<path>`).
+    pub operation: String,
+    /// The incarnation minted for the birth.
+    pub incarnation: IncarnationId,
+    /// The exact deployment minted for the birth: what the provider finds its runtime by, if one
+    /// was ever launched.
+    pub deployment_id: crate::model::DeploymentId,
 }
 
 impl NodeRow {
@@ -1136,7 +1162,7 @@ mod tests {
     }
 
     fn row(name: &str) -> NodeRow {
-        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }
+        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None }
     }
 
     /// CONTRACT (CLAUDE.md read rule: a lookup by id that cannot read the store's own key reads the
@@ -1434,7 +1460,7 @@ mod tests {
     /// thread keeps running meanwhile, and the read answers the row.
     #[test]
     fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
-        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() };
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None };
         let name = row.name.clone();
         let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
         assert!(ran, "the runtime thread ran while the row read waited on the disk");
@@ -1482,7 +1508,7 @@ mod tests {
     async fn a_second_nodes_row_at_a_held_name_is_refused_by_the_adapter_and_nothing_is_written() {
         let d = crate::record_store::tempdir("storage-claim");
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default() };
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None };
         let check = async |n: &dyn NodesStorage, store: &str| {
             let (first, second) = (NodeId::mint(), NodeId::mint());
             let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");

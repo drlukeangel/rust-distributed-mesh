@@ -284,8 +284,8 @@ fn writer_view(records: &[Node], primary: Option<&str>, fabric_primary: Option<N
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default() }).await.unwrap().unwrap();
-        assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node").await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
+        storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
     }
 }
 
@@ -699,7 +699,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         // mesh had a primary.
         rows_written(&storage, &rows, std::slice::from_ref(&last)).await;
         // A live mesh2.admin.1 holds its name: a second birth's claim is refused.
-        let second = rows.claim(&last.name, &NodeId::mint(), "create-node:mesh2.admin.1").await;
+        let second = rows.claim(&last.name, &NodeId::mint(), "create-node:mesh2.admin.1", None).await;
         // Seated and live: the fabric-primary is not the writer of mesh2's rows.
         view.write().await.nodes.iter_mut().filter(|n| n.name == last.name).for_each(|n| n.is_primary = true);
         let live = rows.deleted(&last, &deleting).await;
@@ -715,7 +715,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         let statuses = status.mesh_statuses().await.unwrap();
         let dead_held = status.mesh_status_held_of("mesh2", &rafka_node_admin_core::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
         // mesh2 created again: its first admin's claim wins over the Deleted row.
-        let again = rows.claim(&last.name, &NodeId::mint(), "create-node:mesh2.admin.1").await;
+        let again = rows.claim(&last.name, &NodeId::mint(), "create-node:mesh2.admin.1", None).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
     });
     let (statuses, dead_held) = statuses;
@@ -1355,10 +1355,10 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default() }).await.unwrap().unwrap();
+            storage.put_node_row(&NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: n.config.clone(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
         }
         for n in &records {
-            assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node").await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
+            assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
         }
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();

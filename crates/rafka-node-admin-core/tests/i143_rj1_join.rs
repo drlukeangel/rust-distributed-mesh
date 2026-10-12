@@ -247,7 +247,7 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default() };
+        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34569");
@@ -284,7 +284,7 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default() };
+        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34570");
@@ -340,7 +340,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             name: dep.name.clone(),
             node_id: predecessor.clone(),
             status: rafka_node_admin_core::model::NodeStatus::Deleted,
-            config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(),
+            config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None
         };
         let door = JoinDoor {
             me: "mesh1.admin.1".parse().unwrap(),
@@ -406,7 +406,7 @@ fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::collections::BTreeMap<String, String>>>> = Arc::default();
         let log = installed.clone();
-        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default() };
+        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default(), allocated: None };
         let mut door = door_over(joins.clone(), Arc::default(), row);
         door.install = Arc::new(move |d| log.lock().unwrap().push(d.config.clone()));
         let _reported = joins.expect(dep.clone());
