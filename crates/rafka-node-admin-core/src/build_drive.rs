@@ -539,7 +539,8 @@ enum Inner {
     Unreached(String),
     Broke(String),
     /// The Build log's seat fence was set while the executor's run was open: this admin's authority
-    /// ended at the fence, and the drive ends there without waiting for the run's stream.
+    /// ended at the fence. The drive ends there without waiting for the run's stream, except for
+    /// the executor the row seated, whose stream ends with its new-seat frame once it holds the seat.
     Fenced,
 }
 
@@ -1006,11 +1007,27 @@ impl DriveEnv {
             Dispatched::Refused(r) => return Inner::Refused(r),
             Dispatched::Unreached(why) => return Inner::Unreached(why),
         };
+        // Set once the seat row that fenced this admin names this run's executor: the run's own
+        // SeatTransfer step moved the seats to it (node-rpc-envelope.md TakeSeats).
+        let mut seated_executor = false;
         loop {
             // Only the wait for the next item races the fence: a frame in hand is handled whole.
             let item = tokio::select! {
                 biased;
-                _ = self.gate.fence_set() => return Inner::Fenced,
+                _ = self.gate.fence_set(), if !seated_executor => {
+                    // The row seated this run's executor: it is the fabric-primary once it has installed
+                    // the committed seats ("the reply opens N's execution gate"), and it says so on this
+                    // stream by ending it with SeatMoved naming itself. The callers are sent to it only
+                    // then: before, its door would answer them as an admin that is not the
+                    // fabric-primary. Any other holder ends the drive at the fence at once.
+                    match self.gate.fence().await {
+                        Err(BuildStateError::Fenced { to: Some(to), .. }) if parse_path(&to).as_ref() == Some(executor) => {
+                            seated_executor = true;
+                            continue;
+                        }
+                        _ => return Inner::Fenced,
+                    }
+                }
                 item = stream.next() => item,
             };
             match item {
@@ -1019,12 +1036,17 @@ impl DriveEnv {
                     BuildReply::Blocked { .. } => {
                         drive.push(f);
                     }
+                    // Past the fence this admin decides nothing of the attempt: the executor, now the
+                    // fabric-primary, reports its end to its own callers.
+                    _ if seated_executor => return Inner::Fenced,
                     t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),
                     // The executor took the fabric-primary seat during the run: this admin's seat row
                     // fenced it, and the drive ends at that fence.
                     BuildReply::SeatMoved { .. } => return Inner::Fenced,
                     other => return Inner::Refused(other),
                 },
+                // The row is the answer whatever became of the stream.
+                InnerItem::Ended | InnerItem::Broke(_) if seated_executor => return Inner::Fenced,
                 InnerItem::Ended => return Inner::Broke("the inner stream ended without its terminal".into()),
                 InnerItem::Broke(why) => return Inner::Broke(why),
             }

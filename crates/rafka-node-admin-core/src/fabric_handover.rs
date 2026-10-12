@@ -1127,7 +1127,9 @@ impl HandoverDoor {
                     let successor = seats.first().map(|c| c.record()).ok_or_else(|| format!("{} answered SeatsCommitted with no seat", holder.name))?;
                     let taken = book.take_together(&op, &successor, &seats, false);
                     // The executor's view names it in the committed seats before its next step runs, and before
-                    // the caller resubmits the Build here when the holder was the fabric-primary.
+                    // the caller resubmits the Build here when the holder was the fabric-primary: the old
+                    // driver ends the caller's stream on this run's new-seat frame, which the step's next
+                    // frame after this install carries (build_op.rs `attempt_run`, build_drive.rs `run_inner`).
                     (self.project_view)().await;
                     tracing::info_span!(
                         "rdm.node_admin.seat.update.via-seats-installed",
