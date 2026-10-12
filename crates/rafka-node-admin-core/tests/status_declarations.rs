@@ -111,6 +111,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         rename: Default::default(),
         row_moved: Default::default(),
         loads: None,
+        book: None,
     });
     // The rig's view stands for the admin's projection: a moved row moves the birth's entry.
     let moved_view = topology.clone();

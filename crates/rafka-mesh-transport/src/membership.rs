@@ -1848,11 +1848,12 @@ struct SnapshotTaken {
 struct Prior {
     held: Option<(PublisherId, u64)>,
     stops: BTreeSet<(String, String)>,
+    restarts: BTreeSet<(String, u32, String)>,
 }
 
 impl Prior {
     fn of(rx: &SnapshotReceiver, mesh: &str) -> Self {
-        Self { held: rx.held_version(mesh), stops: Fence::stops_of(rx.held_full(mesh)) }
+        Self { held: rx.held_version(mesh), stops: Fence::stops_of(rx.held_full(mesh)), restarts: Fence::restarts_of(rx.held_full(mesh)) }
     }
 
     /// The fence of a frame of `publisher` at `version` arriving on `side`, `after` the projection the
@@ -1865,6 +1866,8 @@ impl Prior {
             version,
             prior_stops: self.stops,
             post_stops: Fence::stops_of(after),
+            prior_restarts: self.restarts,
+            post_restarts: Fence::restarts_of(after),
         }
     }
 }
@@ -2255,7 +2258,7 @@ impl View {
     fn apply_status_event(&self, kind: StatusEvent, op: &LifecycleOp, carried: Option<(String, u64)>, via: &str) -> bool {
         match kind {
             StatusEvent::Deleting => self.book.deleting(op.clone()),
-            StatusEvent::Restarting => self.book.restarting(op.clone()),
+            StatusEvent::Restarting => self.book.restarting_carried(op.clone(), carried),
             StatusEvent::Stopped => {
                 let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
                 let taken = self.book.stopped_carried(op.clone(), carried);
@@ -2537,7 +2540,7 @@ impl View {
     /// stop to this one (`fence`); any other entry of it is refused by name. An own-mesh birth's
     /// entry gives its status and nothing else (gossip.md §3.1: liveness, endpoints and the runtime
     /// fact come from its Digest), unless this node is the primary that authors it.
-    fn apply_full(&self, _mesh: &str, full: &Full, fabric: &FabricId, side: Side, fence: &Fence) -> Vec<MeshDigest> {
+    fn apply_full(&self, mesh: &str, full: &Full, fabric: &FabricId, side: Side, fence: &Fence) -> Vec<MeshDigest> {
         for op in full.departed() {
             self.book.depart(op);
         }
@@ -2554,7 +2557,13 @@ impl View {
             }
         }
         self.book.note_stops_carried(fence);
+        self.book.note_restarts_carried(fence);
         let authors = self.primary.load(Ordering::Relaxed);
+        // The primary ends its own mesh's restarts at node.started; every other node when its
+        // projection moves past one.
+        if !(mesh == self.mesh && authors) {
+            self.book.restarts_moved_past(mesh, fence);
+        }
         let mut carried = Vec::new();
         for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
             // A read carries this node's own digest as the node read holds it: this node's own
@@ -3972,12 +3981,21 @@ pub(crate) struct Fence {
     prior_stops: BTreeSet<(String, String)>,
     /// The stopped births whose stop the held source carries after the frame.
     post_stops: BTreeSet<(String, String)>,
+    /// The restarts, by operation key, the held source carried before the frame.
+    prior_restarts: BTreeSet<(String, u32, String)>,
+    /// The restarts the held source carries after the frame.
+    post_restarts: BTreeSet<(String, u32, String)>,
 }
 
 impl Fence {
     /// The stop births a source projection carries.
     fn stops_of(full: Option<&crate::snapshot::Full>) -> BTreeSet<(String, String)> {
         full.map(|f| f.in_flight().into_iter().filter(LifecycleOp::is_stop).map(|o| (o.node_id.to_string(), o.incarnation.0)).collect()).unwrap_or_default()
+    }
+
+    /// The restarts, by operation key, a source projection carries.
+    fn restarts_of(full: Option<&crate::snapshot::Full>) -> BTreeSet<(String, u32, String)> {
+        full.map(|f| f.in_flight().into_iter().filter(LifecycleOp::is_restart).map(|o| o.key()).collect()).unwrap_or_default()
     }
 
     /// The version held before the frame, for spans: -1 when none was held.
@@ -4021,6 +4039,11 @@ pub struct DigestBook {
     /// the mesh-primary's `node.joined` ([`Self::joined`]), its projection moving past the stop
     /// (`View::apply_full`), a later incarnation of the NodeId or a departure ends the stop.
     stopped_marks: Arc<Mutex<HashMap<String, StopMark>>>,
+    /// The open restarts by operation key, each with the highest version, and its publisher, at which
+    /// a `NodeRestarting` this book took, or a projection of its mesh it applied, carried it: a later
+    /// projection of that source no longer carrying it moved past it (its mesh-primary took
+    /// node.started).
+    restarts_carried: Arc<Mutex<HashMap<(String, u32, String), (String, u64)>>>,
     /// Whether this book's holder is its mesh's primary now (the same flag its view holds): the
     /// primary authors its members' statuses; every other member takes them from its projection.
     primary: Arc<std::sync::atomic::AtomicBool>,
@@ -4194,6 +4217,7 @@ impl DigestBook {
             refused_departures: Arc::default(),
             in_flight: Arc::default(),
             stopped_marks: Arc::default(),
+            restarts_carried: Arc::default(),
             primary: Arc::default(),
             own_mesh: Arc::default(),
             own: Arc::default(),
@@ -4314,23 +4338,18 @@ impl DigestBook {
         new
     }
 
-    /// The restart overlays the Build facts name open, applied as the facts' truth: each is open here
-    /// until its operation ends in the facts, whatever a rejoin digest did to it before. A restart
-    /// overlay this book holds closes only on the facts' word: its operation's `Complete` is
-    /// receipted in its Build (`completed`, by Build and operation), its attempt's verdict is
-    /// `Converged` (`converged`, by Build and attempt: the fabric-primary records it from the
-    /// executor's stream terminal, which follows every step's `Complete`, so progress waits on no
-    /// gossiped receipt), or its Build is forgotten (`forgotten`). A hold the facts do not name yet (a
-    /// `NodeRestarting` frame or a peer's summary arrived before its receipts) stays open; no other
-    /// fact closes it. This is the lifetime the aggregate carries a restart for: from its pre-event to
-    /// the end of the operation.
+    /// The restart overlays the Build facts name open, applied as the facts' truth: each is opened
+    /// here unless it already ended here, by node.started of its birth at the mesh-primary
+    /// ([`Self::started`]) or by the mesh-primary's projection moving past it at any other node
+    /// (gossip.md: "NodeRestarting stays until node.started of the same `(node.id, incarnation)`
+    /// arrives"); a heartbeat ends none. A restart overlay this book holds also closes on the facts'
+    /// word: its operation's `Complete` is receipted in its Build (`completed`, by Build and
+    /// operation), its attempt's verdict is `Converged` (`converged`, by Build and attempt: the
+    /// fabric-primary records it from the executor's stream terminal, which follows every step's
+    /// `Complete`, so progress waits on no gossiped receipt), or its Build is forgotten (`forgotten`).
+    /// A hold the facts do not name yet (a `NodeRestarting` frame or a peer's summary arrived before
+    /// its receipts) stays open until one of those ends it.
     pub fn restarts_from_facts(&self, open: &[LifecycleOp], completed: &BTreeSet<(String, String)>, converged: &BTreeSet<(String, u32)>, forgotten: &BTreeSet<String>) {
-        {
-            let mut ended = self.ended_overlays.lock().unwrap();
-            for op in open.iter().filter(|o| o.is_restart()) {
-                ended.remove(&op.key());
-            }
-        }
         for op in open.iter().filter(|o| o.is_restart()) {
             self.restarting(op.clone());
         }
@@ -4374,34 +4393,140 @@ impl DigestBook {
         }
     }
 
+    /// [`Self::restarting`], from a `NodeRestarting` whose seated publisher changed the subject at
+    /// `carried`'s version (`(publisher, topology_version)`): the restart is held as carried there.
+    fn restarting_carried(&self, op: LifecycleOp, carried: Option<(String, u64)>) -> bool {
+        let key = op.key();
+        let new = self.restarting(op);
+        if let Some((publisher, version)) = carried {
+            self.note_restart_carried(&key, &publisher, version);
+        }
+        new
+    }
+
+    /// Hold the open restart `key` as carried at `version` of `publisher`, unless it is held at a
+    /// higher version of the same publisher.
+    fn note_restart_carried(&self, key: &(String, u32, String), publisher: &str, version: u64) {
+        if !self.in_flight.lock().unwrap().contains_key(key) {
+            return;
+        }
+        let mut carried = self.restarts_carried.lock().unwrap();
+        if carried.get(key).is_none_or(|(p, v)| p != publisher || version > *v) {
+            carried.insert(key.clone(), (publisher.to_string(), version));
+        }
+    }
+
+    /// A projection frame applied: every open restart the source carried, before the frame at the
+    /// version held or after it at the frame's version, is held as carried at the highest such
+    /// version of that publisher.
+    fn note_restarts_carried(&self, fence: &Fence) {
+        if let Some((publisher, version)) = &fence.held {
+            for key in &fence.prior_restarts {
+                self.note_restart_carried(key, publisher, *version);
+            }
+        }
+        for key in &fence.post_restarts {
+            self.note_restart_carried(key, &fence.publisher, fence.version);
+        }
+    }
+
+    /// The restarts of `mesh` the projection frame `fence` describes moved past: this book holds the
+    /// restart carried at some version of the source, this frame is newer than that version (or of the
+    /// source's next epoch), and the projection after it no longer carries the restart. Its
+    /// mesh-primary took node.started of the birth, and the restart ends here (gossip.md:
+    /// "NodeRestarting stays until node.started of the same `(node.id, incarnation)` arrives").
+    /// Decided and taken under one hold, so one end is spanned whichever receive path applies it.
+    fn restarts_moved_past(&self, mesh: &str, fence: &Fence) {
+        let closed: Vec<(LifecycleOp, u64)> = {
+            let mut carried = self.restarts_carried.lock().unwrap();
+            let mut in_flight = self.in_flight.lock().unwrap();
+            let mut ended = self.ended_overlays.lock().unwrap();
+            let moved: Vec<((String, u32, String), LifecycleOp, u64)> = in_flight
+                .iter()
+                .filter(|(k, o)| o.is_restart() && o.name.mesh == mesh && !fence.post_restarts.contains(*k))
+                .filter_map(|(k, o)| carried.get(k).filter(|(p, v)| *p != fence.publisher || fence.version > *v).map(|(_, v)| (k.clone(), o.clone(), *v)))
+                .collect();
+            for (k, _, _) in &moved {
+                in_flight.remove(k);
+                ended.insert(k.clone());
+                carried.remove(k);
+            }
+            moved.into_iter().map(|(_, o, v)| (o, v)).collect()
+        };
+        if closed.is_empty() {
+            return;
+        }
+        self.overlays_moved();
+        for (op, at) in closed {
+            tracing::info_span!(
+                "rdm.mesh.membership.update.via-restart-ended-in-projection",
+                node = %self.holder.lock().unwrap(),
+                member = %op.name,
+                node_id = %op.node_id,
+                incarnation_id = %op.incarnation.0,
+                build_id = %op.build_id,
+                attempt = op.attempt,
+                operation = %op.operation,
+                publisher = %fence.publisher,
+                channel = fence.channel,
+                held_version = fence.held_version(),
+                restart_carried_at = at,
+                topology_version = fence.version,
+            )
+            .in_scope(|| tracing::info!("the mesh-primary's projection moved from a version carrying the restart to one that no longer carries it: node.started of the birth ended it"));
+        }
+    }
+
     /// The open restart of `node_id`'s birth `incarnation`, if any.
     pub fn restart_of(&self, node_id: &str, incarnation: &rafka_mesh_entity::IncarnationId) -> Option<LifecycleOp> {
         self.in_flight.lock().unwrap().values().find(|op| op.is_restart() && op.node_id.as_str() == node_id && &op.incarnation == incarnation).cloned()
     }
 
-    /// `d` was taken, and `prior` was the status the book held of the node before it (`None` when it
-    /// held none): an open restart of the node is over when the same birth rejoins, a `Pending`
-    /// digest (its start) or a `ReadyForTraffic` one after a `Draining` or `Leaving` the restart
-    /// began with.
-    fn close_restarts(&self, d: &MeshDigest, prior: Option<rafka_mesh_entity::MemberStatus>) {
-        use rafka_mesh_entity::MemberStatus::{Draining, Leaving, Pending, ReadyForTraffic};
-        let rejoin = d.status == Pending || (d.status == ReadyForTraffic && matches!(prior, Some(Draining | Leaving) | None));
-        let mut in_flight = self.in_flight.lock().unwrap();
-        let mut ended = self.ended_overlays.lock().unwrap();
-        let before = in_flight.len();
-        in_flight.retain(|k, op| {
-            let gone = op.is_restart() && op.node_id == d.node.node_id && ((op.incarnation == d.node.incarnation && rejoin) || op.incarnation != d.node.incarnation);
-            if gone {
-                ended.insert(k.clone());
-            }
-            !gone
-        });
-        if in_flight.len() != before {
-            drop((in_flight, ended));
-            self.overlays_moved();
-            tracing::info_span!("rdm.mesh.membership.update.via-node-restarted", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0)
-                .in_scope(|| tracing::info!("the restarted node is heard again: the restart is over"));
+    /// The mesh-primary took node.started of the birth `incarnation` of `node_id`: its
+    /// DeclareNodeState(ReadyForTraffic), applied by its StatusAuthority (states.md "Who sets each
+    /// state": node ReadyForTraffic is set by "the node's mesh-primary" from "the node's node.started
+    /// report, after every start gate"; gossip.md: "NodeRestarting stays until node.started of the same
+    /// `(node.id, incarnation)` arrives"). The birth's status is ReadyForTraffic, and an open restart of
+    /// that exact birth is over; its projection says both on its next round. Only for a birth of this
+    /// book's own mesh: a mesh-primary sets its own mesh's statuses. `false` when nothing moved.
+    pub fn started(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        let held = self.inner.lock().unwrap().get(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation).map(|(d, _, _)| d.node.name.clone());
+        let restart = self.restart_of(node_id.as_str(), incarnation);
+        let name = held.clone().or(restart.as_ref().map(|o| o.name.clone()));
+        let own_mesh = self.own_mesh.lock().unwrap().clone();
+        let Some(name) = name.filter(|n| !own_mesh.is_empty() && n.mesh == own_mesh) else { return false };
+        let prior = self.member_statuses.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), rafka_mesh_entity::MemberStatus::ReadyForTraffic)).filter(|(inc, _)| inc == incarnation).map(|(_, s)| s);
+        if let Some((d, _, _)) = self.inner.lock().unwrap().get_mut(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation) {
+            d.status = rafka_mesh_entity::MemberStatus::ReadyForTraffic;
         }
+        let closed: Vec<LifecycleOp> = {
+            let mut in_flight = self.in_flight.lock().unwrap();
+            let mut ended = self.ended_overlays.lock().unwrap();
+            let closed: Vec<LifecycleOp> = in_flight.values().filter(|o| o.is_restart() && o.node_id == *node_id && o.incarnation == *incarnation).cloned().collect();
+            for o in &closed {
+                in_flight.remove(&o.key());
+                ended.insert(o.key());
+            }
+            closed
+        };
+        if !closed.is_empty() {
+            self.overlays_moved();
+        }
+        if prior != Some(rafka_mesh_entity::MemberStatus::ReadyForTraffic) || !closed.is_empty() {
+            self.heard.send_modify(|v| *v += 1);
+        }
+        tracing::info_span!(
+            "rdm.mesh.membership.update.from-node-started",
+            node = %self.holder.lock().unwrap(),
+            member = %name,
+            node_id = %node_id,
+            incarnation_id = %incarnation.0,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+            status = "ReadyForTraffic",
+            restarts_closed = %closed.iter().map(|o| o.operation.as_str()).collect::<Vec<_>>().join(","),
+        )
+        .in_scope(|| tracing::info!("the mesh-primary took node.started: the birth is ready-for-traffic and its restart, if one was open, is over; its projection says so"));
+        true
     }
 
     /// Accept a stopped birth (`op` is `stop-node:<path>`, naming the birth that stopped): the node
@@ -5034,7 +5159,6 @@ impl DigestBook {
                 return false;
             }
         }
-        let prior = inner.get(d.node.node_id.as_str()).map(|(held, _, _)| held.status);
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != stored.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != stored.node || held.status != stored.status || now.saturating_duration_since(*at) > self.staleness_floor);
         inner.insert(d.node.node_id.to_string(), (stored, now, Heard::Direct));
@@ -5045,7 +5169,6 @@ impl DigestBook {
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
-        self.close_restarts(&d, prior);
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
@@ -5096,7 +5219,6 @@ impl DigestBook {
             }
             held_entry = Some((*at, *heard));
         }
-        let prior = inner.get(d.node.node_id.as_str()).map(|(held, _, _)| held.status);
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
@@ -5105,7 +5227,6 @@ impl DigestBook {
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
-        self.close_restarts(&d, prior);
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
@@ -5141,7 +5262,6 @@ impl DigestBook {
                 return false;
             }
         }
-        let prior = inner.get(d.node.node_id.as_str()).map(|(held, _, _)| held.status);
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
@@ -5154,7 +5274,6 @@ impl DigestBook {
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
-        self.close_restarts(&d, prior);
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
         }
@@ -5575,7 +5694,9 @@ mod tests {
 
     /// The mesh-primary's report-taking of `node.started` of the birth `inc` of `id`: its
     /// DeclareNodeState(ReadyForTraffic) applied by its StatusAuthority.
-    fn node_started(_book: &DigestBook, _id: &NodeId, _inc: &IncarnationId) {}
+    fn node_started(book: &DigestBook, id: &NodeId, inc: &IncarnationId) {
+        book.started(id, inc);
+    }
 
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay": "NodeRestarting stays until node.started
     /// of the same `(node.id, incarnation)` arrives; a digest with a different incarnation does not
@@ -5833,13 +5954,16 @@ mod tests {
     }
 
     /// CONTRACT (gossip.md §3.1 `MembersDelta` carries "overlay and departed changes"; §3.3 a delta is
-    /// "the complete difference between the two projections"): a delta's `changed` entry of a birth
-    /// clears that exact birth's stop overlay in the held projection, because its source lists a
-    /// stopped birth again only after node.joined cleared the stop. Only `NodeStopped` of that exact
-    /// incarnation: a restart or deleting overlay of the birth, and a stop of another incarnation,
-    /// stay. The forwarder's delta for that move carries the birth in `changed` and no overlay.
+    /// "the complete difference between the two projections"; gossip.md: "NodeRestarting stays until
+    /// node.started of the same `(node.id, incarnation)` arrives"): a delta's `changed` entry of a birth
+    /// clears that exact birth's stop and restart overlays in the held projection: its source lists a
+    /// stopped birth again only after node.joined cleared the stop, and carries a changed birth's open
+    /// restart again beside it. A deleting overlay of the birth, and a stop of another incarnation,
+    /// stay. The forwarder's delta for a joined birth carries it in `changed` and no overlay; for a
+    /// birth that changed while its restart stays open, the restart again, so it stays; for one whose
+    /// restart node.started ended, none, so it ends at the receiver.
     #[test]
-    fn a_delta_listing_a_birth_again_clears_only_that_births_stop_overlay() {
+    fn a_delta_listing_a_birth_again_clears_only_that_births_stop_and_restart_overlays() {
         use crate::snapshot::{Delta, Full};
         let (id, inc, other) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
         let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
@@ -5850,9 +5974,9 @@ mod tests {
         held.apply(&Delta { changed: vec![digest(&id, &inc, None, MemberStatus::Pending, 9)], ..Delta::default() });
         let mut left = held.in_flight();
         left.sort_by(|a, b| a.key().cmp(&b.key()));
-        let mut want = vec![old_stop, restart, deleting];
+        let mut want = vec![old_stop, deleting];
         want.sort_by(|a, b| a.key().cmp(&b.key()));
-        assert_eq!(left, want, "only the exact birth's stop overlay is cleared");
+        assert_eq!(left, want, "only the exact birth's stop and restart overlays are cleared");
         let at_stop = Full::new(Vec::new(), vec![stop.clone()], Vec::new());
         let joined = Full::new(vec![digest(&id, &inc, None, MemberStatus::Pending, 9)], Vec::new(), Vec::new());
         let delta = at_stop.delta_to(&joined);
@@ -5860,6 +5984,18 @@ mod tests {
         let mut receiver = at_stop.clone();
         receiver.apply(&delta);
         assert!(receiver.same_topology(&joined), "the receiver holds what the source holds");
+        let restarting = |status| Full::new(vec![digest(&id, &inc, None, status, 9)], vec![restart.clone()], Vec::new());
+        let (leaving, pending) = (restarting(MemberStatus::Leaving), restarting(MemberStatus::Pending));
+        let still_open = leaving.delta_to(&pending);
+        assert_eq!((still_open.changed.len(), still_open.in_flight.clone()), (1, vec![restart.clone()]), "an open restart travels again beside its changed birth");
+        let mut receiver = leaving.clone();
+        receiver.apply(&still_open);
+        assert!(receiver.same_topology(&pending), "the open restart stays at the receiver");
+        let started = Full::new(vec![digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 9)], Vec::new(), Vec::new());
+        let ended = pending.delta_to(&started);
+        assert!(ended.in_flight.is_empty(), "a restart node.started ended does not travel");
+        receiver.apply(&ended);
+        assert!(receiver.same_topology(&started), "the restart ends at the receiver");
     }
 
     /// CONTRACT (membership.rs `restarts_from_facts`; node-restart.md: no event is inferred from
@@ -5901,13 +6037,15 @@ mod tests {
         assert!(book.restart_of(id3.as_str(), &inc3).is_none(), "its own attempt Converged closes it");
     }
 
-    /// CONTRACT: an overlay that ended stays ended: a restart its birth rejoined from, the primary
-    /// re-applying the operation each round (its `Complete` is not receipted yet), and a stop its
-    /// mesh-primary's node.joined ended, re-sent by a snapshot built before it, open nothing. Must NOT
-    /// happen: a rejoined node held restarting or stopped again.
+    /// CONTRACT: an overlay that ended stays ended: a restart node.started of its birth ended, the
+    /// primary re-applying the operation each round or the Build facts still naming it open (its
+    /// `Complete` is not receipted yet), and a stop its mesh-primary's node.joined ended, re-sent by a
+    /// snapshot built before it, open nothing. Must NOT happen: a started node held restarting, or a
+    /// joined one stopped, again.
     #[test]
     fn an_ended_restart_or_stop_overlay_is_not_opened_again_by_a_later_copy() {
         let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
         hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
@@ -5915,8 +6053,12 @@ mod tests {
         assert!(book.restarting(restart.clone()));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 120)));
+        assert!(book.started(&id, &inc), "node.started of the birth");
         assert!(book.restart_of(id.as_str(), &inc).is_none());
-        assert!(!book.restarting(restart), "the same operation again opens nothing");
+        assert!(!book.restarting(restart.clone()), "the same operation again opens nothing");
+        let (none, unconverged, no_build): (BTreeSet<(String, String)>, BTreeSet<(String, u32)>, BTreeSet<String>) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        book.restarts_from_facts(&[restart], &none, &unconverged, &no_build);
+        assert!(book.restart_of(id.as_str(), &inc).is_none(), "facts still naming it open, its Complete not receipted, open nothing");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 125)));
         assert!(book.routable(id.as_str()), "no overlay holds it: the ready birth of a ready mesh is selected");
         let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
@@ -6358,11 +6500,13 @@ mod tests {
 
     /// CONTRACT (i143 R-J1 follow-up, ops-naming): a member whose restart is open is held through
     /// it, but it is a parked birth that answers nobody and gossips nothing: the repair refeed
-    /// never hands its address to the channel again, however long the member has been silent. The
-    /// same birth rejoining closes the restart and the member is a target again at its address.
+    /// never hands its address to the channel again, however long the member has been silent. Its
+    /// heartbeat closes nothing; node.started of the same birth closes the restart and the member is a
+    /// target again at its address.
     #[test]
     fn a_member_under_an_open_restart_is_never_a_repair_target() {
         let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let key = iroh::SecretKey::generate().public().to_string();
         let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
@@ -6375,8 +6519,10 @@ mod tests {
         let mut next = digest(&id, &inc, None, MemberStatus::Pending, 300);
         next.node.endpoint_id = EndpointId(key);
         assert!(book.record_at(next, long_ago));
+        assert!(held_targets(&book, |_| true).is_empty(), "its heartbeat closes nothing");
+        assert!(book.started(&id, &inc));
         let targets = held_targets(&book, |_| true);
-        assert_eq!(targets.len(), 1, "the same birth rejoining closes the restart");
+        assert_eq!(targets.len(), 1, "node.started of the same birth closes the restart");
         assert_eq!(targets[0].addr.ip_addrs().next().map(|a| a.port()), Some(41000), "and is a target at its own address");
     }
 
@@ -7080,7 +7226,7 @@ mod tests {
         assert!(!view.book.record(late), "the stopped birth's heartbeat is refused and kept as the latest");
         let mut listed = rpc.clone();
         listed.status = MemberStatus::Pending;
-        let fence = Fence { publisher: publisher_of(&primary).to_string(), channel: "mesh-channel", held: Some((publisher_of(&primary).to_string(), 11)), version: 12, prior_stops: BTreeSet::new(), post_stops: BTreeSet::new() };
+        let fence = Fence { publisher: publisher_of(&primary).to_string(), channel: "mesh-channel", held: Some((publisher_of(&primary).to_string(), 11)), version: 12, ..Fence::default() };
         both_paths_end_the_stop(&view.book, &listed, &fence);
         assert!(view.book.in_flight().is_empty(), "the stop is over");
         let ended = spans.named("rdm.mesh.membership.update.via-stop-ended-in-projection");

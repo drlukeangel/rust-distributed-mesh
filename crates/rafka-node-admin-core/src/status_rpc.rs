@@ -269,6 +269,10 @@ pub struct StatusAuthority {
     /// answers beside the view. `None` only where no admin owns a digest book; a view read there is
     /// refused `NotReady` by name.
     pub loads: Option<crate::views::Loads>,
+    /// This admin's digest book: as its mesh's primary it takes node.started into it, its member's
+    /// DeclareNodeState(ReadyForTraffic) applied (`DigestBook::started`). `None` only where no admin
+    /// owns a digest book.
+    pub book: Option<rafka_mesh_transport::membership::DigestBook>,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -748,6 +752,12 @@ impl StatusAuthority {
             }
         };
         if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
+            // node.started: the birth's ReadyForTraffic, applied, is its mesh-primary's to set, and
+            // ends that exact birth's restart (states.md "Who sets each state"; gossip.md
+            // "NodeRestarting stays until node.started of the same (node.id, incarnation) arrives").
+            if let (NodeState::ReadyForTraffic, Some(book)) = (row.state, &self.book) {
+                book.started(&row.node_id, &row.incarnation_id);
+            }
             let mut t = self.topology.write().await;
             if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
                 n.declared = Some(format!("{:?}", row.state));
@@ -1028,6 +1038,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1131,6 +1142,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
@@ -1189,6 +1201,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         }
     }
 
@@ -1444,6 +1457,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1533,6 +1547,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);
