@@ -1155,6 +1155,7 @@ fn refusal_reason(r: &Reply) -> (&'static str, String) {
         Reply::RejectedEpochOverflow { seat, epoch } => ("epoch-overflow", format!("{}: epoch {epoch} cannot advance", seat.name())),
         Reply::RejectedSeatOmitted { seat, current } => ("seat-omitted", format!("{}: held at epoch {current}, not named", seat.name())),
         Reply::RejectedSourceFailed { source, op, cause } => ("source-failed", format!("{source}: {op}: {cause}")),
+        Reply::RejectedRecordAbsent { record, holder } => ("record-absent", format!("{holder} holds no {record}: it was never written there")),
         Reply::Applied | Reply::AlreadyApplied | Reply::SeatsCommitted { .. } => ("applied", String::new()),
     }
 }

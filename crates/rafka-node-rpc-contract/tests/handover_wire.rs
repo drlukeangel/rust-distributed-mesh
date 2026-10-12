@@ -71,7 +71,7 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_eighteen_variant_wire_schema() {
+fn replies_match_the_frozen_nineteen_variant_wire_schema() {
     use FabricPrimaryHandoverReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -97,13 +97,15 @@ fn replies_match_the_frozen_eighteen_variant_wire_schema() {
         (RejectedSeatOmitted { seat: Seat::FabricPrimary, current: 7 }, "10 00 07"),
         // source "s" | op "o" | cause "c"
         (RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, "11 0173 016f 0163"),
+        // record "r" | holder "h"
+        (RejectedRecordAbsent { record: "r".into(), holder: "h".into() }, "12 0172 0168"),
     ];
     for (r, hex) in fixtures {
         assert_eq!(FabricPrimaryHandover::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(FabricPrimaryHandover::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(FabricPrimaryHandover::REPLY_VARIANTS, 18);
-    assert_eq!(FabricPrimaryHandover::decode_reply(&[18]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(FabricPrimaryHandover::REPLY_VARIANTS, 19);
+    assert_eq!(FabricPrimaryHandover::decode_reply(&[19]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
@@ -114,7 +116,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
     assert_eq!(FabricPrimaryHandover::classify_reply(&Applied), ReplyKind::Success);
     assert_eq!(FabricPrimaryHandover::classify_reply(&AlreadyApplied), ReplyKind::Success);
     assert_eq!(FabricPrimaryHandover::classify_reply(&SeatsCommitted { seats: vec![committed()] }), ReplyKind::Success);
-    for r in [RejectedStaleEpoch { expected: 1, current: 2 }, RejectedWrongBirth { role: "i".into() }, RejectedNotAuthority, RejectedNotEligible { reason: "e".into() }, RejectedConflict { operation: "o".into() }, RejectedStaleSeat { seat: Seat::FabricPrimary, expected: 1, current: 2 }, RejectedEpochOverflow { seat: Seat::FabricPrimary, epoch: u64::MAX }, RejectedSeatOmitted { seat: Seat::FabricPrimary, current: 7 }, RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }] {
+    for r in [RejectedStaleEpoch { expected: 1, current: 2 }, RejectedWrongBirth { role: "i".into() }, RejectedNotAuthority, RejectedNotEligible { reason: "e".into() }, RejectedConflict { operation: "o".into() }, RejectedStaleSeat { seat: Seat::FabricPrimary, expected: 1, current: 2 }, RejectedEpochOverflow { seat: Seat::FabricPrimary, epoch: u64::MAX }, RejectedSeatOmitted { seat: Seat::FabricPrimary, current: 7 }, RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, RejectedRecordAbsent { record: "r".into(), holder: "h".into() }] {
         assert_eq!(FabricPrimaryHandover::classify_reply(&r), ReplyKind::ProtocolRefusal, "{r:?}");
     }
 }
@@ -134,4 +136,11 @@ fn the_largest_request_fits_the_frame_ceiling() {
     let huge = "x".repeat(4 * FabricPrimaryHandover::MAX_REPLY_FRAME_BYTES);
     let r = FabricPrimaryHandoverReply::source_failed(&huge, &huge, &huge);
     assert!(FabricPrimaryHandover::encode_reply(&r).unwrap().len() <= FabricPrimaryHandover::MAX_REPLY_FRAME_BYTES, "{r:?}");
+    // So is an absent record whose record and holder are each longer than the bound.
+    let r = FabricPrimaryHandoverReply::record_absent(&huge, &huge);
+    assert!(FabricPrimaryHandover::encode_reply(&r).unwrap().len() <= FabricPrimaryHandover::MAX_REPLY_FRAME_BYTES, "{r:?}");
+    let FabricPrimaryHandoverReply::RejectedRecordAbsent { record, holder } = &r else { unreachable!() };
+    assert!(record.ends_with('…') && holder.ends_with('…'), "a cut field says it was cut: {r:?}");
+    let short = FabricPrimaryHandoverReply::record_absent("the fabric-primary seat record of fabric1", "mesh2.admin.1");
+    assert_eq!(short, FabricPrimaryHandoverReply::RejectedRecordAbsent { record: "the fabric-primary seat record of fabric1".into(), holder: "mesh2.admin.1".into() }, "fields within their budgets are kept whole");
 }

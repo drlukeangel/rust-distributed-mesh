@@ -880,21 +880,20 @@ pub enum StatusReply {
         reason: String,
     },
     /// The call is refused because what the receiver had to read or write to decide or commit it
-    /// failed: a durable store refused a put or could not be read, a record it holds is absent (never
-    /// written), its view names no party the call needs, its provider refused the runtime, or a peer's
-    /// Build log could not be read. It is a runtime fact of the receiver, never a readiness answer
+    /// failed: a durable store refused a put or could not be read, its view names no party the call
+    /// needs, its provider refused the runtime, or a peer's Build log could not be read. It is a runtime fact of the receiver, never a readiness answer
     /// (`NotReady` is the door's, node-rpc-envelope.md "Node RPC readiness gate"), and nothing the call
     /// would have done was done.
     RejectedSourceFailed {
         /// What failed, named with its owner and row: `fabric.storage of mesh2.admin.1, handover row
-        /// <operation>`, `the seat records of mesh2.admin.1`, `the Build log of mesh1.admin.1 (the final
+        /// <operation>`, `the view of mesh2.admin.1`, `the Build log of mesh1.admin.1 (the final
         /// primary), read over fetch-build-facts`. Within [`MAX_SOURCE_FAILED_SOURCE_BYTES`].
         source: String,
         /// The operation on it that failed (`put`, `read`, `fetch-build-facts`, `adopt`, `resolve`),
         /// with its subject. Within [`MAX_SOURCE_FAILED_OP_BYTES`].
         op: String,
-        /// Why it failed: the store's or the peer's own error, or what was absent. Within
-        /// [`MAX_SOURCE_FAILED_CAUSE_BYTES`].
+        /// Why it failed: the store's, the provider's or the peer's own error, or the party the view
+        /// does not name. Within [`MAX_SOURCE_FAILED_CAUSE_BYTES`].
         cause: String,
     },
 }
@@ -974,7 +973,7 @@ pub fn source_failed_fields(source: &str, op: &str, cause: &str) -> (String, Str
 
 /// `s` cut to at most `max` bytes at a character boundary; a cut detail ends with `…` so the reader
 /// knows it was cut.
-fn within(s: &str, max: usize) -> String {
+pub(crate) fn within(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
