@@ -6124,6 +6124,42 @@ mod tests {
         assert!(book.restart_of(id3.as_str(), &inc3).is_none(), "its own attempt Converged closes it");
     }
 
+    /// CONTRACT (states.md "Who sets each state": node pending is set by "the node's mesh-primary"
+    /// from "the node's node.joined report on the start call"; gossip.md: "NodeRestarting stays until
+    /// node.started of the same `(node.id, incarnation)` arrives"): at the mesh-primary of mesh1, a
+    /// restart's start sets its birth Pending at node.joined though no stop mark is held (a restart
+    /// publishes no NodeStopped). The restart stays open and the birth unroutable until node.started
+    /// of the same birth, which sets it ready-for-traffic and closes the restart. A node.joined of a
+    /// birth this book holds nothing of sets nothing. Must NOT happen: node.joined of a restarting
+    /// birth leaving it ready-for-traffic, or closing its restart.
+    #[test]
+    fn a_restarts_node_joined_sets_its_birth_pending_with_no_stop_held() {
+        let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
+        book.primary.store(true, Ordering::Relaxed);
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 100)));
+        node_started(&book, &id, &inc);
+        assert!(book.routable(id.as_str()), "the started birth is ready-for-traffic");
+        let restart = op(&id, &inc, "restart-node:mesh1.rpc.1");
+        assert!(book.restarting(restart.clone()));
+        assert!(!book.joined(&op(&NodeId::mint(), &IncarnationId::mint(), "restart-node:mesh1.rpc.9")), "node.joined of a birth this book holds nothing of sets nothing");
+        assert!(book.joined(&op(&id, &inc, "restart-node:mesh1.rpc.1")), "the restart's node.joined sets its birth Pending");
+        assert_eq!(book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "held Pending from node.joined");
+        assert_eq!(book.member_statuses.lock().unwrap().get(id.as_str()).map(|(i, s)| (i.clone(), *s)), Some((inc.clone(), MemberStatus::Pending)), "the status the projection carries is Pending");
+        assert!(book.restart_of(id.as_str(), &inc).is_some(), "node.joined closes no restart");
+        assert!(!book.routable(id.as_str()), "a restarting, Pending birth is not routable");
+        let joined = spans.named("rdm.mesh.membership.update.via-node-joined");
+        assert_eq!(joined.iter().map(|f| (f["status"].clone(), f["stops_cleared"].clone())).collect::<Vec<_>>(), vec![("Pending".to_string(), String::new())], "one node.joined, Pending, no stop cleared: {joined:#?}");
+        node_started(&book, &id, &inc);
+        assert!(book.restart_of(id.as_str(), &inc).is_none(), "node.started of the same birth closes the restart");
+        assert!(book.routable(id.as_str()), "and the birth is ready-for-traffic again");
+    }
+
     /// CONTRACT: an overlay that ended stays ended: a restart node.started of its birth ended, the
     /// primary re-applying the operation each round or the Build facts still naming it open (its
     /// `Complete` is not receipted yet), and a stop its mesh-primary's node.joined ended, re-sent by a
