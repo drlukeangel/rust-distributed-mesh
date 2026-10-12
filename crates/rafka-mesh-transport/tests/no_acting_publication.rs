@@ -1,8 +1,9 @@
-//! i143.e12.s53 functional (R-RX4): nobody publishes a mesh on its behalf. Only a mesh's own
-//! mesh-primary publishes that mesh on the backbone; a mesh with no primary goes unheard, and its
-//! new mesh-primary publishes once it is established. The fabric-primary executes the stops and
-//! deletes of a peer mesh's nodes like any executor, and none of it makes it that mesh's publisher:
-//! its publication round has no aggregate of that mesh to put out, so nothing wakes it.
+//! i143.e12.s53 functional (R-RX4): nobody publishes a live mesh on its behalf. Only a live mesh's
+//! own mesh-primary publishes that mesh on the backbone; a live mesh with no primary goes unheard,
+//! and its new mesh-primary publishes once it is established. The fabric-primary executes the stops
+//! and deletes of a live peer mesh's nodes like any executor, and none of it makes it that mesh's
+//! publisher: its publication round has no aggregate of that mesh to put out, so nothing wakes it.
+//! (A deleted mesh's aggregate from its last admin's stop on is `deleted_mesh_aggregate`'s.)
 
 use iroh::protocol::Router;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
