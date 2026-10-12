@@ -1,14 +1,15 @@
 //! Fixed bytes for the coordinated 2026-10-07 status reseal (#2923); the four drain/stop command
 //! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand, as are
-//! `node.connections.delete`'s request (21) and its two replies (31, 32), and the reads' four
-//! requests (22..=25) and six replies (33..=38) with the views they carry.
+//! `node.connections.delete`'s request (21) and its two replies (31, 32), the reads' four
+//! requests (22..=25) and six replies (33..=38) with the views they carry, and the mesh.delete round
+//! and manifest refusals (39, 40, 41).
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rafka_mesh_entity::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{ConnectionScope, DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -16,6 +17,8 @@ fn mesh() -> MeshId { MeshId::parse("1123456789ab").unwrap() }
 fn fabric() -> FabricId { FabricId::parse("2123456789ab").unwrap() }
 fn birth() -> IncarnationId { IncarnationId("birth".into()) }
 fn connection() -> ConnectionId { ConnectionId::parse("3123456789ab").unwrap() }
+
+fn round(build_id: &str, attempt: u32) -> MeshDeleteRound { MeshDeleteRound { build_id: build_id.into(), attempt, operation: "o".into() } }
 
 fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| {
@@ -75,7 +78,7 @@ fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_thirty_nine_variant_wire_schema() {
+fn replies_match_the_frozen_forty_three_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -136,6 +139,14 @@ fn replies_match_the_frozen_thirty_nine_variant_wire_schema() {
         ),
         (UnknownMesh { mesh: "m".into() }, "25016d"),
         (ReadOverBound { read: "r".into(), bytes: 300, max: 65536 }, "260172ac02808004"),
+        // held { build_id "b" | attempt 2 | operation "o" } | offered { "b" | 1 | "o" }
+        (RejectedStaleRound { held: round("b", 2), offered: round("b", 1) }, "27016202016f016201016f"),
+        // held { "b" | 1 | "o" } | offered { "c" | 1 | "o" }
+        (RejectedConflictingRound { held: round("b", 1), offered: round("c", 1) }, "28016201016f016301016f"),
+        // missing 1 | without_exit (len 1: "n i") | reason "r"
+        (RejectedIncompleteManifest { missing: 1, without_exit: vec!["n i".into()], reason: "r".into() }, "290101036e20690172"),
+        // source "s" | op "o" | cause "c"
+        (RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, "2a0173016f0163"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -252,4 +263,6 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     ] { golden(status, expected); }
     golden(ProviderKind::Process, "00");
     golden(ProviderKind::Container, "01");
+    // build_id "b" | attempt 300 (ac 02) | operation "o"
+    golden(MeshDeleteRound { build_id: "b".into(), attempt: 300, operation: "o".into() }, "0162ac02016f");
 }

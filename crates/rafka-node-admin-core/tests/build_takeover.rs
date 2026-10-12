@@ -161,7 +161,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     // As a started admin: its fabric.storage holds the Fabric record (no Build named yet).
     let storage = Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new());
-    rafka_node_admin_core::fabric_storage::FabricStorage::put_identity(&*storage, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap();
+    rafka_node_admin_core::fabric_storage::FabricStorage::claim_identity(&*storage, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     let local = Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new());
     let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rafka_mesh_transport::membership::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin").await, "test-admin".into(), rafka_node_admin_core::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());

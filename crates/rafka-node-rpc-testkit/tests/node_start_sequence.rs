@@ -1,15 +1,27 @@
 //! node.start is one workflow (lifecycles/node-start.md, "End-to-end sequence"; lifecycles/node-create.md:
 //! create composes the whole node.start with FirstStart, a start after a stop runs it with AfterStop).
 //!
-//! CONTRACT: the four start paths run the same start steps in the same order, each step a child of
-//! its start's root span (`rdm.mesh.node.create.via-boot` for a first start,
-//! `rdm.mesh.node.update.via-start` for a start after a stop): a node-admin's first start (launched by
-//! another admin), the same node-admin's start after its stop, an rpc node's first start and the same
-//! rpc node's start after its stop. The steps are the join (`via-join-admitted`), the mesh channel
-//! (`via-membership-joined`), the topology (`via-topology-taken`), the `hydrate_before_ready` attempt
-//! (`via-hydrate-attempt`) and the report (`via-ready`). What must NOT happen: a start path that steps
-//! the sequence on its own, so that a step is missing from its trace, runs outside its start's root,
-//! or comes in another order than in the other paths.
+//! The design (node-start.md steps 2-5): join the accepting authority and consume its cert and
+//! rafka-time answer, join the mesh channel, then node.joined; run `hydrate_before_ready` (the app
+//! "reads no topology snapshot as a prerequisite"); obtain complete topology through
+//! node.topology.get; fetch Build facts only when the node is below the authority's floor, "after
+//! the hook and before node.started"; "Refresh rafka-time **last**, so it is current when the node
+//! re-enters"; emit node.started.
+//!
+//! CONTRACT: the four start paths run the same seven start steps in that order, each a child of its
+//! start's root span (`rdm.mesh.node.create.via-boot` for a first start,
+//! `rdm.mesh.node.update.via-start` for a start after a stop), and each step begins only after the
+//! step before it has closed: a node-admin's first start (launched by another admin), the same
+//! node-admin's start after its stop, an rpc node's first start and the same rpc node's start after
+//! its stop. The steps are the join (`via-join-admitted`), the mesh channel, node.joined
+//! (`via-membership-joined`), the `hydrate_before_ready` attempt (`via-hydrate-attempt`), the
+//! topology (`via-topology-taken`), the Build floor (`via-build-floor`, run on every start: an rpc
+//! node holds no Build log and owes none), the rafka-time refresh (`via-rafka-time-refreshed`) and
+//! the report (`via-ready`). What must NOT happen: a topology read before the hook returned, a
+//! rafka-time adopted after the topology and before the floor and never again, a start with no
+//! floor step, or a start path that steps the sequence on its own, so that a step is missing from
+//! its trace, runs outside its start's root, overlaps the step before it, or comes in another order
+//! than in the other paths.
 //!
 //! The authority is a real Day-0 node-admin in this process; it launches the second admin and the rpc
 //! node, and commands their stops and starts. Its own process: the cell holds process-wide state (the
@@ -31,12 +43,14 @@ const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_I
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 
-/// The start steps, in the order every start path runs them.
-const STEPS: [&str; 5] = [
+/// The start steps, in the order every start path runs them (node-start.md steps 2-5).
+const STEPS: [&str; 7] = [
     "rdm.mesh.node.update.via-join-admitted",
     "rdm.mesh.node.update.via-membership-joined",
-    "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-hydrate-attempt",
+    "rdm.mesh.node.update.via-topology-taken",
+    "rdm.mesh.node.update.via-build-floor",
+    "rdm.mesh.node.update.via-rafka-time-refreshed",
     "rdm.mesh.node.update.via-ready",
 ];
 const FIRST_START: &str = "rdm.mesh.node.create.via-boot";
@@ -116,16 +130,27 @@ fn start(launch: &Launch) -> StatusRequest {
     StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_start_sequence".into(), attempt: 2, operation: format!("start-node:{}", launch.name) }
 }
 
-/// The start steps of `node` that are children of a span named `root`, in the order they began.
-fn steps_under(spans: &crate::common::Spans, node: &str, root: &str) -> Vec<String> {
+/// The start steps of `node` that are children of a span named `root`, in the order they began:
+/// each with the sequence number of its begin and of its close (`None` while it is open).
+fn steps_under(spans: &crate::common::Spans, node: &str, root: &str) -> Vec<(String, u64, Option<u64>)> {
     let held = spans.0.lock().unwrap();
+    let closed = spans.3.lock().unwrap();
     let mut found: Vec<(u64, String)> = held
         .iter()
         .filter(|(_, (name, parent, fields))| STEPS.contains(&name.as_str()) && parent.as_deref() == Some(root) && fields.get("node").map(String::as_str) == Some(node))
         .map(|(seq, (name, _, _))| (*seq, name.clone()))
         .collect();
     found.sort();
-    found.into_iter().map(|(_, n)| n).collect()
+    found.into_iter().map(|(seq, n)| (n, seq, closed.get(&seq).copied())).collect()
+}
+
+/// Where `steps` breaks the sequence: a step that began before the step ahead of it closed.
+fn overlaps(steps: &[(String, u64, Option<u64>)]) -> Vec<String> {
+    steps
+        .windows(2)
+        .filter(|w| w[0].2.is_none_or(|closed| w[1].1 < closed))
+        .map(|w| format!("{} began (#{}) before {} closed ({})", w[1].0, w[1].1, w[0].0, w[0].2.map_or("never".to_string(), |c| format!("#{c}"))))
+        .collect()
 }
 
 #[test]
@@ -191,7 +216,9 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         ];
         let report: Vec<String> = paths.iter().map(|(path, steps)| format!("{path}: {steps:?}")).collect();
         for (path, steps) in &paths {
-            assert_eq!(steps, &STEPS.map(String::from).to_vec(), "{path} runs the start steps of every start path, in their order, under its start's root; all four:\n{}", report.join("\n"));
+            let names: Vec<String> = steps.iter().map(|(n, _, _)| n.clone()).collect();
+            assert_eq!(names, STEPS.map(String::from).to_vec(), "{path} runs the start steps of every start path, in their order, under its start's root; all four:\n{}", report.join("\n"));
+            assert_eq!(overlaps(steps), Vec::<String>::new(), "{path} begins each start step only after the step before it closed; all four:\n{}", report.join("\n"));
         }
 
         drop(rpc);

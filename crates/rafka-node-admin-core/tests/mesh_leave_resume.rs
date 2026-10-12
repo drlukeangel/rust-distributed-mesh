@@ -149,6 +149,9 @@ impl BuildStateAdapter for WireBuilds {
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.0.mesh_deleted_of(node_id, incarnation).await
     }
+    async fn exits_owed(&self, build_id: &rafka_node_admin_core::build::BuildId, mesh: &str) -> Result<Vec<rafka_node_admin_core::build_state::OwedExit>, BuildStateError> {
+        self.0.exits_owed(build_id, mesh).await
+    }
 }
 
 /// The host's runtimes: every termination, and the one inspection the provider cannot answer.
@@ -460,12 +463,14 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
 /// CONTRACT: an incomplete tier is refused by name, never awaited. Attempt 1 leaves the ordinary
 /// tier incomplete (one ordinary node exits, the other's exit cannot be proven; the node-admin tier
 /// never starts), so the leaving primary records no exit manifest. The fabric-primary's verdict on
-/// the handoff over the sender's Build facts (as the wire carries them) refuses it `NotReady`
-/// naming every roster birth without an Exited receipt (the unproven ordinary node and the other
-/// node-admin) and not the one that exited (node-rpc-envelope.md, "Mesh leave command pair": "an
-/// incomplete manifest is refused NotReady with the mismatch named").
+/// the handoff over the sender's Build facts (as the wire carries them) refuses it
+/// `RejectedIncompleteManifest` naming every roster birth without an Exited receipt (the unproven
+/// ordinary node and the other node-admin), their count, and not the one that exited nor the final
+/// primary (node-rpc-envelope.md, "Mesh delete command pair": "A stale/conflicting round or
+/// incomplete manifest is refused by name with a typed Status refusal naming the mismatch"). What
+/// must NOT happen: `NotReady`, the answer of a door that is not serving yet.
 #[test]
-fn an_incomplete_tier_is_refused_not_ready_naming_the_births_without_an_exited_receipt() {
+fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_receipt() {
     let cap = capture();
     let data_root = std::env::temp_dir().join(format!("mesh-leave-incomplete-{}", NodeId::mint()));
     let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
@@ -527,12 +532,13 @@ fn an_incomplete_tier_is_refused_not_ready_naming_the_births_without_an_exited_r
 
     let err = tier.expect_err("the ordinary tier holds an unproven exit");
     assert!(err.contains("tier ordinary-nodes is incomplete"), "{err}");
-    let reason = match verdict.refusal() {
-        Some(StatusReply::NotReady { reason }) => reason,
-        other => panic!("an incomplete tier is refused NotReady with the births named: {other:?} ({verdict:?})"),
+    let (missing, without_exit, reason) = match verdict.refusal() {
+        Some(StatusReply::RejectedIncompleteManifest { missing, without_exit, reason }) => (missing, without_exit, reason),
+        other => panic!("an incomplete tier is refused by name, RejectedIncompleteManifest with the births named: {other:?} ({verdict:?})"),
     };
-    assert!(reason.contains(FAILING) && reason.contains(OTHER_ADMIN), "every roster birth without an Exited receipt is named: {reason}");
-    assert!(!reason.contains(EXITING) && !reason.contains(&format!("{FINAL} ")), "the exited birth and the final primary are not named: {reason}");
+    let names: BTreeSet<String> = without_exit.iter().map(|b| b.split(' ').next().unwrap_or_default().to_string()).collect();
+    assert_eq!((missing, names), (2, BTreeSet::from([FAILING.to_string(), OTHER_ADMIN.to_string()])), "every roster birth without an Exited receipt is named, and only those: {without_exit:?}");
+    assert!(reason.contains(FAILING) && reason.contains(OTHER_ADMIN) && reason.contains(STEP_OTHER_MEMBERS_EXITED), "the reason names what was read and found missing: {reason}");
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     let refused = named("rdm.node_admin.mesh.reject.via-incomplete-handoff");
     assert!(refused.iter().any(|s| s["attributes"]["without_exit"].as_str().is_some_and(|w| w.contains(FAILING) && w.contains(OTHER_ADMIN))), "{refused:?}");
@@ -705,7 +711,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         });
         let stopped = rows.deleted(&last, &deleting).await;
         let exited = rafka_node_admin_core::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().0, runtime: None, exit_code: Some(0) };
-        let after = mesh_left_rows(Some(&rows), &status, &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
+        let after = mesh_left_rows(Some(&rows), &status, &rafka_node_admin_core::storage::MemoryMeshStorage::default(), &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
         let row = storage.node_row_at(&last.name).await.unwrap();
         let statuses = status.mesh_statuses().await.unwrap();
         let dead_held = status.mesh_status_held_of("mesh2", &rafka_node_admin_core::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
@@ -1448,7 +1454,8 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
 /// manifest, so the fabric-primary's verdict is Incomplete at once, naming every roster birth but
 /// the final primary as without an Exited receipt and naming the unknown Build; the open leave ends
 /// inside the call instead of waiting out its handoff bound (gate 044519ab canonical_ids: 120 s).
-/// A read that could not decide (not ready, unreached) stays undecided and the leave stays open.
+/// A read that could not decide (not ready, unreached) stays undecided and the leave stays open: it is
+/// refused `RejectedSourceFailed` naming the read, never answered as this admin's own `NotReady`.
 #[test]
 fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplete() {
     let records: Vec<Node> = [FINAL, EXITING, FAILING].iter().map(|n| node(n)).collect();
@@ -1475,14 +1482,20 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     match verdict {
-        Ok(HandoffVerdict::Incomplete { reason, without_exit }) => {
+        Ok(v @ HandoffVerdict::Incomplete { .. }) => {
             let expected: BTreeSet<String> = roster.iter().filter(|b| **b != me).map(|b| format!("{} {}", b.node, b.incarnation_id)).collect();
-            assert_eq!(without_exit.into_iter().collect::<BTreeSet<_>>(), expected, "every roster birth but the final primary is without an Exited receipt");
+            let HandoffVerdict::Incomplete { reason, without_exit } = &v else { unreachable!() };
+            assert_eq!(without_exit.iter().cloned().collect::<BTreeSet<_>>(), expected, "every roster birth but the final primary is without an Exited receipt");
             assert!(reason.contains("holds no fact of") && reason.contains(&key.build_id), "the reason names the unknown Build: {reason}");
+            assert!(
+                matches!(v.refusal(), Some(StatusReply::RejectedIncompleteManifest { missing: 2, ref without_exit, ref reason }) if without_exit.iter().cloned().collect::<BTreeSet<_>>() == expected && reason.contains("holds no fact of")),
+                "the handoff is refused by name, the births and the unknown Build named: {:?}",
+                v.refusal()
+            );
         }
         other => panic!("a final primary that holds no fact of the Build ends the leave incomplete, not undecided: {other:?}"),
     }
-    assert!(matches!(&not_ready, Err(r) if r.contains("hydrating")), "a read that could not decide leaves the leave open: {not_ready:?}");
+    assert!(matches!(&not_ready, Err(StatusReply::RejectedSourceFailed { cause, .. }) if cause.contains("hydrating")), "a read that could not decide leaves the leave open, refused by name as a read that failed: {not_ready:?}");
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     assert_eq!(named("rdm.node_admin.mesh.reject.via-incomplete-handoff").iter().filter(|s| s["attributes"]["roster"] == "3" && s["attributes"]["exited"] == "0").count(), 1, "one incomplete handoff is refused, for the unknown Build only");
 }

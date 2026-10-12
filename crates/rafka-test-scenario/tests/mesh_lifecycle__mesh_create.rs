@@ -178,5 +178,37 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
         }
     }
     assert!(continued >= 1, "the first attempt continues the request's trace");
+    // node-identity-and-state.md §2.7: "The mesh's primary node-admin claims the mesh's name and writes
+    // its row, at creation and at state-commit ... by insert-and-fail on the key `(path, name)`", the
+    // same MeshId re-claiming its own name accepted. mesh1's name is claimed by its Day-0 primary
+    // (held in its scratchpad until the fabric's state-commit), mesh2's by mesh2's own first admin,
+    // its only candidate; no claim is refused across creation and state-commit.
+    let claims = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
+    for (mesh, id, writer) in [("mesh1", s(&m1["id"]), "mesh1.admin.1"), ("mesh2", mesh2_id.clone(), "mesh2.admin.1")] {
+        let c = claims
+            .iter()
+            .find(|c| c["attributes"]["mesh"] == mesh && s(&c["attributes"]["mesh_id"]) == id && c["attributes"]["moment"] == "claim")
+            .unwrap_or_else(|| panic!("{mesh}'s primary claims its name: {claims:?}"));
+        assert_eq!(c["attributes"]["outcome"], "row-written", "{c}");
+        assert_eq!(c["attributes"]["node"], writer, "{mesh}'s name is claimed by its primary: {c}");
+        eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh={mesh} mesh_id={id} node={writer} outcome=row-written", s(&c["trace_id"]));
+    }
+    assert!(claims.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's claim is refused: {claims:?}");
+    // node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name by insert-and-fail at
+    // Day 0, its first write of the fabric; a later fabric-primary's claim of the same FabricId finds its
+    // own row and writes nothing.
+    let fabric_id = s(&fabric["id"]);
+    let fabric_claims = named(&spans, "rdm.node_admin.fabric.create.via-fabric-row");
+    let first = fabric_claims
+        .iter()
+        .filter(|c| s(&c["attributes"]["fabric_id"]) == fabric_id && c["attributes"]["moment"] == "claim")
+        .min_by_key(|c| c["start_unix_nano"].as_u64())
+        .unwrap_or_else(|| panic!("the fabric-primary claims the fabric's name: {fabric_claims:?}"));
+    assert_eq!(first["attributes"]["outcome"], "row-written", "{first}");
+    assert!(
+        fabric_claims.iter().all(|c| s(&c["attributes"]["fabric_id"]) == fabric_id && (c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-fabric")),
+        "no fabric claim is refused or names another Fabric: {fabric_claims:?}"
+    );
+    eprintln!("trace {}: rdm.node_admin.fabric.create.via-fabric-row fabric_id={fabric_id} outcome=row-written", s(&first["trace_id"]));
     estate.record_trace_url(accepted["trace_id"].as_str().unwrap_or(""));
 }

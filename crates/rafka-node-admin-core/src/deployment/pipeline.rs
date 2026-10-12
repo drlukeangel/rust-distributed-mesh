@@ -2056,14 +2056,9 @@ impl DeploymentPipeline<'_> {
 
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
     /// drain), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
-    /// `NodeStopped` from that matching reply, then the provider's stop and inspection of the exact
-    /// runtime: only its `Exited` is terminal proof.
-    pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        let terminal = self.stop_steps_with(run, node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?;
-        Ok(terminal.expect("a stop that terminates yields the provider's receipt"))
-    }
-
-    /// [`Self::stop_steps`]; `proof` says what the wait step must have seen to complete (a standalone
+    /// `NodeStopped` from that matching reply, then, by `end`, the parked process or the provider's
+    /// stop and inspection of the exact runtime, whose `Exited` alone is terminal proof. `proof` says
+    /// what the wait step must have seen to complete (a standalone
     /// stop and a replace's predecessor stop fail it by name unless stop-node was admitted and the
     /// birth's `stopped` reply received).
     /// `end` says what follows: the process parks, or the provider ends it.

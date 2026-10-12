@@ -29,8 +29,8 @@ impl FabricStorage for HoldsFirstWrite {
     async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
         self.inner.fabric_rows().await
     }
-    async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
-        self.inner.put_identity(identity).await
+    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<rafka_node_admin_core::fabric_storage::FabricClaim, rafka_node_admin_core::fabric_storage::FabricNameHeld>, FabricStorageError> {
+        self.inner.claim_identity(identity).await
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         if !self.held.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -73,7 +73,7 @@ async fn a_pointer_move_held_mid_write_never_moves_the_pointer_back_past_a_newer
     let (older, newer) = (BuildId("bld-older".into()), BuildId("bld-newer".into()));
     let fabric_id = FabricId::mint();
     let storage = Arc::new(HoldsFirstWrite { inner: MemoryFabricStorage::new(), begun: Notify::new(), release: Notify::new(), held: false.into() });
-    storage.inner.put_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap();
+    storage.inner.claim_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap().unwrap();
     let builds = MemoryBuildStateAdapter::new();
     for (id, at) in [(&older, 1), (&newer, 2)] {
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: at }).await.unwrap();
@@ -118,7 +118,7 @@ async fn only_the_fabric_seat_holder_puts_a_pointer_on_the_store_root() {
     let fabric_id = FabricId::mint();
     let moved = SeatRecord::Moved { by: "the fabric seat record names mesh1 000000000001 (birth p) at epoch 3".into(), to: Some("mesh1.admin.1".into()) };
     let (n, unset, p) = (file_writer(&root, Some(moved)).await, file_writer(&root, None).await, file_writer(&root, Some(SeatRecord::Open { holder: Some("mesh1.admin.1".into()) })).await);
-    p.put_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap();
+    p.claim_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap().unwrap();
     let pointer = |b: &str, at: u64| FabricPointer { build_id: BuildId(b.into()), submitted_at_ms: at };
     match n.put_pointer(&pointer("bld-n", 10)).await {
         Err(FabricStorageError::NotSeatHolder { reason, .. }) => assert!(reason.contains("mesh1.admin.1") && reason.contains("epoch 3"), "the refusal names the holder and its record: {reason}"),

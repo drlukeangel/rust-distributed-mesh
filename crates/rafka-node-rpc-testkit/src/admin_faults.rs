@@ -411,6 +411,9 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn mesh_deleted_of(&self, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
+    async fn exits_owed(&self, build_id: &rafka_node_admin_core::build::BuildId, mesh: &str) -> Result<Vec<rafka_node_admin_core::build_state::OwedExit>, BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
+    }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
@@ -430,9 +433,9 @@ impl FabricStorage for FaultedFabricStorage {
     async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
         self.inner.fabric_rows().await
     }
-    async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
+    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<rafka_node_admin_core::fabric_storage::FabricClaim, rafka_node_admin_core::fabric_storage::FabricNameHeld>, FabricStorageError> {
         self.faults.hold(Probe::Pointer { build_id: None }).await;
-        self.inner.put_identity(identity).await
+        self.inner.claim_identity(identity).await
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         self.faults.hold(Probe::Pointer { build_id: Some(pointer.build_id.to_string()) }).await;

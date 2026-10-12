@@ -33,9 +33,12 @@ pub fn adopted_time() -> rafka_mesh_transport::clock::RafkaTime {
 }
 
 mod admin_serves_forward;
+mod backbone_anti_entropy;
 mod boot_stop;
 mod loopback;
 mod mesh_leave_resume;
+mod mesh_delete_round;
+mod mesh_delete_source;
 mod build_catch_up;
 mod build_admission;
 mod build_claim;
