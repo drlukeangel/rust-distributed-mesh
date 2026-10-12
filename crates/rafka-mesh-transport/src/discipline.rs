@@ -12,7 +12,8 @@
 //!
 //! A stamp is offered only when the authority is `ReadyForTraffic` ("No node is ready-for-traffic
 //! before it has rafka-time", origin-ordering.md), because a pending publisher may not hold the
-//! lineage's time yet. A digest the book did not admit as newer is not a sample either.
+//! lineage's time yet: the status the node's book holds for it, from its own projection (a heartbeat
+//! carries no status). A digest the book did not admit as newer is not a sample either.
 //!
 //! The stamps are publication time: `MeshDigest::emitted_at_rafka_ms` is read from the composed
 //! clock inside [`crate::membership::Membership::publish`] as the frame is built, and
@@ -36,7 +37,8 @@ pub(crate) enum Verdict {
     Sample { authority: String, stamp_ms: u64 },
 }
 
-/// A member's view of one mesh-channel digest.
+/// A member's view of one mesh-channel digest, as its book holds it after the heartbeat: `d.status`
+/// is the status held for the authority's birth.
 pub(crate) fn from_mesh_primary_digest(mesh: &str, me: &str, i_am_mesh_primary: bool, seats: &SeatBook, d: &MeshDigest, admitted_as_newer: bool) -> Verdict {
     if i_am_mesh_primary || d.node.name.mesh != mesh || d.node.name.to_string() == me {
         return Verdict::NotTheAuthority;
@@ -130,6 +132,7 @@ mod tests {
                 runtime: None,
             },
             status,
+            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: at,
             digest_seq: 1,

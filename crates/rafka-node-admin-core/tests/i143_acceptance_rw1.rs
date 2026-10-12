@@ -53,6 +53,7 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
             runtime,
         },
         status: MemberStatus::ReadyForTraffic,
+        node_state: rafka_mesh_entity::NodeState::Alive,
         admin_api_base: full.then(|| "http://127.0.0.1:7000".to_string()),
         digest_seq: 3 + ordinal as u64,
         emitted_at_rafka_ms: 1_000 + ordinal as u64,
@@ -63,6 +64,12 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
         load: None,
         gossip: None,
     }
+}
+
+/// A member's heartbeat: the digest with no status, for a heartbeat carries none (gossip.md §3.1
+/// `Digest`); a decoded one holds `Pending`, the status of a birth its receiver was not told of.
+fn heartbeat(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest {
+    MeshDigest { status: MemberStatus::Pending, ..digest(ordinal, runtime, full) }
 }
 
 fn process_runtime() -> RuntimeFact {
@@ -90,9 +97,9 @@ fn publisher() -> PublisherId {
 fn frames() -> Vec<Frame> {
     let p = publisher();
     vec![
-        Frame::Digest { digest: digest(1, None, false) },
-        Frame::Digest { digest: digest(2, Some(process_runtime()), true) },
-        Frame::Digest { digest: digest(3, Some(container_runtime()), true) },
+        Frame::Digest { digest: heartbeat(1, None, false) },
+        Frame::Digest { digest: heartbeat(2, Some(process_runtime()), true) },
+        Frame::Digest { digest: heartbeat(3, Some(container_runtime()), true) },
         Frame::Members {
             mesh: "mesh2".into(),
             publisher: p.clone(),
@@ -121,7 +128,7 @@ fn frames() -> Vec<Frame> {
         },
         Frame::MembersDelta {
             mesh: "mesh2".into(),
-            source_publisher: p,
+            source_publisher: p.clone(),
             base_version: 8,
             topology_version: 9,
             published_at_rafka_ms: 12,
@@ -130,9 +137,10 @@ fn frames() -> Vec<Frame> {
             in_flight: vec![op("restart-node:mesh2.rpc.4")],
             departed: vec![],
         },
-        Frame::NodeDeleting { op: op("retire-node:mesh2.rpc.2"), forwarded_by: None },
+        Frame::NodeDeleting { op: op("retire-node:mesh2.rpc.2"), forwarded_by: None, publisher: p.clone(), topology_version: 10 },
         Frame::NodeDeleted { op: op("retire-node:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
-        Frame::NodeRestarting { op: op("restart-node:mesh2.rpc.2"), forwarded_by: None },
+        Frame::NodeRestarting { op: op("restart-node:mesh2.rpc.2"), forwarded_by: None, publisher: p.clone(), topology_version: 11 },
+        Frame::NodeStopped { op: op("stop-node:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()), publisher: p.clone(), topology_version: 12 },
         Frame::NodeDraining { op: op("drain-node:mesh2.rpc.2"), forwarded_by: None },
         Frame::NodeLeaving { op: op("stop-node:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
         Frame::NodeLeft { op: op("stop-node:mesh2.rpc.2"), forwarded_by: Some("mesh2.admin.1".into()) },

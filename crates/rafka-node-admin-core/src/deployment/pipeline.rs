@@ -1752,7 +1752,9 @@ impl DeploymentPipeline<'_> {
             }
         }
         let _forget = Forget(self.joins, node.node_id.clone(), run.build_id.to_string(), run.attempt);
-        let _reported = self.joins.expect(deployed.clone());
+        // The birth's join to this executor, admitted at its join door: its node.joined (node-start.md
+        // step 2), which precedes everything the start does after it, node.started included.
+        let mut reported = self.joins.expect(deployed.clone());
         let _ = handle;
         // The start on this exact birth, as the stop it ends is keyed: `node.joined` is taken under it.
         let start_op = node.incarnation_id.clone().map(|incarnation| LifecycleOp {
@@ -1768,14 +1770,36 @@ impl DeploymentPipeline<'_> {
             .step(run, StartStep::StartNode.name(), async {
                 node.status = NodeStatus::Pending;
                 self.sink.publish(node.clone());
-                let admission = self.observer.send_command(node, NodeCommand::Start, &ctx).await;
+                // node.joined is taken when the birth's join is admitted, before the birth can report
+                // node.started: a birth that runs its whole start before it answers (a node-admin's
+                // hook runs inside its start) answers `Started` after its node.started.
+                let take_joined = || async {
+                    if let Some(op) = &start_op {
+                        let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
+                        self.lifecycle.joined(&op).await;
+                    }
+                };
+                let send = self.observer.send_command(node, NodeCommand::Start, &ctx);
+                tokio::pin!(send);
+                let mut joined = false;
+                let admission = loop {
+                    tokio::select! {
+                        biased;
+                        admitted = async { reported.wait_for(Option::is_some).await.is_ok() }, if !joined => {
+                            joined = true;
+                            if admitted {
+                                take_joined().await;
+                            }
+                        }
+                        admission = &mut send => break admission,
+                    }
+                };
                 match &admission {
                     CommandAdmission::Started => {
-                        // `start-node` answered `Started`: the birth rejoined (node.joined, this step's
-                        // receipt). The executor ends its stop here and holds it Pending.
-                        if let Some(op) = &start_op {
-                            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
-                            self.lifecycle.joined(&op).await;
+                        // `start-node` answered `Started`: the birth rejoined. A start with no join to
+                        // this executor admitted (its join door saw none) takes node.joined here.
+                        if !joined || reported.borrow().is_none() {
+                            take_joined().await;
                         }
                         Ok(admission)
                     }

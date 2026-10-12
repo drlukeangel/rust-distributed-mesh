@@ -329,3 +329,124 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
     );
     assert_eq!(*provider.terminated.lock().unwrap(), Vec::<String>::new(), "a failed restart asks the provider for no exit either");
 }
+
+/// The live birth whose start runs its whole sequence before it answers (a node-admin's hook runs
+/// inside its start): on `start-node` it joins its commander (the join door admits its digest), then
+/// reports node.started, and only then answers `Started`.
+struct StartsWhole<'a> {
+    joins: &'a rafka_node_admin_core::join::Joins,
+    events: &'a Events,
+    digest: rafka_mesh_entity::MeshDigest,
+}
+
+#[async_trait::async_trait]
+impl NodeObserver for StartsWhole<'_> {
+    async fn send_command(&self, _: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
+        match cmd {
+            NodeCommand::Start => {
+                // The join, admitted at the commander's door, then the start's own steps and its report.
+                self.joins.report(&self.digest);
+                tokio::task::yield_now().await;
+                self.events.published.lock().unwrap().push(("node.started", ctx.operation.clone()));
+                CommandAdmission::Started
+            }
+            _ => CommandAdmission::Admitted,
+        }
+    }
+    async fn await_completion(&self, _: &Node, _: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
+        Completion::Received
+    }
+    async fn transfer_seats(&self, node: &Node, _: &CommandContext) -> Result<rafka_node_admin_core::fabric_handover::SeatTransferOutcome, String> {
+        Err(format!("{} is an rpc node: it holds no seat", node.name))
+    }
+    async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+        None
+    }
+    async fn ready(&self, _: &Node) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// CONTRACT (node-start.md "End-to-end sequence": the start emits `node.joined` after the accepted
+/// join, then runs its hook, topology, Build floor and rafka-time, then emits `node.started`; states.md
+/// "Who sets each state": node pending from node.joined, node ReadyForTraffic from node.started): the
+/// executor takes a start's node.joined when the birth's join is admitted, before the birth can report
+/// node.started, whatever moment the birth's `Started` answer reaches it. A birth that runs its whole
+/// start before it answers (a node-admin's hook runs inside its start) has node.joined taken first and
+/// node.started after it. Must NOT happen: node.joined taken at the `Started` answer, after the birth's
+/// node.started, so that the Pending node.joined sets stands over the ReadyForTraffic node.started set.
+#[tokio::test]
+async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_started() {
+    let builds = MemoryBuildStateAdapter::new();
+    let build_id = BuildId::mint();
+    builds
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+        .await
+        .unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    let name: PathName = NODE.parse().unwrap();
+    let incarnation = IncarnationId::mint();
+    let mut node = Node::allocated(name.clone());
+    node.node_id = NodeId::mint();
+    node.incarnation_id = Some(incarnation.clone());
+    node.provider = Some(ProviderKind::Process);
+    node.status = NodeStatus::ReadyForTraffic;
+    node.endpoint_id = Some(EndpointId("i143-s52-endpoint".into()));
+    node.data_dir = Some("/nonexistent/i143-s52/mesh1.rpc.1".into());
+    let template = LaunchTemplate {
+        fabric: "fabric1".into(),
+        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        executable: "/nonexistent/start-order".into(),
+        seeds: vec![],
+        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        env: Default::default(),
+        data_root: std::env::temp_dir().join(format!("i143-s52-start-order-{}", NodeId::mint())),
+        store_dir: std::env::temp_dir().join(format!("i143-s52-start-order-store-{}", NodeId::mint())),
+        mesh_issuer: None,
+    };
+    let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-s52-start-order".into()) };
+    let runtime = handle.fact().expect("the handle names its exact runtime");
+    let deployed = rafka_node_admin_core::join::Deployed {
+        name: name.clone(),
+        node_id: node.node_id.clone(),
+        incarnation: incarnation.clone(),
+        supersedes: None,
+        endpoint_id: node.endpoint_id.clone().unwrap(),
+        runtime: runtime.clone(),
+        data_dir: node.data_dir.clone().unwrap(),
+        last_accepted_name: Some(name.clone()),
+        held: true,
+    };
+    let digest = rafka_mesh_entity::MeshDigest {
+        fabric_id: template.fabric_id.clone(),
+        node: rafka_mesh_entity::MeshNode { node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
+        status: rafka_mesh_entity::MemberStatus::Pending,
+        node_state: Default::default(),
+        admin_api_base: None,
+        digest_seq: 9,
+        emitted_at_rafka_ms: 9,
+        data_dir: node.data_dir.clone(),
+        mesh_id: None,
+        in_flight: None,
+        config: Default::default(),
+        load: None,
+        gossip: None,
+    };
+    let (provider, events, joins) = (Running::default(), Events::default(), rafka_node_admin_core::join::Joins::default());
+    let observer = StartsWhole { joins: &joins, events: &events, digest };
+    let pipeline = DeploymentPipeline {
+        provider: &provider,
+        joins: &joins,
+        observer: &observer,
+        sink: &Discard,
+        lifecycle: &events,
+        builds: &builds,
+        template: &template,
+        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
+    };
+    let out = pipeline.restart(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
+    assert!(out.is_ok(), "{out:?}");
+    let published = events.published.lock().unwrap().clone();
+    let order: Vec<&str> = published.iter().map(|(e, _)| *e).filter(|e| matches!(*e, "joined" | "node.started")).collect();
+    assert_eq!(order, ["joined", "node.started"], "node.joined is taken at the admitted join, before the birth's node.started: {published:?}");
+}

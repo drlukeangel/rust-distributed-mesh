@@ -66,7 +66,8 @@ impl NodeObserver for Logged<'_> {
 
 /// The lifecycle events a replace publishes, in the order they leave the executor. With `peer`, each
 /// frame is also taken by that membership's book as the executor's mesh channel delivers it to every
-/// admin (`GossipLifecycle`), so the book holds what a peer admin holds at each step.
+/// admin (`GossipLifecycle`), so the book holds what a peer admin holds at each step: a status event
+/// is published by the mesh's seated primary, the birth the peer's seat record names.
 struct Recorder<'a> {
     log: Log,
     peer: Option<&'a rafka_mesh_transport::membership::Membership>,
@@ -78,13 +79,22 @@ impl Recorder<'_> {
             let _ = m.publish_lifecycle(&f).await;
         }
     }
+
+    /// The status event `kind` of `op`, as the seated primary of `op`'s mesh publishes it.
+    async fn hear_status(&self, kind: rafka_mesh_transport::membership::StatusEvent, op: &LifecycleOp) {
+        if let Some(m) = self.peer {
+            let holder = m.seats().mesh(&op.name.mesh).expect("the peer holds its mesh's seat record");
+            let publisher = rafka_mesh_entity::PublisherId { node: format!("{}.admin.1", op.name.mesh), incarnation: holder.incarnation };
+            let _ = m.publish_lifecycle(&kind.frame(op.clone(), publisher, 0)).await;
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl LifecycleEvents for Recorder<'_> {
     async fn deleting(&self, op: &LifecycleOp) {
         self.log.lock().unwrap().push(format!("NodeDeleting:{}:{}", op.node_id, op.operation));
-        self.hear(rafka_mesh_transport::membership::Frame::NodeDeleting { op: op.clone(), forwarded_by: None }).await;
+        self.hear_status(rafka_mesh_transport::membership::StatusEvent::Deleting, op).await;
     }
     async fn deleted(&self, op: &LifecycleOp) {
         self.log.lock().unwrap().push(format!("NodeDeleted:{}:{}", op.node_id, op.operation));
@@ -95,7 +105,7 @@ impl LifecycleEvents for Recorder<'_> {
     }
     async fn stopped(&self, op: &LifecycleOp) {
         self.log.lock().unwrap().push(format!("NodeStopped:{}:{}", op.node_id, op.operation));
-        self.hear(rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None }).await;
+        self.hear_status(rafka_mesh_transport::membership::StatusEvent::Stopped, op).await;
     }
     async fn joined(&self, op: &LifecycleOp) {
         self.log.lock().unwrap().push(format!("node.joined:{}:{}", op.node_id, op.operation));
@@ -234,6 +244,9 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
     cap.run(crate::common::Threads::Workers(4), async move {
         let rig = rig().await;
         let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone(), stop_not_sent: false };
+        // The stand-in admin is mesh1's primary: the peer holds its seat record, as an entry read names it.
+        let launcher = &rig.admin.launcher;
+        rig.admin.observer.membership.learn_seats(&[(rafka_mesh_entity::Seat::MeshPrimary, rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: launcher.node_id.clone(), incarnation: launcher.incarnation.clone(), epoch: 1 }, false)], "entry");
         let recorder = Recorder { log: rig.log.clone(), peer: Some(&rig.admin.observer.membership) };
         let pipeline = rig.pipeline(&observer, &recorder);
 

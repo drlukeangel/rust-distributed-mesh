@@ -55,6 +55,7 @@ fn a_membership_digest_carries_its_product_ids_exactly() {
             runtime: None,
         },
         status: rafka_mesh_entity::MemberStatus::ReadyForTraffic,
+        node_state: Default::default(),
         admin_api_base: None,
         emitted_at_rafka_ms: 1,
         digest_seq: 1,

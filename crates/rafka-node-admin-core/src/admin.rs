@@ -2638,8 +2638,9 @@ impl MembershipObserver {
     }
 }
 
-/// The blocker an exact birth names for its Ready (node-start.md step 3): only while its own digest
-/// in `book` says Pending, one `ProbeNodeState` to that birth over `client`, and the hook's blocker of
+/// The blocker an exact birth names for its Ready (node-start.md step 3): only while `book` holds the
+/// birth Pending (the status its mesh-primary set, never its heartbeat's), one `ProbeNodeState` to
+/// that birth over `client`, and the hook's blocker of
 /// a Status `Blocked` answer, named with the birth and the event it runs again on and no attempt
 /// counter. Every other answer names no blocker and frames nothing: a `NotReady` is the subject's
 /// door or handler not serving yet (node-rpc-envelope.md, "NotReady ... is never a hook blocker"),
@@ -2676,6 +2677,9 @@ impl NodeObserver for MembershipObserver {
             .map(|(d, _)| Publication { runtime: d.node.runtime, data_dir: d.data_dir })
     }
 
+    /// Ready once this admin's book holds the birth ready-for-traffic: the status its mesh-primary
+    /// set from the birth's node.started (this admin, as that primary, through its status authority;
+    /// otherwise the primary's projection), never a heartbeat's.
     async fn ready(&self, node: &Node) -> Result<(), String> {
         match self.digest_of(node) {
             Some(d) if d.status == MemberStatus::ReadyForTraffic => {
@@ -2684,7 +2688,7 @@ impl NodeObserver for MembershipObserver {
                 }
                 Ok(())
             }
-            Some(d) => Err(format!("{} reports {:?}", node.name, d.status)),
+            Some(d) => Err(format!("{} is held {:?}, not ready-for-traffic: its mesh-primary has not taken its node.started", node.name, d.status)),
             None => Err(format!("no digest from {} for this birth", node.name)),
         }
     }
@@ -2742,6 +2746,8 @@ struct AdminSession {
     local: Arc<dyn crate::build_state::LocalBuildLog>,
     /// The node-admins a start's Build-facts read asks, in order.
     responders: crate::hydrate::Responders,
+    /// What this admin owes its authorities: a start begins its next own-state cycle there.
+    declarer: Arc<crate::status_declare::Declarer>,
 }
 
 #[async_trait::async_trait]
@@ -2856,6 +2862,9 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 let _ = s.shutdown.learn(sd, "start", &joined.served_by).await;
             }
         }
+        // node.joined begins this birth's next cycle: the node.started it reports is owed afresh to its
+        // mesh's primary, before its declarer runs again.
+        s.declarer.begin_own_cycle(&s.name, &s.incarnation.0);
         // Back on the topic means a neighbour: only then does this admin say it is back, once, as
         // Pending, so every node that held it parked or restarting hears the rejoin.
         membership.wait_for_neighbour().await;
@@ -3268,39 +3277,30 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         self.membership.clock().now_rafka_ms()
     }
     async fn deleting(&self, op: &rafka_mesh_entity::LifecycleOp) {
-        let f = rafka_mesh_transport::membership::Frame::NodeDeleting { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            if let Err(e) = self.membership.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeDeleting not sent on the mesh channel");
-            }
+            self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Deleting, op).await;
             tracing::info!("the node is being removed: every mesh hears it is not routable");
         }
         .instrument(span)
         .await
     }
     async fn restarting(&self, op: &rafka_mesh_entity::LifecycleOp) {
-        let f = rafka_mesh_transport::membership::Frame::NodeRestarting { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-restarting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            if let Err(e) = self.membership.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeRestarting not sent on the mesh channel");
-            }
+            self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Restarting, op).await;
             tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
         }
         .instrument(span)
         .await
     }
     async fn stopped(&self, op: &rafka_mesh_entity::LifecycleOp) {
-        let f = rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            if let Err(e) = self.membership.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeStopped not sent on the mesh channel");
-            }
             // This admin executed the stop and holds its matching stopped reply: the overlay its own
-            // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
-            self.membership.book.executed_stop(op);
+            // book takes rides an aggregate it publishes for a mesh with no primary (R-NS1), and the
+            // event carries the version at which its stop changed the birth.
+            self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Stopped, op).await;
             tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
         }
         .instrument(span)
@@ -3315,6 +3315,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rafka_mesh_transport::membership::Frame::NodeDraining { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-draining", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
         async {
+            // connections-deleting is this mesh-primary's to set at the drain's admission (states.md
+            // "Who sets each state"); its projection carries it.
+            self.membership.book.admitted(op, MemberStatus::Draining);
             if let Err(e) = self.backbone.publish_command_hook(&f).await {
                 tracing::info!(error = %e, "node-draining not sent on every channel");
             }
@@ -3327,6 +3330,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rafka_mesh_transport::membership::Frame::NodeLeaving { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-leaving", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
         async {
+            // stopping is this mesh-primary's to set at the stop's admission (states.md "Who sets each
+            // state"); its projection carries it.
+            self.membership.book.admitted(op, MemberStatus::Leaving);
             if let Err(e) = self.backbone.publish_command_hook(&f).await {
                 tracing::info!(error = %e, "node-leaving not sent on every channel");
             }
@@ -4992,6 +4998,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             runtime: Some(runtime.clone()),
         },
         status: MemberStatus::Pending,
+        node_state: Default::default(),
         admin_api_base: Some(api_base.clone()),
         emitted_at_rafka_ms: 0,
         digest_seq: 0,
@@ -5364,6 +5371,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         moved
                                     },
                                     loads: control.loads.get().cloned(),
+                                    book: Some(book.clone()),
                                 }));
                             }
                             // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -5558,6 +5566,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 },
                                 // Pending until it can take authority at once (the Ready gate below).
                                 status: MemberStatus::Pending,
+                                node_state: Default::default(),
                                 admin_api_base: Some(api_base.clone()),
                                 // Stamped by `Membership::publish`: this birth's own sequence and the composed clock.
                                 emitted_at_rafka_ms: 0,
@@ -6055,6 +6064,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             wake: records.clone(),
                                             local: journal.clone(),
                                             responders: responders.clone(),
+                                            declarer: declarer.clone(),
                                         }));
                                         let _ = own_commands.set(own);
                                     }
@@ -6102,11 +6112,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 let turn = park.turn("declarer").await;
                                                 let addressed = records.wake.take_addressed();
                                                 let view = topology.read().await.clone();
-                                                let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
+                                                let own = digest.lock().unwrap().status;
                                                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
                                                 let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
-                                                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
+                                                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
                                                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
                                                 drop(turn);
                                                 // One coalesced wake from the inputs, never a timer: a poke during the round is
@@ -6740,8 +6750,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 d.clone()
                                             };
                                             let _ = membership_w.publish(&d).await;
+                                            // Its Draining reaches the other admins only as its mesh-primary sets it from
+                                            // its report (its heartbeat carries no status): the declarer owes the report.
+                                            records_w.wake.poke();
                                             tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me)
-                                                .in_scope(|| tracing::info!("reconciliation frozen; Draining"));
+                                                .in_scope(|| tracing::info!("reconciliation frozen; Draining, reported to this admin's mesh-primary"));
                                             drop(turn);
                                             if crate::shutdown::drain(me, me_id, drain_control, stopper).await {
                                                 done.notify_waiters();
@@ -6876,6 +6889,7 @@ mod tests {
                 runtime: None,
             },
             status,
+            node_state: Default::default(),
             admin_api_base: (name.kind == NodeKind::NodeAdmin).then(|| format!("http://admin-{name}")),
             emitted_at_rafka_ms: 0,
             digest_seq: 1,
@@ -8786,6 +8800,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         let _ = Declared::default();
 

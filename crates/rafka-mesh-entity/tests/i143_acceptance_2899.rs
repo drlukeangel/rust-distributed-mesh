@@ -87,6 +87,7 @@ impl Birth {
                 runtime: None,
             },
             status,
+            node_state: Default::default(),
             admin_api_base: None,
             digest_seq: seq,
             emitted_at_rafka_ms: at_rafka_ms,

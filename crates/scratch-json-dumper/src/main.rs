@@ -2,6 +2,7 @@ use rafka_mesh_entity::lifecycle::*;
 use rafka_mesh_entity::digest::*;
 use rafka_mesh_transport::membership::*;
 use rafka_node_rpc_contract::status::*;
+use rafka_node_rpc_contract::status::NodeState;
 use rafka_node_admin_core::accepted::*;
 use rafka_node_admin_core::build_state::*;
 use rafka_mesh_entity::ids::*;
@@ -66,14 +67,15 @@ fn main() {
     println!("{}", to_string_pretty(&op).unwrap());
 
     // 5. Frame::NodeRestarting
-    let frame_restarting = Frame::NodeRestarting { op: op.clone(), forwarded_by: None };
+    let publisher = rafka_mesh_entity::PublisherId { node: "mesh1.admin.1".into(), incarnation: inc.clone() };
+    let frame_restarting = Frame::NodeRestarting { op: op.clone(), forwarded_by: None, publisher: publisher.clone(), topology_version: 7 };
     println!("=== Frame::NodeRestarting ===");
     println!("{}", to_string_pretty(&frame_restarting).unwrap());
 
     // 6. Frame::NodeDeleting
     let mut op_del = op.clone();
     op_del.operation = "retire-node:mesh1.rpc.1".into();
-    let frame_deleting = Frame::NodeDeleting { op: op_del.clone(), forwarded_by: None };
+    let frame_deleting = Frame::NodeDeleting { op: op_del.clone(), forwarded_by: None, publisher: publisher.clone(), topology_version: 8 };
     println!("=== Frame::NodeDeleting ===");
     println!("{}", to_string_pretty(&frame_deleting).unwrap());
 
@@ -91,6 +93,7 @@ fn main() {
         fabric_id: fabric_id.clone(),
         node: mesh_node.clone(),
         status: MemberStatus::ReadyForTraffic,
+        node_state: Default::default(),
         admin_api_base: None,
         emitted_at_rafka_ms: 1718290000000,
         digest_seq: 1,

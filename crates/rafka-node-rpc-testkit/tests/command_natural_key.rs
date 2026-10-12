@@ -95,7 +95,20 @@ impl Birth {
         birth
     }
 
-    /// Resolves once the admin side's book holds a digest of this birth saying `status`.
+    /// Wait, bounded, until the birth's own state is `status`: what it is, for its heartbeat carries no
+    /// status (gossip.md §3.1 `Digest`).
+    async fn own_status(&self, status: MemberStatus) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while *self.running.status.lock().unwrap() != status {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{NODE} never became {status:?}"));
+    }
+
+    /// Resolves once the admin side's book holds this birth at `status`: the status it set (its
+    /// ready-for-traffic, from the birth's node.started).
     async fn status_heard(&self, status: MemberStatus) {
         let book = &self.admin.observer.membership.book;
         let mut heard = book.heard_changes();
@@ -255,7 +268,7 @@ fn a_drain_during_a_stop_joins_the_stops_drain_and_runs_no_drain_of_its_own() {
             let birth = birth.clone();
             tokio::spawn(async move { birth.call(&birth.stop(1)).await })
         };
-        birth.status_heard(MemberStatus::Draining).await;
+        birth.own_status(MemberStatus::Draining).await;
         assert_eq!(birth.call(&birth.drain(2)).await, StatusReply::AlreadyApplied, "a DrainNode for a birth whose stop is draining is the same natural key (node_id, incarnation, Draining)");
         assert!(!*drained.borrow(), "nothing is drained while a call is in flight");
 

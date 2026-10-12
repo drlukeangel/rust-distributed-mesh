@@ -20,7 +20,7 @@
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
-use rafka_mesh_entity::wire::WireDigest;
+use rafka_mesh_entity::wire::ProjectionEntry;
 use rafka_mesh_entity::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Seat, SeatHolder};
 use serde::{Deserialize, Serialize};
 
@@ -92,8 +92,9 @@ pub enum TopologyReply {
         chunk_index: u32,
         /// The number of chunks in the snapshot.
         chunk_count: u32,
-        /// The members this chunk carries.
-        digests: Vec<WireDigest>,
+        /// The members this chunk carries, each a member projection entry: its digest, then the
+        /// status held for it (gossip.md §3.1).
+        digests: Vec<ProjectionEntry>,
         /// The open lifecycle overlays this chunk carries.
         in_flight: Vec<LifecycleOp>,
         /// The retained proven departures this chunk carries.

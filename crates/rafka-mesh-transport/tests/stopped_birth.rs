@@ -13,8 +13,8 @@
 //! stop as `rdm.mesh.membership.update.via-node-started`.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rafka_mesh_transport::membership::{learn_addresses, Backbone, DigestBook, Frame, Membership};
+use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
+use rafka_mesh_transport::membership::{learn_addresses, Backbone, DigestBook, Frame, Membership, StatusEvent};
 use rafka_mesh_transport::snapshot::{chunks_of, Chunk, PublisherId};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -71,6 +71,7 @@ fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, supersedes:
             runtime: None,
         },
         status,
+        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: seq,
         emitted_at_rafka_ms: seq,
@@ -98,6 +99,17 @@ fn stop_op(d: &MeshDigest) -> LifecycleOp {
 fn hold_mesh_ready(book: &DigestBook) {
     let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 };
     assert!(book.statuses.take(&f, &fabric()));
+}
+
+/// The mesh-primary `p` (publishing on `bb`) publishes `NodeStopped` for `stop` from the stop's
+/// matching stopped reply, on its own mesh channel.
+async fn publish_stopped(_p: &Membership, bb: &Backbone, stop: &LifecycleOp) {
+    bb.publish_status_event(StatusEvent::Stopped, stop).await;
+}
+
+/// `m` holds `holder` as its mesh's seat record, as its entry read named it.
+fn learn_primary_seat(m: &Membership, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId) {
+    m.learn_seats(&[(Seat::MeshPrimary, SeatHolder { mesh: mesh.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), epoch: 1 }, false)], "entry");
 }
 
 /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): the mesh-primary's
@@ -242,10 +254,12 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     // The mesh-primary's own digest, heard by the member directly.
     let p_digest = digest("mesh1.admin.1", &NodeId::mint(), &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_001);
     p.publish(&p_digest).await.unwrap();
+    learn_primary_seat(&m, "mesh1", &p_digest.node.node_id, &p_birth);
     // mesh1.rpc.1: its heartbeats as the primary and the member hear them.
     let (id, inc) = (NodeId::mint(), IncarnationId::mint());
     let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_011);
     assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 1)));
+    assert!(p.book.started(&id, &inc), "the primary sets it ready-for-traffic from its node.started");
     m.book.record(b(MemberStatus::ReadyForTraffic, 1));
 
     // v1: the primary's projection lists mesh1.rpc.1 ready.
@@ -257,7 +271,7 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
 
     // The stop: the primary publishes NodeStopped from the stopped reply; the member takes the event.
     let stop = stop_op(&b(MemberStatus::ReadyForTraffic, 1));
-    p.publish_lifecycle(&Frame::NodeStopped { op: stop.clone(), forwarded_by: None }).await.unwrap();
+    publish_stopped(&p, &bb, &stop).await;
     until("the member to take NodeStopped", || m.book.in_flight().contains(&stop)).await;
     assert!(m.book.get(id.as_str()).is_none(), "the member dropped the stopped birth");
 
@@ -301,8 +315,11 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     assert!(m.book.record(b(MemberStatus::ReadyForTraffic, 4)), "the birth's heartbeat is taken once the stop is over");
     assert_eq!(m.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "its status is the projection's Pending, not the heartbeat's ReadyForTraffic");
 
-    // node.started: the primary takes the birth's report; its next projection says ready.
+    // node.started: the primary takes the birth's report (its DeclareNodeState(ReadyForTraffic)); its
+    // heartbeat says nothing of it. Its next projection says ready.
     assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 4)));
+    assert_eq!(p.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the birth's heartbeat moves no status at the primary");
+    assert!(p.book.started(&id, &inc), "node.started of the birth");
     round().await;
     until("the member to take ready-for-traffic from the projection", || m.book.get(id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
     let v4 = version_at_m().unwrap();
@@ -330,5 +347,100 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     for (what, s) in refused.iter().map(|s| ("refused", *s)).chain(ended.iter().map(|s| ("ended", *s))).chain(joined.iter().map(|s| ("joined", *s))).chain(delta.iter().map(|s| ("delta", *s))) {
         lines.push_str(&format!("{what} {} {} door={} held_version={} topology_version={} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "door"), attr(s, "held_version"), attr(s, "topology_version"), attr(s, "digest_seq")));
     }
+    std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
+}
+
+/// CONTRACT (node-status-heartbeat-connections.md R-HB1 "The version field": "Each status fact carries
+/// its subject's `topology_version`"; §A.2: "A status fact carries the `topology_version` at which its
+/// subject changed ... Receivers compare per subject"; §C "missed event repaired by top-up"): through
+/// real gossip, mesh1.rpc.2 (an own-mesh member holding its mesh-primary's seat) holds the primary's
+/// projection v1 listing mesh1.rpc.1 ready and takes the primary's `NodeStopped` event. No projection
+/// carrying the stop ever reaches it: the primary takes node.joined of the birth before its next
+/// round, and the member is parked through that round. Its top-up (a topology read of the primary)
+/// installs the projection listing the birth `Pending`, at a version past the one the stop changed the
+/// subject at, of the same publisher: the stop is over, and the member holds the birth again with
+/// the projection's status. Must NOT happen: the stop standing forever at a member that never applied
+/// a projection carrying it (it holds the stop only from the event, which carried no version, so no
+/// projection could be ordered past it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_up_after_node_joined() {
+    let cell = "a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_up_after_node_joined";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let dir = evidence(cell);
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-s52");
+
+    let (p_node, m_node) = (node().await, node().await);
+    let p_addr = addr_of(&p_node.ep);
+    learn_addresses(&m_node.ep, &[p_addr.clone()]).unwrap();
+    let mesh_id = MeshId::mint();
+    let clock = rafka_mesh_transport::clock::os_clock;
+    let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
+    let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![p_addr]).await.unwrap();
+    let p_birth = IncarnationId::mint();
+    let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", "mesh1.admin.1", p_birth.clone(), vec![]).await.unwrap();
+    bb.set_mesh_primary(true);
+    m.wait_for_neighbour().await;
+    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone() };
+    let round = || async { bb.publish(&p, bb.own_members(&p)).await };
+    let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
+
+    let p_digest = digest("mesh1.admin.1", &NodeId::mint(), &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_021);
+    p.publish(&p_digest).await.unwrap();
+    learn_primary_seat(&m, "mesh1", &p_digest.node.node_id, &p_birth);
+    let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+    let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_031);
+    assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 1)));
+    assert!(p.book.started(&id, &inc), "the primary sets it ready-for-traffic from its node.started");
+    m.book.record(b(MemberStatus::ReadyForTraffic, 1));
+
+    // v1: the primary's projection lists mesh1.rpc.1 ready.
+    round().await;
+    until("the member to hold the primary's first projection", || version_at_m().is_some()).await;
+    let v1 = version_at_m().unwrap();
+
+    // The stop: the member takes the primary's NodeStopped event, and nothing else of it.
+    let stop = stop_op(&b(MemberStatus::ReadyForTraffic, 1));
+    publish_stopped(&p, &bb, &stop).await;
+    until("the member to take NodeStopped", || m.book.in_flight().contains(&stop)).await;
+    assert_eq!(version_at_m(), Some(v1), "no projection carrying the stop reached the member");
+
+    // node.joined at the mesh-primary before its next round; the member is parked through the round,
+    // so the projection listing the birth again reaches it only through its top-up.
+    let start = LifecycleOp { operation: "start-node:mesh1.rpc.1".into(), ..stop.clone() };
+    assert!(p.book.joined(&start), "the mesh-primary ends the stop at node.joined");
+    m.park().await;
+    round().await;
+    let served = p.held_topology(&p.book.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
+    let read_version = served.iter().find(|s| s.mesh == "mesh1").map(|s| s.topology_version).expect("the primary serves its own mesh");
+    assert!(read_version > v1, "the primary's round after node.joined moved its projection");
+    for c in read_chunks(&served, "mesh1") {
+        let _ = m.take_read_chunk(c, "mesh1");
+    }
+    assert_eq!(version_at_m(), Some(read_version), "the top-up installed the primary's projection");
+    assert!(!m.book.in_flight().contains(&stop), "the top-up's projection, past the version the stop changed the birth at, ends the stop");
+    assert_eq!(m.book.get(id.as_str()).map(|(d, _)| (d.node.incarnation.clone(), d.status)), Some((inc.clone(), MemberStatus::Pending)), "the member holds the birth again with the projection's status");
+    m.unpark().await;
+
+    drop(bb);
+    for n in [&p_node, &m_node] {
+        n.ep.close().await;
+    }
+    drop(telemetry);
+    let spans = spans_of(&dir);
+    let stopped: Vec<&Value> = named(&spans, "rdm.mesh.membership.remove.via-node-stopped").into_iter().filter(|s| attr(s, "node_id") == id.as_str() && attr(s, "holder") == "mesh1.rpc.2").collect();
+    assert_eq!(stopped.len(), 1, "the member took the event once: {stopped:#?}");
+    let stop_version = attr(stopped[0], "topology_version");
+    assert_eq!(attr(stopped[0], "publisher"), publisher.to_string(), "the event names its publisher: {stopped:#?}");
+    let ended: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-stop-ended-in-projection").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
+    assert_eq!(ended.len(), 1, "the member ended the stop once: {ended:#?}");
+    assert_eq!(
+        (attr(ended[0], "node"), attr(ended[0], "channel"), attr(ended[0], "stop_carried_at"), attr(ended[0], "topology_version"), attr(ended[0], "status")),
+        ("mesh1.rpc.2".to_string(), "topology-read".to_string(), stop_version.clone(), read_version.to_string(), "Pending".to_string()),
+        "ended by the top-up, ordered past the version the event carried"
+    );
+    assert!(stop_version.parse::<u64>().unwrap() > v1 && read_version > stop_version.parse::<u64>().unwrap(), "v1 {v1} < stop {stop_version} < read {read_version}");
+    let lines: String = stopped.iter().map(|s| ("stopped", *s)).chain(ended.iter().map(|s| ("ended", *s))).map(|(what, s)| format!("{what} {} {} publisher={} topology_version={} stop_carried_at={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "publisher"), attr(s, "topology_version"), attr(s, "stop_carried_at"))).collect();
     std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
 }

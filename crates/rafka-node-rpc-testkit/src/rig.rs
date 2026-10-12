@@ -17,9 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Joined = the node's own digest for exactly this birth reached the admin's
-/// membership; ready = that digest says ReadyForTraffic (as the node-admin's own observer
-/// decides it) and a Ping is answered; drained =
-/// this birth's digest says `Draining` with nothing in flight, or `Leaving`;
+/// membership; ready = the admin side holds the birth ready-for-traffic, set from the node.started
+/// it reported (as the node-admin's own observer decides it), and a Ping is answered;
 /// admission closed = no Ping runs any more.
 pub struct LiveMesh {
     pub membership: Membership,
@@ -69,10 +68,11 @@ impl NodeObserver for LiveMesh {
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
         // A joined node answers Ping while it is still Pending (its hook runs, it serves status and
-        // the lifecycle commands): ready is what its own digest says, never the Ping alone.
+        // the lifecycle commands): ready is the status this admin side set from its node.started,
+        // never the Ping alone and never its heartbeat.
         match self.membership.book.get(node.node_id.as_str()).filter(|(d, _)| node.incarnation_id.as_ref() == Some(&d.node.incarnation)) {
             Some((d, _)) if d.status == rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic => {}
-            Some((d, _)) => return Err(format!("{} reports {:?}", node.name, d.status)),
+            Some((d, _)) => return Err(format!("{} is held {:?}, not ready-for-traffic: the admin side has not taken its node.started", node.name, d.status)),
             None => return Err(format!("no digest from {} for this birth", node.name)),
         }
         let target = self.echo_target(node)?;
@@ -461,18 +461,37 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     // acknowledged; the admin side keeps no checklist.
     let check_ins = Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
     let serve_commands = {
-        let (commands, check_ins, receiver) = (commands.clone(), check_ins.clone(), name.to_string());
+        let (commands, check_ins, receiver, book) = (commands.clone(), check_ins.clone(), name.to_string(), membership.book.clone());
         move |b: rafka_node_rpc::ServerBuilder| {
             b.serve::<rafka_node_rpc_contract::status::Status, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Product("rdm".into()), move |_peer: rafka_node_rpc::PeerContext, req: rafka_node_rpc_contract::status::StatusRequest| {
-                let (commands, check_ins, receiver) = (commands.clone(), check_ins.clone(), receiver.clone());
+                let (commands, check_ins, receiver, book) = (commands.clone(), check_ins.clone(), receiver.clone(), book.clone());
                 async move {
-                    use rafka_node_rpc_contract::status::StatusRequest as R;
+                    use rafka_node_rpc_contract::status::{NodeState, NotAuthority, StatusReply, StatusRequest as R};
                     if matches!(req, R::StateCommitted { .. } | R::TrafficOpened { .. }) {
                         check_ins.send_modify(|held| held.push(req));
-                        return Ok(rafka_node_rpc_contract::status::StatusReply::Applied);
+                        return Ok(StatusReply::Applied);
+                    }
+                    // A member's report to its mesh's primary sets its status (node-status.md "Status
+                    // report": "A node reports to its mesh's primary, which sets its status"), as a
+                    // node-admin's status authority applies it into its book: its node.started sets
+                    // it ready-for-traffic. A birth the book does not hold yet is not known here: the
+                    // member reports again.
+                    if let R::DeclareNodeState { node_id, incarnation, state } = &req {
+                        let held = book.get(node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == *incarnation);
+                        if !held {
+                            return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+                        }
+                        use rafka_mesh_entity::MemberStatus as M;
+                        match state {
+                            NodeState::ReadyForTraffic => book.started(node_id, incarnation),
+                            NodeState::Pending => book.reported(node_id, incarnation, M::Pending),
+                            NodeState::Draining => book.reported(node_id, incarnation, M::Draining),
+                            NodeState::Leaving => book.reported(node_id, incarnation, M::Leaving),
+                        };
+                        return Ok(StatusReply::Applied);
                     }
                     let (R::NodeDrained { incarnation, .. } | R::NodeLeft { incarnation, .. }) = &req else {
-                        return Ok(rafka_node_rpc_contract::status::StatusReply::NotReady { reason: "the admin side serves completion calls only".into() });
+                        return Ok(StatusReply::NotReady { reason: "the admin side serves completion calls, round check-ins and declarations only".into() });
                     };
                     let incarnation = incarnation.clone();
                     Ok(rafka_node_admin_core::node_commands::accept_completion(&commands, &receiver, Some((Some(&incarnation), "the commanded birth")), "", &req))
@@ -500,6 +519,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
             runtime: None,
         },
         status,
+        node_state: Default::default(),
         admin_api_base: None,
         emitted_at_rafka_ms: now_ms,
         digest_seq: 1,
@@ -515,7 +535,8 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         membership.publish(&admin_digest).await.expect("the admin's digest publishes");
     }
     // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
-    // members' lifecycle, authors their statuses from what they report to it, and publishes its
+    // members' lifecycle, sets each member's status from what it reports (its node.started, its Draining and
+    // Leaving), and publishes its
     // member projection on its own mesh channel each round and at once on a material change
     // (gossip.md §3.1 `Members`, the admin's publication round). Its members take every status
     // from that projection.

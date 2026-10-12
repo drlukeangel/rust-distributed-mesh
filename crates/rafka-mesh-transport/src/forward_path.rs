@@ -268,6 +268,7 @@ mod tests {
                 runtime: None,
             },
             status: MemberStatus::ReadyForTraffic,
+            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: seq,
             digest_seq: seq,

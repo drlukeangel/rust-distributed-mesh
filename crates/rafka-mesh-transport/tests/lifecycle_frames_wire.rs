@@ -3,7 +3,7 @@
 //! independently of codec round trips; they are derived from the postcard rules by hand. Never
 //! regenerate an expectation from the Rust serializer to make a schema change pass.
 
-use rafka_mesh_entity::{IncarnationId, LifecycleOp, MeshId, NodeId};
+use rafka_mesh_entity::{IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId};
 use rafka_mesh_transport::membership::{forward_of, Frame};
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -15,6 +15,11 @@ const OPERATION: &str = "shutdown-mesh:1123456789ab";
 
 fn mesh() -> MeshId {
     MeshId::parse("1123456789ab").unwrap()
+}
+
+/// The publisher a status event names: mesh1's primary, birth `p-birth`.
+fn publisher() -> PublisherId {
+    PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId("p-birth".into()) }
 }
 
 fn op(operation: &str) -> LifecycleOp {
@@ -46,7 +51,7 @@ fn node_command_frames_match_the_frozen_wire_schema() {
         assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex), "{frame:?} decodes and re-encodes to the same bytes");
     }
     // The frames that existed keep their positions.
-    assert_eq!(Frame::NodeRestarting { op: op("restart-node:mesh1.rpc.1"), forwarded_by: None }.encode()[0], 5);
+    assert_eq!(Frame::NodeRestarting { op: op("restart-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 1 }.encode()[0], 5);
 }
 
 /// CONTRACT: a peer mesh's primary forwards a command or completion frame onto its own channel,
@@ -122,23 +127,47 @@ fn a_peer_mesh_primary_forwards_mesh_frames_once_and_the_authors_mesh_does_not()
     }
 }
 
-/// CONTRACT: `NodeStopped` is variant 22, appended after `TrafficOpened` (21); it is the lifecycle op
-/// (build, attempt, operation, node id, incarnation, path.name, event instant) then the forwarding
-/// primary, the shape of the other node lifecycle frames. A peer mesh's primary forwards it onto its
-/// own channel, preserving the op; the frame's own mesh hears the original.
+/// CONTRACT (node-status-heartbeat-connections.md R-HB1, "The version field": "Each status fact
+/// carries its subject's `topology_version` ... a named coordinated schema cut of the lifecycle
+/// frames"): the three status events keep their positions, `NodeDeleting` variant 3,
+/// `NodeRestarting` 5 and `NodeStopped` 22 (appended after `TrafficOpened`, 21). Each is the
+/// lifecycle op (build, attempt, operation, node id, incarnation, path.name, event instant), then the
+/// forwarding primary, then the publisher's exact identity (node, incarnation) and the
+/// `topology_version` at which its subject changed, appended after `forwarded_by`. A peer mesh's
+/// primary forwards each onto its own channel, preserving the op, the publisher and the version;
+/// the frame's own mesh hears the original. What must NOT happen: a field moved, a variant
+/// inserted before the end, or a forward that drops the publisher or the version.
 #[test]
-fn node_stopped_matches_the_frozen_wire_schema_and_is_forwarded_by_a_peer_mesh_primary() {
-    let hex = "16 05626c645f31011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00";
-    let frame = Frame::NodeStopped { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None };
-    assert_eq!(frame.encode(), bytes(hex));
-    assert_eq!(Frame::decode(&bytes(hex)).unwrap().encode(), bytes(hex), "decodes and re-encodes to the same bytes");
-    let forwarded = forward_of(frame.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
-    match forwarded {
-        Frame::NodeStopped { op: forwarded_op, forwarded_by } => {
-            assert_eq!(forwarded_op, op("stop-node:mesh1.rpc.1"), "the op is preserved");
-            assert_eq!(forwarded_by.as_deref(), Some("mesh2.admin.1"));
+fn status_events_match_the_frozen_wire_schema_and_are_forwarded_with_their_publisher_and_version() {
+    let fixtures = [
+        (
+            Frame::NodeDeleting { op: op("retire-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 1 },
+            "03 05626c645f3101177265746972652d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00 0d6d657368312e61646d696e2e3107702d6269727468 01",
+        ),
+        (
+            Frame::NodeRestarting { op: op("restart-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()), publisher: publisher(), topology_version: 300 },
+            "05 05626c645f310118726573746172742d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31 0d6d657368312e61646d696e2e3107702d6269727468 ac02",
+        ),
+        (
+            Frame::NodeStopped { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 300 },
+            "16 05626c645f31011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00 0d6d657368312e61646d696e2e3107702d6269727468 ac02",
+        ),
+    ];
+    for (frame, hex) in fixtures {
+        assert_eq!(frame.encode(), bytes(hex), "{frame:?}");
+        assert_eq!(Frame::decode(&bytes(hex)).unwrap().encode(), bytes(hex), "{frame:?} decodes and re-encodes to the same bytes");
+        let kind = frame.encode()[0];
+        let forwarded = forward_of(frame.clone(), "mesh3.admin.1", "mesh3").expect("a peer mesh forwards it");
+        assert_eq!(forwarded.encode()[0], kind);
+        match (&frame, &forwarded) {
+            (Frame::NodeDeleting { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeDeleting { op: b, forwarded_by, publisher: pb, topology_version: vb })
+            | (Frame::NodeRestarting { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeRestarting { op: b, forwarded_by, publisher: pb, topology_version: vb })
+            | (Frame::NodeStopped { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeStopped { op: b, forwarded_by, publisher: pb, topology_version: vb }) => {
+                assert_eq!((a, pa, va), (b, pb, vb), "the op, the publisher and the version are preserved");
+                assert_eq!(forwarded_by.as_deref(), Some("mesh3.admin.1"));
+            }
+            other => panic!("{other:?}"),
         }
-        other => panic!("{other:?}"),
+        assert!(forward_of(frame, "mesh1.admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
     }
-    assert!(forward_of(frame, "mesh1.admin.1", "mesh1").is_none(), "the frame's own mesh hears the original");
 }
