@@ -78,6 +78,37 @@ pub(crate) fn superseded_by(key: &RoundKey, accepted: &crate::build_state::Build
     (own.submitted_at_ms < accepted.submitted_at_ms).then(|| format!("Build {} (accepted at {} ms) was accepted after this round's Build {} (accepted at {} ms)", accepted.build_id.0, accepted.submitted_at_ms, key.build_id, own.submitted_at_ms))
 }
 
+/// Withdraw from `declarer` every round completion `accepted` (the Build this admin holds accepted)
+/// has moved past, by the [`superseded_by`] rule: the completion of a superseded round is not owed
+/// and is never sent. `builds` is read for the Build of a round that is not the accepted one.
+pub(crate) async fn withdraw_superseded_completions(declarer: &Declarer, me: &PathName, accepted: &crate::build_state::BuildProjection, builds: &dyn BuildStateAdapter) {
+    for (key, round) in declarer.round_completions() {
+        if let Some(why) = round_superseded_by(&round, accepted, builds, &me.to_string()).await {
+            declarer.withdraw_round(me, &key, &why);
+        }
+    }
+}
+
+/// [`superseded_by`] for `round`, reading the round's own Build from `builds` when it is another than
+/// the accepted one. A Build this admin's log holds no fact of is a round that came ahead of the
+/// pointer (the same answer [`superseded_by`] gives it). A Build that cannot be read leaves the
+/// question open, and says so by name: it is neither superseded nor known to be current.
+async fn round_superseded_by(round: &RoundKey, accepted: &crate::build_state::BuildProjection, builds: &dyn BuildStateAdapter, node: &str) -> Option<String> {
+    if accepted.build_id.0 == round.build_id {
+        return superseded_by(round, accepted, None);
+    }
+    let own = match builds.read_build(&crate::build::BuildId(round.build_id.clone())).await {
+        Ok(own) => Some(own),
+        Err(crate::build_state::BuildStateError::UnknownBuild(_)) => None,
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.fabric.reject.via-round-build-unreadable", node, round = round.kind.command(), build_id = %round.build_id, attempt = round.attempt, accepted_build_id = %accepted.build_id, error = %e)
+                .in_scope(|| tracing::info!("the round's Build cannot be read: whether the accepted Build moved past the round is not known"));
+            None
+        }
+    };
+    superseded_by(round, accepted, own.as_ref())
+}
+
 /// RDM standalone's commit-state action (fabric-state-commit.md step 2: "Each node writes what it
 /// holds in its scratchpad into the store the state-sync work established"; node-admin-lifecycle.md
 /// §7): the node publishes its scratchpad to the fabric's store root, then runs the embedding's own
@@ -740,8 +771,7 @@ impl FabricRounds {
             // A round the accepted Build moved past commands nothing more and owes no completion: the
             // round of the accepted Build and attempt is the one its primaries run now.
             if let Some(b) = &accepted {
-                let own = if b.build_id.0 == key.build_id { None } else { self.env.builds.read_build(&crate::build::BuildId(key.build_id.clone())).await.ok() };
-                if let Some(why) = superseded_by(key, b, own.as_ref()) {
+                if let Some(why) = round_superseded_by(key, b, &*self.env.builds, &self.env.me.to_string()).await {
                     round_span.record("superseded_by", why.as_str());
                     tracing::info!(superseded_by = %why, "the accepted Build moved past this round: it commands nothing more and owes no completion");
                     self.mesh_book.close(key);
@@ -792,7 +822,7 @@ impl FabricRounds {
                 let req = key.kind.up(key, self.env.node_id.clone(), self.env.incarnation.clone());
                 // The check-in hook runs when the completion becomes owed: once per round, however often it is sent.
                 self.publish_hook(key, true, &self.env.node_id, &self.env.incarnation).await;
-                self.env.declarer.owe_in(Key::Round(format!("{}/{}/{}/{}", key.kind.completion(), key.fabric_id, key.build_id, key.attempt)), Authority::FabricPrimary, req, crate::build_claim::current_context().traceparent);
+                self.env.declarer.owe_in(Key::round(key), Authority::FabricPrimary, req, crate::build_claim::current_context().traceparent);
                 self.env.wake.poke();
             }
             false => {
@@ -804,6 +834,16 @@ impl FabricRounds {
     }
 
     // ----------------------------------------------------------------- served by an admin
+
+    /// The completions this admin owes for a round the accepted Build has moved past are withdrawn,
+    /// before the declarer sends anything: a superseded round's completion is never sent.
+    pub async fn withdraw_superseded(&self) {
+        if self.env.declarer.round_completions().is_empty() {
+            return;
+        }
+        let Some(accepted) = self.env.accepted.current(&*self.env.builds).await else { return };
+        withdraw_superseded_completions(&self.env.declarer, &self.env.me, &accepted, &*self.env.builds).await;
+    }
 
     /// `node_id` sent this admin a Status call: an undelivered round command to it is eligible again.
     pub fn heard_from(&self, node_id: &NodeId) {
@@ -1008,6 +1048,55 @@ mod tests {
         assert!(superseded_by(&key(&one, 1), &two_at_1, Some(&one_at_1)).is_some(), "a Build accepted after the round's own supersedes it");
         assert_eq!(superseded_by(&key(&two, 1), &one_at_1, Some(&two_at_1)), None, "a round of a Build accepted after the one this admin holds: its pointer lags");
         assert_eq!(superseded_by(&key(&crate::build::BuildId("bld-unlearned".into()), 1), &two_at_1, None), None, "a round of a Build this admin's log has not learned: its command came ahead");
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to the accepted
+    /// Build, attempt and planned exact births"): a mesh primary's owed completion of a round the
+    /// accepted Build moved past is withdrawn when the round is superseded, by the same rule that stops
+    /// the round commanding ([`superseded_by`]): a later attempt of the accepted Build, or a Build
+    /// accepted after the round's own. The completion of the accepted Build's current attempt, of an
+    /// attempt ahead of what this admin holds, and of a Build this admin's log has not learned stays
+    /// owed. Must NOT happen: a superseded round's completion kept owed until a seat moves (gate red
+    /// b24a4303, mesh_elections__sticky_seat: mesh2.admin.1 declared Round(.../2) and was answered
+    /// NotReady "round holds 3, reported 2", then sent it again on every eligible event).
+    #[tokio::test]
+    async fn an_owed_completion_of_a_round_the_accepted_build_moved_past_is_withdrawn_when_it_is_superseded() {
+        use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
+        let builds = MemoryBuildStateAdapter::new();
+        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
+        let (one, two) = (crate::build::BuildId("bld-one".into()), crate::build::BuildId("bld-two".into()));
+        for (b, at) in [(&one, 1_000), (&two, 2_000)] {
+            builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
+        }
+        let accepted = BuildProjection { attempt: 2, ..builds.read_build(&two).await.unwrap() };
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        let fabric = FabricId::mint();
+        let declarer = Declarer::new();
+        let owe = |build: &str, attempt: u32| {
+            let round = RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: build.to_string(), attempt };
+            declarer.owe_in(Key::round(&round), Authority::FabricPrimary, round.kind.up(&round, NodeId::mint(), IncarnationId("inc".into())), None);
+            Key::round(&round)
+        };
+        let (earlier_attempt, earlier_build) = (owe("bld-two", 1), owe("bld-one", 2));
+        let (current, ahead, unlearned) = (owe("bld-two", 2), owe("bld-two", 3), owe("bld-unlearned", 1));
+        assert_eq!(declarer.owed(), 5);
+
+        let capture = crate::span_capture::Capture::new("i143-s42-round-superseded");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        withdraw_superseded_completions(&declarer, &me, &accepted, &builds).await;
+        let mut owed = declarer.owed_keys();
+        owed.sort();
+        let mut kept = vec![current, ahead, unlearned];
+        kept.sort();
+        assert_eq!(owed, kept, "the completions of an earlier attempt ({earlier_attempt:?}) and of an earlier Build ({earlier_build:?}) are withdrawn; a current, an ahead and an unlearned round's stay owed");
+        // Each withdrawal is one span naming the completion and why the round is superseded.
+        let spans = capture.named("rdm.node_admin.status.remove.via-round-superseded");
+        assert_eq!(spans.len(), 2, "one span per withdrawn completion: {spans:?}");
+        for (key, why) in [(&earlier_attempt, "is at attempt 2, past this round's attempt 1"), (&earlier_build, "was accepted after this round's Build bld-one")] {
+            let span = spans.iter().find(|s| s.attributes.get("key") == Some(&format!("{key:?}"))).unwrap_or_else(|| panic!("no span names {key:?}: {spans:?}"));
+            assert!(span.attributes.get("superseded_by").is_some_and(|a| a.contains(why)), "{key:?} is withdrawn because {why}: {span:?}");
+            eprintln!("span {} trace_id={} {:?}", span.name, span.trace_id, span.attributes);
+        }
     }
 
     /// CONTRACT (R-S2): only an admission ends a round command. A refusal by name rests on the receiver's own view, which

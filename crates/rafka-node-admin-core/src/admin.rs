@@ -6312,6 +6312,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         let declarer = declarer.clone();
                                         let (digest, topology, records, me_id, incarnation, client, authority) =
                                             (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone(), authority.clone());
+                                        let rounds = rounds_slot.clone();
                                         let park = park_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             loop {
@@ -6329,6 +6330,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
                                                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
+                                                // A completion owed for a round the accepted Build moved past is withdrawn before anything is sent.
+                                                if let Some(rounds) = rounds.get() {
+                                                    rounds.withdraw_superseded().await;
+                                                }
                                                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
                                                 drop(turn);
                                                 // One coalesced wake from the inputs, never a timer: a poke during the round is
