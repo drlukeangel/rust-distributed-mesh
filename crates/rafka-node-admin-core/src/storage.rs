@@ -210,6 +210,10 @@ pub struct NodeRecord {
     pub fabric_id: FabricId,
     /// The node's `path.name`.
     pub name: PathName,
+    /// The Mesh the birth belongs to, by its minted id (node-identity-and-state.md §2.7: `Node.mesh_id`):
+    /// a restarting node-admin reads its mesh's row by it, never by the name alone, since a mesh
+    /// created again under the name is another mesh with another id (R-MN1).
+    pub mesh_id: MeshId,
     /// The incarnation this birth last ran (a restart supersedes it).
     pub incarnation_id: IncarnationId,
     /// The node's fabric endpoint id.
@@ -374,7 +378,7 @@ impl NodesStorage for MemoryNodesStorage {
     }
 }
 
-const NODE_FORMAT: &str = "node-record/3";
+const NODE_FORMAT: &str = "node-record/4";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
 const ROW_FORMAT: &str = "node-row/1";
 
@@ -780,6 +784,7 @@ mod tests {
             node_id: NodeId::mint(),
             fabric_id: FabricId::mint(),
             name: name.parse().unwrap(),
+            mesh_id: MeshId::mint(),
             incarnation_id: IncarnationId::mint(),
             endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
