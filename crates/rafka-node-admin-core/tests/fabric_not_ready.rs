@@ -133,7 +133,7 @@ async fn a_drain_of_a_seat_holder_before_the_fabric_first_reaches_ready_for_traf
 /// CONTRACT (R-PC1, R-PB1): until the initial fabric has first reached ready-for-traffic, mesh.delete and
 /// node.delete are refused `fabric-not-ready` in every shape a Build takes them: `RemoveMesh`,
 /// `RemoveNode`, a `ReconcileFabric` that drops a mesh and a `ReconcileMesh` that drops a node. Each
-/// names the workflow and the node or mesh it deletes; no Build is accepted and the accepted Build
+/// names the workflow and the node or mesh it deletes; no Build is accepted and the current Build
 /// does not move. What must NOT happen: a Deleting row written to a scratchpad whose primary is then lost.
 #[tokio::test]
 async fn a_mesh_delete_or_node_delete_before_the_fabric_first_reaches_ready_for_traffic_is_refused_in_every_shape_and_accepts_no_build() {
