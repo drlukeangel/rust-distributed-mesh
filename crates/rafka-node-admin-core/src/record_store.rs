@@ -310,11 +310,7 @@ impl FileRecords {
         let bytes = Self::encode(&path, format, record)?;
         let held = self.writer(&path).await?;
         if self.holding() {
-            let live = match self.held_row(key) {
-                Some(HeldRow::Put(_) | HeldRow::Insert(_)) => true,
-                Some(HeldRow::Removed) => false,
-                None => path.exists(),
-            };
+            let live = self.holds(key).await?;
             return Ok(!live && self.hold(key, HeldRow::Insert(bytes)));
         }
         let (dir, tmp) = (self.0.dir.clone(), self.tmp_path(key));
