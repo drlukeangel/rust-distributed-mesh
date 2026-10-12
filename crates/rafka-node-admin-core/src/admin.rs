@@ -2436,20 +2436,25 @@ pub async fn nodes_exit_proof(
     read_node_exits(nodes, t, book, durable, probe, provider).await.0
 }
 
-/// [`nodes_exit_proof`], with each proven node's exited birth: what the fabric authority's pass opens
-/// the create on.
+/// [`nodes_exit_proof`], with each proven node's exited birth (`None` for a node nothing was ever born
+/// of): what the fabric authority's pass opens the create on.
 async fn read_node_exits(
     nodes: &[PathName],
     t: &Topology,
     book: &DigestBook,
     durable: &[crate::storage::RuntimeRow],
-    _probe: Option<&dyn crate::fence::PathProbe>,
+    probe: Option<&dyn crate::fence::PathProbe>,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
-) -> (crate::build_drive::ExitProofs, Vec<(PathName, crate::drift::ExitedBirth)>) {
+) -> (crate::build_drive::ExitProofs, Vec<(PathName, Option<crate::drift::ExitedBirth>)>) {
     let (mut proven, mut unproven) = (Vec::new(), Vec::new());
     for node in nodes {
         let Some(n) = t.node(node) else {
-            unproven.push(format!("{node}: neither the view nor a durable runtime row holds a birth there"));
+            // A node the accepted topology names that no view and no durable runtime row holds a birth of
+            // (a Build's growth, not yet created): the provider is asked what is recorded at its path.
+            match unborn_node_exit(node, probe).await {
+                Ok(()) => proven.push((node.clone(), None)),
+                Err(why) => unproven.push(format!("{node}: {why}")),
+            }
             continue;
         };
         let Some(incarnation) = n.incarnation_id.clone() else {
@@ -2459,11 +2464,31 @@ async fn read_node_exits(
         let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
         let row = durable.iter().find(|r| r.node_id == n.node_id && r.incarnation_id == incarnation);
         match exit_proof_of(provider, &held_row, row).await {
-            Ok((code, source)) => proven.push((node.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source })),
+            Ok((code, source)) => proven.push((node.clone(), Some(crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source }))),
             Err(why) => unproven.push(format!("{node}: {why}")),
         }
     }
     (crate::build_drive::ExitProofs { proven: proven.iter().map(|(p, _)| p.to_string()).collect(), unproven }, proven)
+}
+
+/// The provider's proof for a node the accepted topology names that neither the view nor a durable
+/// runtime row holds a birth of: the question the create's own fence asks of a path the view holds
+/// nothing at ([`crate::fence::fence`]), "the world is asked, not assumed", read through
+/// [`crate::fence::PathProbe::recorded`] (node-create.md: "Runtime exit requires independent exact
+/// provider proof, even for a deployment that never joined"). A runtime recorded at the path that is
+/// not proven exited (it runs, or cannot be told), records that cannot be read, and no probe held,
+/// each hold the mesh by name; nothing recorded that runs proves the path.
+async fn unborn_node_exit(node: &PathName, probe: Option<&dyn crate::fence::PathProbe>) -> Result<(), String> {
+    use crate::deployment::provider::DeploymentStatus;
+    let Some(probe) = probe else {
+        return Err("neither the view nor a durable runtime row holds a birth there, and no provider probe of the runtimes recorded at its path is held here".into());
+    };
+    let recorded = probe.recorded(node).await.map_err(|reason| format!("neither the view nor a durable runtime row holds a birth there, and the runtimes recorded at its path cannot be read: {reason}"))?;
+    match recorded.iter().find(|(_, status)| !matches!(status, DeploymentStatus::Exited { .. })) {
+        None => Ok(()),
+        Some((at, DeploymentStatus::Running)) => Err(format!("no birth is held for it, and a runtime recorded at {at} still runs")),
+        Some((at, other)) => Err(format!("no birth is held for it, and the runtime recorded at {at} is not proven exited: {other:?}")),
+    }
 }
 
 /// The fully crashed mesh (mesh-investigation.md step 5, "Fully crashed"; R-ML3): a peer mesh whose
@@ -2487,7 +2512,7 @@ async fn crashed_peer_mesh(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     unreachable: &(dyn Fn(&str) -> bool + Sync),
-) -> Option<(String, PathName, crate::drift::ExitedBirth)> {
+) -> Option<(String, PathName, Option<crate::drift::ExitedBirth>)> {
     for m in current.topology.meshes.values().filter(|m| m.name != me.mesh && unreachable(&m.name)) {
         let Some(first) = m.cohort(NodeKind::NodeAdmin).min() else { continue };
         let nodes: Vec<PathName> = m.nodes.iter().cloned().collect();
@@ -2872,8 +2897,8 @@ pub async fn reconcile_drift(
             authority_node_id = %authority.node_id,
             reason = reason.as_str(),
             action = action_name,
-            exit_code = crashed.as_ref().map(|(_, _, b)| b).or(first_exited.map(|(_, b)| b)).and_then(|b| b.code).map(|c| c.to_string()).unwrap_or_default(),
-            exit_proof = crashed.as_ref().map(|(_, _, b)| b).or(first_exited.map(|(_, b)| b)).map(|b| b.source).unwrap_or("none"),
+            exit_code = crashed.as_ref().and_then(|(_, _, b)| b.as_ref()).or(first_exited.map(|(_, b)| b)).and_then(|b| b.code).map(|c| c.to_string()).unwrap_or_default(),
+            exit_proof = crashed.as_ref().and_then(|(_, _, b)| b.as_ref()).or(first_exited.map(|(_, b)| b)).map(|b| b.source).unwrap_or("none"),
             fabric_status = tracing::field::Empty,
         ),
     };
@@ -5883,6 +5908,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 handover: handover.clone(),
                                 issuer: issuer.clone(),
                             });
+                            // What the provider holds recorded at a path: the proof of a node the accepted topology names
+                            // that no view and no durable runtime row holds a birth of (mesh-investigation.md step 5).
+                            records.set_path_probe(runner.clone());
                             let _ = leaver.set(Arc::new(LeaveDoor { runner: runner.clone() }));
                             // The Build family on `0x20`: the executor's door for `build.attempt.run` and the fabric-primary's
                             // drive of every Build. The same admin holds both; which one a call reaches depends on the seat.

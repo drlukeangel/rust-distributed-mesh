@@ -488,15 +488,16 @@ async fn crashed_rig() -> Rig {
 /// CONTRACT (mesh-investigation.md step 5, "Fully crashed": "The fabric-primary acts on the provider's
 /// exact exit proof, never on silence, and creates mesh-x's node-admin in process"; R-D1): mesh2 has
 /// lost every node-admin and the investigation's 60 s decision on it came out `unreachable`, a hold.
-/// The drive reads the provider's exit proof of every node-admin of mesh2 itself, and on that proof
-/// it runs the create of the mesh's first node-admin, and only it, on the fabric-primary; the mesh's
+/// The drive reads the provider's exit proof of every node of mesh2 the accepted topology names (its
+/// two node-admins, its lost rpc node and the rpc node the Build grows, not yet born) itself, and on
+/// that proof it runs the create of the mesh's first node-admin, and only it, on the fabric-primary; the mesh's
 /// second admin and its ordinary node still wait for the mesh to be heard. With no decision at all
 /// the fence stands for the first admin too. Must NOT happen: the fence refusing the one create the
 /// exit proof admits (the mesh waiting for ever), or the hold releasing more than that create.
 #[tokio::test]
 async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does() {
     let r = crashed_rig().await;
-    r.proofs.exited.lock().unwrap().extend(["mesh2.admin.1".to_string(), "mesh2.admin.2".to_string()]);
+    r.proofs.exited.lock().unwrap().extend(["mesh2.admin.1", "mesh2.admin.2", "mesh2.rpc.1", "mesh2.rpc.2"].map(String::from));
     let held = |unreachable_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: false, unreachable_decided };
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-crashed-mesh-drive");
     let drive = Drive::detached(r.build.clone());
