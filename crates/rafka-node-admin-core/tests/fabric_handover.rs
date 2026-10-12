@@ -1109,6 +1109,59 @@ fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
     });
 }
 
+/// CONTRACT (R14 items 2 and 4; R13: the fabric-primary writes another mesh's rows only as acting
+/// primary of a mesh with no primary, an authority its fabric seat gives it; mesh-leave.md step 7):
+/// a holder that opened its stores before the fabric's first state-commit holds the rows it wrote as
+/// acting primary of mesh2 (mesh2's Node row and its Mesh status row) in its scratchpad. Once a seat
+/// transfer moving the fabric seat commits, every one of them is dropped: never read again, and a
+/// later publication writes none of them. What must NOT happen: a row its writer held as acting
+/// primary kept after the fabric seat moved, read in place of the store root or written there.
+#[test]
+fn a_committed_fabric_seat_transfer_drops_the_rows_its_holder_held_as_acting_primary_of_another_mesh() {
+    use rafka_node_admin_core::fabric_handover::{SeatStores, WriteCutOff};
+    use rafka_node_admin_core::status_storage::{MeshStatusRow, StatusStorage as _};
+    use rafka_node_admin_core::storage::{NodeRow, NodesStorage as _};
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let d = std::env::temp_dir().join(format!("seat-stores-acting-{}", NodeId::mint()));
+        let pad = rafka_node_admin_core::record_store::Scratchpad::new();
+        let root = rafka_node_admin_core::store_root::StoreRoot::held_at(&d.join("store"), pad.clone());
+        let inc = IncarnationId::mint();
+        let stores = SeatStores {
+            mesh: std::sync::Arc::new(rafka_node_admin_core::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
+            nodes: std::sync::Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
+            fabric: std::sync::Arc::new(FileFabricStorage::open(&root, &inc).await.unwrap()),
+            status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
+        };
+        let row = NodeRow { name: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: Default::default() };
+        let dead = MeshStatusRow { mesh_id: MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::Dead };
+        stores.nodes.put_node_row(&row).await.unwrap().expect("mesh2.rpc.1 is a free key");
+        stores.status.put_mesh_status_of("mesh2", &dead).await.unwrap();
+        assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), Some(row.clone()), "the holder reads the mesh2 Node row it holds");
+        assert!(stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "the holder reads the mesh2 status row it holds");
+        let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by take-seats:b1";
+        stores.apply(WriteCutOff::Set { reason: reason.into(), fabric_seat: true }).await;
+        stores.apply(WriteCutOff::Committed { reason: reason.into(), fabric_seat: true }).await;
+        assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), None, "a mesh2 Node row dropped at the commit is never read");
+        assert!(!stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "a mesh2 status row dropped at the commit is never read");
+        let published = pad.publish().await.unwrap();
+        assert_eq!((published.written(), published.dropped(), published.held()), (0, 0, 0), "nothing the holder held as acting primary is published after the seat row: {published:?}");
+        let mut on_root = Vec::new();
+        let mut dirs = vec![d.join("store")];
+        while let Some(dir) = dirs.pop() {
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                if e.path().is_dir() {
+                    dirs.push(e.path());
+                } else {
+                    on_root.push(e.path().display().to_string());
+                }
+            }
+        }
+        assert!(on_root.is_empty(), "no row reached the store root: {on_root:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    });
+}
+
 // ---- No caller check inside the mesh (node-rpc.md §14) ----
 
 /// An admin endpoint no view of the fabric holds a birth for, reaching `to`: the caller a receiver
