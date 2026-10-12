@@ -6774,17 +6774,25 @@ mod tests {
         assert_eq!(silent, vec![floor + Duration::from_millis(1); 2], "every held member's silence is measured from its receipt");
     }
 
-    /// A graceful departure is not current one gossip interval after its last `Leaving`, whether
-    /// it was heard directly or forwarded: no aggregate carries a departed member on.
+    /// CONTRACT (gossip.md §6.1: a stopped status by itself and silence are not departure proof;
+    /// node-identity-and-state.md §4.1: `Leaving` is a status the routing rule reads; gossip.md §3.1:
+    /// `Members.digests` are the digests as held): a member held `Leaving` stays current, and so in
+    /// every aggregate, for as long as any member does: until it has been silent past the staleness
+    /// floor. One gossip interval and a millisecond after its last heartbeat it is current, heard
+    /// directly or forwarded. Must NOT happen: a member whose status is `Leaving` and whose heartbeat is
+    /// one interval old absent from `Members`, so a live node declared Leaving oscillates in and out of
+    /// every peer's list with its own heartbeat.
     #[test]
-    fn a_departed_member_is_not_current_one_gossip_interval_after_its_leaving() {
+    fn a_member_held_leaving_is_current_until_it_is_silent_past_the_staleness_floor() {
         let book = DigestBook::default();
         let (direct, forwarded) = (NodeId::mint(), NodeId::mint());
         let t0 = Instant::now();
         book.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
         book.record_forwarded_at(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
-        assert_eq!(book.current_at(book.staleness_floor(), t0 + gossip_interval()).len(), 2, "within the tick it is still saying Leaving");
-        assert!(book.current_at(book.staleness_floor(), t0 + gossip_interval() + Duration::from_millis(1)).is_empty());
+        let floor = book.staleness_floor();
+        assert_eq!(book.current_at(floor, t0 + gossip_interval()).len(), 2, "within the interval it is current");
+        assert_eq!(book.current_at(floor, t0 + gossip_interval() + Duration::from_millis(1)).len(), 2, "a Leaving status is not a departure: one interval on it is still current");
+        assert!(book.current_at(floor, t0 + floor + Duration::from_millis(1)).is_empty(), "silent past the staleness floor it is no longer current, as any member");
     }
 
     /// The documented defaults: a 30 s staleness floor and 2 s gossip intervals.

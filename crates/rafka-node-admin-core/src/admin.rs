@@ -9521,6 +9521,31 @@ mod tests {
         assert!(!routable(&of_unheard_mesh), "a birth of a mesh this admin holds no status of is not held ready-for-traffic");
     }
 
+    /// CONTRACT (gossip.md §6.1: a stopped status by itself and silence are not departure proof;
+    /// node-identity-and-state.md §4.1: `Leaving` is a status the routing rule reads; §6: the
+    /// observer's inference evicts at the staleness floor): a member the book holds `Leaving` is
+    /// listed `Leaving` with the state it declared, whatever the age of its last heartbeat within the
+    /// staleness floor: a node declared Leaving that still heartbeats is a member of its mesh until it
+    /// is stopped or deleted. Past the floor it is the silent member any silent member is. Must NOT
+    /// happen: a `Leaving` member one gossip interval and a millisecond after its heartbeat absent from
+    /// the view, which is what makes `declared` unreadable at the authority that applied it.
+    #[test]
+    fn a_member_held_leaving_is_listed_leaving_with_its_declared_state_until_it_is_silent_past_the_staleness_floor() {
+        use rafka_node_rpc_contract::status::NodeState;
+        let book = DigestBook::default();
+        let records = Records::default();
+        let d = digest("mesh1.rpc.1", MemberStatus::Leaving);
+        let t0 = std::time::Instant::now();
+        assert!(book.record_at(d.clone(), t0));
+        records.declared.lock().unwrap().nodes.insert((d.node.node_id.clone(), d.node.incarnation.clone()), NodeState::Leaving);
+        let listed = |at: std::time::Instant| project_at("fabric1", &fabric1(), ProviderKind::Process, &book, &records, at).node(&d.node.name).cloned();
+
+        let within = listed(t0 + gossip_interval() + Duration::from_millis(1)).expect("a Leaving member one interval after its heartbeat is a member of the view");
+        assert_eq!((within.status, within.declared.as_deref(), within.routable, within.parked), (NodeStatus::Leaving, Some("Leaving"), false, false));
+        let silent = listed(t0 + book.staleness_floor() + Duration::from_millis(1)).expect("silent past the floor it is listed, not departed");
+        assert_eq!((silent.status, silent.declared.as_deref()), (NodeStatus::PendingReconnect, Some("Leaving")), "silent past the staleness floor it is the silent member any silent member is");
+    }
+
     /// CONTRACT (states.md: a mesh is pending -> ready-for-traffic -> leaving -> dead; "Routing": a
     /// mesh Leaving or Dead is a routing stop): the mesh status this admin projects is the state its
     /// mesh row holds once that is past ready-for-traffic. The projection is what the mesh primary
