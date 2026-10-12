@@ -183,6 +183,86 @@ fn a_restarted_bootstrap_admin_opens_its_fabric_from_its_own_row() {
     assert_eq!(opened["attributes"]["restart"].as_str(), Some("true"), "{opened}");
 }
 
+/// CONTRACT (states.md "The initial fabric before ready-for-traffic": "Once the fabric is ready-for-traffic
+/// these are admitted as usual"; "A resize or roll puts the fabric back to pending"): the admin that
+/// opens a store root already holding the Fabric row, published at the fabric's first state-commit,
+/// knows the fabric has first reached ready-for-traffic from the root itself, not from the status it
+/// hears. A bootstrap admin on a fresh root has not (one `rdm.node_admin.fabric.update.via-first-ready`
+/// says `ready-for-traffic`, when it climbs); the same admin restarted on its data dir and root says
+/// `fabric-row-on-store-root` at its boot, before any status is heard. What must NOT happen: a restarted
+/// admin, or one born into a resize after the first ready-for-traffic, refusing a caller's workflow
+/// `fabric-not-ready` because it heard pending.
+#[test]
+fn an_admin_that_opens_a_root_holding_the_fabric_row_knows_the_fabric_first_reached_ready_for_traffic() {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/an_admin_that_opens_a_root_holding_the_fabric_row_knows_the_fabric_first_reached_ready_for_traffic");
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = dir.join("store");
+    std::fs::create_dir_all(&store).unwrap();
+    let data_dir = dir.join("mesh1.admin.1");
+    let run = || {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"));
+        cmd.env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("RDM_DATA_DIR", &data_dir)
+            .env("RDM_STORE_DIR", &store)
+            .env("RDM_EVIDENCE_DIR", &dir)
+            .env("MESH_SPAWN_TYPE", "process")
+            .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0");
+        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rafka-node-admin starts")
+    };
+    struct Reap(u32);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
+        }
+    }
+    let stop = |mut child: std::process::Child| {
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+        let status = child.wait().unwrap();
+        let mut err = String::new();
+        std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut err).unwrap();
+        (status, err)
+    };
+    let first_ready = |pid: u32| -> Vec<String> {
+        spans_of(&dir, pid).iter().filter(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready").map(|s| s["attributes"]["reason"].as_str().unwrap_or_default().to_string()).collect()
+    };
+
+    // Day 0: the fabric climbs to ready-for-traffic on a fresh root and says why it knows.
+    let first = run();
+    let day0_pid = first.id();
+    let reap_first = Reap(day0_pid);
+    let until = Instant::now() + Duration::from_secs(30);
+    let row = loop {
+        let published = fabric_dirs(&store).first().map(|f| store.join(f).join("fabric").join("identity.json")).filter(|p| p.exists());
+        if let (Some(row), true) = (published, first_ready(day0_pid) == ["ready-for-traffic"]) {
+            break row;
+        }
+        assert!(Instant::now() < until, "the Day-0 admin published no Fabric row and reached ready-for-traffic in 30 s: {:?} {:?}", fabric_dirs(&store), first_ready(day0_pid));
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let (status, err) = stop(first);
+    std::mem::forget(reap_first);
+    assert!(status.success(), "the Day-0 admin's stop: {status:?} {err}");
+    assert!(row.exists(), "the Fabric row stands on the root");
+
+    // The restart: the root holds the Fabric row, so the admin knows at boot.
+    let second = run();
+    let pid = second.id();
+    let reap_second = Reap(pid);
+    let until = Instant::now() + Duration::from_secs(20);
+    while first_ready(pid).is_empty() {
+        assert!(Instant::now() < until, "the restart said nothing of the fabric having reached ready-for-traffic in 20 s");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (status, err) = stop(second);
+    std::mem::forget(reap_second);
+    assert!(status.success(), "the restart's stop: {status:?} {err}");
+    let spans = spans_of(&dir, pid);
+    let said: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready").collect();
+    assert_eq!(said.first().map(|s| s["attributes"]["reason"].as_str()), Some(Some("fabric-row-on-store-root")), "the restart knows from the root, at boot: {said:?}");
+    println!("trace_id={}", said[0]["trace_id"].as_str().unwrap_or(""));
+}
+
 /// CONTRACT (R-MN1: "a mesh created again under the same name is a new mesh with a new id"; R-ML2: "a
 /// dead mesh's path.name used again is mesh.create of a new mesh with a new MeshId", "a dead mesh is
 /// never restarted"; states.md: a mesh id is never reissued): a bootstrap node-admin restarted on its
