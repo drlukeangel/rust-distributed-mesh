@@ -679,7 +679,7 @@ impl Records {
             // The seat of this admin's mesh taken with this view: its status rows are folded in
             // before the view is installed, so no decision reads the view against an empty record.
             if let Some(fold) = self.status.get() {
-                fold.on_install(&t, &self.declared).await;
+                fold.on_install(&t, &self.declared, self.book.get()).await;
             }
             // A replaced predecessor this view now names `<path>.old` (its row moved there; its digest
             // still says `<path>`): one span as it enters, with the member that took the path.

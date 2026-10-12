@@ -5039,6 +5039,51 @@ impl DigestBook {
         true
     }
 
+    /// The status this book holds for the own-mesh birth `incarnation` of `node_id`: what its
+    /// mesh-primary set, here or in the projection this book took. `None` when it holds none for that
+    /// exact birth.
+    pub fn member_status(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rafka_mesh_entity::MemberStatus> {
+        self.member_statuses.lock().unwrap().get(node_id.as_str()).filter(|(inc, _)| inc == incarnation).map(|(_, s)| *s)
+    }
+
+    /// This book's holder took its mesh's primary seat and adopts `status`, the state its mesh's
+    /// primary set for the own-mesh birth `incarnation` of `node_id` at `name`, as the seat's status
+    /// rows hold it (node-status-heartbeat-connections.md §A.3: "the successor acquires the held member
+    /// statuses and publishes a complete projection under its own epoch before any delta";
+    /// fabric-authority.md §7: a takeover hydrates the lifecycle state that exists, it is not a
+    /// transition). Held for the birth whether or not its heartbeat is held yet: the projection carries
+    /// it from its next round and a heartbeat heard later takes it. Nothing else of the birth moves and
+    /// no restart closes. `Err` names why nothing is adopted: a birth of another mesh, this book's own
+    /// birth or a predecessor at its own path.name, a departed or stopped birth, or another birth of
+    /// the node this book holds. `Ok` carries
+    /// the status held before.
+    pub fn adopt_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &rafka_mesh_entity::PathName, status: rafka_mesh_entity::MemberStatus) -> Result<Option<rafka_mesh_entity::MemberStatus>, &'static str> {
+        let own_mesh = self.own_mesh.lock().unwrap().clone();
+        if own_mesh.is_empty() || name.mesh != own_mesh {
+            return Err("another-mesh");
+        }
+        if self.own.lock().unwrap().as_deref() == Some(node_id.as_str()) {
+            return Err("own-birth");
+        }
+        // Another node at this book's own path.name is a predecessor this holder replaced: its own
+        // word about that path is this holder's.
+        if name.to_string() == *self.holder.lock().unwrap() {
+            return Err("predecessor-at-own-path");
+        }
+        if self.is_departed(node_id.as_str()) {
+            return Err("departed");
+        }
+        if self.stopped_marks.lock().unwrap().get(node_id.as_str()).is_some_and(|m| m.incarnation == *incarnation) {
+            return Err("stopped");
+        }
+        let other_birth = self.inner.lock().unwrap().get(node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation != *incarnation)
+            || self.member_statuses.lock().unwrap().get(node_id.as_str()).is_some_and(|(inc, _)| inc != incarnation);
+        if other_birth {
+            return Err("another-birth-held");
+        }
+        Ok(self.author_status(node_id.as_str(), incarnation, status))
+    }
+
     /// Set `status` for the birth `incarnation` of `node_id`, as its mesh-primary sets it (states.md
     /// "Who sets each state"): held for the birth, so its projection carries it, and given to the
     /// digest held of that exact birth. A move ticks `heard`. Returns the status held for that birth
@@ -6107,6 +6152,34 @@ mod tests {
     /// DeclareNodeState(ReadyForTraffic) applied by its StatusAuthority.
     fn node_started(book: &DigestBook, id: &NodeId, inc: &IncarnationId) {
         book.started(id, inc);
+    }
+
+    /// CONTRACT (node-status-heartbeat-connections.md §A.3: "the successor acquires the held member
+    /// statuses and publishes a complete projection under its own epoch before any delta";
+    /// fabric-authority.md §7: a takeover hydrates, it is not a transition): the book of mesh1's new
+    /// primary adopts a held status for an own-mesh birth whether or not its heartbeat is held yet, and
+    /// a heartbeat heard after takes it. Nothing is adopted, each by its named reason, for a birth of
+    /// another mesh, a predecessor at the holder's own path.name, a departed birth, or another birth of
+    /// a node whose later birth the book holds. Must NOT happen: an adoption moving a birth the book
+    /// holds of a node at another incarnation, or a peer mesh's member.
+    #[test]
+    fn a_seat_takers_book_adopts_held_statuses_of_its_own_mesh_births_only() {
+        let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
+        *book.holder.lock().unwrap() = "mesh1.admin.1".into();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let rpc1: rafka_mesh_entity::PathName = "mesh1.rpc.1".parse().unwrap();
+        assert_eq!(book.adopt_status(&id, &inc, &rpc1, MemberStatus::ReadyForTraffic), Ok(None), "held before its heartbeat");
+        assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 10)));
+        assert_eq!(book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "the heartbeat heard after takes the adopted status");
+        assert_eq!(book.adopt_status(&NodeId::mint(), &IncarnationId::mint(), &"mesh2.rpc.1".parse().unwrap(), MemberStatus::ReadyForTraffic), Err("another-mesh"));
+        assert_eq!(book.adopt_status(&NodeId::mint(), &IncarnationId::mint(), &"mesh1.admin.1".parse().unwrap(), MemberStatus::ReadyForTraffic), Err("predecessor-at-own-path"));
+        assert_eq!(book.adopt_status(&id, &IncarnationId::mint(), &rpc1, MemberStatus::Leaving), Err("another-birth-held"), "an earlier birth of a node held at a later one");
+        assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic), "and the held birth's status stands");
+        let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.depart(op(&gone, &gone_inc, "retire-node:mesh1.rpc.1")));
+        assert_eq!(book.adopt_status(&gone, &gone_inc, &rpc1, MemberStatus::ReadyForTraffic), Err("departed"));
     }
 
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay": "NodeRestarting stays until node.started

@@ -216,7 +216,8 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 assert!(membership.book.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the seat take");
                 let rpc2_heard = status(&rpc2);
                 let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.2", b.incarnation_id.clone().unwrap(), vec![]).await.unwrap();
-                let projected: Vec<(String, MemberStatus)> = backbone.own_members(&membership).into_iter().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
+                let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&membership).into_iter().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
+                projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
                 let authority = rafka_node_admin_core::status_rpc::StatusAuthority {
                     me: b.name.clone(),
