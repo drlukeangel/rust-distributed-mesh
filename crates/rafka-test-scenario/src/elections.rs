@@ -1,5 +1,5 @@
 //! The expected election outcome, computed from a public view alone
-//! (`GET /api/nodes`). An rpc, gateway or other cohort's primary is its ready member with the
+//! (`node.get`). An rpc, gateway or other cohort's primary is its ready member with the
 //! lowest `node_id`. A node-admin seat (a mesh primary, the fabric primary) is held by its holder
 //! until that holder is proven unable to hold it (ruling R-A2), so a view alone cannot name it:
 //! [`seats_as_expected`] checks that exactly one holder is advertised per cohort and that the

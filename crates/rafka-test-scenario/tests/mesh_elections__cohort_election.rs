@@ -4,7 +4,7 @@
 //! A non-admin cohort's primary is its ready member with the lowest NodeId; a
 //! mesh's primary is its node-admin cohort's seat, and the fabric seat stays
 //! with its holder (ruling R-A2: a lower NodeId never displaces a living
-//! holder). From public surfaces only (each admin's `GET /api/nodes`), the test
+//! holder). From public surfaces only (each admin's `node.get`), the test
 //! computes the expected non-admin winners from the advertised NodeIds and
 //! statuses of the same view and compares, and holds the fabric seat to the
 //! Day-0 admin. Through the matrix:
@@ -30,6 +30,7 @@
 //! partition case is a named skip; `RDM_REQUIRE_NETFAULT=1` (CI) makes it a
 //! failure.
 
+use rafka_node_admin_client::{CallEnd, LaunchKind as NodeKind, NodeStatus, PathName, WorkflowStream};
 use rafka_test_scenario::elections::{advertised_primaries, expected_primaries, seats_as_expected, Cohort};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
@@ -68,18 +69,17 @@ fn primary_of(nodes: &[Value], c: &Cohort) -> Option<String> {
 }
 
 async fn build(estate: &Estate, meshes: &[(&str, u32, u32)]) {
-    let desired = json!({
-        "fabric": "fabric1",
-        "meshes": meshes.iter().map(|(m, a, r)| json!({"name": m, "node_admin": a, "rpc_node": r})).collect::<Vec<_>>(),
-    });
-    let (status, accepted) = estate.post("/api/build", &desired).await;
-    assert_eq!(status, 202, "{accepted}");
-    estate.await_build(accepted["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.reconcile_shape("fabric1", meshes).await;
 }
 
-async fn accepted_build(estate: &Estate, (status, v): (u16, Value)) {
-    assert_eq!(status, 202, "{v}");
-    estate.await_attempt(v["build_id"].as_str().unwrap(), Estate::attempt_of(&v), Duration::from_secs(120)).await;
+/// The workflow `call` was accepted by the fabric-primary: await its reply stream to `Complete`.
+async fn complete(what: &str, call: Result<WorkflowStream, CallEnd>) {
+    let mut stream = call.unwrap_or_else(|end| panic!("the fabric-primary refused {what}: {end}"));
+    Estate::complete(&mut stream).await;
+}
+
+fn path(name: &str) -> PathName {
+    name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"))
 }
 
 /// The view without the rows of births proven dead: drift recovery restores a killed birth's
@@ -94,28 +94,22 @@ fn settled(nodes: &[Value]) -> bool {
     !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(&nodes).is_ok()
 }
 
-/// Wait until `base`'s view is settled; return its live rows. A timeout names the last view.
-async fn settle(estate: &Estate, base: &str, label: &str) -> Vec<Value> {
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let nodes = estate.nodes_at(base).await;
-        if settled(&nodes) {
-            return live(&nodes);
-        }
-        if Instant::now() > until {
-            let seats = seats_as_expected(&live(&nodes)).err().unwrap_or_default();
-            panic!("{label}: the view did not settle on the computed seats in 30s ({seats}): {nodes:#?}");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+/// Wait until the view of the node-admin `admin` is settled; return its live rows. A timeout names the last view.
+async fn settle(estate: &Estate, admin: &PathName, label: &str) -> Vec<Value> {
+    estate
+        .until_view_at(admin, &format!("{label}: the view of {admin} settles on the computed seats"), Duration::from_secs(30), |views| {
+            let nodes = Estate::values(views);
+            settled(&nodes).then(|| live(&nodes))
+        })
+        .await
 }
 
-/// For `hold`, every sample of `base`'s view advertises the computed seats
+/// For `hold`, every sample of the view of the node-admin `admin` advertises the computed seats
 /// of that same sample (never two, never none, never another).
-async fn steady(estate: &Estate, base: &str, label: &str, hold: Duration) {
+async fn steady(estate: &Estate, admin: &PathName, label: &str, hold: Duration) {
     let until = Instant::now() + hold;
     while Instant::now() < until {
-        let nodes = live(&estate.nodes_at(base).await);
+        let nodes = live(&estate.node_values_at(&admin.to_string()).await);
         if nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
             if let Err(e) = seats_as_expected(&nodes) {
                 panic!("{label}: {e}: {nodes:#?}");
@@ -130,7 +124,7 @@ async fn steady(estate: &Estate, base: &str, label: &str, hold: Duration) {
 /// `gone_id`. Decided from the pre-kill view and the announcement span, never from a polled
 /// view: drift recovery rebirths the path within seconds, and a view polled after that already
 /// shows the reborn NodeId (a different birth) in the seat.
-async fn successor(estate: &Estate, base: &str, before: &[Value], c: &Cohort, gone_id: &str) -> (String, String) {
+async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Cohort, gone_id: &str) -> (String, String) {
     let (name, id) = before
         .iter()
         .filter(|n| n["mesh"] == c.0.as_str() && n["kind"] == c.1.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != gone_id)
@@ -139,18 +133,21 @@ async fn successor(estate: &Estate, base: &str, before: &[Value], c: &Cohort, go
         .unwrap_or_else(|| panic!("no other ready member of {c:?} to succeed {gone_id}: {before:#?}"));
     // Silence is local receipt age, and gossip may still hand on the gone birth's last cached
     // digests for one cache window after it died: the successor is announced within the staleness
-    // floor after that.
+    // floor after that. The announcement names the winner it elected and the birth it replaced; the
+    // election's span is the only place that fact lives (a view may already show a reborn birth in the
+    // seat), so the span is awaited.
     let silence_bound = rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(10);
     wait_for(&format!("{name} ({id}) announced as the successor to {gone_id}"), silence_bound, || async {
         announced(&estate.spans(), c, &id, gone_id).then_some(())
     })
     .await;
-    // Another admin may announce first: `base`'s own view holds the killed birth dead before
+    // Another admin may announce first: `admin`'s own view holds the killed birth dead before
     // anything is read from it.
-    wait_for(&format!("{base} no longer hears {gone_id}"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), || async {
-        (!estate.nodes_at(base).await.iter().any(|n| n["node_id"] == gone_id && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")))).then_some(())
-    })
-    .await;
+    estate
+        .until_view_at(admin, &format!("{admin} no longer hears {gone_id}"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), |views| {
+            (!views.iter().any(|n| n.node_id.to_string() == gone_id && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect))).then_some(())
+        })
+        .await;
     (name, id)
 }
 
@@ -170,19 +167,19 @@ fn announced(spans: &[Value], c: &Cohort, winner: &str, previous: &str) -> bool 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let mut estate = Estate::bootstrap(owner("every_mn_cohort_elects_the_lowest_ready_node_id", "MN"), "fabric1", "mesh1").await;
-    let base1 = estate.admin.clone();
+    let admin1 = estate.entry().await;
     let (rpc, admin) = (cohort("mesh1", "rpc_node"), cohort("mesh1", "node_admin"));
     let hold = Duration::from_secs(4);
 
     // day 0: one admin, every seat its own.
-    let day0 = settle(&estate, &base1, "day 0").await;
+    let day0 = settle(&estate, &admin1, "day 0").await;
     let boot = day0.iter().find(|n| n["kind"] == "node_admin").map(|n| (s(&n["name"]), s(&n["node_id"]))).unwrap();
     assert_eq!(advertised_fabric(&day0).as_deref(), Some(boot.0.as_str()), "day 0: the one admin holds the fabric seat");
 
     // settled MN -> the computed seats
     build(&estate, &[("mesh1", 2, 3)]).await;
-    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
-    let nodes = settle(&estate, &base1, "MN").await;
+    estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
+    let nodes = settle(&estate, &admin1, "MN").await;
     let rpc_p = primary_of(&nodes, &rpc).unwrap();
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some(boot.0.as_str()), "the Day-0 admin keeps the fabric seat whatever NodeId its mesh's second admin drew (R-A2)");
 
@@ -191,72 +188,72 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     // restart a non-primary -> it keeps its NodeId; the seats stay computed
     let other_rpc: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["is_primary"] == false).map(|n| s(&n["name"])).collect();
     let before = id_of(&nodes, &other_rpc[1]);
-    accepted_build(&estate, estate.post(&format!("/api/nodes/{}/restart", other_rpc[1]), &json!({})).await).await;
+    complete(&format!("node.restart of {}", other_rpc[1]), estate.nodes_obj().await.restart(&path(&other_rpc[1])).await).await;
     // The Build completed on the executor; the asked admin's view holds the reborn node once its
     // Ready has reached it (one gossip round): wait for the shape, as after the Build above.
-    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
-    let nodes = settle(&estate, &base1, "restart non-primary").await;
+    estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
+    let nodes = settle(&estate, &admin1, "restart non-primary").await;
     assert_eq!(id_of(&nodes, &other_rpc[1]), before, "restart keeps the NodeId");
-    steady(&estate, &base1, "restart non-primary", hold).await;
+    steady(&estate, &admin1, "restart non-primary", hold).await;
 
     // restart the primary -> it keeps its NodeId and, once ready, holds the seat again
     let rpc_p_id = id_of(&nodes, &rpc_p);
-    accepted_build(&estate, estate.post(&format!("/api/nodes/{rpc_p}/restart"), &json!({})).await).await;
-    let nodes = settle(&estate, &base1, "restart primary").await;
+    complete(&format!("node.restart of {rpc_p}"), estate.nodes_obj().await.restart(&path(&rpc_p)).await).await;
+    let nodes = settle(&estate, &admin1, "restart primary").await;
     assert_eq!(id_of(&nodes, &rpc_p), rpc_p_id, "restart keeps the NodeId");
     assert_eq!(primary_of(&nodes, &rpc).as_deref(), Some(rpc_p.as_str()), "the restarted lowest NodeId retakes its seat: {nodes:#?}");
 
     // grow, then shrink back -> every sample the computed seats (a newcomer may win)
     build(&estate, &[("mesh1", 3, 5)]).await;
-    settle(&estate, &base1, "grow").await;
-    steady(&estate, &base1, "grow", hold).await;
+    settle(&estate, &admin1, "grow").await;
+    steady(&estate, &admin1, "grow", hold).await;
     build(&estate, &[("mesh1", 2, 3)]).await;
-    settle(&estate, &base1, "shrink").await;
-    steady(&estate, &base1, "shrink", hold).await;
+    settle(&estate, &admin1, "shrink").await;
+    steady(&estate, &admin1, "shrink", hold).await;
 
     // kill the current primary -> the next-lowest succeeds; drift recovery restores the count with
     // a new NodeId at a free path
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let killed = primary_of(&nodes, &rpc).unwrap();
     let killed_id = id_of(&nodes, &killed);
     estate.kill_node(&killed).await;
-    let (_succ, succ_id) = successor(&estate, &base1, &nodes, &rpc, &killed_id).await;
+    let (_succ, succ_id) = successor(&estate, &admin1, &nodes, &rpc, &killed_id).await;
     build(&estate, &[("mesh1", 2, 3)]).await;
     // The rebirth is drift recovery's, once the killed runtime is proven exited: wait for the
     // count, then for the seats.
-    wait_for("drift recovery restores three live rpc nodes", rafka_mesh_transport::membership::staleness_floor() * 2 + Duration::from_secs(30), || async {
-        let live_rpc = live(&estate.nodes_at(&base1).await).iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node" && n["status"] == "ready-for-traffic").count();
-        (live_rpc == 3).then_some(())
-    })
-    .await;
-    let nodes = settle(&estate, &base1, "the cohort is back at its desired count").await;
-    estate.artifact("settled-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "live": nodes, "all": estate.nodes().await}));
+    estate
+        .until_view_at(&admin1, "drift recovery restores three live rpc nodes", rafka_mesh_transport::membership::staleness_floor() * 2 + Duration::from_secs(30), |views| {
+            (views.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.status == NodeStatus::ReadyForTraffic).count() == 3).then_some(())
+        })
+        .await;
+    let nodes = settle(&estate, &admin1, "the cohort is back at its desired count").await;
+    estate.artifact("settled-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "live": nodes, "all": estate.node_values().await}));
     assert!(!nodes.iter().any(|n| n["node_id"] == killed_id.as_str()), "the killed birth {killed_id} is not live again: {nodes:#?}");
     assert_eq!(nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node").count(), 3, "three live rpc nodes: {nodes:#?}");
-    steady(&estate, &base1, "the cohort is back at its desired count", hold).await;
+    steady(&estate, &admin1, "the cohort is back at its desired count", hold).await;
 
     // legal removal of the primary -> the next-lowest succeeds
     let removed = primary_of(&nodes, &rpc).unwrap();
     let removed_id = id_of(&nodes, &removed);
-    accepted_build(&estate, estate.delete(&format!("/api/nodes/{removed}")).await).await;
-    let nodes = wait_for("the view drops the removed primary", Duration::from_secs(30), || async {
-        let nodes = estate.nodes().await;
-        (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready-for-traffic") && primary_of(&nodes, &rpc).is_some()).then_some(nodes)
-    })
-    .await;
+    complete(&format!("node.delete of {removed}"), estate.nodes_obj().await.delete(&path(&removed)).await).await;
+    let nodes = estate
+        .until_view("the view drops the removed primary", Duration::from_secs(30), |views| {
+            let nodes = Estate::values(views);
+            (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready-for-traffic") && primary_of(&nodes, &rpc).is_some()).then_some(nodes)
+        })
+        .await;
     let succ2 = primary_of(&nodes, &rpc).unwrap();
     assert_eq!(expected_primaries(&nodes).get(&rpc), Some(&succ2), "the next-lowest succeeds: {nodes:#?}");
     let succ2_id = id_of(&nodes, &succ2);
     build(&estate, &[("mesh1", 2, 3)]).await;
-    settle(&estate, &base1, "after removal").await;
-    steady(&estate, &base1, "after removal", hold).await;
+    settle(&estate, &admin1, "after removal").await;
+    steady(&estate, &admin1, "after removal", hold).await;
 
     // partition -> transient split permitted; heal -> the computed seats in every view
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let admin_p = primary_of(&nodes, &admin).unwrap();
-    let admin2 = nodes.iter().find(|n| n["kind"] == "node_admin" && n["name"] != admin_p.as_str()).unwrap();
-    let (admin2_name, base2) = (s(&admin2["name"]), s(&admin2["admin_api_base"]));
-    let base_p = s(&nodes.iter().find(|n| n["name"] == admin_p.as_str()).unwrap()["admin_api_base"]);
+    let admin2_name = s(&nodes.iter().find(|n| n["kind"] == "node_admin" && n["name"] != admin_p.as_str()).unwrap()["name"]);
+    let (admin2, admin_pp) = (path(&admin2_name), path(&admin_p));
     let rpc_now = primary_of(&nodes, &rpc).unwrap();
     let lone_rpc = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["name"] != rpc_now.as_str()).map(|n| s(&n["name"])).unwrap();
     let side_a = vec![admin_p.clone(), lone_rpc.clone()];
@@ -268,18 +265,17 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
         Err(why) => eprintln!("SKIP partition case: {why}"),
         Ok(partition) => {
             // Each side elects from what it can hear: the split is visible.
-            wait_for("side A elects its own rpc primary", Duration::from_secs(30), || async {
-                (primary_of(&estate.nodes_at(&base_p).await, &rpc).as_deref() == Some(lone_rpc.as_str())).then_some(())
-            })
-            .await;
+            estate
+                .until_view_at(&admin_pp, "side A elects its own rpc primary", Duration::from_secs(30), |views| (primary_of(&Estate::values(views), &rpc).as_deref() == Some(lone_rpc.as_str())).then_some(()))
+                .await;
             // Side B has now heard nothing from the admin primary for longer than the staleness
             // floor, and it elects no admin primary of its own: a silent holder keeps its seat, and
             // silence is not proof of exit (R-A2).
-            let b_view = estate.nodes_at(&base2).await;
+            let b_view = estate.node_values_at(&admin2_name).await;
             assert_ne!(primary_of(&b_view, &admin).as_deref(), Some(admin2_name.as_str()), "a cut-off holder keeps the admin seat: side B names no admin primary of its own: {b_view:#?}");
-            for base in [&base_p, &base2] {
-                for (c, p) in advertised_primaries(&estate.nodes_at(base).await) {
-                    assert!(p.len() <= 1, "{base}: a view never names two primaries of {c:?}: {p:?}");
+            for at in [&admin_pp, &admin2] {
+                for (c, p) in advertised_primaries(&estate.node_values_at(&at.to_string()).await) {
+                    assert!(p.len() <= 1, "{at}: a view never names two primaries of {c:?}: {p:?}");
                 }
             }
             drop(partition);
@@ -289,22 +285,21 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
             // computed seats over it.
             let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
             let mut healed = Vec::new();
-            for base in [&base_p, &base2] {
-                wait_for(&format!("{base} holds every pre-cut member ready"), Duration::from_secs(30), || async {
-                    let view = live(&estate.nodes_at(base).await);
-                    everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic")).then_some(())
-                })
-                .await;
-                healed.push(settle(&estate, base, &format!("{base} heals")).await);
+            for at in [&admin_pp, &admin2] {
+                estate
+                    .until_view_at(at, &format!("{at} holds every pre-cut member ready"), Duration::from_secs(30), |views| {
+                        let view = live(&Estate::values(views));
+                        everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic")).then_some(())
+                    })
+                    .await;
+                healed.push(settle(&estate, at, &format!("{at} heals")).await);
             }
             assert_eq!(advertised_primaries(&healed[0]), advertised_primaries(&healed[1]), "healed views agree");
-            steady(&estate, &base2, "healed", hold).await;
+            steady(&estate, &admin2, "healed", hold).await;
         }
     }
 
-    estate.artifact("nodes.json", &json!(estate.nodes().await));
-    let (_, fabric) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric["admin_api_base"]);
+    estate.artifact("nodes.json", &json!(estate.node_values().await));
     estate.stop().await;
     let spans = estate.spans();
     // Day 0: the bootstrap admin resolved itself at all three levels, observing itself.
@@ -330,64 +325,65 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     let mut estate = Estate::bootstrap(owner("a_second_meshs_admin_cohort_elects", "MM"), "fabric1", "mesh1").await;
-    let base1 = estate.admin.clone();
+    let admin1 = estate.entry().await;
     let admin2 = cohort("mesh2", "node_admin");
     let hold = Duration::from_secs(4);
 
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     // A peer mesh's members reach this admin through its primary's backbone
     // publication: the view settles within a publication round or two.
-    let nodes = wait_for("the MM view settles with four cohort primaries", Duration::from_secs(15), || async {
-        let nodes = estate.nodes().await;
-        (settled(&nodes) && advertised_primaries(&nodes).len() == 4).then_some(nodes)
-    })
-    .await;
+    let nodes = estate
+        .until_view("the MM view settles with four cohort primaries", Duration::from_secs(15), |views| {
+            let nodes = Estate::values(views);
+            (settled(&nodes) && advertised_primaries(&nodes).len() == 4).then_some(nodes)
+        })
+        .await;
     let p = primary_of(&nodes, &admin2).unwrap();
     let p_id = id_of(&nodes, &p);
     estate.artifact("settled-before-kill.json", &json!({"killed": p, "killed_id": p_id, "nodes": nodes}));
 
     // kill the mesh2 admin primary -> the next-lowest succeeds; the fabric seat is recomputed
     estate.kill_node(&p).await;
-    let (succ, succ_id) = successor(&estate, &base1, &nodes, &admin2, &p_id).await;
+    let (succ, succ_id) = successor(&estate, &admin1, &nodes, &admin2, &p_id).await;
     // The successor was announced; the repair of the same Build rebirths the killed path within
     // seconds, and that birth may draw a lower NodeId and take the seat in turn. The view is read
     // once the killed birth is dead in it; whoever holds the seat then is the computed one.
-    let nodes = wait_for("the view holds the killed birth dead", Duration::from_secs(30), || async {
-        let nodes = estate.nodes().await;
-        (!nodes.iter().any(|n| n["node_id"] == p_id.as_str() && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))) && primary_of(&nodes, &admin2).is_some()).then_some(nodes)
-    })
-    .await;
+    let nodes = estate
+        .until_view("the view holds the killed birth dead", Duration::from_secs(30), |views| {
+            let nodes = Estate::values(views);
+            (!nodes.iter().any(|n| n["node_id"] == p_id.as_str() && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))) && primary_of(&nodes, &admin2).is_some()).then_some(nodes)
+        })
+        .await;
     estate.artifact("successor-after-kill.json", &json!({"successor": succ, "successor_id": succ_id, "nodes": nodes}));
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some("mesh1.admin.1"), "the fabric seat stays with the Day-0 admin of mesh1 while mesh2 loses and regains admins (R-A2)");
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
-    settle(&estate, &base1, "mesh2's killed admin is back").await;
-    steady(&estate, &base1, "mesh2's killed admin is back", hold).await;
+    settle(&estate, &admin1, "mesh2's killed admin is back").await;
+    steady(&estate, &admin1, "mesh2's killed admin is back", hold).await;
 
     // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // legal removal of the mesh2 admin primary -> the next-lowest succeeds
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let removed = primary_of(&nodes, &admin2).unwrap();
     let removed_id = id_of(&nodes, &removed);
-    accepted_build(&estate, estate.delete(&format!("/api/nodes/{removed}")).await).await;
+    complete(&format!("node.delete of {removed}"), estate.nodes_obj().await.delete(&path(&removed)).await).await;
     // The removed primary keeps its seat while it drains and leaves: a seat moves only by an
     // explicit transfer or a proven loss, never by its holder's status (R-EL1). The view is
     // read once the seat has left the removed birth.
-    let nodes = wait_for("the removed admin primary's seat moves to another admin of its mesh", Duration::from_secs(30), || async {
-        let nodes = estate.nodes().await;
-        (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready-for-traffic") && primary_of(&nodes, &admin2).is_some_and(|p| p != removed)).then_some(nodes)
-    })
-    .await;
+    let nodes = estate
+        .until_view("the removed admin primary's seat moves to another admin of its mesh", Duration::from_secs(30), |views| {
+            let nodes = Estate::values(views);
+            (!nodes.iter().any(|n| n["name"] == removed.as_str() && n["status"] == "ready-for-traffic") && primary_of(&nodes, &admin2).is_some_and(|p| p != removed)).then_some(nodes)
+        })
+        .await;
     let succ2 = primary_of(&nodes, &admin2).unwrap();
     assert_eq!(expected_primaries(&nodes).get(&admin2), Some(&succ2));
     let succ2_id = id_of(&nodes, &succ2);
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some("mesh1.admin.1"), "the fabric seat stays with the Day-0 admin of mesh1 while mesh2 loses and regains admins (R-A2)");
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
-    settle(&estate, &base1, "mesh2 after removal").await;
-    steady(&estate, &base1, "mesh2 after removal", hold).await;
+    settle(&estate, &admin1, "mesh2 after removal").await;
+    steady(&estate, &admin1, "mesh2 after removal", hold).await;
 
-    let (_, fabric) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric["admin_api_base"]);
     estate.stop().await;
     let spans = estate.spans();
     assert!(announced(&spans, &admin2, &succ_id, &p_id), "the successor to the killed admin primary was announced");
