@@ -6690,6 +6690,53 @@ mod tests {
         assert_eq!(q_nodes.1.load(std::sync::atomic::Ordering::SeqCst), writes, "a publication wrote a contact");
     }
 
+    /// CONTRACT (node-identity-and-state.md §2.7: the mesh-primary "claims the mesh's name by
+    /// insert-and-fail on the key `(path, name)` ... Held means held by a different MeshId:
+    /// `NameHeld` names that holder"; "A mesh whose name another mesh's row already holds stays held
+    /// as `name-taken`, naming the holder; it is never renamed, and the id never moves"; CLAUDE.md:
+    /// the claim is the first durable write of a create, nothing is written for the entity until it
+    /// wins): on one shared root, mesh A's primary claims `mesh2` and writes its row and its member's
+    /// contact. A second mesh under the same name (another MeshId) has its primary's rounds refused by
+    /// name: the row still names A, the second primary writes no contact, and it claims once per seat
+    /// tenure: one `rdm.node_admin.mesh.create.via-mesh-row` span `name-held` naming A, however many
+    /// rounds run. Must NOT happen: the second mesh's put overwriting A's row, its contacts written
+    /// beside a refused claim, or a refused claim tried again on every birth change.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_second_mesh_of_a_live_name_is_refused_by_name_and_writes_nothing() {
+        let d = crate::record_store::tempdir("mesh-claim-live");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let store = |data: &str| {
+            let (data, root) = (d.join(data), root.clone());
+            async move { Arc::new(CountingNodes(Arc::new(crate::storage::FileNodesStorage::open(&data, &root, "mesh2", &IncarnationId::mint()).await.unwrap()), Default::default())) }
+        };
+        let (a_nodes, b_nodes) = (store("a.admin").await, store("b.admin").await);
+        let (a_meshes, b_meshes): (Arc<dyn crate::storage::MeshStorage>, Arc<dyn crate::storage::MeshStorage>) =
+            (Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap()), Arc::new(crate::storage::FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap()));
+        let (first, second) = (mesh_id("mesh2"), MeshId::mint());
+        let (a_admin, b_admin) = (digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), digest("mesh2.admin.1", MemberStatus::ReadyForTraffic));
+        let capture = crate::span_capture::Capture::new("i143-3089-mesh-name-held");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let mut aw = MeshRowsWriter::new(fabric1(), "mesh2", first.clone(), a_nodes.clone(), a_meshes.clone());
+        aw.round(std::slice::from_ref(&a_admin), true, |_| false).await;
+        assert_eq!(crate::storage::MeshStorage::mesh(&*a_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "mesh A's primary claims mesh2 and writes its row");
+        assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 1, "mesh A's primary writes its member's contact once its claim won");
+        let mut bw = MeshRowsWriter::new(fabric1(), "mesh2", second.clone(), b_nodes.clone(), b_meshes.clone());
+        for _round in 0..2 {
+            bw.round(std::slice::from_ref(&b_admin), true, |_| false).await;
+        }
+        assert_eq!(crate::storage::MeshStorage::mesh(&*b_meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(first.clone()), "the second mesh's claim of a live name writes no row: mesh2's row still names mesh A");
+        assert_eq!(b_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 0, "the second mesh's primary writes no contact beside its refused claim");
+        let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
+        let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("holder").cloned().unwrap_or_default())).collect();
+        assert_eq!(
+            said,
+            vec![(first.to_string(), "row-written".to_string(), String::new()), (second.to_string(), "name-held".to_string(), first.to_string())],
+            "one claim per seat tenure, the refusal naming the holder: {spans:?}"
+        );
+        eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
+    }
+
     fn view(digests: &[MeshDigest]) -> Topology {
         let book = DigestBook::default();
         for d in digests {
