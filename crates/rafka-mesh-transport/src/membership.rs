@@ -2569,13 +2569,8 @@ impl View {
             if own && authors && matches!(side, Side::MeshChannel | Side::Backbone) {
                 continue;
             }
-            if !(own && authors) && self.book.is_stopped(&d) {
-                if self.book.moved_past_stop(&d, fence) {
-                    self.book.stop_ended_in_projection(&d, fence);
-                } else {
-                    self.book.refuse_in_projection(&d, fence);
-                    continue;
-                }
+            if !(own && authors) && self.book.stopped_entry(&d, fence) == Some(false) {
+                continue;
             }
             let prior = self.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
@@ -4602,16 +4597,30 @@ impl DigestBook {
         self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation).and_then(|m| m.carried.clone())
     }
 
-    /// Whether the projection frame `fence` describes moved, in order, past the stop of `d`: a
-    /// projection of the source this book applied carried the stop at some version, this frame is
-    /// newer than that version, and the projection after it no longer carries the stop. A refresh at
-    /// the version that carried it, or a projection that never carried it here, moves nothing. A new
-    /// publisher's projection is the next epoch of the source (receivers install its full first).
-    fn moved_past_stop(&self, d: &MeshDigest, fence: &Fence) -> bool {
+    /// What the projection frame `fence` describes does to the stop of the birth `d` lists: `None`
+    /// when this book holds no stop of that exact birth. The projection moved, in order, past the stop
+    /// when a projection of the source this book applied carried the stop at some version, this frame
+    /// is newer than that version, and the projection after it no longer carries the stop; then the
+    /// stop ends here (`Some(true)`, [`Self::stop_ended_in_projection`]). A refresh at the version that
+    /// carried it, or a projection that never carried it here, is refused by name (`Some(false)`). A
+    /// new publisher's projection is the next epoch of the source (receivers install its full first).
+    /// Decided and taken under one hold of the stop marks: a node's backbone and mesh channel each
+    /// apply their projections under their own receiver, and the stop ends on one of them, once.
+    fn stopped_entry(&self, d: &MeshDigest, fence: &Fence) -> Option<bool> {
         let key = (d.node.node_id.to_string(), d.node.incarnation.0.clone());
-        let Some((publisher, version)) = self.stop_carried_at(d) else { return false };
-        let newer = publisher != fence.publisher || fence.version > version;
-        newer && !fence.post_stops.contains(&key)
+        let mark = {
+            let mut marks = self.stopped_marks.lock().unwrap();
+            let held = marks.get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation)?;
+            let moved = held.carried.as_ref().is_some_and(|(publisher, version)| *publisher != fence.publisher || fence.version > *version) && !fence.post_stops.contains(&key);
+            if !moved {
+                drop(marks);
+                self.refuse_in_projection(d, fence);
+                return Some(false);
+            }
+            marks.remove(d.node.node_id.as_str()).expect("the mark is held under this hold")
+        };
+        self.stop_ended_in_projection(d, fence, mark);
+        Some(true)
     }
 
     /// The mesh-primary's projection of the stopped birth `d`'s mesh moved, in order, from a version
@@ -4621,10 +4630,10 @@ impl DigestBook {
     /// the primary, from the latest digest of it this book refused while the stop stood: with the
     /// projection's status, and the instant and channel that digest was heard on (the projection
     /// refreshes no liveness). With none refused, its next heartbeat holds it.
-    fn stop_ended_in_projection(&self, d: &MeshDigest, fence: &Fence) {
+    fn stop_ended_in_projection(&self, d: &MeshDigest, fence: &Fence, mark: StopMark) {
         let cleared: Vec<String> = self.in_flight().into_iter().filter(|o| o.is_stop() && o.node_id == d.node.node_id).map(|o| o.operation).collect();
-        let carried = self.stop_carried_at(d).map(|(_, v)| v as i64).unwrap_or(-1);
-        let latest = self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation).and_then(|m| m.latest.clone());
+        let carried = mark.carried.as_ref().map(|(_, v)| *v as i64).unwrap_or(-1);
+        let latest = mark.latest;
         self.end_stop(d.node.node_id.as_str());
         let held_again = match latest {
             Some((mut again, at, heard)) if self.own_mesh_member(d) => {
@@ -7041,7 +7050,7 @@ mod tests {
     /// the stopped birth `d` at once, each having found the stop held and the projection past it.
     fn both_paths_end_the_stop(book: &DigestBook, d: &MeshDigest, fence: &Fence) {
         for _ in 0..2 {
-            book.stop_ended_in_projection(d, fence);
+            book.stopped_entry(d, fence);
         }
     }
 
