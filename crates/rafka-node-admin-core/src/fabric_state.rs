@@ -624,6 +624,30 @@ mod tests {
         assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the target addressed this primary");
     }
 
+    /// CONTRACT (R-S2): the target addressing this primary while the command to it is out is an
+    /// eligible event the call does not consume: when that call ends undelivered (the target was not
+    /// ready when it took it), the command is sent again on the address. Must NOT happen: the address
+    /// dropped because no undelivered command stood when it arrived, so a target whose own
+    /// declaration (its last call to this primary) crossed a refused command is never commanded again
+    /// (gate red, tree b24a4303, fabric_states__rounds trace 95adb727: mesh1.admin.2's declaration
+    /// reached mesh1.admin.1 at 788604 while the commit-state sent at 788599 was out; it came back
+    /// NotReady and was next sent only 28 s later).
+    #[test]
+    fn an_address_that_arrives_while_the_command_is_out_sends_it_again_once_the_call_ends_undelivered() {
+        let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
+        let (book, k, n) = (RoundBook::default(), key("bld_1", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
+        book.open(&k);
+        book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
+        let view = view_of(vec![n.clone()]);
+        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
+        book.heard_from(&n.node_id);
+        assert!(book.take_due(&k, &view).is_empty(), "the call is out: nothing is sent beside it");
+        book.undelivered(&k, &n.node_id, &inc, true);
+        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the address made while the call was out sends the command again");
+        book.undelivered(&k, &n.node_id, &inc, true);
+        assert!(book.take_due(&k, &view).is_empty(), "the address counts once");
+    }
+
     #[test]
     fn the_states_are_ordered_and_named_as_the_frame_carries_them() {
         assert!(FabricState::Pending < FabricState::StateSync && FabricState::StateSync < FabricState::StateCommit && FabricState::StateCommit < FabricState::ReadyForTraffic);
