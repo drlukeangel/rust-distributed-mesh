@@ -251,6 +251,23 @@ impl Estate {
         all
     }
 
+    /// The view once it holds exactly `names`, every one ready-for-traffic, as `node.get` reads it at the
+    /// admin the estate asks. The answering admin learns a node another admin created by gossip, so its
+    /// view converges a moment after the Build's terminal frame (a wait on the view, bounded by `within`,
+    /// naming the last view when it does not settle).
+    pub async fn settles_to_named(&self, names: &std::collections::BTreeSet<String>, within: std::time::Duration) -> Vec<NodeView> {
+        self.until_view(&format!("the view holds exactly {names:?}, every node ready-for-traffic"), within, |views| {
+            let have: std::collections::BTreeSet<String> = views.iter().map(|n| n.name.to_string()).collect();
+            (&have == names && views.iter().all(|n| n.status == NodeStatus::ReadyForTraffic)).then(|| views.to_vec())
+        })
+        .await
+    }
+
+    /// `views` as the JSON each serializes to: the shape the cells record.
+    pub fn values(views: &[NodeView]) -> Vec<serde_json::Value> {
+        views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
+    }
+
     /// The view once the fabric has recovered to `meshes` after a fault: every `(mesh, node_admin, rpc_node)`
     /// cohort holds exactly its count of nodes, every one ready-for-traffic. No stream announces it: the
     /// recovery is the rectifier's (a later attempt of the accepted Build, or a person's admin on a former

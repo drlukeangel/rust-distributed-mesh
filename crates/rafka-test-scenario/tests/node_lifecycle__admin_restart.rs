@@ -3,8 +3,9 @@
 //! Matrix (restart: executing Mesh admin = owning mesh-admin; dissemination = own Mesh channel,
 //! then the backbone aggregate), §13, §17 "Restart Evidence".
 
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{named, Estate, Owner};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -23,8 +24,8 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn mesh(name: &str) -> Value {
-    json!({"name": name, "node_admin": 2, "rpc_node": 2})
+fn mesh(name: &str) -> MeshDesired {
+    MeshDesired::of(name, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])
 }
 
 /// Every span the process `pid` wrote.
@@ -40,7 +41,7 @@ fn spans_of(estate: &Estate, pid: u64) -> Vec<Value> {
 }
 
 /// CONTRACT: a node-admin of a mesh that does not hold the fabric seat is restarted through the
-/// fabric's REST door. The restart is executed by that mesh's own primary admin, never by the
+/// `node.restart` call to the fabric-primary. The restart is executed by that mesh's own primary admin, never by the
 /// fabric primary: the primary of the target's mesh is the only process that publishes
 /// `NodeRestarting` for it (on its own mesh channel). The fabric primary's mesh hears the same
 /// operation through the target mesh's aggregate on the backbone, and its members hear it from
@@ -48,11 +49,9 @@ fn spans_of(estate: &Estate, pid: u64) -> Vec<Value> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reaches_the_other_mesh_through_the_aggregate() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
     let names: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| [format!("{m}.admin.1"), format!("{m}.admin.2"), format!("{m}.rpc.1"), format!("{m}.rpc.2")]).collect();
-    let before = estate.settled(&names, Duration::from_secs(60)).await;
+    let before = Estate::values(&estate.settles_to_named(&names, Duration::from_secs(60)).await);
     // The target's mesh is the one that does not hold the fabric seat.
     let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let (home, away) = if fabric_primary.starts_with("mesh1.") { ("mesh1", "mesh2") } else { ("mesh2", "mesh1") };
@@ -64,13 +63,8 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     // The restart outruns gossip, so every node must hold the target before it begins: each rpc node reports,
     // through its held view, that it holds the target's mesh including the target.
     {
-        let peers = rafka_node_admin_client::Peers::of(&[]).await;
-        let nodes = peers.nodes(rafka_node_admin_client::NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
-        let mut views = Vec::new();
-        for m in ["mesh1", "mesh2"] {
-            views.extend(nodes.get(&rafka_node_admin_client::NodeSelector::Mesh(m.into())).await.expect("node.get"));
-        }
-        peers.learn(&views);
+        let peers = estate.peers().await;
+        let views = estate.node_views().await;
         let target_view = views.iter().find(|n| n.name.to_string() == target).expect("node.get lists the target").clone();
         for peer in views.iter().filter(|n| n.name != target_view.name && n.kind == rafka_node_admin_client::LaunchKind::RpcNode) {
             peers.fact(peer, &target_view.mesh, "it holds the restart target's mesh including the target", |v| v.birth(&target_view.node_id).is_some()).await;
@@ -84,10 +78,8 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
         };
         pids.insert(n.clone(), pid);
     }
-    let (status, restart) = estate.post(&format!("/api/nodes/{target}/restart"), &json!({})).await;
-    assert_eq!(status, 202, "restart route: {restart}");
-    let build_id = s(&restart["build_id"]);
-    estate.await_attempt(&build_id, Estate::attempt_of(&restart), Duration::from_secs(120)).await;
+    let mut restart = estate.nodes_obj().await.restart(&target.parse().unwrap_or_else(|e| panic!("{target} is not a path.name: {e:?}"))).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {target}: {e}"));
+    Estate::complete(&mut restart).await;
     let operation = format!("restart-node:{target}");
     estate.stop().await;
 

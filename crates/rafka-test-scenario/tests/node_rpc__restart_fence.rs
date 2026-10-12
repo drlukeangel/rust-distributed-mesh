@@ -16,6 +16,7 @@
 //! The in-flight arm — a dial to a birth that moves before it is pooled ends as
 //! `RejectedStale`, never dispatched — is `crates/rafka-node-rpc/tests/pool.rs`.
 
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -38,16 +39,14 @@ fn s(v: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "broker": 1, "gateway": 1}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 1), (NodeKind::Gateway, 1)])] }).await;
     let want = ["mesh1.admin.1", "mesh1.broker.1", "mesh1.gateway.1"].iter().map(|n| n.to_string()).collect();
-    estate.settled(&want, Duration::from_secs(30)).await;
-    let broker = estate.node("mesh1.broker.1").await;
+    estate.settles_to_named(&want, Duration::from_secs(30)).await;
+    let broker = estate.node_value("mesh1.broker.1").await;
     let (broker_id, old_birth, addr) = (s(&broker["node_id"]), s(&broker["incarnation_id"]), s(&broker["transport_addr"]));
     let exact = format!("exact:{broker_id}");
     let via = "path:mesh1.gateway.1";
-    estate.witness_holds(via, "mesh1.broker.1").await;
+    estate.witness_holds_birth("mesh1.gateway.1", "mesh1.broker.1").await;
 
     // 1. ExactNode and CurrentPath, through the gateway: the broker served.
     let put = estate.probe(&["put", "--target", &exact, "--via", via, "--key", "f1", "--value", "before-restart"]);
@@ -59,22 +58,21 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     assert_eq!(by_path["reply"]["result"], json!({"found": true, "value": "before-restart"}));
 
     // 2. The broker restarts: the same node, birth and port.
-    let (status, restart) = estate.post("/api/nodes/mesh1.broker.1/restart", &json!({})).await;
-    assert_eq!(status, 202, "{restart}");
-    estate.await_attempt(restart["build_id"].as_str().unwrap(), Estate::attempt_of(&restart), Duration::from_secs(120)).await;
-    let reborn = estate.settled(&want, Duration::from_secs(30)).await.into_iter().find(|n| n["name"] == "mesh1.broker.1").unwrap();
+    let mut restart_stream = estate.nodes_obj().await.restart(&"mesh1.broker.1".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of mesh1.broker.1: {e}"));
+    let restart = Estate::complete(&mut restart_stream).await;
+    let reborn = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await).into_iter().find(|n| n["name"] == "mesh1.broker.1").unwrap();
     assert_eq!(s(&reborn["node_id"]), broker_id, "a restart keeps the NodeId: {reborn}");
     assert_eq!(s(&reborn["incarnation_id"]), old_birth, "a restart keeps the birth: {reborn}");
     assert_eq!(s(&reborn["transport_addr"]), addr, "a restart keeps the port: {reborn}");
 
-    estate.witness_holds(via, "mesh1.broker.1").await;
+    estate.witness_holds_birth("mesh1.gateway.1", "mesh1.broker.1").await;
 
     // 3. Through the gateway again: the new birth serves, and the value survived in its data dir.
     let after = estate.probe(&["get", "--target", &exact, "--via", via, "--key", "f1"]);
     assert_eq!((after["outcome"].as_str(), after["route"].as_str()), (Some("Reply"), Some("via-peer")), "{after}");
     assert_eq!(after["reply"]["executing_node"], broker_id, "{after}");
     assert_eq!(after["reply"]["result"], json!({"found": true, "value": "before-restart"}));
-    estate.artifact("calls.json", &json!({"put": put, "by_path": by_path, "restart": restart, "reborn": reborn, "after": after}));
+    estate.artifact("calls.json", &json!({"put": put, "by_path": by_path, "restart": {"build_id": restart.build_id.0, "attempt": restart.attempt}, "reborn": reborn, "after": after}));
 
     estate.stop().await;
     let spans = estate.spans();
