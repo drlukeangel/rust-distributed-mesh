@@ -79,7 +79,7 @@ impl AdminRunner {
             }
             crate::mesh_leave::OwnerResume::Lead => {}
         }
-        let node_rpc = self.node_rpc.as_ref().ok_or_else(|| format!("{}: this admin holds no Node RPC client: {outer} cannot call the mesh", self.me))?;
+        let node_rpc = &self.node_rpc;
         // Step 1: this owner is the fabric-primary. When the leaving mesh held the fabric seat it
         // was handed over first (fabric-primary-handover.md): the leave opens only on the confirmed
         // transfer, and an unconfirmed one is reconciled here before anything is dismantled.
@@ -427,8 +427,7 @@ impl AdminRunner {
         // owner's Build facts when this admin has not yet heard them ([`crate::mesh_leave::leaving_roster`]).
         let build_id = crate::build::BuildId(key.build_id.clone());
         let fetch_owner = || async {
-            let node_rpc = self.node_rpc.as_ref().ok_or_else(|| format!("{} holds no Node RPC client to read the owner {owner}'s Build facts with", self.me))?;
-            crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(owner.clone()), &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}", self.me))
+            crate::build_facts_read::fetch_build_facts(&self.node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(owner.clone()), &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}", self.me))
         };
         let capture = || {
             let mut roster = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.node_id != me.node_id).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
@@ -498,7 +497,8 @@ impl AdminRunner {
     async fn call_mesh_leave(&self, key: &LeaveKey, owner: &NodeId, manifest: &'static str, manifest_receipts: usize) {
         let reference = manifest_reference(&key.build_id, key.attempt, &key.operation, false);
         let view = self.topology.read().await.clone();
-        let (Some(me), Some(owner_node), Some(node_rpc)) = (view.own(&self.node_id).cloned(), view.nodes.iter().find(|n| &n.node_id == owner).cloned(), self.node_rpc.as_ref()) else {
+        let node_rpc = &self.node_rpc;
+        let (Some(me), Some(owner_node)) = (view.own(&self.node_id).cloned(), view.nodes.iter().find(|n| &n.node_id == owner).cloned()) else {
             tracing::info!(operation = %key.operation, owner = %owner, "the owner of this workflow is not held in this view: the handoff waits for a repeated leave-mesh");
             return;
         };
@@ -553,9 +553,7 @@ impl AdminRunner {
             return refused;
         }
         // The manifest: the sender's Build facts, read now.
-        let Some(node_rpc) = self.node_rpc.as_ref() else {
-            return StatusReply::NotReady { reason: format!("{} holds no Node RPC client to read the manifest with", self.me) };
-        };
+        let node_rpc = &self.node_rpc;
         let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(build_id.to_string())).await.map(|f| f.facts);
         let verdict = match crate::mesh_leave::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &self.me.to_string(), &final_node_id.to_string()) {
             Ok(v) => v,
@@ -583,8 +581,8 @@ impl AdminRunner {
     /// The exact birth's exit is proven: the resolver names no current birth for it and its direct
     /// paths are retired, so nothing aims at its old socket.
     pub(super) fn after_mesh_exit(&self, record: &Node, kind: &'static str) {
-        if let (Some(rpc), Some(incarnation)) = (&self.node_rpc, record.incarnation_id.as_ref()) {
-            rpc.resolver.retire_birth(&record.node_id, incarnation);
+        if let Some(incarnation) = record.incarnation_id.as_ref() {
+            self.node_rpc.resolver.retire_birth(&record.node_id, incarnation);
         }
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             let ep = ep.clone();

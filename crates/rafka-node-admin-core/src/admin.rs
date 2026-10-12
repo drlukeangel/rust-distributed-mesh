@@ -2438,8 +2438,8 @@ pub struct AdminRunner {
     pub node_id: NodeId,
     /// This admin's Iroh endpoint: it asks a node directly whether it answers.
     pub endpoint: Option<Endpoint>,
-    /// This process's one Node RPC client (and its live resolver).
-    pub node_rpc: Option<crate::node_rpc::ProcessNodeRpc>,
+    /// This process's one Node RPC client (and its live resolver): every running admin holds it.
+    pub node_rpc: crate::node_rpc::ProcessNodeRpc,
     /// Where the retire pipeline's lifecycle events go: this admin's membership and backbone.
     pub lifecycle_events: Arc<dyn crate::deployment::pipeline::LifecycleEvents>,
     /// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a handoff for.
@@ -2741,7 +2741,7 @@ impl AdminRunner {
     async fn answers(&self, node: &Node) -> bool {
         const WITHIN: Duration = Duration::from_secs(2);
         // Every kind, a node-admin included, serves Ping on its one endpoint.
-        let Some(node_rpc) = &self.node_rpc else { return false };
+        let node_rpc = &self.node_rpc;
         let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(WITHIN), ..Default::default() };
         let req = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"fence".to_vec() };
         let (out, _) = node_rpc.client.call::<rafka_node_rpc_contract::ping::Ping>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
@@ -2813,7 +2813,7 @@ impl AdminRunner {
     /// backward move, an unreachable target, a lost reply), and the rectifier is the retry, so
     /// `Build(shape)` never starts under an assumed state.
     fn mesh_state_hook(&self, admin: &PathName, state: rafka_node_rpc_contract::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
-        let Some(node_rpc) = &self.node_rpc else { return Err(format!("{admin}: this admin has no Node RPC client for the {state:?} hand-off")) };
+        let node_rpc = &self.node_rpc;
         let (client, resolver, me, me_id, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
         Ok(Arc::new(move |target: Node| {
             let (client, resolver, me, me_id, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone());
@@ -2970,8 +2970,8 @@ impl AdminRunner {
     /// error and this returns. The wait is at most the actor's turns over the messages queued ahead
     /// of this one, none of which awaits the exited peer.
     async fn fence_exited(&self, record: &Node) {
-        if let (Some(rpc), Some(incarnation)) = (&self.node_rpc, record.incarnation_id.as_ref()) {
-            rpc.resolver.retire_birth(&record.node_id, incarnation);
+        if let Some(incarnation) = record.incarnation_id.as_ref() {
+            self.node_rpc.resolver.retire_birth(&record.node_id, incarnation);
         }
         if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
             ep.replace_direct_addrs(key, []).await;
@@ -2996,7 +2996,8 @@ impl AdminRunner {
     /// binds a port the operating system assigns, so this endpoint holds no path to the key until
     /// that birth reports one (R-I1's replacement, with no address left).
     fn after_exit(&self, record: &Node) {
-        if let (Some(rpc), Some(incarnation)) = (&self.node_rpc, record.incarnation_id.as_ref()) {
+        if let Some(incarnation) = record.incarnation_id.as_ref() {
+            let rpc = &self.node_rpc;
             // The exit is proven: the resolver names no current birth for the node until its
             // successor is applied, so no dial, probe or install aims at the dead birth's socket.
             rpc.resolver.retire_birth(&record.node_id, incarnation);
@@ -4591,7 +4592,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 me: name.clone(),
                                 node_id: node_id.clone(),
                                 endpoint: Some(endpoint.clone()),
-                                node_rpc: Some(node_rpc.clone()),
+                                node_rpc: node_rpc.clone(),
                                 lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone() })),
                                 leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
                                 leave_runs: crate::mesh_leave::LeaveRuns::default(),
@@ -5243,7 +5244,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             nodes_storage: nodes_storage.clone(),
                                             status_storage: status_storage.clone(),
                                             door: build_slot.clone(),
-                                            client: runner.node_rpc.as_ref().map(|r| r.client.clone()),
+                                            client: Some(runner.node_rpc.client.clone()),
                                             failed: Arc::default(),
                                         };
                                         let park = park_gate.clone();
@@ -5272,7 +5273,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 // One reading of the clocks for the tick: each birth's mark is read from the book at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
                                                 let silent = crate::offline::silent_set(watched.values(), &recovery.book, now, now_ms, floor);
-                                                let client = runner.node_rpc.as_ref().map(|r| r.client.clone());
+                                                let client = Some(runner.node_rpc.client.clone());
                                                 // The tickle: ask the exact birth to reassert itself.
                                                 // Protocol name: ProbeNodeState.
                                                 let kick_of = |n: &Node| rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState {
