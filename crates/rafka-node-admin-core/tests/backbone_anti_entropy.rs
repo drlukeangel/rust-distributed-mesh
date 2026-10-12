@@ -74,6 +74,9 @@ impl FabricStorage for HeldStore {
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         self.inner.claim_identity(identity).await
     }
+    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
+        self.inner.release_name(identity).await
+    }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         self.inner.put_pointer(pointer).await
     }

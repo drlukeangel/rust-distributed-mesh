@@ -74,9 +74,14 @@ fn spans_of(dir: &std::path::Path, pid: u32) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// The fabric directories under `store`.
+/// The fabric directories under `store`: every directory but the fabrics' name index beside them (R-FN1).
 fn fabric_dirs(store: &std::path::Path) -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(store).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let mut v: Vec<String> = std::fs::read_dir(store)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir() && e.file_name() != rafka_node_admin_core::store_root::FABRIC_NAMES)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
     v.sort();
     v
 }
@@ -143,6 +148,9 @@ fn a_restarted_bootstrap_admin_opens_its_fabric_from_its_own_row() {
         std::thread::sleep(Duration::from_millis(20));
     };
     let day0 = own_incarnation().unwrap();
+    // R-FN1: the fabric's claim of its name is at the path level, beside the per-fabric roots.
+    let index: serde_json::Value = serde_json::from_slice(&std::fs::read(store.join(rafka_node_admin_core::store_root::FABRIC_NAMES).join("fabric1.json")).expect("the fabric's name claim at <store_dir>/fabrics/fabric1")).unwrap();
+    assert_eq!(index["record"]["fabric_id"].as_str(), Some(fabric.as_str()), "the name index names this fabric: {index}");
     let (status, err) = stop(first);
     std::mem::forget(reap_first);
     assert!(status.success(), "the Day-0 admin's stop: {status:?} {err}");
