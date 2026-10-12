@@ -3459,8 +3459,8 @@ impl AdminRunner {
             // "Steps": node.delete of the exited instance, then node.create at the same path.name).
             FenceOutcome::Clear { gone: Some(prev) } => {
                 if let Some(incarnation) = prev.incarnation_id.clone() {
-                    self.records.put_exit(&prev, None, "provider").await.map_err(|e| format!("{node}: the provider proves birth {} at {} exited, and its exit-proof row is not written, so it is not deleted and nothing is created over it: {e}", prev.node_id, incarnation.0))?;
-                    self.delete_exited(build_id, attempt, node, &crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation }).await?;
+                    let exit = self.records.put_exit(&prev, None, "provider").await.map_err(|e| format!("{node}: the provider proves birth {} at {} exited, and its exit-proof row is not written, so it is not deleted and nothing is created over it: {e}", prev.node_id, incarnation.0))?;
+                    self.delete_crashed(build_id, attempt, node, &crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation }, exit).await?;
                 }
             }
             FenceOutcome::Clear { gone: None } => {}
@@ -3533,6 +3533,13 @@ impl AdminRunner {
             .await
             .map_err(|e| format!("retire-node:{node}: the exit-proof row of birth {} at {} could not be read from {}'s status.storage: {e}", from.node_id, from.incarnation.0, self.me))?
             .ok_or_else(|| format!("retire-node:{node}: {} holds no exit-proof row for birth {} at {}: only a proven exit is deleted as a crashed target", self.me, from.node_id, from.incarnation.0))?;
+        self.delete_crashed(build_id, attempt, node, from, exit).await
+    }
+
+    /// node.delete of the crashed target `from` at `node` on the exit-proof row `exit` in hand
+    /// (node-delete.md "Crashed target"): the delete workflow, nothing sent to the dead process. A
+    /// birth the provider sees running is not exited and is not deleted.
+    async fn delete_crashed(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, exit: crate::status_storage::NodeExitRow) -> Result<(), String> {
         let (exited, handle) = self.exited_birth("retire-node", node, from).await?;
         if self.provider.inspect(&handle).await == crate::deployment::provider::DeploymentStatus::Running {
             return Err(format!("retire-node:{node}: birth {} at {} still runs: it is not exited and is not deleted as a crashed target", from.node_id, from.incarnation.0));
