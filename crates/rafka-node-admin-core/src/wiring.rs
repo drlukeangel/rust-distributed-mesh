@@ -40,6 +40,16 @@ pub trait CatchUpSeam: Send + Sync {
     fn withholds(&self, node: &str, neighbour: &str) -> bool;
 }
 
+/// Where a joining node-admin's start waits before it makes its topology read (op `0x1E`, node-start.md
+/// step 4): the start asks it once, after the join and the hook and before the read, and goes on when it
+/// returns. The read, its frames and the authority it goes to are untouched. The product passes none, so
+/// the read is made at once.
+#[async_trait::async_trait]
+pub trait ReadSeam: Send + Sync {
+    /// Returns when the start of `node` may make its topology read of `authority`.
+    async fn before_topology_read(&self, node: &str, authority: &str);
+}
+
 /// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
 /// the gate of its [`Hydration`](crate::app_hydration::Hydration) into each
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
@@ -119,6 +129,8 @@ pub struct Wiring {
     pub catch_up_seam: Option<Arc<dyn CatchUpSeam>>,
     /// Asked by the leave before each announcement publish.
     pub leave_seam: Option<Arc<dyn LeaveSeam>>,
+    /// Asked by a joining admin's start before it makes its topology read.
+    pub read_seam: Option<Arc<dyn ReadSeam>>,
     /// Wraps `fabric.storage` before the Fabric identity holder and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the

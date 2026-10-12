@@ -551,6 +551,17 @@ impl rafka_node_admin_core::wiring::LeaveSeam for FaultedLeave {
     }
 }
 
+/// The topology read's seam: an armed [`CutSpec::TopologyRead`] parks the joining admin's start before it
+/// makes the read, until the release.
+struct FaultedRead(Arc<AdminFaults>);
+
+#[async_trait]
+impl rafka_node_admin_core::wiring::ReadSeam for FaultedRead {
+    async fn before_topology_read(&self, node: &str, authority: &str) {
+        self.0.hold(Probe::TopologyRead { node: node.to_string(), authority: authority.to_string() }).await;
+    }
+}
+
 /// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`); the
 /// drain phases belong to a transition into `Draining`, which no admin path runs.
 pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
@@ -562,6 +573,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     Wiring {
         leave_seam: Some(Arc::new(FaultedLeave(faults.clone()))),
         catch_up_seam: Some(Arc::new(FaultedCatchUp(faults.clone()))),
+        read_seam: Some(Arc::new(FaultedRead(faults.clone()))),
         builds: Some(Box::new(move |inner| Arc::new(FaultedBuilds { inner, faults: f_builds }))),
         fabric_storage: None,
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),

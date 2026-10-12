@@ -185,6 +185,12 @@ pub trait AfterHook: Send + 'static {
     /// gossip peers). Runs inside the topology step's span.
     async fn topology_installed(&mut self, membership: &Membership, read: &TopologyRead);
 
+    /// The topology step is about to make its read of `authority`: the kind may wait here before the read is
+    /// made. Runs inside the topology step's span. A kind with nothing to wait on makes the read at once.
+    async fn before_topology_read(&mut self, authority: &PathName) {
+        let _ = authority;
+    }
+
     /// The Build floor: resolves once the node holds the Build facts the authority's floor requires,
     /// recording on `step` (the floor step's span, which this runs inside) `owed` and `outcome`. A kind
     /// with no Build log owes none.
@@ -381,6 +387,7 @@ impl AfterTheHook {
         let mut held: Option<(String, SourceVersion)> = None;
         if let Some((t, label)) = &through {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node = %name, launcher = %label);
+            after.before_topology_read(&t.name).instrument(step.clone()).await;
             let read = match crate::topology_read::get_topology(&client, &NodeTarget::ExactNode(t.node_id.clone()), &t.name.mesh, &membership, None, None).instrument(step.clone()).await {
                 Ok(read) => read,
                 Err(e) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {}: {e}", t.name) }, after)),

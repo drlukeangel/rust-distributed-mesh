@@ -3201,10 +3201,17 @@ struct AdminFirstStart {
     start_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     floor: AdminFloor,
     progress: StartProgress,
+    read_seam: Option<Arc<dyn crate::wiring::ReadSeam>>,
 }
 
 #[async_trait::async_trait]
 impl crate::workflows::node_start::AfterHook for AdminFirstStart {
+    async fn before_topology_read(&mut self, authority: &PathName) {
+        if let Some(seam) = &self.read_seam {
+            seam.before_topology_read(&self.me.to_string(), &authority.to_string()).await;
+        }
+    }
+
     async fn topology_installed(&mut self, membership: &Membership, read: &crate::topology_read::TopologyRead) {
         self.progress.at(format!("{}: node.start is at its topology step", self.me));
         let mut mesh_peers = Vec::new();
@@ -6030,6 +6037,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     progress: Some(progress.clone()),
                                 },
                                 progress: progress.clone(),
+                                read_seam: wiring.read_seam.clone(),
                             };
                             let parts = crate::workflows::node_start::HookParts {
                                 birth: crate::app_hydration::Birth { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), fabric_id: cfg.fabric_id.clone(), mesh_id: mesh_id.clone(), kind: NodeKind::NodeAdmin },
