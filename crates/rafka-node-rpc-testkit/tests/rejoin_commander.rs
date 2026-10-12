@@ -61,6 +61,11 @@ async fn rig(tag: &str) -> Rig {
 /// [`rig`], with the commander carried in the primary's member projection only when `carry` holds:
 /// otherwise no record the node holds names the commander, as for an admin born after its stop.
 async fn rig_carried(tag: &str, carry: bool) -> Rig {
+    rig_hydrating(tag, carry, None).await
+}
+
+/// [`rig_carried`], the node running `hydrator` as its `hydrate_before_ready` hook when one is given.
+async fn rig_hydrating(tag: &str, carry: bool, hydrator: Option<std::sync::Arc<rafka_node_rpc_testkit::hydrate_probe::TestHydrator>>) -> Rig {
     let fabric = rafka_mesh_entity::FabricId::mint();
     let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
     let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.2").await;
@@ -85,7 +90,11 @@ async fn rig_carried(tag: &str, carry: bool) -> Rig {
         mesh_issuer: None,
     };
     primary.deployed(&launch, &key);
-    let running = node::start(&launch, |b, _| b).await.expect("the node comes up");
+    let running = match hydrator {
+        Some(h) => node::start_hydrating(&launch, rafka_node_admin_core::app_hydration::Hydration::new(h), |b, _| b).await,
+        None => node::start(&launch, |b, _| b).await,
+    }
+    .expect("the node comes up");
     let book = &primary.observer.membership.book;
     let mut heard = book.heard_changes();
     tokio::time::timeout(NEVER, async {
@@ -362,6 +371,61 @@ fn a_start_whose_commander_the_resolver_holds_departed_joins_it_over_its_call() 
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
         let started = call(&commander, &target, &start).await;
         assert_eq!(started, StatusReply::Started, "the start joins the commander over its call, whatever the resolver holds of it");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// CONTRACT (fabric-node-hooks.md "Outcomes and the gate": a Blocked hook runs again only when its
+/// `retry_on` occurs; node-start.md step 2: the stopped node holds no record of the commander and
+/// learns who answered from the join answer): an rpc node is stopped and started by an admin no
+/// record it holds names, and its hook answers `Blocked { AuthorityAddressed }` after that start. The
+/// commander then addresses the node with a down op (a probe): the hook runs again at once, passes,
+/// and the node is ReadyForTraffic. The authority is known by the endpoint of the call it answered
+/// on, so its down op is counted whatever record names it. Must NOT happen: the hook waiting on, and
+/// the node held Pending, because the down op came from an endpoint no record names.
+#[test]
+fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_names_addresses_it() {
+    let cell = "a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_names_addresses_it";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        use rafka_node_admin_core::app_hydration::{HookOutcome, HydrationState, RetryOn};
+        use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
+        let hydrator = TestHydrator::new(Mode::Local);
+        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, .. } = rig_hydrating("addressed-unrecorded", false, Some(hydrator.clone())).await;
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_addressed".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_addressed".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
+        commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        // After this start the hook waits on its authority's word.
+        hydrator.set_mode(Mode::Fixed(HookOutcome::Blocked { reason: "waits for its authority to address it".into(), retry_on: RetryOn::AuthorityAddressed }));
+        assert_eq!(call(&commander, &target, &start).await, StatusReply::Started, "the start joins the commander over its call; its hook runs on, blocked");
+        let handle = running.hydration().expect("a registered hook has a handle");
+        tokio::time::timeout(NEVER, async {
+            while !matches!(handle.state(), HydrationState::Blocked { retry_on: RetryOn::AuthorityAddressed, .. }) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the hook never blocked on its authority's word: {:?}", handle.state()));
+        // The commander's down op: the hook runs again, and this time passes.
+        hydrator.set_mode(Mode::Local);
+        let _ = call(&commander, &target, &probe).await;
+        let settled = tokio::time::timeout(NEVER, handle.settled()).await.unwrap_or_else(|_| panic!("the hook never ran again on the commander's down op: {:?}", handle.state()));
+        assert_eq!(settled, HydrationState::Passed);
+        tokio::time::timeout(NEVER, async {
+            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the started node never answered ReadyForTraffic");
+        let blocked = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.node.reject.via-hydration-blocked" && f.get("cleared_by").map(String::as_str) == Some("authority-addressed")).count();
+        assert_eq!(blocked, 1, "the blocker span closes naming the event that cleared it, authority-addressed");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
