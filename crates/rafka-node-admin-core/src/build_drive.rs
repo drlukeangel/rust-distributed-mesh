@@ -157,6 +157,17 @@ struct DriveState {
     terminal: Option<BuildReply>,
     lost: Option<SeatLoss>,
     stall: Option<String>,
+    /// The attempt that ended handed back to this fabric-primary with nothing moved, and what its
+    /// resume decides on then ([`DriveEnv::world`]): no next attempt is claimed until that moves.
+    idle: Option<Idle>,
+}
+
+/// What a drive waits on after an attempt it handed back to itself ended with nothing moved.
+#[derive(Clone)]
+struct Idle {
+    attempt: u32,
+    world: String,
+    why: String,
 }
 
 /// One Build's drive: the frames its callers read. The task that makes them is [`DriveEnv::run`].
@@ -306,6 +317,14 @@ impl Drive {
 
     fn clear_stall(&self) {
         self.state.lock().unwrap().stall = None;
+    }
+
+    fn idle(&self) -> Option<Idle> {
+        self.state.lock().unwrap().idle.clone()
+    }
+
+    fn set_idle(&self, idle: Option<Idle>) {
+        self.state.lock().unwrap().idle = idle;
     }
 
     /// Whether this drive holds the `Complete` frame of the operation `key` in an attempt `counts`
@@ -502,6 +521,24 @@ fn node_of_key(key: &str) -> Option<PathName> {
 /// is the authority: a remote executor's receipt reaches this admin's log by the Build topic, and
 /// nothing waits for that copy. A lost executor's run reported nothing: what it left is planned from
 /// the view again, and the create pipeline's fence decides against the world.
+/// What the next claim of a Build decides on: the first operation left, the receipts the Build
+/// holds, and the members of the mesh that operation acts on, by birth, status and seat. An attempt
+/// that ended with this unchanged would end the same way again.
+fn world(drive: &Drive, p: &BuildProjection, t: &Topology) -> String {
+    let first = left(drive, p, t).into_iter().next();
+    let mesh = first.as_ref().and_then(|op| match op {
+        BuildOperation::CreateMesh { mesh, .. } | BuildOperation::ShutdownMesh { mesh, .. } => Some(mesh.clone()),
+        other => other.node().map(|n| n.mesh.clone()),
+    });
+    let mut members: Vec<String> = t
+        .members()
+        .filter(|n| Some(&n.mesh) == mesh.as_ref())
+        .map(|n| format!("{}:{}:{:?}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("-"), n.status, n.is_primary))
+        .collect();
+    members.sort();
+    format!("{} receipts={} members=[{}]", first.map(|op| op.key()).unwrap_or_default(), p.steps.len(), members.join(","))
+}
+
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
     crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
 }
@@ -743,6 +780,9 @@ impl DriveEnv {
                 };
                 (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
             } else {
+                if let Some(end) = self.idle_until_moved(drive, &p).await {
+                    return end;
+                }
                 match self.claim_next(drive, &p, handed_to.take()).await {
                     Ok(c) => c,
                     Err(end) => return end,
@@ -773,6 +813,12 @@ impl DriveEnv {
                     Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f),
                 }
             };
+            // What the attempt decides on, as claimed: an attempt handed back to this admin with this
+            // unchanged would end the same way again.
+            let before = match self.builds.read_build(&id).await {
+                Ok(claimed) => Some(world(drive, &claimed, &self.topology.read().await.clone())),
+                Err(_) => None,
+            };
             let inner = self.run_inner(drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
             drive.clear_stall();
             match inner {
@@ -798,6 +844,23 @@ impl DriveEnv {
                     let Some(next) = parse_path(&to) else {
                         return self.stalled(drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
                     };
+                    // An attempt handed back to this admin that moved nothing (it ended incomplete: a
+                    // participant lost, a proof not in) would be claimed again and end the same way: the
+                    // Build stays in progress, and the next attempt waits for what it decides on to move.
+                    if next == self.me {
+                        if let (Some(before), Ok(ended)) = (before, self.builds.read_build(&id).await) {
+                            let after = world(drive, &ended, &self.topology.read().await.clone());
+                            if before == after {
+                                let why = format!(
+                                    "{}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves",
+                                    self.me
+                                );
+                                self.blocked(drive, attempt, "", "incomplete", &why);
+                                drive.set_idle(Some(Idle { attempt, world: after, why: why.clone() }));
+                                return self.stalled(drive, why);
+                            }
+                        }
+                    }
                     handed_to = Some(next);
                     departed = None;
                 }
@@ -841,6 +904,22 @@ impl DriveEnv {
                 }
             }
         }
+    }
+
+    /// The drive waits, named, while the attempt it handed back to itself with nothing moved has not
+    /// seen what its resume decides on move ([`world`]); the stall is the same reason, named once.
+    async fn idle_until_moved(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
+        let idle = drive.idle()?;
+        if idle.attempt != p.attempt {
+            drive.set_idle(None);
+            return None;
+        }
+        let now = world(drive, p, &self.topology.read().await.clone());
+        if now == idle.world {
+            return Some(self.stalled(drive, idle.why));
+        }
+        drive.set_idle(None);
+        None
     }
 
     /// Claim the next attempt of `p` for the admin that runs what is left (or `forced`, the admin a

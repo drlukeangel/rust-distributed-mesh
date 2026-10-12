@@ -337,6 +337,7 @@ impl BuildExecutor {
             reason = previous.as_ref().map(|b| b.reason.as_str()).unwrap_or(""),
             action = %previous.as_ref().and_then(|b| b.action.as_ref()).map(|a| serde_json::to_string(a).unwrap_or_default()).unwrap_or_default(),
             operations = tracing::field::Empty,
+            incomplete = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
         if let Some(tp) = &context.traceparent {
@@ -384,14 +385,29 @@ impl BuildExecutor {
                     return self.hand_off(&build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }
             }
-            if let Err(e) = self.runner.run(&build.build_id, attempt, op).await {
-                return self.finish(&build, attempt, Err((op.key(), e.reason().to_string()))).await;
+            match self.runner.run(&build.build_id, attempt, op).await {
+                Ok(()) => {}
+                Err(RunEnd::Failed(reason)) => return self.finish(&build, attempt, Err((op.key(), reason))).await,
+                Err(RunEnd::Incomplete(reason)) => return self.hand_back(&build, attempt, operations[..i].to_vec(), op, reason, span).await,
             }
         }
         match &plan.hand_off_to {
             Some(to) => self.hand_off(&build, attempt, operations.clone(), to.clone()).await,
             None => self.finish(&build, attempt, Ok(operations.clone())).await,
         }
+    }
+
+    /// `op` ended incomplete (R-BI4): a participant of it was lost, or the proof its resume needs is
+    /// not in. Its receipts stand and no terminal verdict is recorded. The attempt ends the way a run
+    /// that stops at another executor's operation ends: handed to the fabric-primary of the view the
+    /// run ends with, which claims the next attempt, and that attempt resumes from the receipts. The
+    /// Build stays in progress. The reason is the attempt's blocker, framed to the caller.
+    async fn hand_back(&self, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
+        span.record("incomplete", reason.as_str());
+        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or_else(|| self.executor.clone());
+        self.builds.note_blocked(&build.build_id, attempt, &op.key(), "incomplete", &reason).await;
+        tracing::info!(operation = %op.key(), reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
+        self.hand_off(build, attempt, ran, to).await
     }
 
     async fn hand_off(&self, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {

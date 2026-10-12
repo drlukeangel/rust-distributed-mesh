@@ -1040,11 +1040,12 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
         let trace_id = crate::mesh_leave_resume::trace_id(&root);
         let _in_root = root.enter();
         let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
-        // Attempt 1: the shutdown ends incomplete.
-        let first = r.env.run(&Drive::detached(r.build.clone())).await;
+        // Attempt 1: the shutdown ends incomplete. One drive across the passes, as the fabric-primary keeps it.
+        let drive = Drive::detached(r.build.clone());
+        let first = r.env.run(&drive).await;
         let first = (first, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap());
         // The same drive again with nothing moved: no attempt is claimed.
-        let second = r.env.run(&Drive::detached(r.build.clone())).await;
+        let second = r.env.run(&drive).await;
         let second = (second, r.builds.read_build(&r.build).await.unwrap().attempt, r.dispatch.dispatched.lock().unwrap().len());
         // The leaving mesh's primary is proven gone: it is no longer live in the view, and the shutdown can run.
         *leaver.ends.lock().unwrap() = None;
@@ -1052,7 +1053,7 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
             n.status = NodeStatus::Dead;
             n.is_primary = false;
         }
-        let third = r.env.run(&Drive::detached(r.build.clone())).await;
+        let third = r.env.run(&drive).await;
         let third = (third, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap());
         let facts = r.builds.facts().await.unwrap();
         let ran = r.ran.0.lock().unwrap().clone();
@@ -1067,7 +1068,7 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
     let (end, p, current) = first;
     assert_eq!(p.state, BuildState::Pending, "the attempt ended handed back to the fabric-primary: the Build waits for its next claim, it is not failed");
     assert_eq!(current, CurrentBuild::InProgress(after.clone()), "the current-Build read returns the Build in progress; a failed Build would be skipped for the seeded one");
-    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains(LEAVE_INCOMPLETE)), "the drive names why it claims nothing more: {end:?}");
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("attempt 1 of Build") && why.contains("ended incomplete and was handed back to this fabric-primary with nothing moved")), "the drive names why it claims nothing more: {end:?}");
     let verdict = facts.iter().find_map(|f| match f {
         BuildFact::Attempt(a) if a.build_id == after && a.attempt == 1 => Some(a.outcome.clone()),
         _ => None,
@@ -1082,8 +1083,12 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
     assert_eq!(current, CurrentBuild::Completed(after), "the resumed Build is the current one, completed");
     assert_eq!(ran.iter().filter(|k| k.starts_with("shutdown-mesh:")).count(), 1, "the shutdown ran once, on the resumed attempt: {ran:?}");
     assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)], "attempt 2 was claimed for the fabric-primary, once");
-    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    // The executor's run is parented to the attempt's recorded context (the claim's), so it is read by name.
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();
     assert!(named("rdm.node_admin.build.update.via-reconcile").iter().any(|s| s["attributes"]["attempt"] == "1" && s["attributes"]["outcome"] == "handed-off" && s["attributes"]["incomplete"] == LEAVE_INCOMPLETE), "the executor's span says the attempt ended handed back, incomplete, with the reason");
+    assert!(named("rdm.node_admin.build.update.via-reconcile").iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["outcome"] == "converged"), "attempt 2 resumed the shutdown and converged");
+    let stalls: Vec<_> = named("rdm.node_admin.build.update.via-stalled").into_iter().filter(|s| s["trace_id"] == trace_id.as_str()).collect();
+    assert_eq!(stalls.len(), 1, "the idle wait is named once across the two passes that made it: {stalls:?}");
 }
 
 /// CONTRACT (R-BI4: "Only an attempt that ended with a named terminal failure makes a Build
