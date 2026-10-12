@@ -6,7 +6,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
-use rafka_mesh_transport::membership::Membership;
+use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::deployment::pipeline::NodeObserver;
 use rafka_node_admin_core::model::Node;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
@@ -144,6 +144,8 @@ pub struct AdminSide {
     rows: Arc<std::sync::Mutex<std::collections::HashMap<rafka_mesh_entity::PathName, rafka_node_admin_core::storage::NodeRow>>>,
     /// The digest this admin side publishes as itself, on the membership cadence as a node-admin does.
     digest: Arc<std::sync::Mutex<rafka_mesh_entity::digest::MeshDigest>>,
+    /// Its publication rounds as its mesh's primary.
+    _rounds: AbortOnDrop,
     _router: Router,
 }
 
@@ -366,6 +368,22 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
         gossip: None,
     };
     membership.publish(&admin_digest).await.expect("the admin's digest publishes");
+    // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
+    // members' lifecycle, authors their statuses from what they report to it, and publishes its
+    // member projection on its own mesh channel each round and at once on a material change
+    // (gossip.md §3.1 `Members`, the admin's publication round). Its members take every status
+    // from that projection.
+    let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", name, admin_incarnation.clone(), vec![]).await.expect("the launcher joins the backbone");
+    backbone.set_mesh_primary(true);
+    let rounds = {
+        let (backbone, membership) = (backbone.clone(), membership.clone());
+        AbortOnDrop(tokio::spawn(async move {
+            loop {
+                backbone.publish(&membership, backbone.own_members(&membership)).await;
+                backbone.round_wake(&membership, tokio::time::Instant::now() + rafka_mesh_transport::membership::gossip_interval()).await;
+            }
+        }))
+    };
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
     let _publisher = {
         let cell = digest_cell.clone();
@@ -381,6 +399,16 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
         launcher: rafka_mesh_entity::launch::Launcher { name: name.parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
         rows,
         digest: digest_cell,
+        _rounds: rounds,
         _router: router,
+    }
+}
+
+/// A task that ends with its holder.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }

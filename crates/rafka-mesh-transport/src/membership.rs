@@ -2635,6 +2635,15 @@ impl Membership {
         &self.view.node
     }
 
+    /// Hold (or drop) this node as its mesh's primary: while it is, it authors its own mesh's member
+    /// statuses from what its members report to it and replays what it holds to a neighbour coming
+    /// up; otherwise it takes them from its primary's projection (gossip.md §3.1 `Members`).
+    /// [`Backbone::set_mesh_primary`] sets it with the seat; a launcher that executes its mesh's
+    /// node lifecycle with no backbone sets it here.
+    pub fn set_mesh_primary(&self, primary: bool) {
+        self.view.primary.store(primary, Ordering::Relaxed);
+    }
+
     /// May this node's view authorize anything now: not cut off, and not
     /// within one silence window of healing ([`CutOff::authorizes`]).
     pub fn authorizes(&self) -> bool {
@@ -3253,7 +3262,7 @@ impl Backbone {
 
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
-        self.membership.view.primary.store(primary, Ordering::Relaxed);
+        self.membership.set_mesh_primary(primary);
         // A forwarder that takes (or loses) the seat has published nothing into its Mesh: the
         // first publication of every source after taking it is a full (gossip.md §3.3). The role,
         // its baseline and its term switch together under the forwarder's lock.
