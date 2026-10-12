@@ -41,8 +41,9 @@ fn names() -> BTreeSet<String> {
 
 /// The replace recipe of `p` (lifecycles/node-replace.md: one Build of node primitives) submitted to
 /// the fabric-primary the admin at `base` names, over the `node` objects: the Build it runs on, and
-/// the caller's reply stream read to its end on a task of its own (its frames).
-async fn replace_by_recipe(base: &str, p: &str) -> (String, tokio::task::JoinHandle<Vec<rafka_node_admin_client::Frame>>) {
+/// the caller's reply stream read to its end on a task of its own (its frames, and how a stream
+/// that broke before its terminal ended).
+async fn replace_by_recipe(base: &str, p: &str) -> (String, tokio::task::JoinHandle<(Vec<rafka_node_admin_client::Frame>, Option<String>)>) {
     use rafka_node_admin_client::{NodeAdminClient, NodeSelector, Peers};
     use rafka_node_rpc_contract::build::RecipeStep;
     let peers = Peers::of(&[]).await;
@@ -66,14 +67,19 @@ async fn replace_by_recipe(base: &str, p: &str) -> (String, tokio::task::JoinHan
     let build = stream.accepted().build_id.0.clone();
     let frames = tokio::spawn(async move {
         let mut out = Vec::new();
-        while let Some(Ok(f)) = stream.next().await {
-            let end = f.is_terminal() || matches!(f, rafka_node_admin_client::Frame::SeatMoved { .. });
-            out.push(f);
-            if end {
-                break;
+        loop {
+            match stream.next().await {
+                Some(Ok(f)) => {
+                    let end = f.is_terminal() || matches!(f, rafka_node_admin_client::Frame::SeatMoved { .. });
+                    out.push(f);
+                    if end {
+                        return (out, None);
+                    }
+                }
+                Some(Err(e)) => return (out, Some(format!("{e:?}"))),
+                None => return (out, Some("the stream ended with no frame after these".into())),
             }
         }
-        out
     });
     (build, frames)
 }
@@ -370,8 +376,8 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     // The caller holds P's outer stream: it ends with the seat loss P's drive records at its fence
     // (`via-fenced`, its `to` is the SeatMoved frame's seat), and the inner stream H ends carries the
     // same new seat.
-    let outer = outer.await.expect("the caller's stream task");
-    assert!(matches!(outer.last(), Some(rafka_node_admin_client::Frame::SeatMoved { fabric_primary: Some(to) }) if *to == h_name), "the caller's stream ends SeatMoved naming H: {outer:?}");
+    let (outer, broke) = outer.await.expect("the caller's stream task");
+    assert!(matches!(outer.last(), Some(rafka_node_admin_client::Frame::SeatMoved { fabric_primary: Some(to) }) if *to == h_name), "the caller's stream ends SeatMoved naming H: {outer:?}, broke: {broke:?}");
     let p_fenced: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(!p_fenced.is_empty() && p_fenced.iter().all(|sp| attr(sp, "to") == h_name), "P's drive lost the seat at its fence naming H: {p_fenced:#?}");
     // When H is P's successor `<P>.new`, the recipe's stop of `.new` moves the seats once more, to
