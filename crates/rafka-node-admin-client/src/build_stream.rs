@@ -114,6 +114,10 @@ pub enum BuildFrame {
 /// One accepted Build call: its `Started` and the frames after it.
 pub struct BuildStream {
     stream: ReplyStream<Build>,
+    /// The carrier the call was opened over. A QUIC connection does not keep its endpoint: the
+    /// last handle of the endpoint ends its runtime and with it every stream it carries. The stream
+    /// holds the carrier, so a caller that keeps only the stream reads it to its terminal.
+    _carrier: BuildCarrier,
     build_id: BuildId,
     attempt: u32,
     disposition: Disposition,
@@ -261,7 +265,7 @@ impl BuildCarrier {
             };
             match (first, stream) {
                 (BuildReply::Started { build_id, attempt, disposition }, Some(stream)) => {
-                    return Ok(BuildStream { stream, build_id: BuildId(build_id), attempt, disposition, seen: HashSet::new(), ended: false });
+                    return Ok(BuildStream { stream, _carrier: self.clone(), build_id: BuildId(build_id), attempt, disposition, seen: HashSet::new(), ended: false });
                 }
                 (BuildReply::NotFabricPrimary { fabric_primary: Some(named) }, _) => match named.parse::<PathName>() {
                     Ok(next) if !asked.contains(&next) => target = next,
