@@ -302,16 +302,12 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         v.iter().map(|sp| (s(&sp["attributes"]["step"]), sp["start_unix_nano"].as_u64().unwrap_or(0), sp["end_unix_nano"].as_u64().unwrap_or(0))).collect()
     };
     let members: Vec<String> = mesh1_pids.iter().map(|(n, _)| n.clone()).filter(|n| *n != final_name).collect();
-    // mesh-delete.md step 3: each member's end is the whole node.delete, its node-admin's with the
-    // SeatTransfer step a node-admin target takes (it holds no seat: NotAHolder).
+    // mesh-delete.md step 3: each member's end is the whole node.delete, a node-admin's the same as
+    // any member's: it holds no seat, so no node.primary.update precedes it (R-MT1).
     for name in &members {
         let order = order_in(name, false);
         let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
-        let want: &[&str] = if name.contains(".admin.") {
-            &["NodeDeleting", "SeatTransfer", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
-        } else {
-            &["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
-        };
+        let want: &[&str] = &["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"];
         assert_eq!(got, want, "{name}: the ordinary node.delete under {b}, node.stop first, then the exit proof and NodeDeleted");
     }
     // Each member's NodeDeleted is mesh1's primary's, before mesh.deleted; the deleted mesh's last
@@ -404,11 +400,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert!(early_left.is_empty(), "no MeshLeft before the final birth's exit proof at {final_exit}: {early_left:?}");
 
     // 2. The final primary's node.delete under C, executed by the fabric-primary: its whole node.stop
-    // (the seats it holds stay with it, no admin of its mesh is left to take them), the provider's
-    // exact exit proof, its row Deleted, NodeDeleted, its removal.
+    // (the delete of a mesh's only node skips node.primary.update, R-MT1: "delete is skipped if it's
+    // the only node on the mesh"; its seat stays with it), the provider's exact exit proof, its row
+    // Deleted, NodeDeleted, its removal.
     let order = order_in(&final_name, true);
     let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
-    assert_eq!(got, ["NodeDeleting", "SeatTransfer", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exit proof");
+    let moved: Vec<&Value> = ["rdm.node_admin.seat.update.via-primary-update", "rdm.node_admin.seat.update.via-primary-updating"].iter().flat_map(|n| named(&spans, n)).filter(|sp| s(&sp["attributes"]["holder"]) == final_name || s(&sp["attributes"]["node"]) == final_name).collect();
+    assert!(moved.is_empty(), "{final_name} is its mesh's only node: its delete runs no node.primary.update: {moved:#?}");
+    assert_eq!(got, ["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exit proof");
     let c_steps: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == final_name.as_str() && node_delete_run(sp)).collect();
     assert!(c_steps.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{final_name}: every step of its node.delete completed: {c_steps:?}");
     let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == final_name && s(&sp["attributes"]["node"]) == fabric_primary).collect();
