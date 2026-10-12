@@ -758,6 +758,14 @@ async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_execute
     let birth_build = s(&a["build_id"]);
     estate.await_build(&birth_build, SETTLE).await;
     estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+    // The rows a mesh-primary writes live in its scratchpad until the fabric's state-commit publishes them
+    // to the store (fabric-state-commit.md): a mesh-primary changed before it hands its successor no row
+    // to read. This cell changes mesh2's primary after a rename, so the fabric commits first.
+    wait_for("the fabric is ready-for-traffic: state-commit has published every writer's rows", Duration::from_secs(60), || async {
+        let (_, f) = estate.get("/api/fabric").await;
+        (f["status"] == "ready-for-traffic").then_some(())
+    })
+    .await;
     let nodes = objects(&estate).await;
     let parked = stop_and_rename(&estate, &nodes, "mesh2.rpc.1").await;
     let first_primary = parked.renamed_by.clone();
