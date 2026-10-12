@@ -36,12 +36,16 @@ fn acceptance_dir(cell: &str) -> PathBuf {
 /// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
+/// When it drops, whether the cell passed or panicked, every span it holds goes to the cell's
+/// `spans.json`, so a red is read from its own trace and never from a rerun.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
     capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     /// The resource's `service.name` this capture exports under.
     service: String,
+    /// The cell's artifact directory.
+    dir: PathBuf,
 }
 
 fn capture(cell: &str) -> Capture {
@@ -49,7 +53,17 @@ fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2805-{cell}");
     let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
-    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service, dir: acceptance_dir(cell) }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        let flushed = self.capture.flush(Duration::from_secs(10));
+        let spans = self.rows();
+        let path = self.dir.join("spans.json");
+        let written = std::fs::create_dir_all(&self.dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&spans).unwrap()));
+        eprintln!("i143_acceptance_2805: the cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());
+    }
 }
 
 impl Capture {
@@ -70,9 +84,16 @@ impl Capture {
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
         self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
-        let finished = self.exporter.get_finished_spans().unwrap();
-        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
-        finished
+        let spans = self.rows();
+        crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap_or("")));
+        spans
+    }
+
+    /// Every span the exporter holds, as [`Capture::spans`] gives them, read without a flush.
+    fn rows(&self) -> Vec<Value> {
+        self.exporter
+            .get_finished_spans()
+            .unwrap_or_default()
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
@@ -265,7 +286,6 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let spans = capture.spans();
     let decisions: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-declaration").collect();
     assert!(decisions.iter().any(|s| s["attributes"]["op"] == "apply-mesh-state" && s["attributes"]["outcome"] == "already-applied"), "the retry is spanned as already-applied");
-    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let result = json!({
         "cell": cell,
         "mesh_id": mesh2.to_string(),
@@ -349,7 +369,6 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let spans = capture.spans();
     let commands = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-command").count();
     assert!(commands >= 2, "every node command naming the admin is spanned: {commands}");
-    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let result = json!({
         "cell": cell,
         "subject": node_id.to_string(),
@@ -499,9 +518,14 @@ const DECLARATION: &str = "rdm.node_admin.status.update.via-declaration";
 
 fn finish(capture: &Capture, dir: &std::path::Path, result: Value) -> Vec<Value> {
     let spans = capture.spans();
-    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     spans
+}
+
+/// How many connections the cell's authorities accepted from `b`'s endpoint.
+fn accepts_from(spans: &[Value], b: &Birth) -> usize {
+    let peer = b.key.public().fmt_short().to_string();
+    spans.iter().filter(|s| s["name"] == "rdm.node_rpc.connection.create.via-accept" && s["attributes"]["peer"] == peer.as_str()).count()
 }
 
 fn cell_dir(cell: &str) -> PathBuf {
@@ -650,8 +674,9 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
 /// CONTRACT (#2805, adversary): every backward move through the door is refused by its name with
 /// the current state it ran into, for each of the four node states and each of the four Mesh
 /// states; the same state again is AlreadyApplied, three times over, the same typed reply; a skip
-/// forward applies. What must NOT happen: a backward move applied, or a repeat answered anything
-/// but AlreadyApplied.
+/// forward applies. Each sender speaks from its one endpoint, so its calls ride one connection.
+/// What must NOT happen: a backward move applied, a repeat answered anything but AlreadyApplied, or
+/// a call from a fresh endpoint of a key another live endpoint holds.
 #[test]
 fn status_authority_refuses_every_backward_move_by_name() {
     let cell = "status_authority_refuses_every_backward_move_by_name";
@@ -703,6 +728,12 @@ fn status_authority_refuses_every_backward_move_by_name() {
         let skip = MeshId::mint();
         let to_dead = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Dead };
         assert_eq!(reply(&call(&mesh_rig, &fp, &to_dead, &CallOptions::default()).await), StatusReply::Applied, "an unseen Mesh may be told Dead: a skip is forward");
+        // A birth speaks from its one endpoint: each sender's calls rode one connection, never a fresh
+        // endpoint of the same key per call.
+        let accepted = capture.spans();
+        for b in senders.iter().chain([&fp]) {
+            assert_eq!(accepts_from(&accepted, b), 1, "{}: every call of the birth rode the one connection of its one endpoint", b.node.name);
+        }
 
         let spans = finish(&capture, &dir, json!({"cell": cell, "refused_node_moves": refused_node, "refused_mesh_moves": refused_mesh, "repeats_already_applied": repeats}));
         assert_eq!(refused_node, 6, "0+1+2+3 backward pairs");
