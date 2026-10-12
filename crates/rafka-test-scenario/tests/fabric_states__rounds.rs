@@ -10,7 +10,7 @@
 use crate::build_log;
 use rafka_node_admin_client::{CallEnd, Change, Fabrics, FabricView, NodeMeta, NodeView, PathName, ScopeStatus};
 use rafka_node_rpc_contract::status::StatusReply;
-use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, binding_set_with_roles, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::time::Duration;
