@@ -117,6 +117,22 @@ pub struct StartFailed {
     pub reason: String,
 }
 
+impl std::fmt::Display for StartFailed {
+    /// The reason: it names the node, the step's authority and what failed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for StartFailed {}
+
+/// A first start whose refusal is a string (a node-admin's) carries the step's reason.
+impl From<StartFailed> for String {
+    fn from(failed: StartFailed) -> Self {
+        failed.reason
+    }
+}
+
 /// How a process leaves its mesh when parked and joins it again when started: the part of
 /// stop and start that differs by node kind.
 #[async_trait::async_trait]
@@ -322,6 +338,17 @@ impl NodeSelf {
         match writer {
             Some(w) => Ok(w.held_routes().await),
             None => Err(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name())),
+        }
+    }
+
+    /// `node.connections.get` at this birth (fabric-mesh-node-lifecycles.md: "Reading or cutting a
+    /// node's held connections"): the connections it holds now, under the name it holds, once every
+    /// observation handed to its writer has landed; the ids are those `node.connections.delete` names.
+    pub async fn connections_get(&self) -> StatusReply {
+        let writer = self.connections.lock().unwrap().clone();
+        match writer {
+            Some(w) => crate::views::connections_answer(&w.held_connections().await),
+            None => StatusReply::NotReady { reason: format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name()) },
         }
     }
 

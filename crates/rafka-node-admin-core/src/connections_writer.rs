@@ -93,6 +93,17 @@ fn end_of(node: &ResolvedNode) -> ConnectionEnd {
 
 /// This node's open routes in `held`: its own latest Direct entries that are `connected`, then its
 /// own active Proxy entries, each by destination.
+/// The connections a node holds, as one read of its writer sees them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldConnections {
+    /// The name the node holds, and writes its rows under.
+    pub name: PathName,
+    /// Whether its held set is complete.
+    pub complete: bool,
+    /// Its own latest Direct entries that are `connected` and its own active Proxy entries.
+    pub routes: Vec<NodeConnection>,
+}
+
 fn open_routes(held: &ConnectionsHeld) -> Vec<NodeConnection> {
     held.own_latest_directs().into_iter().filter(|e| e.state == ConnectionState::Connected).chain(held.own_active_proxies()).cloned().collect()
 }
@@ -245,10 +256,17 @@ impl ConnectionsWriter {
     /// `connected` and its own active Proxy entries, under the name it holds, once every observation
     /// handed to the writer before the call has landed. Ordered by destination, Direct first.
     pub async fn held_routes(&self) -> Vec<NodeConnection> {
+        self.held_connections().await.routes
+    }
+
+    /// [`Self::held_routes`] with the name the node holds them under and whether its held set is
+    /// complete: what `node.connections.get` answers.
+    pub async fn held_connections(&self) -> HeldConnections {
         self.drain().await;
         let _gate = self.inner.write_gate.lock().await;
-        self.own_now();
-        open_routes(&self.inner.held.lock().unwrap())
+        let own = self.own_now();
+        let held = self.inner.held.lock().unwrap();
+        HeldConnections { name: own.name, complete: held.is_complete(), routes: open_routes(&held) }
     }
 
     /// `node.connections.delete`'s drops (R-CR3): each of `routes` (open entries this node held,

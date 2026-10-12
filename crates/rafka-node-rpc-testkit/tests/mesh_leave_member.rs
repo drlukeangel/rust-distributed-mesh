@@ -84,7 +84,7 @@ fn a_mesh_leave_member_shutdown_publishes_node_stopped_from_its_stopped_reply() 
             timeouts: Timeouts::default(),
         };
         let first = pipeline
-            .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
 

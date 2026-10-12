@@ -141,7 +141,7 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
         let trace_id = crate::mesh_leave_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
-            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle };
+            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle, exit: None };
             match workflow {
                 Some(NodeCommand::Stop) => pipeline.stop(&req).instrument(root).await,
                 Some(_) => pipeline.drain(&req).instrument(root).await,

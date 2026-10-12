@@ -236,7 +236,7 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
 
         let birth_build = publish_build(&rig.builds, persistent(true)).await;
         let first = pipeline
-            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -359,7 +359,7 @@ fn a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails
 
         let birth_build = publish_build(&rig.builds, persistent(true)).await;
         let first = pipeline
-            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         rig.log.lock().unwrap().clear();
@@ -422,7 +422,7 @@ fn recovery_of_a_proven_terminal_birth_sends_it_no_drain_and_hands_over_no_ephem
 
         let birth_build = publish_build(&rig.builds, add_node()).await;
         let first = pipeline
-            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().unwrap());
@@ -481,21 +481,21 @@ fn a_replace_never_hands_over_the_storage_of_a_birth_deleted_earlier_at_its_path
 
         // The path's first birth, with a WAL, is deleted: its data dir stays.
         let deleted = pipeline
-            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let deleted_dir = std::path::PathBuf::from(deleted.node.data_dir.clone().expect("the birth's directory"));
         std::fs::create_dir_all(seg(&deleted_dir).parent().unwrap()).unwrap();
         std::fs::write(seg(&deleted_dir), b"the deleted birth's records").unwrap();
         pipeline
-            .retire(&RetireRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: deleted.node.clone(), handle: deleted.handle.clone() })
+            .retire(&RetireRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: deleted.node.clone(), handle: deleted.handle.clone(), exit: None })
             .await
             .unwrap_or_else(|e| panic!("delete: {e}"));
         assert_eq!(std::fs::read(seg(&deleted_dir)).unwrap(), b"the deleted birth's records", "the delete keeps the birth's storage");
 
         // The path's next birth, with its own WAL, is replaced.
         let current = pipeline
-            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, held_runtimes: Vec::new() })
+            .create(&CreateRequest { build_id: publish_build(&rig.builds, persistent(true)).await, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let current_dir = std::path::PathBuf::from(current.node.data_dir.clone().expect("the birth's directory"));

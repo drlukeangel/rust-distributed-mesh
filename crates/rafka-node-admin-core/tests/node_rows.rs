@@ -276,10 +276,10 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
         let mut record = Node::allocated(name.clone());
         record.node_id = born.clone();
         assert!(record.config.is_empty());
-        mp.rows.deleted(&record, "recover-node:mesh1.rpc.2").await.expect("the Deleted row is written");
+        mp.rows.deleted(&record, "retire-node:mesh1.rpc.2").await.expect("the Deleted row is written");
         let deleted = storage.node_row_at(&name).await.unwrap();
         let next = NodeId::mint();
-        mp.rows.claim(&name, &next, "recover-node:mesh1.rpc.2").await.expect("the Deleted row holds no name");
+        mp.rows.claim(&name, &next, "create-node:mesh1.rpc.2").await.expect("the Deleted row holds no name");
         (deleted, storage.node_row_at(&name).await.unwrap(), born)
     });
     assert_eq!(deleted.map(|r| (r.node_id, r.status, r.config)), Some((born.clone(), NodeStatus::Deleted, tier("silver"))), "the Deleted row keeps the config the writer holds for the birth");
@@ -853,7 +853,7 @@ mod writer {
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let req = CreateRequest { build_id: BuildId("build-node-rows".into()), attempt: 1, node: name.parse().unwrap(), spec: &RPC_NODE, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id: BuildId("build-node-rows".into()), attempt: 1, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
         let r = pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string());
         let _ = std::fs::remove_dir_all(&data_root);
         r
@@ -978,7 +978,7 @@ mod writer {
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
-        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
         let r = pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string());
         let _ = std::fs::remove_dir_all(&data_root);
         r
@@ -1072,12 +1072,12 @@ mod writer {
 }
 
 /// The recovery of `mesh1.rpc.1` (node-recovery.md steps 3-4) as its executor, `mesh1`'s primary
-/// `mesh1.admin.2`, writes it (R13; deployment pipeline `recover_steps`): the exited birth's row
-/// `Deleted` inside its `NodeDeleted` step, and the new node's claim at the same `path.name`, made
-/// `before` or after that `Deleted` row. Returns the row at `mesh1.rpc.1`, the exited node and the
-/// new one.
+/// `mesh1.admin.2`, writes it (R13): its node.delete of the exited birth (`retire-node:<path>`)
+/// writes the row `Deleted` inside its `NodeDeleted` step, and its node.create at the same
+/// `path.name` (`create-node:<path>`) claims it, `before` or after that `Deleted` row. Returns the
+/// row at `mesh1.rpc.1`, the exited node and the new one.
 async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId) {
-    let op = "recover-node:mesh1.rpc.1";
+    let (delete, create) = ("retire-node:mesh1.rpc.1", "create-node:mesh1.rpc.1");
     let storage = Arc::new(MemoryNodesStorage::default());
     let mp = mesh_primary(&storage);
     let exited = held(&mp, "mesh1.rpc.1").await;
@@ -1085,10 +1085,10 @@ async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId)
     storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold") }).await.unwrap().unwrap();
     let born = NodeId::mint();
     if new_claimed_first {
-        mp.rows.claim(&exited.name, &born, op).await.expect_err("the exited node's live row holds the name");
+        mp.rows.claim(&exited.name, &born, create).await.expect_err("the exited node's live row holds the name");
     }
-    mp.rows.deleted(&exited, op).await.expect("the executor writes the Deleted row inside NodeDeleted");
-    mp.rows.claim(&exited.name, &born, op).await.expect("the Deleted row holds no name");
+    mp.rows.deleted(&exited, delete).await.expect("the executor writes the Deleted row inside NodeDeleted");
+    mp.rows.claim(&exited.name, &born, create).await.expect("the Deleted row holds no name");
     (storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap(), exited.node_id, born)
 }
 

@@ -542,7 +542,7 @@ struct Lands {
 impl OperationRunner for Lands {
     async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         self.ran.run(build, attempt, op).await?;
-        if let (true, BuildOperation::CreateNode { node: p }) = (self.lands, op) {
+        if let (true, BuildOperation::CreateNode { node: p, .. }) = (self.lands, op) {
             self.topology.write().await.nodes.push(node(&p.to_string(), false, false));
         }
         Ok(())
@@ -692,7 +692,7 @@ struct LandsAndSeats {
 impl OperationRunner for LandsAndSeats {
     async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         self.ran.run(build, attempt, op).await?;
-        if let BuildOperation::CreateNode { node: p } = op {
+        if let BuildOperation::CreateNode { node: p, .. } = op {
             let mut v = self.topology.write().await;
             v.nodes.push(node(&p.to_string(), false, false));
             if p.to_string() == "mesh1.rpc.2" {
