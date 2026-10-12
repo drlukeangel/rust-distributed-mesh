@@ -150,7 +150,8 @@ impl HandoverBook {
 }
 
 /// What a receiver had to read or write to decide or commit a call, and why it failed: the fields a
-/// `RejectedSourceFailed` reply names (node-rpc-envelope.md: a runtime refusal, never `NotReady`).
+/// `RejectedSourceFailed` reply names. A runtime fact of the receiver, never `NotReady`, which is the
+/// readiness door's answer (node-rpc-envelope.md, "Node RPC readiness gate").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceFailure {
     /// What failed, named with its owner and row.

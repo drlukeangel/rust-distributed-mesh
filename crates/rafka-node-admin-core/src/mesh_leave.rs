@@ -769,7 +769,8 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
 /// workflows are incomplete, every roster birth but the final primary without an Exited receipt,
 /// and the open leave ends now (mesh-leave.md: "Missing receipts ... leave the workflow
 /// incomplete"). `Err` is a read that decides nothing (not ready, unreached, interrupted, refused
-/// or an incomplete stream): the reply is not-ready by that name and the open leave stays open.
+/// or an incomplete stream): the refusal is `RejectedSourceFailed` naming the final primary's Build
+/// log, the fetch and the read's own failure ([`refuse_source_failed`]), and the open leave stays open.
 pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, StatusReply> {
     match read {
         Ok(facts) => Ok(handoff_verdict(&facts, key, admitted, receipt_manifest)),
