@@ -89,8 +89,11 @@ impl NodeConfigs {
         if let Err(over) = rafka_mesh_entity::check_config(config) {
             return StatusReply::RejectedConfig { over };
         }
-        let Some(subject) = view.members().find(|n| n.node_id == *node_id) else {
-            return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} is not a member of this admin's view; its config cannot be put") };
+        // The subject is the exact birth the call names, wherever its row stands: a node whose row its
+        // mesh-primary moved to `<path>.old` is still that birth (never found by path.name, its shape
+        // included: `Topology::own`).
+        let Some(subject) = view.own(node_id) else {
+            return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} holds no birth in this admin's view; its config cannot be put") };
         };
         span.record("subject", subject.name.to_string().as_str());
         span.record("row_status", format!("{:?}", subject.status).as_str());
