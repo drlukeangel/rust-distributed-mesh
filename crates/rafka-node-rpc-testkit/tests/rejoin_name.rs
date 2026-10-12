@@ -42,7 +42,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("rejoin-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = "mesh1.rpc.1".parse().unwrap();
         let old: PathName = "mesh1.rpc.1.old".parse().unwrap();
@@ -118,7 +118,7 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("rejoin-held-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();

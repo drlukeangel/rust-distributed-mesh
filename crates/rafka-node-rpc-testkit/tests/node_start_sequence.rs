@@ -78,7 +78,7 @@ fn passing() -> Hydration {
 fn launch_by(root: &Running, name: &str, dir: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     Launch {
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),

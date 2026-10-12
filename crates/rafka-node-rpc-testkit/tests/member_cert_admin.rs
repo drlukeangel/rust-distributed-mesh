@@ -70,7 +70,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             (d.clone(), d.mesh_id.clone().expect("the root holds its mesh id"))
         };
         std::fs::create_dir_all(&joiner_dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&joiner_dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();
         let key = rafka_node_rpc_testkit::node::load_or_mint_key(&joiner_dir).unwrap();
         let launch = Launch {
             fabric,

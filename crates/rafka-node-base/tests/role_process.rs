@@ -29,7 +29,7 @@ struct RoleProcess {
 
 async fn born(role: Role, name: &str) -> RoleProcess {
     let dir = tempdir::Dir::new();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(dir.path()).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir.path()).unwrap();
     let key = node::load_or_mint_key(dir.path()).unwrap();
     // The admin that deployed this birth: it takes the node's JoinNode and serves its topology.
     let fabric_id = FabricId::mint();

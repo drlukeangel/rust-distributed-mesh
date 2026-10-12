@@ -24,7 +24,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
     cap.run(crate::common::Threads::Current, async move {
         let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let fabric = FabricId::mint();
         let admin = admin_side_deaf_to_joins("127.0.0.1".parse().unwrap(), &fabric).await;
         let launch = Launch {
@@ -71,7 +71,7 @@ fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
     cap.run(crate::common::Threads::Current, async move {
         let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),

@@ -519,7 +519,7 @@ async fn an_application_that_never_answers_keeps_the_fabric_in_state_sync_with_a
     assert_eq!(fabric["status"], "state-sync", "{fabric}");
     let blocked: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-blocked").into_iter().filter(|b| b["attributes"]["state"] == "state-sync").collect();
     assert!(
-        blocked.iter().any(|b| b["attributes"]["blockers"] == "application(no-state-synced)" && s(&b["attributes"]["what"]).starts_with("sync_state awaits the application's state-synced for build pd8zej7xtjyr")),
+        blocked.iter().any(|b| b["attributes"]["blockers"] == "application(no-state-synced)" && s(&b["attributes"]["what"]).starts_with("sync_state awaits the application's state-synced for build ")),
         "the blocker is named: {:?}",
         blocked.iter().map(|b| &b["attributes"]).collect::<Vec<_>>()
     );

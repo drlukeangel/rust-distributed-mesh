@@ -65,7 +65,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         let launch_of = |name: &PathName| {
             let dir = root.join(name.to_string());
             std::fs::create_dir_all(&dir).unwrap();
-            RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+            RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
             let launch = Launch {
                 fabric: "fabric1".into(),
@@ -284,7 +284,7 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         let dir = root.join(born.to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),

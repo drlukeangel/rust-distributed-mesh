@@ -130,7 +130,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             (d.clone(), d.mesh_id.clone().expect("the root holds its mesh id"))
         };
         std::fs::create_dir_all(&joiner_dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&joiner_dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();
         let key = rafka_node_rpc_testkit::node::load_or_mint_key(&joiner_dir).unwrap();
         let launch = Launch {
             fabric,

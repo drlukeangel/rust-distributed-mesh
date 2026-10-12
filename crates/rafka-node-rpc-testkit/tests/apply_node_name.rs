@@ -39,7 +39,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
         let dir = std::env::temp_dir().join(format!("apply-node-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();

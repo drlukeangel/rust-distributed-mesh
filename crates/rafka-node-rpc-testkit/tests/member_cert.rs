@@ -39,7 +39,7 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarn
 fn birth_dir(what: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("{what}-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     dir
 }
 

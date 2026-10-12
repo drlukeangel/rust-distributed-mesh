@@ -4,6 +4,8 @@
 //! - the Fabric, Mesh and Node views carry canonical 12-char Crockford ids
 //!   (no 32-char hex product id), every admin names the same Fabric id, and a
 //!   node's transport identity is never its product identity;
+//! - a node's incarnation and a Build's id are canonical Crockford ids too (R-BI5: one id type,
+//!   never hex), and the Digest a peer hears from a restarted birth names its incarnation as one;
 //! - every birth's ready span names its node, mesh and fabric ids with
 //!   `id_format = "crockford60"`, equal to the views';
 //! - a restart keeps NodeId and FabricId under a new incarnation, and a second restart of the
@@ -50,7 +52,8 @@ fn names(meshes: &[&str], rpc: u32) -> BTreeSet<String> {
 }
 
 async fn build(estate: &Estate, body: &FabricDesired) {
-    estate.reconcile(body).await;
+    let accepted = estate.reconcile(body).await;
+    canonical("build id", &Value::String(accepted.build_id.to_string()));
 }
 
 fn json_of<T: serde::Serialize>(v: &T) -> Value {
@@ -78,6 +81,9 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     }
     let node_ids: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), canonical("node id", &n["node_id"]))).collect();
     assert_eq!(node_ids.values().collect::<BTreeSet<_>>().len(), node_ids.len(), "node ids are distinct");
+    for n in &nodes {
+        canonical("incarnation id", &n["incarnation_id"]);
+    }
     for n in &nodes {
         let transport = s(&n["endpoint_id"]);
         assert!(!transport.is_empty() && transport != s(&n["node_id"]) && transport != fabric_id, "transport identity is not product identity: {n}");
@@ -165,10 +171,18 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
             .unwrap_or_else(|| panic!("{} reports ready", n["name"]));
         let a = &ready["attributes"];
         assert_eq!(a["id_format"], "crockford60");
+        canonical("ready span incarnation_id", &a["incarnation_id"]);
         assert_eq!(s(&a["node_id"]), s(&n["node_id"]));
         assert_eq!(s(&a["fabric_id"]), fabric_id);
         assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
     }
+
+    // The Digest a peer heard from the restarted birth names its incarnation as a Crockford id.
+    let heard = named(&spans, "rdm.mesh.membership.update.via-node-started")
+        .into_iter()
+        .find(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"])
+        .unwrap_or_else(|| panic!("no peer heard the Digest of the restarted birth {}", after["incarnation_id"]));
+    canonical("heard Digest incarnation_id", &heard["attributes"]["incarnation_id"]);
 
     // The removed mesh2's last admin published MeshStatus Dead while it lived, and it left with MeshLeft;
     // after that nothing publishes mesh2 Dead: the recreated mesh2's primary authors its new mesh's own

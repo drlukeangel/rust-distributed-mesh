@@ -70,7 +70,7 @@ async fn rig_hydrating(tag: &str, carry: bool, hydrator: Option<std::sync::Arc<r
     let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.2").await;
     let dir = std::env::temp_dir().join(format!("{tag}-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     let key = node::load_or_mint_key(&dir).unwrap();
     let launch = Launch {
         fabric: "fabric1".into(),

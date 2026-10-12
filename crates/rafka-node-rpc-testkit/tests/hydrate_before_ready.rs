@@ -43,7 +43,7 @@ async fn birth(status: MemberStatus) -> Birth {
     .await;
     let dir = std::env::temp_dir().join(format!("hydrate-before-ready-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     let key = node::load_or_mint_key(&dir).unwrap();
     let launch = Launch {
         fabric: "fabric1".into(),
