@@ -687,12 +687,20 @@ pub struct AcceptedStore {
     /// A learned record whose Build is not held yet.
     wanted: Mutex<Option<FabricRecord>>,
     node: String,
+    /// Ticked each time `learned` takes a newer pointer: the fabric-primary's `fabric/` writer runs a
+    /// round on it (`crate::admin`'s fabric rows), so every pointer learned reaches `fabric/`.
+    learned_changes: tokio::sync::watch::Sender<()>,
 }
 
 impl AcceptedStore {
     /// A store over `storage`, held by the admin named `node`.
     pub fn new(storage: Arc<dyn FabricStorage>, node: impl Into<String>) -> Self {
-        Self { storage, learned: Mutex::new(None), wanted: Mutex::new(None), node: node.into() }
+        Self { storage, learned: Mutex::new(None), wanted: Mutex::new(None), node: node.into(), learned_changes: tokio::sync::watch::channel(()).0 }
+    }
+
+    /// Changes each time this admin learns a newer pointer ([`Self::learned_pointer`]).
+    pub fn learned_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.learned_changes.subscribe()
     }
 
     /// The fabric record held, when one is: the identity row (or the learned identity while the
@@ -776,6 +784,7 @@ impl AcceptedStore {
             *learned = Some((FabricIdentity { fabric_id: record.fabric_id.clone(), name: record.name.clone() }, pointer));
         }
         *self.wanted.lock().unwrap() = None;
+        self.learned_changes.send_replace(());
         let previous = before.as_ref().and_then(|r| r.build_id.clone());
         tracing::info_span!(
             "rdm.node_admin.fabric.update.via-pointer-learned",

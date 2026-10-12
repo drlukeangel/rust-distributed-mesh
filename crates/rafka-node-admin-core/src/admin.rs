@@ -1538,7 +1538,8 @@ pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::Fabri
 
 /// `fabric/` on the fabric's store root, written by the fabric-primary alone (R14 item 2): while this
 /// birth holds the fabric seat it writes the Fabric record it holds (the identity it is configured
-/// for, and the pointer it learned while another admin held the seat), so a seat that came to it
+/// for, and every pointer it learns that is newer than the last it wrote, each a blind put of its own
+/// row, build.md §5.3: a restart reads the pointer from `fabric/`), so a seat that came to it
 /// before the fabric's first state-commit, from a holder whose held rows were dropped, still leaves
 /// the Fabric row on the store root, and every seat record it holds as its own row. The claim of the
 /// fabric's name comes first: nothing else is written to `fabric/` until it wins, and a name another
@@ -1555,13 +1556,32 @@ pub(crate) struct FabricRowsWriter {
     /// The claim of the fabric's name: `None` before the store answered it; `Some(Ok)` once it won;
     /// `Some(Err)` when another Fabric's identity holds the key (a held identity is never rewritten).
     claim: Option<Result<(), crate::fabric_storage::FabricNameHeld>>,
-    /// The learned pointer is on the store root (or there was none to write).
-    pointer_written: bool,
+    /// The newest learned pointer this writer has put on the store root.
+    pointer_written: Option<crate::fabric_storage::FabricPointer>,
 }
 
 impl FabricRowsWriter {
     pub(crate) fn new(me: (NodeId, IncarnationId), identity: crate::fabric_storage::FabricIdentity, storage: Arc<dyn crate::fabric_storage::FabricStorage>, accepted: Arc<AcceptedStore>) -> Self {
-        Self { me, identity, storage, accepted, written: HashSet::new(), claim: None, pointer_written: false }
+        Self { me, identity, storage, accepted, written: HashSet::new(), claim: None, pointer_written: None }
+    }
+
+    /// Run a round on every change of the seats `seats` holds and every pointer this admin learns,
+    /// each under the park gate's turn (`seat-rows`), until either source ends.
+    pub(crate) async fn run(mut self, seats: rafka_mesh_transport::membership::SeatBook, park: crate::park_gate::ParkGate) {
+        let (mut seat_changed, mut learned) = (seats.subscribe(), self.accepted.learned_changes());
+        loop {
+            // Held here while the admin is parked: its own wait, outside every lock.
+            let turn = park.turn("seat-rows").await;
+            self.round(&seats).await;
+            drop(turn);
+            let ended = tokio::select! {
+                r = seat_changed.changed() => r.is_err(),
+                r = learned.changed() => r.is_err(),
+            };
+            if ended {
+                return;
+            }
+        }
     }
 
     /// One round over the seat records `seats` holds.
@@ -1577,17 +1597,26 @@ impl FabricRowsWriter {
         if !matches!(self.claim, Some(Ok(()))) {
             return;
         }
-        if !self.pointer_written {
-            self.pointer_written = match self.accepted.learned_pointer() {
-                None => true,
-                Some(p) => match storage.put_pointer(&p).await {
-                    Ok(()) => true,
-                    Err(e) => {
-                        tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, build_id = %p.build_id, error = %e).in_scope(|| tracing::info!("the learned Fabric pointer could not be written to fabric.storage"));
-                        false
-                    }
-                },
-            };
+        // Each learned pointer newer than the last written: a blind put of its own row, never a read of
+        // the rows and a write back. One that is not written is written by the next round.
+        if let Some(p) = self.accepted.learned_pointer().filter(|p| self.pointer_written.as_ref().is_none_or(|w| p.order() > w.order())) {
+            match storage.put_pointer(&p).await {
+                Ok(()) => {
+                    tracing::info_span!(
+                        "rdm.node_admin.fabric.update.via-pointer-written",
+                        fabric_id = %identity.fabric_id,
+                        build_id = %p.build_id,
+                        submitted_at_ms = p.submitted_at_ms,
+                        previous_build_id = %self.pointer_written.as_ref().map(|w| w.build_id.0.as_str()).unwrap_or(""),
+                        holder_id = %self.me.0,
+                    )
+                    .in_scope(|| tracing::info!("the fabric-primary put the pointer it learned on fabric/: its own row"));
+                    self.pointer_written = Some(p);
+                }
+                Err(e) => {
+                    tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, build_id = %p.build_id, error = %e).in_scope(|| tracing::info!("the learned Fabric pointer could not be written to fabric.storage"));
+                }
+            }
         }
         let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
         rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
@@ -5186,23 +5215,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // file store reads the committed fabric seat record, as the Build gate does.
                 fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
-                // seat change.
+                // seat change and every pointer learned.
                 {
-                    let seats = membership.seats().clone();
-                    let mut writer = FabricRowsWriter::new((node_id.clone(), incarnation.clone()), fabric_identity.clone(), fabric_storage.clone(), accepted.clone());
-                    let mut changed = seats.subscribe();
-                    let park = park_gate.clone();
-                    tasks_early.push(tokio::spawn(async move {
-                        loop {
-                            // Held here while the admin is parked: its own wait, outside every lock.
-                            let turn = park.turn("seat-rows").await;
-                            writer.round(&seats).await;
-                            drop(turn);
-                            if changed.changed().await.is_err() {
-                                return;
-                            }
-                        }
-                    }));
+                    let writer = FabricRowsWriter::new((node_id.clone(), incarnation.clone()), fabric_identity.clone(), fabric_storage.clone(), accepted.clone());
+                    tasks_early.push(tokio::spawn(writer.run(membership.seats().clone(), park_gate.clone())));
                 }
                 // The status rows of this admin's mesh on the fabric's store root (`status/<mesh>/`): written by
                 // the mesh's seat holder, folded into what this admin applied when it takes the seat.
@@ -7248,6 +7264,102 @@ mod tests {
         accepted.learn(record(&b30), &builds, "build-topic").await;
         writer.round(&seats).await;
         assert_eq!(restarted().build_id().await, Some(b30.clone()), "a pointer learned after the first one written reaches fabric/: a restart reads B30, not B27");
+    }
+
+    /// `fabric.storage` in memory that reports the Build of each pointer row put on `puts`.
+    struct PointerPuts {
+        inner: crate::fabric_storage::MemoryFabricStorage,
+        puts: tokio::sync::mpsc::UnboundedSender<crate::build::BuildId>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::fabric_storage::FabricStorage for PointerPuts {
+        async fn fabric(&self) -> Result<Option<crate::fabric_storage::FabricRecord>, crate::fabric_storage::FabricStorageError> {
+            self.inner.fabric().await
+        }
+        async fn fabric_rows(&self) -> Result<(Option<crate::fabric_storage::FabricIdentity>, Option<crate::fabric_storage::FabricPointer>), crate::fabric_storage::FabricStorageError> {
+            self.inner.fabric_rows().await
+        }
+        async fn claim_identity(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<Result<crate::fabric_storage::FabricClaim, crate::fabric_storage::FabricNameHeld>, crate::fabric_storage::FabricStorageError> {
+            self.inner.claim_identity(identity).await
+        }
+        async fn release_name(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<bool, crate::fabric_storage::FabricStorageError> {
+            self.inner.release_name(identity).await
+        }
+        async fn put_pointer(&self, pointer: &crate::fabric_storage::FabricPointer) -> Result<(), crate::fabric_storage::FabricStorageError> {
+            self.inner.put_pointer(pointer).await?;
+            let _ = self.puts.send(pointer.build_id.clone());
+            Ok(())
+        }
+        async fn shutdown(&self) -> Result<Option<crate::fabric_storage::FabricShutdown>, crate::fabric_storage::FabricStorageError> {
+            self.inner.shutdown().await
+        }
+        async fn put_shutdown(&self, shutdown: &crate::fabric_storage::FabricShutdown) -> Result<crate::fabric_storage::FabricShutdown, crate::fabric_storage::FabricStorageError> {
+            self.inner.put_shutdown(shutdown).await
+        }
+        async fn put_seat(&self, row: &crate::fabric_storage::SeatRow) -> Result<(), crate::fabric_storage::FabricStorageError> {
+            self.inner.put_seat(row).await
+        }
+        async fn seats(&self) -> Result<Vec<crate::fabric_storage::SeatRow>, crate::fabric_storage::FabricStorageError> {
+            self.inner.seats().await
+        }
+        async fn put_handover(&self, row: &crate::fabric_storage::HandoverRow) -> Result<(), crate::fabric_storage::FabricStorageError> {
+            self.inner.put_handover(row).await
+        }
+        async fn handovers(&self) -> Result<Vec<crate::fabric_storage::HandoverRow>, crate::fabric_storage::FabricStorageError> {
+            self.inner.handovers().await
+        }
+        async fn put_seat_transfer(&self, row: &crate::fabric_storage::SeatTransferRow) -> Result<(), crate::fabric_storage::FabricStorageError> {
+            self.inner.put_seat_transfer(row).await
+        }
+        async fn seat_transfer(&self, holder_mesh: &str, operation: &str) -> Result<Option<crate::fabric_storage::SeatTransferRow>, crate::fabric_storage::FabricStorageError> {
+            self.inner.seat_transfer(holder_mesh, operation).await
+        }
+        async fn seat_transfers(&self) -> Result<Vec<crate::fabric_storage::SeatTransferRow>, crate::fabric_storage::FabricStorageError> {
+            self.inner.seat_transfers().await
+        }
+    }
+
+    /// CONTRACT (build.md §5.3: the fabric-primary writes `fabric/`, and a restart reads the pointer
+    /// from it): the fabric-primary's `fabric/` writer runs a round when its admin learns a pointer, not
+    /// only when a seat changes. The writer runs (`FabricRowsWriter::run`) for the seat holder, whose
+    /// first round puts the learned B27; the admin then learns B30 with no seat change, and the
+    /// writer's next put is B30's row. Must NOT happen: the writer asleep until the next seat change,
+    /// with B30 only in this admin's memory.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn the_fabric_primarys_rows_writer_runs_when_its_admin_learns_a_pointer() {
+        use crate::build_state::{BuildAccepted, BuildStateAdapter};
+        let (puts_tx, mut puts) = tokio::sync::mpsc::unbounded_channel();
+        let storage: Arc<dyn crate::fabric_storage::FabricStorage> = Arc::new(PointerPuts { inner: crate::fabric_storage::MemoryFabricStorage::new(), puts: puts_tx });
+        let accepted = Arc::new(AcceptedStore::new(storage.clone(), "mesh1.admin.1"));
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let identity = crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
+        let (b27, b30) = (crate::build::BuildId("bld-27".into()), crate::build::BuildId("bld-30".into()));
+        for (id, at) in [(&b27, 27), (&b30, 30)] {
+            let topology = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
+            builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology, submitted_change: None, submitted_at_ms: at }).await.unwrap();
+        }
+        let record = |build_id: &crate::build::BuildId| crate::fabric_storage::FabricRecord { fabric_id: identity.fabric_id.clone(), name: identity.name.clone(), build_id: Some(build_id.clone()) };
+        accepted.learn(record(&b27), &builds, "entry-answer").await;
+        let me = rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 };
+        let seats = rafka_mesh_transport::membership::SeatBook::default();
+        seats.take(rafka_mesh_entity::Seat::FabricPrimary, &me);
+        let writer = FabricRowsWriter::new((me.node_id.clone(), me.incarnation.clone()), identity.clone(), storage.clone(), accepted.clone());
+        let capture = crate::span_capture::Capture::new("i143-s42-learned-pointer-written");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let task = tokio::spawn(writer.run(seats.clone(), crate::park_gate::ParkGate::new()));
+        let bound = Duration::from_secs(5);
+        let first = tokio::time::timeout(bound, puts.recv()).await.expect("the writer's first round puts the pointer learned before it ran");
+        assert_eq!(first, Some(b27.clone()));
+        accepted.learn(record(&b30), &builds, "build-topic").await;
+        let next = tokio::time::timeout(bound, puts.recv()).await.unwrap_or_else(|_| panic!("no pointer was put within {bound:?} of B30 being learned: the writer did not run"));
+        assert_eq!(next, Some(b30.clone()), "the pointer learned with no seat change is put by the writer's next round");
+        task.abort();
+        let spans = capture.named("rdm.node_admin.fabric.update.via-pointer-written");
+        let said: Vec<(String, String)> = spans.iter().map(|s| (s.attributes.get("build_id").cloned().unwrap_or_default(), s.attributes.get("previous_build_id").cloned().unwrap_or_default())).collect();
+        assert_eq!(said, vec![(b27.0.clone(), String::new()), (b30.0.clone(), b27.0.clone())], "each learned pointer newer than the last written is its own put: {spans:?}");
+        eprintln!("span rdm.node_admin.fabric.update.via-pointer-written trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
     }
 
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
