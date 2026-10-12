@@ -205,6 +205,11 @@ pub trait NodesStorage: Send + Sync {
     /// it). The index entry is kept by the store in the same step as every write of a row (a put, a
     /// release), so it names exactly the row the node holds; `None` when it holds none.
     async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, StorageError>;
+    /// Whether the row at `name` is `holder`'s, decided in one step against every other row write.
+    /// When it is, the row is left exactly as it is and its id index entry names `name` once this
+    /// answers: written when it does not, as when a put ended between the row file and its entry
+    /// (two files), so a move retried over the row its node already holds leaves no row unnamed.
+    async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError>;
     /// `holder` lets go of the key `name`: its row goes when it is `holder`'s, decided by the store
     /// in one step against every other row write; a row of another node there (the name was
     /// released before and claimed since) is left as it is. Returns whether `holder`'s row went.
@@ -287,6 +292,14 @@ impl NodesStorage for MemoryNodesStorage {
     async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, StorageError> {
         Ok(self.ids.lock().unwrap().get(node_id).filter(|n| n.mesh == mesh).cloned())
     }
+    async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
+        let rows = self.rows.lock().unwrap();
+        let held = rows.get(&name.to_string()).is_some_and(|r| &r.node_id == holder);
+        if held {
+            self.ids.lock().unwrap().insert(holder.clone(), name.clone());
+        }
+        Ok(held)
+    }
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let mut rows = self.rows.lock().unwrap();
         let key = name.to_string();
@@ -337,7 +350,7 @@ impl MeshNodes {
     /// row a node holds (a status change, a delete's `Deleted` row) is the one write of its row. An
     /// entry that does not name it yet is written, also when the write that put the row ended
     /// before its entry was written (the row and its entry are two files): the node's next put of
-    /// the key names it.
+    /// the key, or a move retried over it ([`NodesStorage::hold_node_row`]), names it.
     async fn index_put(&self, previous: Option<&NodeRow>, row: &NodeRow) -> Result<(), StorageError> {
         if let Some(p) = previous.filter(|p| p.node_id != row.node_id) {
             self.index_drop(&p.node_id, &p.name).await?;
@@ -546,6 +559,13 @@ impl NodesStorage for FileNodesStorage {
     }
     async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, StorageError> {
         Ok(self.mesh(mesh).await?.ids.read::<RowId>(node_id.as_str(), ROW_ID_FORMAT).await?.map(|e| e.name))
+    }
+    async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
+        let _one = self.row_writes.lock().await;
+        let rows = self.mesh(&name.mesh).await?;
+        let Some(row) = rows.rows.read::<NodeRow>(&name.to_string(), ROW_FORMAT).await?.filter(|r| &r.node_id == holder) else { return Ok(false) };
+        rows.index_put(None, &row).await?;
+        Ok(true)
     }
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let _one = self.row_writes.lock().await;
@@ -816,8 +836,9 @@ mod tests {
     /// names it; a move (put at the new key, release the old) leaves it naming the new one; a release
     /// drops it; a recovery's new node put over a `Deleted` row of another node leaves that node with
     /// no entry; a put refused by another node's live row writes no entry and leaves the holder's. A
-    /// node that never held a row has none; a put of the key the node already holds names it (a
-    /// write that ended between the row file and its entry) and, once named, writes no entry again.
+    /// node that never held a row has none; a hold of the key the node already holds names it (a
+    /// move retried after a write that ended between the row file and its entry), and a put of it,
+    /// once named, writes no entry again.
     /// What must NOT happen: an entry naming a key whose row another node holds, or a row its node
     /// holds that no entry names.
     #[tokio::test]
@@ -860,13 +881,14 @@ mod tests {
         assert_eq!(file.put_node_row(&NodeRow { status: crate::model::NodeStatus::Deleted, ..held.clone() }).await.unwrap(), Ok(()));
         assert_eq!(inode(&entry), before, "the entry naming the key is not written again");
         assert_eq!(file.node_row_name("mesh1", &held.node_id).await.unwrap(), Some(held.name.clone()));
-        // A write that ended between the row and its entry (two files): the node's next put of the
-        // key it holds names it.
+        // A write that ended between the row and its entry (two files): the move retried over the row
+        // the node holds there leaves it as it is and names it, so no row is left unnamed.
         let torn = row("mesh1.rpc.3");
         std::fs::write(root.nodes("mesh1").join("rows").join("mesh1.rpc.3.json"), serde_json::to_vec(&serde_json::json!({"format": ROW_FORMAT, "record": torn})).unwrap()).unwrap();
         assert_eq!(file.node_row_name("mesh1", &torn.node_id).await.unwrap(), None);
-        assert_eq!(file.put_node_row(&torn).await.unwrap(), Ok(()));
-        assert_eq!(file.node_row_name("mesh1", &torn.node_id).await.unwrap(), Some(torn.name.clone()), "the put of a key the node holds names it");
+        assert!(!file.hold_node_row(&torn.name, &NodeId::mint()).await.unwrap(), "another node holds no row there");
+        assert!(file.hold_node_row(&torn.name, &torn.node_id).await.unwrap());
+        assert_eq!(file.node_row_name("mesh1", &torn.node_id).await.unwrap(), Some(torn.name.clone()), "the hold of a key the node holds names it");
         let _ = std::fs::remove_dir_all(&d);
     }
 

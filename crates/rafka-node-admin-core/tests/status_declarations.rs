@@ -518,6 +518,9 @@ impl NodesStorage for RefusingRows {
     async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<rafka_node_admin_core::model::PathName>, rafka_node_admin_core::record_store::StorageError> {
         self.0.node_row_name(mesh, node_id).await
     }
+    async fn hold_node_row(&self, name: &rafka_node_admin_core::model::PathName, _holder: &NodeId) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
+        Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the hold".into() })
+    }
     async fn release_node_row(&self, name: &rafka_node_admin_core::model::PathName, _holder: &rafka_node_admin_core::model::NodeId) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
     }

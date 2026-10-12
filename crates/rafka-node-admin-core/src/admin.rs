@@ -6523,6 +6523,9 @@ mod tests {
         async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::record_store::StorageError> {
             self.0.node_row_name(mesh, node_id).await
         }
+        async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.0.hold_node_row(name, holder).await
+        }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
         }
@@ -6668,6 +6671,9 @@ mod tests {
         async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::record_store::StorageError> {
             self.0.node_row_name(mesh, node_id).await
         }
+        async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.0.hold_node_row(name, holder).await
+        }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
         }
@@ -6720,6 +6726,9 @@ mod tests {
         }
         async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::record_store::StorageError> {
             self.inner.node_row_name(mesh, node_id).await
+        }
+        async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.hold_node_row(name, holder).await
         }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.inner.release_node_row(name, holder).await
@@ -8434,6 +8443,9 @@ mod tests {
         async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, crate::record_store::StorageError> {
             self.read(&self.id_reads);
             self.inner.node_row_name(mesh, node_id).await
+        }
+        async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.hold_node_row(name, holder).await
         }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.inner.release_node_row(name, holder).await
