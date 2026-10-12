@@ -8,10 +8,14 @@
 //!   adopts its own OS clock once at boot ([`adopt_own_clock`]); so does a restarted node-admin
 //!   whose own seat records name it the fabric-primary and that holds no rafka-time.
 //! - Every other process adopts from the answer to its pull: the `JoinNode` answer
-//!   ([`crate::wire::JoinControl::rafka_time_ms`]) and every `GetTopology` read
-//!   ([`rafka_node_rpc_contract::topology::TopologyReply::RafkaTime`]). A member adopts from
-//!   whoever answers. A mesh primary adopts only from a fabric-primary seat; any other answer is
-//!   refused by name and the mesh primary keeps the rafka-time it holds.
+//!   ([`crate::wire::JoinControl::rafka_time_ms`]), its start's last step, which refreshes rafka-time
+//!   from a `GetTopology` read ([`rafka_node_rpc_contract::topology::TopologyReply::RafkaTime`]), a
+//!   re-entry's read, and a mesh primary's pull from a new fabric-primary ([`run_seat_move_pull`]).
+//!   A member adopts from whoever answers. A mesh primary adopts only from a fabric-primary seat; any
+//!   other answer is refused by name and the mesh primary keeps the rafka-time it holds.
+//! - Between pulls a node's rafka-time is disciplined from its own authority's heartbeats only. A
+//!   delta-gap top-up ([`crate::topology_read::top_up_fetch`]) is a topology read repair and adopts
+//!   nothing.
 //! - A node answers a pull with the rafka-time it adopted ([`crate::topology_read::TopologyDoor`],
 //!   [`crate::admin`]'s join answer), never its own clock, so every served time is one lineage.
 //!

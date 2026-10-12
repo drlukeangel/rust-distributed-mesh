@@ -696,7 +696,7 @@ fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() 
         let _ = target_of(&caller, &server);
         let mut primary = own_digest(&server, &fabric);
         primary.node.name = server.resolved.name.clone();
-        let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())), caller.time.clone(), "mesh1.rpc.1".into(), NodeId::mint());
+        let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())));
         let done = fetch(caller.membership.clone(), primary, vec!["mesh2".into()]).await.unwrap();
         assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete snapshot");
         let before = caller.time.now_ms();

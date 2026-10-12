@@ -388,17 +388,20 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// node whose source desynchronized "pulls the current full fabric topology from its own current
 /// mesh-primary with GetTopology, installs it atomically, records the publisher and version baseline,
 /// and resumes"): one [`get_topology`] of each desynchronized mesh to the exact birth of the primary
-/// the membership names, installed through the membership's own receiver, and the rafka-time that
-/// read was served with adopted by the rule of the puller `me` (`me_id`). The one workflow a node-admin
-/// and every other node run.
-pub fn top_up_fetch(client: Arc<NodeRpcClient>, rafka_time: rafka_mesh_transport::clock::RafkaTime, me: String, me_id: rafka_mesh_entity::NodeId) -> rafka_mesh_transport::membership::TopUpFetch {
+/// the membership names, installed through the membership's own receiver. The one workflow a
+/// node-admin and every other node run.
+///
+/// A top-up is a topology read repair (lifecycles/node-topology-get.md) and adopts no rafka-time:
+/// between its pulls a node keeps its rafka-time disciplined from its own authority's heartbeats only
+/// (origin-ordering.md, rafka-time), so a gap's repair neither stalls its reading nor clears its
+/// discipline's window or slew.
+pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rafka_mesh_transport::membership::TopUpFetch {
     Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
-        let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), me.clone(), me_id.clone());
+        let client = client.clone();
         Box::pin(async move {
             let mut done = rafka_mesh_transport::membership::TopUpDone::default();
             for mesh in meshes {
                 let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
-                read.adopt_rafka_time(&rafka_time, &membership, &me, me.split('.').next().unwrap_or_default(), &me_id, &primary.node.name.to_string()).map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
             }
             Ok(done)
