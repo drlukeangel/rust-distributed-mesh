@@ -2,8 +2,9 @@
 //!
 //! The invariant: every Ready blocker caused by missing control facts is recoverable through a
 //! request the blocked node can repeat. The blocker is a TYPED reason ([`HydrationBlocker`]); the
-//! existing Ready check (`admin.rs`, every 100 ms) hands it to a [`Hydrator`], which issues the
-//! request the reason names:
+//! Build-floor step of a node-admin's start (`admin.rs` `AdminFloor`, node-start.md step 4, every
+//! 100 ms while below the floor) hands it to a [`Hydrator`], which issues the request the reason
+//! names:
 //!
 //! - [`HydrationBlocker::NoPointer`] with a `wanted` BuildId (the entry reply supplied the Fabric
 //!   record and the Build is not held): `FetchBuildFacts` (op `0x1F`) for that Build.
@@ -153,13 +154,13 @@ impl Backoff {
 /// How one outstanding request ended.
 enum End {
     /// A complete stream was absorbed from this responder; whether it cleared the blocker is
-    /// judged by the next Ready check.
+    /// judged by the next floor check.
     Absorbed(NodeId),
     Failed(NodeId),
     Entry(Result<(), String>),
 }
 
-/// What the Ready check drives: at most one outstanding request, per-target backoff.
+/// What the Build-floor check drives: at most one outstanding request, per-target backoff.
 pub struct Hydrator {
     me: PathName,
     client: Arc<NodeRpcClient>,
@@ -190,7 +191,7 @@ impl Hydrator {
         Self { me, client, local, builds, accepted, responders, entry, in_flight: None, backoff: BTreeMap::new(), entry_backoff: Backoff::default(), judging: None }
     }
 
-    /// One Ready check's turn. `blocker` is what the check just found, `None` when no control fact
+    /// One floor check's turn. `blocker` is what the check just found, `None` when no control fact
     /// is missing. Never waits for the request it starts.
     pub async fn tick(&mut self, blocker: Option<&HydrationBlocker>) {
         let now = Instant::now();
@@ -221,6 +222,20 @@ impl Hydrator {
         match blocker.need() {
             Need::Entry => self.repeat_entry(blocker, now),
             Need::BuildFacts(id) => self.fetch(blocker, id, now).await,
+        }
+    }
+
+    /// Resolves once no request is outstanding: one still in flight is let end (its call has its own
+    /// budget) and its outcome taken as a turn would take it. A node-admin's start calls it when the
+    /// Build floor is held, so nothing of the step is pending at node.started.
+    pub async fn settle(&mut self) {
+        if let Some(h) = self.in_flight.take() {
+            match h.await {
+                Ok(End::Absorbed(from)) => self.judging = Some(from),
+                Ok(End::Failed(from)) => self.backoff.entry(from).or_default().failed(Instant::now()),
+                Ok(End::Entry(Err(_))) => self.entry_backoff.failed(Instant::now()),
+                Ok(End::Entry(Ok(()))) | Err(_) => {}
+            }
         }
     }
 

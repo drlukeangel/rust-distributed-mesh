@@ -165,6 +165,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
 }
 
 /// What the entering admin has.
+#[derive(Clone)]
 pub(crate) struct EntryCtx {
     pub me: PathName,
     pub me_id: NodeId,

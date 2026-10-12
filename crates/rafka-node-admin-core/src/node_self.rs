@@ -111,7 +111,7 @@ pub const CONNECTIONS_DELETE: &str = "node.connections.delete";
 /// Why a start stopped, and at which step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartFailed {
-    /// `node.join`, `node.topology` or `node.hydrate`.
+    /// `node.join`, `node.hydrate`, `node.topology` or `node.rafka-time`.
     pub step: &'static str,
     /// Why.
     pub reason: String,
