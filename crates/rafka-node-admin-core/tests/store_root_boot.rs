@@ -235,6 +235,39 @@ fn a_relaunched_bootstrap_admin_is_a_new_node_over_its_inherited_data_dir() {
     assert!(a.get("supersedes").is_none(), "a relaunch supersedes no incarnation: {a}");
 }
 
+/// CONTRACT (fabric-node-lifecycle-elections.md §4.1: "Only the provider's exit proof vacates a seat;
+/// no probe outcome does"; fabric-recovery.md: the relaunched node-admin "is a new node over its
+/// inherited data dir: a new node.id and incarnation" and becomes ready-for-traffic "under the
+/// ordinary seat rules"; node-recovery.md "Detection and proof" step 3: the provider is asked "about
+/// the exact runtime recorded at launch. Exited is the proof, recorded durably"): a bootstrap
+/// node-admin relaunched on its data dir after its Day-0 run exited asks the provider about its former
+/// birth, the one its own row and its data dir's runtime record name, and records the provider's
+/// Exited as that birth's exit-proof row among its mesh's status rows
+/// (`status/mesh1/exits/<former node id>--<former incarnation>.json` on the fabric's store root), the
+/// fact the seat rules read as a proven loss. One `rdm.node_admin.node.resolve.via-relaunch-exit-proof`
+/// span names the former birth and the outcome `exited`.
+/// Must NOT happen: no exit-proof row of the former birth, so the seats its records name wait for a
+/// holder that never comes back; or a `supersedes` standing in for the proof.
+#[test]
+fn a_relaunched_bootstrap_admin_records_the_providers_exit_proof_of_its_former_birth() {
+    let r = day0_then_relaunch("a_relaunched_bootstrap_admin_records_the_providers_exit_proof_of_its_former_birth");
+    let (former_id, former_inc) = (r.before["node_id"].as_str().unwrap(), r.before["incarnation_id"].as_str().unwrap());
+    let spans = spans_of(&r.dir, r.pid);
+    let proofs: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.resolve.via-relaunch-exit-proof").collect();
+    assert_eq!(proofs.len(), 1, "one exit-proof decision of the former birth: {proofs:?}");
+    let a = &proofs[0]["attributes"];
+    println!("trace_id={}", proofs[0]["trace_id"].as_str().unwrap_or(""));
+    assert_eq!((a["former_node_id"].as_str(), a["former_incarnation_id"].as_str()), (Some(former_id), Some(former_inc)), "{a}");
+    assert_eq!(a["node_id"], r.after["node_id"], "the relaunched node asked: {a}");
+    assert_eq!(a["outcome"].as_str(), Some("exited"), "the Day-0 runtime exited: {a}");
+    let row = r.store.join(&r.fabric).join("status").join("mesh1").join("exits").join(format!("{former_id}--{former_inc}.json"));
+    let raw = std::fs::read_to_string(&row).unwrap_or_else(|e| panic!("the former birth's exit-proof row {}: {e}", row.display()));
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["record"]["name"].as_str(), Some("mesh1.admin.1"), "{v}");
+    assert_eq!(v["record"]["node_id"].as_str(), Some(former_id), "{v}");
+    assert_eq!(a["exit_proof"], v["record"]["proof"], "the span names the row's proof: {a} {v}");
+}
+
 /// CONTRACT (R-MN1: "a mesh created again under the same name is a new mesh with a new id"; R-ML2: "a
 /// dead mesh's path.name used again is mesh.create of a new mesh with a new MeshId", "a dead mesh is
 /// never restarted"; states.md: a mesh id is never reissued): a bootstrap node-admin restarted on its
