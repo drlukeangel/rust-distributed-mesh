@@ -1570,6 +1570,36 @@ async fn a_primary_update_naming_other_than_one_seat_is_refused_by_name_and_noth
     let _ = (&f.m, &f.n);
 }
 
+/// CONTRACT (`HandoverDoor::decisions`: "a seat commit here holds it across the record's move, so a
+/// decision in flight commits wholly before the record moves"; node-rpc-envelope.md TakeSeats: "P's
+/// execution authority ends at the row's epoch"; R-MT1): the fabric seat's record moves from the
+/// successor's row until the holder installs its answer. P, the fabric-primary, has moved its mesh
+/// seat to N and now updates its fabric seat to N; N writes the row and takes the seat and has not
+/// answered yet. Through that window P's Build-log decision lock is held, so no claim is decided by
+/// P under a fabric seat N's row already took; once N answers, P installs and the lock is free.
+/// What must NOT happen: P's decision lock free while N holds the fabric seat P still names itself for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_holders_build_decisions_are_held_from_the_fabric_seat_call_until_it_installs_the_answer() {
+    use rafka_node_admin_core::fabric_handover::update_operation;
+    let f = seats_fabric().await;
+    let node_op = "replace-node:mesh1.admin.1";
+    f.p.door.update_primary(Seat::MeshPrimary, None, "b1", 1, &update_operation(Seat::MeshPrimary, "b1", node_op)).await.expect("the mesh seat moves first");
+    // N holds its answer once it wrote the fabric row and took the seat.
+    f.n.view_open.send_replace(false);
+    let fabric = tokio::spawn({
+        let door = f.p.door.clone();
+        async move { door.update_primary(Seat::FabricPrimary, None, "b1", 1, &update_operation(Seat::FabricPrimary, "b1", node_op)).await }
+    });
+    until("N wrote the fabric row and took the seat", || f.n.door.membership.seats().fabric() == Some(holder_of(&f.n, 8))).await;
+    assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.p, 7)), "P has not installed N's answer yet");
+    assert!(f.p.door.decisions.try_lock().is_err(), "P's Build-log decisions are open while N's row already took the fabric seat P names itself for");
+    f.n.view_open.send_replace(true);
+    assert_eq!(fabric.await.unwrap(), Ok(committed_fabric(&f.n, 8)));
+    assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.n, 8)), "P installed N's answer");
+    assert!(f.p.door.decisions.try_lock().is_ok(), "the decision lock is free once P installed");
+    let _ = (&f.m, &f.x);
+}
+
 /// CONTRACT (R14 item 4: "the holder cuts off its writes to the stores its moving seats authorize,
 /// drains them, then writes the seat row"; fabric-node-lifecycle.md §4.3: the mesh-primary writes
 /// every status of its mesh): a moving mesh seat cuts off the mesh's status rows on the fabric's
