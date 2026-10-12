@@ -348,6 +348,8 @@ impl FabricBuildStateAdapter {
                                 }
                                 absorb.absorb_facts(&w.facts).await;
                                 if let Some(r) = heard_fabric {
+                                    tracing::info_span!("rdm.node_admin.fabric.update.via-build-topic-record", node = %node, sender = %m.delivered_from.fmt_short(), bytes = m.content.len(), fabric_id = %r.identity.fabric_id, name = %r.identity.name, build_id = %r.current.as_ref().map(|b| b.to_string()).unwrap_or_default())
+                                        .in_scope(|| tracing::info!("the Fabric record heard on the Build topic"));
                                     store.learn(r.identity, &m.delivered_from.to_string()).await;
                                 }
                             }
