@@ -654,7 +654,18 @@ impl MeshNodes {
         if self.ids.read::<RowId>(row.node_id.as_str(), ROW_ID_FORMAT).await?.is_some_and(|e| e.name == row.name) {
             return Ok(());
         }
-        self.ids.write(row.node_id.as_str(), ROW_ID_FORMAT, &RowId { node_id: row.node_id.clone(), name: row.name.clone() }).await
+        // The entry follows its row's publication: held before the fabric's first state-commit, it is
+        // decided again at the publication against the row then standing at the key it names (this
+        // store's rows publish before its ids), and written only while that row is the node's.
+        let (standing, node, name) = (self.rows.disk_read::<NodeRow>(&row.name.to_string(), ROW_FORMAT), row.node_id.clone(), row.name.clone());
+        self.ids
+            .write_claimed(row.node_id.as_str(), ROW_ID_FORMAT, &RowId { node_id: row.node_id.clone(), name: row.name.clone() }, move |_entry: Option<&RowId>| match standing() {
+                Ok(Some(r)) if r.node_id == node => Ok(true),
+                Ok(Some(r)) => Err(format!("the row at {name} is node {}'s, not {node}'s: the id index entry follows its row and is not written", r.node_id)),
+                Ok(None) => Err(format!("no row stands at {name}: the id index entry of {node} follows its row and is not written")),
+                Err(e) => Err(format!("the row at {name} could not be read for the id index entry of {node}: {e}")),
+            })
+            .await
     }
 
     /// `node_id`'s entry goes when it names `name`, the key whose row the node no longer holds.
@@ -872,7 +883,11 @@ impl NodesStorage for FileNodesStorage {
         self.mesh(&name.mesh).await?.rows.read(&name.to_string(), ROW_FORMAT).await
     }
     async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, StorageError> {
-        Ok(self.mesh(mesh).await?.ids.read::<RowId>(node_id.as_str(), ROW_ID_FORMAT).await?.map(|e| e.name))
+        // The entry and the row are two files: the name is answered only while the row at it is this
+        // node's.
+        let rows = self.mesh(mesh).await?;
+        let Some(e) = rows.ids.read::<RowId>(node_id.as_str(), ROW_ID_FORMAT).await? else { return Ok(None) };
+        Ok(rows.rows.read::<NodeRow>(&e.name.to_string(), ROW_FORMAT).await?.filter(|r| r.node_id == *node_id).map(|_| e.name))
     }
     async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let _one = self.row_writes.lock().await;
@@ -1566,9 +1581,9 @@ mod tests {
     /// scratchpad over the disk). The first writer's publication writes its claims. The second's
     /// publication re-runs each held claim as a conditional write against the row now standing at its
     /// key: each is refused, naming the holder, and nothing of it is written, so the first writer's
-    /// rows stand; its commit-state span `rdm.node_admin.fabric.update.via-round-action` counts the
-    /// refusals and names each. Must NOT happen: a held claim written blindly over another writer's
-    /// row at publication.
+    /// rows stand, and B's id index entry, which follows its row, is not written either; its
+    /// commit-state span `rdm.node_admin.fabric.update.via-round-action` counts the refusals and names
+    /// each. Must NOT happen: a held claim written blindly over another writer's row at publication.
     // @feature: mesh-lifecycle
     #[tokio::test]
     async fn a_held_claim_is_re_run_at_publication_and_a_refused_one_is_named_and_writes_nothing() {
@@ -1597,10 +1612,11 @@ mod tests {
         assert_eq!(FileNodesStorage::open(&d.join("r"), &reader, "mesh2", &IncarnationId::mint()).await.unwrap().node_row_at(&row_a.name).await.unwrap(), Some(row_a.clone()), "B's refused row claim wrote nothing: mesh2.rpc.1's row is A's");
         let spans = capture.named("rdm.node_admin.fabric.update.via-round-action");
         let b = spans.iter().find(|s| s.attributes.get("node").map(String::as_str) == Some("mesh2.admin.1")).unwrap_or_else(|| panic!("writer B's commit-state span: {spans:?}"));
-        assert_eq!(b.attributes.get("refused").map(String::as_str), Some("2"), "B's commit-state counts its two refused claims: {b:?}");
+        assert_eq!(b.attributes.get("refused").map(String::as_str), Some("3"), "B's commit-state counts its two refused claims and the id index entry that follows the refused row: {b:?}");
         let stores = b.attributes.get("stores").cloned().unwrap_or_default();
         assert!(stores.contains(&format!("meshes refused 1")) && stores.contains(&mesh_a.mesh_id.to_string()), "the refusal of mesh2's claim names its holder: {stores}");
         assert!(stores.contains("nodes/mesh2/rows refused 1") && stores.contains(row_a.node_id.as_str()), "the refusal of mesh2.rpc.1's claim names its holder: {stores}");
+        assert!(stores.contains(&format!("nodes/mesh2/ids refused 1: {}", row_b.node_id)), "B's id index entry follows its refused row and is not written, named: {stores}");
         eprintln!("span rdm.node_admin.fabric.update.via-round-action trace_id={} {:?}", b.trace_id, b.attributes);
     }
     /// CONTRACT (node-identity-and-state.md §2.7: "The same MeshId re-claiming its own name, at
