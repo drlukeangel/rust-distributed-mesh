@@ -5,8 +5,8 @@
 //! journal and serves it over `FetchBuildFacts` (op `0x1F`; `BuildFactsDoor::serve`, build.md "Each
 //! node-admin keeps its own Build journal"), so a cell that asks what one exact admin holds reads that
 //! admin's log here: [`log_read`] is the one read, [`log_fact`] awaits a typed fact of it through the
-//! client's `await_fact`, and [`build_fact`] awaits a fact of the Build the log folds to (the view
-//! `GET /api/builds?id=` served: `build_state::fold` over the same log).
+//! client's `await_fact`, and [`build_fact`] awaits a fact of the Build the log folds to
+//! (`build_state::fold` over the same log).
 //!
 //! It lives in the test binary every cell links, not in `src/typed.rs`: the facts' types and the read
 //! are the node-admin core's, and the scenario crate's shipped code reaches RDM only through the public
