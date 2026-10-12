@@ -7154,6 +7154,40 @@ mod tests {
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[2].trace_id, spans[2].attributes);
     }
 
+    /// CONTRACT (node-identity-and-state.md §2.7: "Who mints it. The Build that creates a mesh's first
+    /// node-admin mints the mesh id, never reissued"; "The same MeshId re-claiming its own name, at
+    /// state-commit, on a retry or from a replaced primary, is idempotent and accepted"): the accepted
+    /// Build that creates mesh2 is planned by its fabric-primary and, after that admin is lost, by its
+    /// successor, which holds nothing of its predecessor's memory. Each runs the plan's
+    /// `create-mesh:mesh2` over the one mesh store: the first claim writes mesh2's row, and the
+    /// successor's re-run claims with the same MeshId and finds its own row (`row-held-by-mesh`), so
+    /// the id its launches carry is the row's. Must NOT happen: the successor minting another MeshId
+    /// and being refused `name-held` by its own mesh's row.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_successor_re_running_create_mesh_of_the_same_build_claims_with_its_mesh_id_and_finds_its_own_row() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let observed = view(&[digest("mesh1.admin.1", MemberStatus::ReadyForTraffic)]);
+        let current = crate::accepted::FabricTopology::root("fabric1", "mesh1");
+        let change = crate::accepted::TopologyChange::CreateMesh { desired: crate::build::MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]) };
+        let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
+        let create_mesh_of = |plan: crate::build::BuildPlan| plan.operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
+        let (first_op, successor_op) = (create_mesh_of(crate::accepted::plan(&accepted, &observed, None)), create_mesh_of(crate::accepted::plan(&accepted, &observed, None)));
+        let (BuildOperation::CreateMesh { mesh: first_mesh, .. }, BuildOperation::CreateMesh { mesh: successor_mesh, .. }) = (&first_op, &successor_op) else { unreachable!() };
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-rerun");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let (first, successor) = (Records::default(), Records::default());
+        let claimed = create_mesh(&first, &meshes, "mesh1.admin.1", first_mesh).await.expect("the first run claims mesh2's free name");
+        let rerun = create_mesh(&successor, &meshes, "mesh1.admin.2", successor_mesh).await;
+        assert_eq!(rerun, Ok(claimed.clone()), "the successor's re-run of the same Build's create-mesh claims with the same MeshId and finds its own row");
+        assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(&claimed), "the successor's launches of mesh2 carry the id mesh2's row holds");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(claimed.clone()), "mesh2's row is the first claim's");
+        let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
+        let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
+        assert_eq!(said, vec![("mesh1.admin.1".to_string(), claimed.to_string(), "row-written".to_string()), ("mesh1.admin.2".to_string(), claimed.to_string(), "row-held-by-mesh".to_string())], "{spans:?}");
+        eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
+    }
+
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
     /// insert-and-fail on its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming a
     /// different one"; CLAUDE.md: the claim is the first durable write of a create, nothing is written
