@@ -865,7 +865,7 @@ impl rafka_node_admin_core::workflows::node_start::AfterHook for RpcAfterHook {
         becoming.go().await;
     }
 
-    async fn start_failed(self: Box<Self>) {
+    async fn start_failed(self: Box<Self>, _: &rafka_node_admin_core::node_self::StartFailed, _: bool) {
         let running = self.ends.and_then(|out| out.lock().unwrap().take());
         if let Some(running) = running {
             running.close().await;

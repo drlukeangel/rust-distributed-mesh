@@ -151,8 +151,12 @@ pub trait AfterHook: Send + 'static {
     /// node.started: the kind's report once every step before it ended.
     async fn report(self: Box<Self>);
 
-    /// A step failed inside the start: the kind ends what the start brought up.
-    async fn start_failed(self: Box<Self>) {}
+    /// A step failed: `inside` the start (which answers the failure; the kind ends what the start
+    /// brought up), or in the task a blocked or spawned hook ran in, after the start returned (the
+    /// kind names the failure where its readiness evidence is read; the node stays Pending).
+    async fn start_failed(self: Box<Self>, failed: &StartFailed, inside: bool) {
+        let _ = (failed, inside);
+    }
 }
 
 /// What a node kind plugs into `node.start`.
@@ -257,8 +261,9 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             match driver.attempt().await {
                 Step::Passed => rest.run_inline(Some(driver)).await.map_err(Into::into),
                 Step::Failed(why) => {
-                    rest.after.start_failed().await;
-                    Err(StartFailed { step: "node.hydrate", reason: format!("{name} failed hydrate_before_ready: {why}") }.into())
+                    let failed = StartFailed { step: "node.hydrate", reason: format!("{name} failed hydrate_before_ready: {why}") };
+                    rest.after.start_failed(&failed, true).await;
+                    Err(failed.into())
                 }
                 Step::Retired => match kind {
                     // A first start retired while its hook ran ends without a report and without a refusal.
@@ -299,7 +304,7 @@ impl AfterTheHook {
         match self.steps(driver).await {
             Ok(()) => Ok(()),
             Err((failed, after)) => {
-                after.start_failed().await;
+                after.start_failed(&failed, true).await;
                 Err(failed)
             }
         }
@@ -312,7 +317,7 @@ impl AfterTheHook {
         if let Err((failed, after)) = self.steps(driver).await {
             tracing::info_span!(parent: &root, "rdm.mesh.node.reject.via-start-step-failed", node = %name, step = failed.step, reason = %failed.reason)
                 .in_scope(|| tracing::warn!("a start step after hydrate_before_ready failed: the node is not started and stays Pending"));
-            drop(after);
+            after.start_failed(&failed, false).await;
         }
     }
 

@@ -2552,6 +2552,11 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         // node.started: the Ready check, which waits on every other blocker too, makes the report.
         self.progress.started();
     }
+
+    async fn start_failed(self: Box<Self>, failed: &crate::node_self::StartFailed, _: bool) {
+        // The Ready check names the failed step as this admin's blocker: it is not started.
+        self.progress.at(format!("{}: node.start failed at {}: {}", self.me, failed.step, failed.reason));
+    }
 }
 
 /// Enter an existing mesh: connect to a local node, read its topology and sweep the own mesh once with
