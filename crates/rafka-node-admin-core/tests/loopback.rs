@@ -130,6 +130,11 @@ impl DepartureProof for Proofs {
     async fn recorded(&self, executor: &PathName) -> bool {
         self.recorded.lock().unwrap().contains(&executor.to_string())
     }
+    async fn exits_of(&self, admins: &[PathName]) -> rafka_node_admin_core::build_drive::ExitProofs {
+        let exited = self.exited.lock().unwrap();
+        let (proven, unproven): (Vec<&PathName>, Vec<&PathName>) = admins.iter().partition(|a| exited.contains(&a.to_string()));
+        rafka_node_admin_core::build_drive::ExitProofs { proven: proven.iter().map(|a| a.to_string()).collect(), unproven: unproven.iter().map(|a| format!("{a}: its runtime is not proven exited: Running")).collect() }
+    }
 }
 
 /// Fixtures whose admins share one Build log need no verdict recorded.

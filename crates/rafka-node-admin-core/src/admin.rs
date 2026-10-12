@@ -2271,6 +2271,21 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         Ok(())
     }
 
+    /// The provider's exit proof of every one of `admins`, as the fabric authority's pass reads it
+    /// ([`admins_exit_proof`] over this admin's view and the durable runtime rows): what the drive
+    /// admits a fully crashed mesh's create on. Durable rows that cannot be read prove nothing, and
+    /// every admin is named so.
+    async fn exits_of(&self, admins: &[PathName]) -> crate::build_drive::ExitProofs {
+        let durable = match self.nodes.runtimes().await {
+            Ok(rows) => rows,
+            Err(e) => return crate::build_drive::ExitProofs { proven: Vec::new(), unproven: admins.iter().map(|a| format!("{a}: the durable runtime rows could not be read at {}: {e}", self.me)).collect() },
+        };
+        let view = self.topology.read().await.clone();
+        let mut map = view.clone();
+        map.nodes.extend(durable_births(&view, &durable, &|p| admins.contains(p), &|id| self.book.is_departed(id)));
+        admins_exit_proof(admins, &map, &self.book, &durable, &*self.provider).await
+    }
+
     /// Whether the exit of the exact birth the view names for `executor` is recorded: a point read
     /// of its exit-proof row (node-recovery.md: "Exited is the proof, recorded durably"). A row that
     /// cannot be read is named and answers not recorded: the exit is proven again, and its row put
@@ -2290,16 +2305,61 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     }
 }
 
+/// The provider's exact exit proof of every one of `admins` (mesh-investigation.md step 5, "Fully
+/// crashed": "The fabric-primary acts on the provider's exact exit proof, never on silence"): for each,
+/// the birth `t` holds at its path (the view, plus the births durable runtime rows name at a path the
+/// view holds nothing at, [`durable_births`]), inspected through the runtime its digest or its durable
+/// row names. A path with no birth, a birth with no incarnation, and a runtime not proven exited are
+/// each named as not proven. Nothing is recorded. The fabric authority's pass and the drive's fence
+/// both read it here ([`read_admin_exits`]).
+pub async fn admins_exit_proof(
+    admins: &[PathName],
+    t: &Topology,
+    book: &DigestBook,
+    durable: &[crate::storage::RuntimeRow],
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+) -> crate::build_drive::ExitProofs {
+    read_admin_exits(admins, t, book, durable, provider).await.0
+}
+
+/// [`admins_exit_proof`], with each proven node-admin's exited birth: what the fabric authority's pass
+/// opens the create on.
+async fn read_admin_exits(
+    admins: &[PathName],
+    t: &Topology,
+    book: &DigestBook,
+    durable: &[crate::storage::RuntimeRow],
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+) -> (crate::build_drive::ExitProofs, Vec<(PathName, crate::drift::ExitedBirth)>) {
+    let (mut proven, mut unproven) = (Vec::new(), Vec::new());
+    for admin in admins {
+        let Some(n) = t.node(admin) else {
+            unproven.push(format!("{admin}: neither the view nor a durable runtime row holds a birth there"));
+            continue;
+        };
+        let Some(incarnation) = n.incarnation_id.clone() else {
+            unproven.push(format!("{admin}: its birth {} has no incarnation", n.node_id));
+            continue;
+        };
+        let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
+        let row = durable.iter().find(|r| r.node_id == n.node_id && r.incarnation_id == incarnation);
+        match exit_proof_of(provider, &held_row, row).await {
+            Ok((code, source)) => proven.push((admin.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source })),
+            Err(why) => unproven.push(format!("{admin}: {why}")),
+        }
+    }
+    (crate::build_drive::ExitProofs { proven: proven.iter().map(|(p, _)| p.to_string()).collect(), unproven }, proven)
+}
+
 /// The fully crashed mesh (mesh-investigation.md step 5, "Fully crashed"; R-ML3): a peer mesh whose
 /// investigation decided `unreachable` (`unreachable`: no member answered, no carrier reported its edge
 /// to a node-admin lost) is held as ever. It is owed node.create of its first node-admin only if the
-/// provider proves the exact runtime of EVERY node-admin the accepted topology names for it exited:
-/// the proof is read here, for each, from the birth the view or a durable runtime row holds at its
-/// path (`t`), and a node-admin with no birth there, or whose runtime is not proven exited, holds the
-/// mesh. Silence is never the proof. The proof read is one named span, once per distinct result.
-/// Answers the mesh, the node-admin owed (the mesh's first in path order, or the one the Build already
-/// carried across the fence) and that node-admin's proof; nothing is recorded, and the create's own
-/// fence deletes a birth only on its exact exit.
+/// provider proves the exact runtime of EVERY node-admin the accepted topology names for it exited
+/// ([`admins_exit_proof`] over `t`); a node-admin not proven holds the mesh. Silence is never the
+/// proof. The proof read is one named span, once per distinct result. Answers the mesh, the node-admin
+/// owed (the mesh's first in path order, or the one the Build already carried across the fence) and
+/// that node-admin's proof; nothing is recorded, and the create's own fence deletes a birth only on its
+/// exact exit.
 #[allow(clippy::too_many_arguments)]
 async fn crashed_peer_mesh(
     me: &PathName,
@@ -2315,30 +2375,11 @@ async fn crashed_peer_mesh(
         let mut admins: Vec<PathName> = m.cohort(NodeKind::NodeAdmin).cloned().collect();
         admins.sort();
         let Some(first) = admins.first() else { continue };
-        let (mut proven, mut unproven) = (Vec::new(), Vec::new());
-        for admin in &admins {
-            let Some(n) = t.node(admin) else {
-                unproven.push(format!("{admin}: neither the view nor a durable runtime row holds a birth there"));
-                continue;
-            };
-            let Some(incarnation) = n.incarnation_id.clone() else {
-                unproven.push(format!("{admin}: its birth {} has no incarnation", n.node_id));
-                continue;
-            };
-            let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
-            let row = durable.iter().find(|r| r.node_id == n.node_id && r.incarnation_id == incarnation);
-            match exit_proof_of(provider, &held_row, row).await {
-                Ok((code, source)) => proven.push((admin.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source })),
-                Err(why) => unproven.push(format!("{admin}: {why}")),
-            }
+        let (proofs, proven) = read_admin_exits(&admins, t, book, durable, provider).await;
+        if started.insert((current.build_id.clone(), 0u32, vec!["crash-proof".to_string(), m.name.clone(), proofs.proven.join(","), proofs.unproven.join("; ")])) {
+            crate::build_drive::crash_proof_span(me, &current.build_id, &m.name, admins.len(), &proofs);
         }
-        let (proved, unproved) = (proven.iter().map(|(p, _)| p.to_string()).collect::<Vec<_>>().join(","), unproven.join("; "));
-        let outcome = if unproven.is_empty() { "proven" } else { "held" };
-        if started.insert((current.build_id.clone(), 0u32, vec!["crash-proof".to_string(), m.name.clone(), proved.clone(), unproved.clone()])) {
-            tracing::info_span!("rdm.node_admin.mesh.update.via-crash-proof", node = %me, mesh = %m.name, admins = admins.len(), proven = %proved, unproven = %unproved, outcome)
-                .in_scope(|| tracing::info!("the provider's exit proof of every node-admin of a mesh the investigation found unreachable was read"));
-        }
-        if !unproven.is_empty() {
+        if !proofs.unproven.is_empty() {
             continue;
         }
         let Some(owed) = crate::build_drive::rebirth_owed(current, &m.name, first) else { continue };

@@ -80,6 +80,47 @@ impl Gate for OpenGate {
     }
 }
 
+/// The provider's exit proof of a set of node-admins read together (mesh-investigation.md step 5,
+/// "Fully crashed"): each one proven exited, by path.name, and each one not proven, with why. Nothing
+/// is recorded by the read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExitProofs {
+    /// The node-admins whose exact runtime the provider proves exited.
+    pub proven: Vec<String>,
+    /// Each node-admin not proven exited, with why (no birth at its path, no runtime fact, a runtime
+    /// that runs or cannot be told).
+    pub unproven: Vec<String>,
+}
+
+impl ExitProofs {
+    /// `proven` when every node-admin read is proven exited, else `held`.
+    pub fn outcome(&self) -> &'static str {
+        if self.unproven.is_empty() {
+            "proven"
+        } else {
+            "held"
+        }
+    }
+}
+
+/// The read of the provider's exit proof of every node-admin of a mesh the peer-mesh investigation
+/// decided `unreachable` (mesh-investigation.md step 5, "Fully crashed"), named on its own span. The
+/// one emitter of the span: the fabric authority's pass and the drive each name a read once per
+/// distinct result.
+pub fn crash_proof_span(me: &PathName, build_id: &BuildId, mesh: &str, admins: usize, proofs: &ExitProofs) {
+    tracing::info_span!(
+        "rdm.node_admin.mesh.update.via-crash-proof",
+        node = %me,
+        build_id = %build_id,
+        mesh = %mesh,
+        admins,
+        proven = %proofs.proven.join(","),
+        unproven = %proofs.unproven.join("; "),
+        outcome = proofs.outcome(),
+    )
+    .in_scope(|| tracing::info!("the provider's exit proof of every node-admin of a mesh the investigation found unreachable was read"));
+}
+
 /// Proof that an executor's birth departed: the exact runtime inspected and found exited. Silence
 /// is not proof.
 #[async_trait::async_trait]
@@ -92,6 +133,13 @@ pub trait DepartureProof: Send + Sync {
     /// holder recorded so claims the next attempt without calling or proving it again.
     async fn recorded(&self, _executor: &PathName) -> bool {
         false
+    }
+    /// The provider's exit proof of the exact birth each of `admins` names in this admin's view (or a
+    /// durable runtime row names at a path the view holds nothing at), read now and recorded nowhere:
+    /// what the create of a fully crashed mesh's first node-admin is admitted on. A proof that holds
+    /// no provider proves nothing.
+    async fn exits_of(&self, admins: &[PathName]) -> ExitProofs {
+        ExitProofs { proven: Vec::new(), unproven: admins.iter().map(|a| format!("{a}: no provider proof is held here")).collect() }
     }
 }
 
@@ -288,6 +336,11 @@ impl Drive {
     /// The frames from attempt `from_attempt` on, from the first.
     pub fn reader(self: &Arc<Self>, from_attempt: u32) -> DriveReader {
         DriveReader { drive: self.clone(), cursor: 0, from_attempt, done: false }
+    }
+
+    /// Whether `key` is new to this drive: a fact the drive names once, never on every pass.
+    fn first_time(&self, key: String) -> bool {
+        self.state.lock().unwrap().seen.insert(key)
     }
 
     /// Whether a stall reason is new (the drive names a stall once, not on every pass).
@@ -640,27 +693,53 @@ impl DriveEnv {
     /// Build carried no other admin of that mesh across the fence ([`crossed_admin`]). The
     /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
     /// included): it is the mesh's first recovering node-admin.
-    fn rebirth_admits(&self, p: &BuildProjection, op: &BuildOperation) -> bool {
-        self.unheard_peer(op).is_some_and(|(node, _, decided)| (decided || self.crash_admits(p, op, &node)) && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
+    fn rebirth_admits(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> bool {
+        self.unheard_peer(op).is_some_and(|(node, _, decided)| (decided || self.crash_admits(p, op, &node, crashed)) && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
     }
 
     /// The node.create of the node-admin a fully crashed mesh is owed (mesh-investigation.md step 5,
     /// "Fully crashed"): `op` creates `node`, the mesh's first node-admin in path order (or the one
-    /// the Build already carried across the fence, [`rebirth_owed`]), and the investigation's 60 s
-    /// decision on the mesh came out `unreachable`. Nothing else of that mesh crosses the fence: the
-    /// fabric-primary opened the attempt on the provider's exact exit proof of every node-admin of the
-    /// mesh, and the create's own fence deletes a birth only on its exact exit.
-    fn crash_admits(&self, p: &BuildProjection, op: &BuildOperation, node: &PathName) -> bool {
+    /// the Build already carried across the fence, [`rebirth_owed`]), and `crashed` (this pass's
+    /// [`Self::crash_proven`]) holds its mesh: the investigation's 60 s decision on it came out
+    /// `unreachable` and the provider proves every node-admin of it exited. Silence is never the
+    /// proof. Nothing else of that mesh crosses the fence, and the create's own fence deletes a birth
+    /// only on its exact exit.
+    fn crash_admits(&self, p: &BuildProjection, op: &BuildOperation, node: &PathName, crashed: &HashSet<String>) -> bool {
         op.created_node() == Some(node)
-            && self.gate.peer_mesh(&node.mesh).is_some_and(|m| m.unreachable_decided)
+            && crashed.contains(&node.mesh)
             && p.topology.meshes.get(&node.mesh).and_then(|m| m.cohort(NodeKind::NodeAdmin).min()).and_then(|first| rebirth_owed(p, &node.mesh, first)).as_ref() == Some(node)
     }
 
+    /// The peer meshes of `p` a fully crashed mesh's create may be admitted for, read now: each mesh
+    /// the investigation decided `unreachable` whose every node-admin the accepted topology names the
+    /// provider proves exited (mesh-investigation.md step 5, "Fully crashed": "The fabric-primary acts
+    /// on the provider's exact exit proof, never on silence ... no exit proof: hold"). Each read is
+    /// named once per distinct result.
+    async fn crash_proven(&self, drive: &Drive, p: &BuildProjection) -> HashSet<String> {
+        let mut crashed = HashSet::new();
+        for m in p.topology.meshes.values().filter(|m| m.name != self.me.mesh && self.gate.peer_mesh(&m.name).is_some_and(|pm| pm.unreachable_decided)) {
+            let mut admins: Vec<PathName> = m.cohort(NodeKind::NodeAdmin).cloned().collect();
+            if admins.is_empty() {
+                continue;
+            }
+            admins.sort();
+            let proofs = self.departure.exits_of(&admins).await;
+            if drive.first_time(format!("crash-proof|{}|{}|{}", m.name, proofs.proven.join(","), proofs.unproven.join("; "))) {
+                crash_proof_span(&self.me, &drive.build_id, &m.name, admins.len(), &proofs);
+            }
+            if proofs.unproven.is_empty() {
+                crashed.insert(m.name.clone());
+            }
+        }
+        crashed
+    }
+
     /// The fence on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
-    /// except the mesh's first recovering node-admin once the investigation decided its rebirth
-    /// ([`Self::rebirth_admits`]). `Some` names the fence.
-    fn fenced(&self, p: &BuildProjection, op: &BuildOperation) -> Option<(PathName, u64, bool)> {
-        if self.rebirth_admits(p, op) {
+    /// except the mesh's first recovering node-admin once the investigation decided its rebirth, or
+    /// once the provider proves the mesh fully crashed ([`Self::rebirth_admits`]). `Some` names the
+    /// fence.
+    fn fenced(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> Option<(PathName, u64, bool)> {
+        if self.rebirth_admits(p, op, crashed) {
             return None;
         }
         self.unheard_peer(op)
@@ -668,7 +747,7 @@ impl DriveEnv {
 
     /// The drive stops at the fence on `op` by name: once per mesh, operation and verdict on its own
     /// span, framed as the attempt's blocker, and stalled until the investigation's state changes.
-    fn stop_at_fence(&self, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool)) -> DriveEnd {
+    fn stop_at_fence(&self, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool), crashed: &HashSet<String>) -> DriveEnd {
         let unreachable = self.gate.peer_mesh(&node.mesh).is_some_and(|m| m.unreachable_decided);
         let why = format!(
             "{}: {} acts on {node} of peer mesh {mesh}, which the peer-mesh investigation holds unheard ({unheard_ms} ms){}: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
@@ -676,8 +755,10 @@ impl DriveEnv {
             op.key(),
             if decided {
                 "; its decided rebirth admits only the mesh's first recovering node-admin"
+            } else if unreachable && crashed.contains(&node.mesh) {
+                "; its decision is unreachable and the provider proves every node-admin of the mesh exited, which admits only the create of the mesh's first node-admin"
             } else if unreachable {
-                "; its decision is unreachable, which admits only the create of the mesh's first node-admin once the provider proves every node-admin of the mesh exited"
+                "; its decision is unreachable and the provider does not prove every node-admin of the mesh exited (rdm.node_admin.mesh.update.via-crash-proof names which), so nothing of it is admitted"
             } else {
                 ", with no rebirth decided"
             },
@@ -698,15 +779,15 @@ impl DriveEnv {
     /// an operation no admin executes in this view (it waits for its mesh's own seat, never for the
     /// run's executor); a cut run hands back to this admin, whose next claim re-reads the view and
     /// the investigation. `Err` names the fence on the first operation.
-    fn plan_dispatch(&self, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
+    fn plan_dispatch(&self, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName, crashed: &HashSet<String>) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
         let ops = left(drive, p, t);
-        if let Some(op) = ops.first().filter(|op| *executor == self.me && self.rebirth_admits(p, op)) {
+        if let Some(op) = ops.first().filter(|op| *executor == self.me && self.rebirth_admits(p, op, crashed)) {
             return Ok(RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| self.me.to_string()) });
         }
         let mut plan = run_of(&ops, t, executor);
         let mut cut = None;
         for (i, op) in plan.operations.iter().enumerate() {
-            if let Some(f) = self.fenced(p, op) {
+            if let Some(f) = self.fenced(p, op, crashed) {
                 if i == 0 {
                     return Err((op.clone(), f));
                 }
@@ -753,6 +834,7 @@ impl DriveEnv {
             if self.accepted.build_id().await.as_ref() != Some(&id) {
                 return self.stalled(drive, format!("{}: Build {id} is not the accepted Build (Fabric.build_id): nothing drives it", self.me));
             }
+            let crashed = self.crash_proven(drive, &p).await;
             // The claim's holder was proven departed: by this pass, or by an earlier pass or the
             // drift reconcile, whose proof this admin recorded for its exact birth. Either way the
             // next attempt is claimed without calling the lost holder or proving it again.
@@ -771,7 +853,7 @@ impl DriveEnv {
                 };
                 (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
             } else {
-                match self.claim_next(drive, &p, handed_to.take()).await {
+                match self.claim_next(drive, &p, handed_to.take(), &crashed).await {
                     Ok(c) => c,
                     Err(end) => return end,
                 }
@@ -796,9 +878,9 @@ impl DriveEnv {
             }
             let plan = {
                 let t = self.topology.read().await.clone();
-                match self.plan_dispatch(drive, &p, &t, &executor) {
+                match self.plan_dispatch(drive, &p, &t, &executor, &crashed) {
                     Ok(plan) => plan,
-                    Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f),
+                    Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f, &crashed),
                 }
             };
             let inner = self.run_inner(drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
@@ -873,22 +955,22 @@ impl DriveEnv {
 
     /// Claim the next attempt of `p` for the admin that runs what is left (or `forced`, the admin a
     /// run just handed off to), on this admin's own log.
-    async fn claim_next(&self, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<PathName>) -> Result<(u32, PathName, CallContext), DriveEnd> {
+    async fn claim_next(&self, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<PathName>, crashed: &HashSet<String>) -> Result<(u32, PathName, CallContext), DriveEnd> {
         let id = &drive.build_id;
         let attempt = p.attempt + 1;
         let first = {
             let t = self.topology.read().await.clone();
             left(drive, p, &t).into_iter().next()
         };
-        if let Some((op, f)) = first.as_ref().and_then(|op| self.fenced(p, op).map(|f| (op, f))) {
-            return Err(self.stop_at_fence(drive, attempt, op, f));
+        if let Some((op, f)) = first.as_ref().and_then(|op| self.fenced(p, op, crashed).map(|f| (op, f))) {
+            return Err(self.stop_at_fence(drive, attempt, op, f, crashed));
         }
         // The mesh's first recovering node-admin under the investigation's rebirth verdict is this
         // admin's to execute (R-D1). A run handed back to this admin (its own cut, or an executor whose
         // view names this admin) is claimed for the admin this view names for what is left: an
         // operation no admin executes waits for its mesh's own seat, and one another admin executes is
         // claimed for that admin, never for this one to hand on unrun.
-        let rebirth = first.as_ref().is_some_and(|op| self.rebirth_admits(p, op));
+        let rebirth = first.as_ref().is_some_and(|op| self.rebirth_admits(p, op, crashed));
         let forced = if rebirth { Some(self.me.clone()) } else { forced.filter(|to| *to != self.me) };
         let lead = match forced {
             Some(to) => Some(to),

@@ -90,6 +90,27 @@ impl World {
 /// The provider: inspection is the world's.
 struct Provider(Arc<World>);
 
+/// The drive's departure proof over the estate: an executor's departure is proven by nothing here
+/// (the drive's executors in these cells never leave), and a fully crashed mesh's node-admins are
+/// proven by the product's own read of the world's provider (`admin::admins_exit_proof`), the read
+/// the fabric authority's pass makes.
+struct WorldProofs {
+    view: Arc<RwLock<Topology>>,
+    book: DigestBook,
+    provider: Provider,
+}
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::build_drive::DepartureProof for WorldProofs {
+    async fn proven(&self, executor: &PathName) -> Result<(), String> {
+        Err(format!("{executor}'s runtime is not proven exited"))
+    }
+    async fn exits_of(&self, admins: &[PathName]) -> rafka_node_admin_core::build_drive::ExitProofs {
+        let view = self.view.read().await.clone();
+        rafka_node_admin_core::admin::admins_exit_proof(admins, &view, &self.book, &[], &self.provider).await
+    }
+}
+
 #[async_trait::async_trait]
 impl DeploymentProvider for Provider {
     fn kind(&self) -> ProviderKind {
@@ -424,7 +445,7 @@ impl Estate {
             door,
             dispatcher: self.dispatch.clone(),
             gate,
-            departure: Arc::new(crate::loopback::Proofs::default()),
+            departure: Arc::new(WorldProofs { view: self.view.clone(), book: self.book.clone(), provider: Provider(self.world.clone()) }),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
         })
     }
@@ -1472,12 +1493,20 @@ mod fully_crashed_mesh {
         drop(telemetry);
         let spans = collect_spans(&dir);
         let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
-        let proof = named("rdm.node_admin.mesh.update.via-crash-proof");
-        assert_eq!(proof.len(), 1, "the proof read is named once for the pass that opened: {proof:?}");
+        // Two readers of the one proof: the pass that opened the attempt, and the drive whose fence
+        // admits the create on it (a span under its `via-drive`). Each names its read once.
+        let drives: Vec<&str> = named("rdm.node_admin.build.update.via-drive").iter().filter_map(|d| d["span_id"].as_str()).collect();
+        let proofs = named("rdm.node_admin.mesh.update.via-crash-proof");
+        let (admitted, opened): (Vec<&&serde_json::Value>, Vec<&&serde_json::Value>) = proofs.iter().partition(|p| p["parent_span_id"].as_str().is_some_and(|parent| drives.contains(&parent)));
+        assert_eq!((opened.len(), admitted.len()), (1, 1), "the proof read is named once by the pass that opened and once by the drive that admitted the create: {proofs:?}");
+        for p in opened.iter().chain(admitted.iter()) {
+            let a = &p["attributes"];
+            assert_eq!(a["outcome"], "proven", "{a}");
+            assert!(a["proven"].as_str().unwrap_or_default().contains(".admin.1") && a["proven"].as_str().unwrap_or_default().contains(".admin.2"), "the proof lists both node-admins: {a}");
+            assert_eq!(a["unproven"], "", "{a}");
+        }
+        let proof = opened;
         let a = &proof[0]["attributes"];
-        assert_eq!(a["outcome"], "proven", "{a}");
-        assert!(a["proven"].as_str().unwrap_or_default().contains(".admin.1") && a["proven"].as_str().unwrap_or_default().contains(".admin.2"), "the proof lists both node-admins: {a}");
-        assert_eq!(a["unproven"], "", "{a}");
         let drift = named("rdm.node_admin.build.update.via-proven-drift");
         assert_eq!(drift.len(), 1, "{drift:?}");
         let d = &drift[0]["attributes"];
