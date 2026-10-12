@@ -416,6 +416,13 @@ async fn configs_door(rig: &Rig, node: &ServedNode) {
     let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.authority.configure.clone(), Default::default())));
 }
 
+/// mesh1's primary's config door, the one door its record changes take turns at, its client
+/// resolving no node: what a cell whose subject is told nothing (a stopped birth) needs.
+async fn quiet_door(rig: &Rig) {
+    let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), rig.authority.configure.clone(), Default::default())));
+}
+
 fn exact(b: &Birth) -> rafka_node_admin_client::ExactBirth {
     rafka_node_admin_client::ExactBirth { target: NodeTarget::ExactNode(b.node.node_id.clone()), node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap() }
 }
@@ -1219,6 +1226,7 @@ fn a_stopped_nodes_rename_at_its_mesh_primary_writes_the_row_and_tells_the_node_
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
+        quiet_door(&rig).await;
         let stopped = &b["rpc2"];
         if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == stopped.node.node_id) {
             (n.parked, n.status) = (true, NodeStatus::Leaving);
