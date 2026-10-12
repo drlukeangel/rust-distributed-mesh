@@ -7378,6 +7378,40 @@ mod tests {
         eprintln!("span rdm.node_admin.mesh.create.via-receipt trace_id={} {:?}", steps[0].trace_id, steps[0].attributes);
     }
 
+    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: a receipt is read and replayed by the run it belongs
+    /// to; `BuildProjection::opened`: a step receipt from the attempt a reopen opened on is the current
+    /// run's): `create-mesh:mesh2` completed in the Build's first run, which ended `Converged`; the Build
+    /// is reopened (attempt 2, a drift repair) and its plan names `create-mesh:mesh2` again because the
+    /// mesh is not yet in the executor's view. The earlier run's receipt is not this run's: the step runs
+    /// by its natural key (the mesh's own row answers `row-held-by-mesh`) and is receipted at attempt 2.
+    /// Must NOT happen: a receipt of a finished run replayed into the run a reopen began.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_reopened_builds_create_mesh_runs_by_its_natural_key_and_is_receipted_in_the_new_run() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let (build_id, op) = build_creating_mesh2(&builds).await;
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-reopened");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let claim = |attempt: u32, executor: &str| crate::build_state::BuildAttemptClaim { build_id: build_id.clone(), attempt, executor: executor.into() };
+        assert_eq!(builds.claim_attempt(&claim(1, "key1@127.0.0.1:1")).await.unwrap(), crate::build_state::ClaimOutcome::Won);
+        create_mesh_step(&Records::default(), &meshes, &builds, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect("the first run");
+        builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged }).await.unwrap();
+        builds
+            .open_attempt(&crate::build_state::AttemptOpened { build_id: build_id.clone(), attempt: 2, reason: crate::build_state::AttemptReason::ProvenDrift, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 })
+            .await
+            .expect("the Build is reopened");
+        assert_eq!(builds.read_build(&build_id).await.unwrap().opened, 2, "attempt 2 begins the Build's current run");
+        assert_eq!(builds.claim_attempt(&claim(2, "key2@127.0.0.1:2")).await.unwrap(), crate::build_state::ClaimOutcome::Won);
+        create_mesh_step(&Records::default(), &meshes, &builds, "key2@127.0.0.1:2", "mesh1.admin.2", &build_id, 2, &op).await.expect("the reopened run");
+        let receipts = receipts_of(&builds, &build_id, "create-mesh:mesh2").await;
+        assert_eq!(receipts.iter().map(|r| (r.0, r.1.as_str())).collect::<Vec<_>>(), vec![(1, "Complete"), (2, "Complete")], "each run receipts its own step: {receipts:?}");
+        let claims: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-mesh-row").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(claims, ["row-written", "row-held-by-mesh"], "the reopened run claims by the natural key");
+        let steps: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-receipt").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(steps, ["complete", "complete"]);
+    }
+
     /// CONTRACT (node-rpc-envelope.md, Build op 0x20: "Durable step outcomes remain Complete and Failed"):
     /// mesh2's name is held by another mesh's live row, so `create-mesh:mesh2` is refused by name. The
     /// step `ClaimMeshName` is receipted `Failed` with the refusal's reason (the holder named), holds no id
