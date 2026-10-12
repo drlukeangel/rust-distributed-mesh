@@ -2552,9 +2552,13 @@ pub async fn reconcile_drift(
         }
         // So is a node-admin of a mesh with a live mesh-primary (mesh-recovery.md:8-9, "A lost member
         // of a mesh with a live mesh-primary is node recovery, driven by that mesh-primary"); a mesh
-        // primary's own loss by the admin its mesh seats. What stays here is the mesh that lost its
-        // mesh-primary (mesh recovery), the ladder's decided mesh included.
-        if n.kind == NodeKind::NodeAdmin && unheard_ms.is_none() && !decided(&n.mesh) && crate::executor::node_admin_recoverer(&n.name, t).is_some() {
+        // primary's own loss by the admin its mesh seats. So is every node-admin of a peer mesh heard
+        // again whose rebirth the ladder still holds decided: the decision released the mesh's first
+        // recovering node-admin, which the verdict above opens, and nothing else of the mesh from here
+        // (R-D1: "once mesh authority is restored, that mesh performs its own ordinary-node
+        // reconciliation"), however long the ladder takes to step the decision off. What stays here is
+        // the mesh that lost its mesh-primary (mesh recovery).
+        if n.kind == NodeKind::NodeAdmin && unheard_ms.is_none() && (decided(&n.mesh) || crate::executor::node_admin_recoverer(&n.name, t).is_some()) {
             continue;
         }
         let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
