@@ -208,13 +208,33 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
             .unwrap_or_else(|| panic!("{step} completed on the executor"));
         assert!(start(done) < terminal, "{step} precedes termination");
     }
-    // The command hooks: node-draining and node-leaving are heard by the other nodes of the fabric; the
-    // node authors no node-left frame (it gossips nothing for its stop).
+    // The command hooks: node-draining and node-leaving, which the owning mesh-admin authors, are heard
+    // by the other nodes of the fabric; the node authors no node-left frame (it gossips nothing for its
+    // stop).
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == VICTIM).count(), 0, "no node-left frame of the victim is heard by anyone");
-    for kind in ["node-draining", "node-leaving", "node-drained"] {
+    for kind in ["node-draining", "node-leaving"] {
         let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
         assert!(heard >= 1, "{kind} for the victim was heard by another node: {heard}");
     }
+    // The completion hook is the victim's own (gossip.md "Node-draining and node-leaving events": "The
+    // node-drained upward call runs NodeDrained in the sending node after eligible in-flight work
+    // reaches zero. The node publishes the event on its own mesh channel."). What the doc makes certain
+    // is the publication and the call, not a peer's receipt: "the directed calls are the certainty"
+    // (gossip.md §10), and NodeDrained rides no aggregate (§7: only NodeDeleting and NodeDeleted are
+    // retained, in `in_flight` and `departed`; "No event is retried by the application and no second
+    // delivery mechanism exists"). The victim's stop cuts its gossip neighbours right after the drain
+    // (node-stop.md step 3), so a peer holds the frame only if iroh-gossip pushed it before the cut.
+    // The victim takes its own frame on its mesh channel, hands it to gossip, and calls node-drained at
+    // the executor, which accepted it (asserted above).
+    let own_hook: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["kind"] == "node-drained" && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] == VICTIM)
+        .collect();
+    assert_eq!(own_hook.len(), 1, "the victim published its node-drained once: {own_hook:#?}");
+    assert_eq!((s(&own_hook[0]["attributes"]["via"]), s(&own_hook[0]["attributes"]["forwarded_by"])), ("mesh-channel".to_string(), String::new()), "on its own mesh channel, as its author: {}", own_hook[0]);
+    let call: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["completion"] == "node-drained").collect();
+    assert_eq!(call.len(), 1, "the victim made one node-drained completion call: {call:#?}");
+    assert_eq!((s(&call[0]["attributes"]["hook"]), s(&call[0]["attributes"]["answer"])), ("published".to_string(), "applied".to_string()), "the hook went to gossip before the call, which the executor applied: {}", call[0]);
     let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone
