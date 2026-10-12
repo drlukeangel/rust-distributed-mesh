@@ -153,16 +153,13 @@ struct Rig {
     sink: Published,
     provider: ProcessDeploymentProvider,
     log: Log,
-    /// A cell that fails before its own terminate leaves no node running: held for the cell's life.
-    _reap: common::ReapOnDrop,
 }
 
 async fn rig() -> Rig {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    let _reap = common::ReapOnDrop(template.data_root.clone());
-    Rig { admin, template, builds: MemoryBuildStateAdapter::new(), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default(), _reap }
+    let template = template(&admin);
+    Rig { admin, template, builds: MemoryBuildStateAdapter::new(), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default() }
 }
 
 impl Rig {

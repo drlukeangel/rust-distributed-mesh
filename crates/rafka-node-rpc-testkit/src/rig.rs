@@ -106,22 +106,89 @@ impl NodeObserver for LiveMesh {
 }
 
 /// Every runtime a process provider launched under `data_root` (each birth's data dir carries the
-/// `deployment.json` the provider writes at spawn: its pid and start token) is killed when this is
+/// `deployment.json` the provider writes at spawn: its pid and start token) is stopped when this is
 /// dropped, however the cell ends: a cell that panics before its own terminate leaves no node behind.
-/// A pid whose start token no longer matches is another process (or none) and is left alone.
+/// The drop returns once each of them has exited. A pid whose start token no longer matches is
+/// another process (or none) and is left alone. [`AdminSide`] holds one over the data root of every
+/// launch from its template.
 pub struct ReapOnDrop(pub std::path::PathBuf);
 
 impl Drop for ReapOnDrop {
     fn drop(&mut self) {
         let Ok(dirs) = std::fs::read_dir(&self.0) else { return };
-        for dir in dirs.flatten() {
-            let Ok(record) = std::fs::read_to_string(dir.path().join("deployment.json")) else { continue };
-            let Ok(record) = serde_json::from_str::<serde_json::Value>(&record) else { continue };
-            let Some(pid) = record["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else { continue };
-            let start = record["start"].as_u64();
-            if start.is_some() && rafka_mesh_entity::runtime::process_start_token(pid) == start {
-                eprintln!("reap: {} still runs as pid {pid} after the cell: killed", dir.path().display());
-                let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+        // Every birth still running is signalled first, then each exit is awaited: the births stop
+        // together.
+        let signalled: Vec<Pidfd> = dirs.flatten().filter_map(|dir| Pidfd::kill_birth(&dir.path())).collect();
+        for birth in signalled {
+            birth.await_exit(Duration::from_secs(5));
+        }
+    }
+}
+
+/// One process this reap signalled, held by a pidfd: the fd names that exact process for its whole
+/// life (a recycled pid is another process and never matches it), and reads ready once every task of
+/// it has exited, so its sockets are released.
+struct Pidfd {
+    fd: std::os::fd::OwnedFd,
+    pid: u32,
+    dir: std::path::PathBuf,
+}
+
+impl Pidfd {
+    /// SIGKILL the runtime `dir`'s `deployment.json` names, when that exact process still runs.
+    fn kill_birth(dir: &std::path::Path) -> Option<Self> {
+        use std::os::fd::FromRawFd;
+        let record = std::fs::read_to_string(dir.join("deployment.json")).ok()?;
+        let record = serde_json::from_str::<serde_json::Value>(&record).ok()?;
+        let pid = record["pid"].as_u64().and_then(|p| u32::try_from(p).ok())?;
+        let start = record["start"].as_u64()?;
+        // The fd is opened before the start token is read: a token that matches then names the
+        // process the fd holds, and the signal below cannot reach a process that took the pid later.
+        // SAFETY: pidfd_open(2) with a pid and no flags; no memory is touched.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0 as libc::c_uint) };
+        if raw < 0 {
+            let e = std::io::Error::last_os_error();
+            // ESRCH: no such process, its exit already waited for by the provider.
+            if e.raw_os_error() != Some(libc::ESRCH) {
+                eprintln!("reap: {} names pid {pid}, which cannot be held to stop it: pidfd_open: {e}", dir.display());
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a pidfd this call just opened and nothing else owns.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw as libc::c_int) };
+        if rafka_mesh_entity::runtime::process_start_token(pid) != Some(start) {
+            return None;
+        }
+        eprintln!("reap: {} still runs as pid {pid} after the cell: killed", dir.display());
+        // SAFETY: pidfd_send_signal(2) on the pidfd held above, no siginfo, no flags.
+        let sent = unsafe { libc::syscall(libc::SYS_pidfd_send_signal, std::os::fd::AsRawFd::as_raw_fd(&fd), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0 as libc::c_uint) };
+        if sent < 0 {
+            eprintln!("reap: SIGKILL to pid {pid} ({}) failed: {}", dir.display(), std::io::Error::last_os_error());
+            return None;
+        }
+        Some(Self { fd, pid, dir: dir.to_path_buf() })
+    }
+
+    /// Wait until the process has exited, at most `within`; a process still running after that is
+    /// named.
+    fn await_exit(self, within: Duration) {
+        let mut ready = libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(&self.fd), events: libc::POLLIN, revents: 0 };
+        loop {
+            // SAFETY: poll(2) over the one pollfd above, which outlives the call.
+            let n = unsafe { libc::poll(&mut ready, 1, within.as_millis() as libc::c_int) };
+            match n {
+                1.. => return,
+                0 => {
+                    eprintln!("reap: pid {} ({}) has not exited {within:?} after SIGKILL", self.pid, self.dir.display());
+                    return;
+                }
+                _ => {
+                    let e = std::io::Error::last_os_error();
+                    if e.kind() != std::io::ErrorKind::Interrupted {
+                        eprintln!("reap: awaiting the exit of pid {} ({}) failed: poll: {e}", self.pid, self.dir.display());
+                        return;
+                    }
+                }
             }
         }
     }
@@ -131,10 +198,14 @@ impl Drop for ReapOnDrop {
 pub const TEST_MESH_ID: &str = "meshd0000001";
 
 /// The admin side of a fabric: one endpoint serving gossip on `ip`, used as
-/// the nodes' membership seed, and the observer over it.
+/// the nodes' membership seed, and the observer over it. It is the launcher of every node a cell
+/// launches from its template, and owns their teardown: dropped, it stops every node launched under
+/// its data root and ends its publication rounds.
 pub struct AdminSide {
     pub observer: LiveMesh,
     pub seed: (String, SocketAddr),
+    /// The fabric this admin side serves.
+    pub fabric: FabricId,
     /// The births this admin side deployed and awaits a `JoinNode` from.
     pub joins: Arc<rafka_node_admin_core::join::Joins>,
     /// The admin every launch from `template` names as its launcher.
@@ -144,12 +215,24 @@ pub struct AdminSide {
     rows: Arc<std::sync::Mutex<std::collections::HashMap<rafka_mesh_entity::PathName, rafka_node_admin_core::storage::NodeRow>>>,
     /// The digest this admin side publishes as itself, on the membership cadence as a node-admin does.
     digest: Arc<std::sync::Mutex<rafka_mesh_entity::digest::MeshDigest>>,
+    /// Over the data root where every launch from this admin side's template keeps its births'
+    /// data dirs and the fabric's store root: stops every node launched under it, before the
+    /// admin's endpoint closes.
+    reap: ReapOnDrop,
     /// Its publication rounds as its mesh's primary.
     _rounds: AbortOnDrop,
+    /// Its own digest, published on the membership cadence.
+    _publisher: AbortOnDrop,
     _router: Router,
 }
 
 impl AdminSide {
+    /// The data root every launch from this admin side's template uses: the nodes under it are
+    /// stopped when the admin side drops.
+    pub fn data_root(&self) -> &std::path::Path {
+        &self.reap.0
+    }
+
     /// Say `status` as this admin side's own digest: how a test moves its authority from Pending
     /// to ReadyForTraffic.
     pub async fn publish_status(&self, status: rafka_mesh_entity::digest::MemberStatus) {
@@ -385,9 +468,9 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
         }))
     };
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
-    let _publisher = {
+    let publisher = {
         let cell = digest_cell.clone();
-        membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone())
+        AbortOnDrop(membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone()))
     };
     let _ = own_digest_slot.set(admin_digest.clone());
     let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));
@@ -395,11 +478,14 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
     AdminSide {
         observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, check_ins },
         seed: (admin_ep.id().to_string(), addr),
+        fabric: fabric.clone(),
         joins,
         launcher: rafka_mesh_entity::launch::Launcher { name: name.parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
         rows,
         digest: digest_cell,
+        reap: ReapOnDrop(std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint()))),
         _rounds: rounds,
+        _publisher: publisher,
         _router: router,
     }
 }
