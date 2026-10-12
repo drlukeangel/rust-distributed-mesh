@@ -1050,7 +1050,7 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
 /// and the open leave ends now (mesh-leave.md: "Missing receipts ... leave the workflow
 /// incomplete"). `Err` is a read that decides nothing (not ready, unreached, interrupted, refused
 /// or an incomplete stream): the refusal is `RejectedSourceFailed` naming the final primary's Build
-/// log, the fetch and the read's own failure ([`refuse_source_failed`]), and the open leave stays open.
+/// log, the fetch and the read's own failure ([`refuse_source_failed`]); the door ends the open leave incomplete on that refusal ([`settle_handoff`]).
 pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, StatusReply> {
     match read {
         Ok(facts) => Ok(handoff_verdict(&facts, key, admitted, receipt_manifest)),
@@ -1058,8 +1058,8 @@ pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts
             HandoffVerdict::Incomplete { reason, without_exit } => HandoffVerdict::Incomplete { reason: format!("{reader}: the final primary {sender} holds no fact of the Build ({detail}): {reason}"), without_exit },
             other => other,
         }),
-        // A read that failed is not the final primary holding nothing: the leave stays open and the
-        // call is refused naming the read.
+        // A read that failed is not the final primary holding nothing: it decides nothing, and the
+        // call is refused naming the read (the door ends the open leave incomplete on any refusal).
         Err(e) => Err(refuse_source_failed("mesh-leave", key, &format!("the Build log of {sender} (the final primary), read by {reader} over fetch-build-facts"), &format!("fetch-build-facts {} for the manifest {receipt_manifest}", key.build_id), &e.to_string())),
     }
 }
@@ -1247,7 +1247,8 @@ impl LeaveBook {
         self.end(key, Ok(manifest))
     }
 
-    /// The leaving primary reported its member workflows incomplete for `key`: the leave ends
+    /// The handoff of `key` was answered by a refusal (the leaving primary reported its member
+    /// workflows incomplete, or what the owner had to read to validate it failed): the leave ends
     /// with `reason` at once (the owner's attempt ends inside the call, never on a wait); whether it
     /// was the first outcome of the leave.
     pub fn incomplete(&self, key: &LeaveKey, reason: String) -> bool {
@@ -1273,43 +1274,51 @@ impl LeaveBook {
     }
 }
 
-/// The door's reply to the handoff of the open leave `key`, settled against the leave.
-pub fn settle_handoff(_book: &LeaveBook, _key: &LeaveKey, _primary: &str, reply: StatusReply) -> StatusReply {
+/// The door's reply to the handoff of the open leave `key`, settled against the leave. The one
+/// handoff the owner awaits is answered: `Applied` or `AlreadyApplied` accepts it (its manifest ends
+/// the wait), and any other reply is a refusal by name. "A step that answers Indeterminate or a
+/// refusal leaves the workflow incomplete" (node-rpc-envelope.md, "Caller execution and certainty"):
+/// the leave ends incomplete, naming the refusal and `primary`, so the owner's attempt ends inside the
+/// call and the next attempt resumes from the receipts. The sender is told the refusal unchanged and
+/// sends nothing again; nothing else would end the owner's wait.
+pub fn settle_handoff(book: &LeaveBook, key: &LeaveKey, primary: &str, reply: StatusReply) -> StatusReply {
+    if !matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
+        book.incomplete(key, format!("the mesh-leave of {primary} was refused {}: {reply:?}", reply.name()));
+    }
     reply
 }
 
-/// The bound on the owner's wait for a `MeshLeave` handoff that no event ends: the final primary's
-/// `MeshLeave` call lost while it lives (the call answered NotSent or Indeterminate;
-/// `call_mesh_leave` records the outcome and nothing calls again), or the final primary exiting
-/// after the owner found it silent and not exited, with no later change of the owner's view to
-/// prove it on. Every other end is an event: the handoff, the incomplete report inside the call,
-/// or the final primary proven exited ([`await_handoff`]). An attempt that ends incomplete is handed back to the
-/// fabric-primary ([`crate::executor::RunEnd::Incomplete`]): the Build stays in progress and the
-/// fabric-primary's drive claims the next attempt once what it decides on moves, and that attempt
-/// resumes from the receipts.
-pub const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
-
 /// The owner's wait for the handoff of the open leave `key` (mesh-delete.md step 5), sent by the
 /// final primary `primary` (its exact birth, named): the validated manifest, or the attempt's
-/// incomplete end. A handoff held is read first. Each time the owner's view changes (`view`),
-/// `final_primary_exited` answers whether the final primary is proven exited, naming the proof; a
-/// proven exit ends the attempt incomplete at once, so the next attempt resumes the leave in the
-/// order "Resume after the primary's loss" gives (the lost primary's exact Exited recorded first,
-/// then `RosterAmended`, then a fresh claim). A view change that proves nothing keeps the wait open:
-/// silence is not death.
+/// incomplete end. It has no timer: "Forbidden proof: Silence, a closed endpoint, a failed call or a
+/// timeout never proves a member exited" (mesh-delete.md), and a lost step "leaves the workflow
+/// incomplete" for a later attempt to resume from its receipts (node-rpc-envelope.md, "Caller
+/// execution and certainty"). Every end is an event:
+///
+/// - the handoff held, read first each time: the validated manifest, or the incomplete report the
+///   leaving primary made inside its `MeshLeave` call ([`LeaveBook::incomplete`]), which ends the
+///   attempt incomplete naming the births without an Exited receipt;
+/// - the final primary proven exited, asked each time the owner's view changes (`view`):
+///   `final_primary_exited` names the proof. A proven exit ends the attempt incomplete at once, so
+///   the next attempt resumes the leave in the order "Resume after the primary's loss" gives (the
+///   lost primary's exact Exited recorded first, then `RosterAmended`, then a fresh claim). A view
+///   change that proves nothing keeps the wait open: silence is not death;
+/// - the open leave closed, or the owner's view ended: the attempt ends incomplete.
+///
+/// An attempt that ends incomplete is handed back to the fabric-primary
+/// ([`crate::executor::RunEnd::Incomplete`]): the Build stays in progress and the next attempt
+/// resumes from the receipts.
 pub async fn await_handoff<F, Fut>(key: &LeaveKey, primary: &str, mut handoff: watch::Receiver<Option<LeaveOutcome>>, mut view: watch::Receiver<u64>, mut final_primary_exited: F) -> Result<ExitManifest, crate::executor::RunEnd>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<String>>,
 {
     let outer = key.operation.as_str();
-    let bound = tokio::time::sleep(HANDOFF_WAIT);
-    tokio::pin!(bound);
     view.borrow_and_update();
     loop {
         let held = handoff.borrow_and_update().clone();
         if let Some(outcome) = held {
-            return outcome.map_err(|reason| crate::executor::RunEnd::Incomplete(format!("{outer}: {primary} reported its member workflows incomplete: {reason}")));
+            return outcome.map_err(|reason| crate::executor::RunEnd::Incomplete(format!("{outer}: the handoff of {primary} ended the leave incomplete: {reason}")));
         }
         if let Some(proof) = final_primary_exited().await {
             tracing::info_span!("rdm.node_admin.mesh.update.via-final-primary-exited", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, final_primary = %primary, proof = %proof)
@@ -1328,9 +1337,6 @@ where
                 if changed.is_err() {
                     return Err(crate::executor::RunEnd::Incomplete(format!("{outer}: the owner's view ended while the handoff of {primary} was awaited")));
                 }
-            }
-            _ = &mut bound => {
-                return Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary}, live and not proven exited, sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand")));
             }
         }
     }

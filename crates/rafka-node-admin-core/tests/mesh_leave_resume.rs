@@ -15,7 +15,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, MeshLeaveEvent, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{await_handoff, settle_handoff, LeaveBook, HANDOFF_WAIT, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{await_handoff, settle_handoff, LeaveBook, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::node_rows::{Claimed, NodeRows, RowRefused};
@@ -1458,9 +1458,10 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
 /// and holds no fact of the Build at all (FetchBuildFacts answers UnknownBuild) recorded no exit
 /// manifest, so the fabric-primary's verdict is Incomplete at once, naming every roster birth but
 /// the final primary as without an Exited receipt and naming the unknown Build; the open leave ends
-/// inside the call instead of waiting out its handoff bound (gate 044519ab canonical_ids: 120 s).
-/// A read that could not decide (not ready, unreached) stays undecided and the leave stays open: it is
-/// refused `RejectedSourceFailed` naming the read, never answered as this admin's own `NotReady`.
+/// inside the call instead of waiting for a handoff that will not come (gate 044519ab canonical_ids: 120 s).
+/// A read that could not decide (not ready, unreached) stays undecided: it is refused
+/// `RejectedSourceFailed` naming the read, never answered as this admin's own `NotReady`; the door
+/// then ends the open leave incomplete on that refusal ([`settle_handoff`]).
 #[test]
 fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplete() {
     let records: Vec<Node> = [FINAL, EXITING, FAILING].iter().map(|n| node(n)).collect();
@@ -1500,7 +1501,7 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
         }
         other => panic!("a final primary that holds no fact of the Build ends the leave incomplete, not undecided: {other:?}"),
     }
-    assert!(matches!(&not_ready, Err(StatusReply::RejectedSourceFailed { cause, .. }) if cause.contains("hydrating")), "a read that could not decide leaves the leave open, refused by name as a read that failed: {not_ready:?}");
+    assert!(matches!(&not_ready, Err(StatusReply::RejectedSourceFailed { cause, .. }) if cause.contains("hydrating")), "a read that could not decide is refused by name as a read that failed: {not_ready:?}");
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     assert_eq!(named("rdm.node_admin.mesh.reject.via-incomplete-handoff").iter().filter(|s| s["attributes"]["roster"] == "3" && s["attributes"]["exited"] == "0").count(), 1, "one incomplete handoff is refused, for the unknown Build only");
 }
@@ -1742,7 +1743,7 @@ fn run_paused<F: std::future::Future>(cap: &Capture, f: F) -> F::Output {
 /// proves a member exited"): the attempt ends incomplete, naming the final primary and the proof,
 /// its receipts standing for the next attempt, which resumes. A view change that proves nothing
 /// keeps the wait open: silence is not death. Must NOT happen: the wait running on to a timer
-/// (`HANDOFF_WAIT`) after the proof is in, the 120 s attempt 1 of the leave stems (trace
+/// after the proof is in, the 120 s attempt 1 of the leave stems (trace
 /// b84c9abc66ec8a8cee045c1e871514cb).
 #[test]
 fn the_owners_wait_ends_when_the_final_primary_is_proven_exited_never_on_a_timer() {
@@ -1781,7 +1782,7 @@ fn the_owners_wait_ends_when_the_final_primary_is_proven_exited_never_on_a_timer
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
 
     assert!(open_after_silence, "a view change that proves nothing keeps the wait open");
-    assert!(waited < HANDOFF_WAIT, "the wait ended on the proof, not on the {HANDOFF_WAIT:?} timer: it ended after {waited:?} with {end:?}");
+    assert!(waited.is_zero(), "the wait ended on the proof, not on a timer: no virtual time passed, but it ended after {waited:?} with {end:?}");
     match &end {
         Err(rafka_node_admin_core::executor::RunEnd::Incomplete(reason)) => {
             assert!(reason.contains(FINAL) && reason.contains("proven exited") && reason.contains("exit-proof row"), "the incomplete end names the final primary and its proof: {reason}");

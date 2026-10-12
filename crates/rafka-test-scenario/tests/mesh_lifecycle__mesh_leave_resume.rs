@@ -4,7 +4,7 @@
 //! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `shutdown-mesh:<mesh2 id>`.
 //! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete DrainNode receipt) and
 //! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends the moment its view
-//! holds the lost primary proven exited (`via-final-primary-exited`), never on the hand-off bound,
+//! holds the lost primary proven exited (`via-final-primary-exited`), never on a timer,
 //! and the next attempts record the lost primary's exact Exited, amend the roster with the new final
 //! primary once it is seated (or created, when none survives), and finish at mesh.deleted: its
 //! completion covers the accepted roster plus the amendment but the new final primary, which stays
@@ -141,9 +141,9 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     estate.kill_pid(u32::try_from(pid).unwrap());
 
     // Attempt 1 ends once the owner's view holds the primary proven exited; a later attempt
-    // completes. The bound is below the owner's 120 s hand-off bound: a resume that waited on it is
-    // red here. Nothing here panics before the estate is stopped: every process flushes its spans on
-    // exit, and a red run is read from them.
+    // completes. The owner's wait has no timer: an attempt 1 that ends on anything but the lost
+    // primary's proven exit is red on the span assertion below. Nothing here panics before the
+    // estate is stopped: every process flushes its spans on exit, and a red run is read from them.
     let deadline = std::time::Instant::now() + Duration::from_secs(90);
     let mut build = Value::Null;
     while std::time::Instant::now() < deadline {
