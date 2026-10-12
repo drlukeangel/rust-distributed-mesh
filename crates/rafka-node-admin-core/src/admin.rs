@@ -1544,8 +1544,8 @@ async fn commit_receipt(builds: &dyn BuildStateAdapter, me: &str, receipt: crate
 /// claim of the mesh's name ([`create_mesh`]), and its `Complete` receipt, written by `executor`, is the
 /// step's durable commit.
 ///
-/// - A `Complete` receipt of the operation in the Build, from this attempt or an earlier one, is the step
-///   done: it is replayed, which holds the operation's mesh id for this admin's launches and claims
+/// - A `Complete` receipt of the operation in the Build's current run (from the attempt a reopen began,
+///   [`crate::build_state::BuildProjection::opened`], to this attempt) is the step done: it is replayed, which holds the operation's mesh id for this admin's launches and claims
 ///   nothing and writes nothing.
 /// - No receipt is an uncertain step, run by its natural key: the claim finds the mesh free (written),
 ///   or its own row standing (`row-held-by-mesh`: an earlier run claimed and was lost before it
@@ -1578,7 +1578,7 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
     let receipt = |step: CreateMeshStep, outcome: StepOutcome| BuildStepReceipt { build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.name().into(), outcome, output: None, executor: Some(executor.to_string()) };
     let run = async {
         let held = builds.read_build(build_id).await.map_err(|e| ("build-unreadable", format!("{me}: {operation}: the Build {build_id} could not be read for its receipts: {e}")))?;
-        if held.steps.iter().any(|r| r.operation == operation && r.step == CreateMeshStep::Complete.name() && r.outcome == StepOutcome::Complete && r.attempt <= attempt) {
+        if held.steps.iter().any(|r| r.operation == operation && r.step == CreateMeshStep::Complete.name() && r.outcome == StepOutcome::Complete && r.attempt >= held.opened && r.attempt <= attempt) {
             hold_mesh_id(records, mesh, mesh_id);
             return Ok("replayed");
         }
