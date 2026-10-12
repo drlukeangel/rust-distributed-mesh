@@ -341,6 +341,12 @@ pub enum Refusal {
         /// `publisher-stopped` or `publisher-departed`.
         reason: &'static str,
     },
+    /// A chunk of a mesh this receiver applied mesh-left for, within its departed retention: the
+    /// mesh's removal is terminal (R-MD1 item 3), and nothing of that MeshId is installed again.
+    MeshLeft {
+        /// The MeshId the receiver applied mesh-left for.
+        mesh_id: rafka_mesh_entity::MeshId,
+    },
     /// A chunk of a snapshot older than the one being assembled from the same source.
     /// The chunk belongs to a snapshot older than the one being assembled from the same source.
     OlderThanPending {

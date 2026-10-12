@@ -464,7 +464,17 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let after_left = |sp: &Value| mesh_left_at.iter().any(|(n, at)| (s(&sp["attributes"]["node"]) == *n || s(&sp["attributes"]["holder"]) == *n) && start_ns(sp) > *at);
     let reinstalled: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && after_left(sp)).collect();
     assert!(reinstalled.is_empty(), "a node of a surviving mesh installed a mesh1 aggregate after mesh-left: {reinstalled:?}");
-    let late_refused: Vec<String> = ["rdm.mesh.membership.reject.via-departed-birth", "rdm.mesh.membership.reject.via-mesh-not-in-build"]
+    // R-MD1 item 3 with R-NS1 item 3: the fabric-primary keeps publishing the deleted mesh's own
+    // aggregate until departed retention, and every node that applied mesh-left refuses each republish
+    // of that MeshId by name, whether or not it holds the accepted Build: the removal is terminal.
+    let fenced: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare && after_left(sp)).collect();
+    for m in survivors {
+        let at_m: Vec<&&Value> = fenced.iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.")) && s(&sp["attributes"]["node"]) != fabric_primary).collect();
+        assert!(at_m.len() >= 2, "a node of {m} refused the fabric-primary's republishes of mesh1 by name after mesh-left, more than once: {at_m:?}");
+        assert!(at_m.iter().all(|sp| s(&sp["attributes"]["left_operation"]) == format!("shutdown-mesh:{mesh1_bare}")), "each refusal names the mesh-left it applied: {at_m:?}");
+    }
+    eprintln!("mesh-left fence: {} republishes of mesh1 refused after mesh-left, first trace {}", fenced.len(), fenced.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
+    let late_refused: Vec<String> = ["rdm.mesh.membership.reject.via-departed-birth", "rdm.mesh.membership.reject.via-mesh-not-in-build", "rdm.mesh.membership.reject.via-mesh-left"]
         .into_iter()
         .flat_map(|n| named(&spans, n))
         .filter(|sp| after_left(sp) && (sp["attributes"]["mesh"] == "mesh1" || s(&sp["attributes"]["node"]).starts_with("mesh1.")))

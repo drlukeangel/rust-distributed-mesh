@@ -1854,6 +1854,33 @@ struct View {
     /// What a node-admin does with a `node-drained` or `node-left` it hears on its mesh channel
     /// from the node itself: carry it onto the backbone when it holds the command (set by the admin).
     completion_carrier: Arc<Mutex<Option<CompletionCarrier>>>,
+    /// The meshes this node applied mesh-left for, by MeshId, each for its departed retention
+    /// ([`View::refuse_left_mesh`]).
+    left: Arc<Mutex<HashMap<MeshId, LeftMesh>>>,
+    /// The name each MeshId was stated under by a digest this node installed ([`View::learn_mesh_ids`]):
+    /// what mesh-left names the mesh by when the projection it holds states no MeshId any more (the
+    /// fabric-primary's aggregate of a deleted mesh has no digests, R-NS1 item 2).
+    mesh_names: Arc<Mutex<HashMap<MeshId, String>>>,
+}
+
+/// A mesh this node applied mesh-left for (R-MD1 item 3: "MeshLeft applies Gone and the terminal
+/// topology removal"), held by its MeshId for this node's departed retention: no later `Members`,
+/// `MembersDelta` or topology-read chunk of that MeshId is installed again, whoever publishes it
+/// (the fabric-primary publishes the deleted mesh's own aggregate until departed retention, R-NS1
+/// item 3).
+#[derive(Debug, Clone)]
+struct LeftMesh {
+    /// The mesh's name, when this node held a source projection naming it.
+    name: Option<String>,
+    /// The births the mesh-left departed here, by node id: the mesh's own births.
+    births: BTreeSet<String>,
+    /// The mesh-left applied: its Build, attempt, operation and publisher.
+    build_id: String,
+    attempt: u32,
+    operation: String,
+    publisher: String,
+    /// When this node applied it (local age; the retention is this node's own).
+    at: Instant,
 }
 
 /// What a node-admin does with a node's own completion frame heard on its mesh channel.
@@ -2023,8 +2050,22 @@ impl View {
                 Vec::new()
             }
             Frame::MeshLeft { mesh_id, build_id, attempt, operation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by } => {
-                let source = self.source_mesh_of(mesh_id);
+                // The mesh's name: a projection held that states the MeshId, else the name it was last
+                // stated under here (the fabric-primary's aggregate of a deleted mesh states none).
+                let source = self.source_mesh_of(mesh_id).or_else(|| self.mesh_names.lock().unwrap().get(mesh_id).cloned());
                 let applied = self.book.mesh_left(mesh_id, source.as_deref(), build_id, *attempt, *event_at_rafka_ms);
+                // The removal is terminal for this MeshId, for this node's departed retention: no
+                // later aggregate of it is installed again (`refuse_left_mesh`).
+                let births: BTreeSet<String> = applied.name.as_ref().map(|n| self.book.departed().into_iter().filter(|op| op.name.mesh == *n).map(|op| op.node_id.to_string()).collect()).unwrap_or_default();
+                self.left.lock().unwrap().entry(mesh_id.clone()).or_insert_with(|| LeftMesh {
+                    name: applied.name.clone(),
+                    births,
+                    build_id: build_id.clone(),
+                    attempt: *attempt,
+                    operation: operation.clone(),
+                    publisher: publisher.clone(),
+                    at: Instant::now(),
+                });
                 // The mesh is no longer part of the topology this node holds: the source projections
                 // of it, held or published, go with it, so no replay or top-up carries it again.
                 // Its held status goes too (a dead mesh's MeshStatus Dead included): no replay to a
@@ -2187,6 +2228,9 @@ impl View {
                     .in_scope(|| tracing::warn!("a Members frame on a channel it is not published on: refused"));
                     return SnapshotTaken::default();
                 }
+                if self.refuse_left_mesh(side, "members", mesh, &publisher.to_string(), digests, in_flight.iter().chain(departed.iter())).is_some() {
+                    return SnapshotTaken::default();
+                }
                 if self.outside_build(mesh, side) {
                     return SnapshotTaken::default();
                 }
@@ -2243,6 +2287,9 @@ impl View {
                         .in_scope(|| tracing::warn!("a MembersDelta on the backbone, where only complete snapshots travel: refused"));
                     return SnapshotTaken::default();
                 }
+                if self.refuse_left_mesh(side, "members-delta", mesh, &source_publisher.to_string(), changed, in_flight.iter().chain(departed.iter())).is_some() {
+                    return SnapshotTaken::default();
+                }
                 if self.outside_build(mesh, side) {
                     return SnapshotTaken::default();
                 }
@@ -2271,6 +2318,7 @@ impl View {
                             departed = delta.departed.len(),
                         )
                         .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
+                        self.learn_mesh_ids(&delta.changed);
                         let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.departed.clone());
                         let fence = prior.fence(source_publisher, side, *topology_version, rx.held_full(mesh));
                         let carried = self.apply_full(mesh, &full, fabric, side, &fence, source_publisher.node.split('.').next() == Some(mesh.as_str()));
@@ -2311,6 +2359,55 @@ impl View {
         }
     }
 
+    /// The mesh-left this node applied that an aggregate of `mesh` belongs to, by MeshId, within this
+    /// node's departed retention: a digest stating that MeshId, or, when no digest states a MeshId,
+    /// the mesh of that name every birth it lists (`digests`, `overlays`) is one that mesh-left
+    /// departed (an aggregate with no digests is the deleted mesh's own: R-NS1 item 3). A digest
+    /// stating another MeshId, or a birth of no left mesh, is a mesh created again at that path.name
+    /// (R-MN1), never refused.
+    fn left_mesh_of<'a>(&self, mesh: &str, digests: &[MeshDigest], overlays: impl Iterator<Item = &'a LifecycleOp>) -> Option<(MeshId, LeftMesh)> {
+        let now = Instant::now();
+        let mut left = self.left.lock().unwrap();
+        let expired: Vec<MeshId> = left.iter().filter(|(_, l)| now.duration_since(l.at) >= self.book.retention).map(|(id, _)| id.clone()).collect();
+        for id in expired {
+            left.remove(&id);
+            self.mesh_names.lock().unwrap().remove(&id);
+        }
+        if left.is_empty() {
+            return None;
+        }
+        let stated: Vec<&MeshId> = digests.iter().filter_map(|d| d.mesh_id.as_ref()).collect();
+        if !stated.is_empty() {
+            return stated.into_iter().find_map(|id| left.get(id).map(|l| (id.clone(), l.clone())));
+        }
+        let births: Vec<String> = digests.iter().map(|d| d.node.node_id.to_string()).chain(overlays.map(|o| o.node_id.to_string())).collect();
+        left.iter().find(|(_, l)| l.name.as_deref() == Some(mesh) && births.iter().all(|b| l.births.contains(b))).map(|(id, l)| (id.clone(), l.clone()))
+    }
+
+    /// Refuse, by name, an aggregate of a mesh this node applied mesh-left for ([`Self::left_mesh_of`]):
+    /// `frame` arrived on `side` from `publisher`. One `rdm.mesh.membership.reject.via-mesh-left` span
+    /// names the MeshId and the mesh-left applied. Whether this node holds the accepted Build does not
+    /// matter: the removal is terminal (R-MD1 item 3). Nothing is queued.
+    fn refuse_left_mesh<'a>(&self, side: Side, frame: &'static str, mesh: &str, publisher: &str, digests: &[MeshDigest], overlays: impl Iterator<Item = &'a LifecycleOp>) -> Option<MeshId> {
+        let (mesh_id, l) = self.left_mesh_of(mesh, digests, overlays)?;
+        tracing::info_span!(
+            "rdm.mesh.membership.reject.via-mesh-left",
+            node = %self.node,
+            channel = side.name(),
+            frame,
+            mesh = %mesh,
+            mesh_id = %mesh_id,
+            publisher = %publisher,
+            left_build_id = %l.build_id,
+            left_attempt = l.attempt,
+            left_operation = %l.operation,
+            left_publisher = %l.publisher,
+            held_for_ms = l.at.elapsed().as_millis() as u64,
+        )
+        .in_scope(|| tracing::info!("an aggregate of a mesh this node applied mesh-left for: refused, its removal is terminal for the departed retention"));
+        Some(mesh_id)
+    }
+
     /// Whether a snapshot or delta of the peer mesh `mesh` installs nothing: the accepted Build is
     /// the authority on which meshes the fabric has, and a mesh it does not name, of which this
     /// node holds no source projection, is not a mesh this node takes members of from an old
@@ -2345,7 +2442,18 @@ impl View {
 
     /// A complete snapshot is held: apply it to the book. `prior` is what the receiver held of the
     /// source before it.
+    /// Hold the name every MeshId `digests` state was stated under.
+    fn learn_mesh_ids(&self, digests: &[MeshDigest]) {
+        let mut names = self.mesh_names.lock().unwrap();
+        for d in digests {
+            if let Some(id) = &d.mesh_id {
+                names.insert(id.clone(), d.node.name.mesh.clone());
+            }
+        }
+    }
+
     fn installed(&self, i: &Install, fabric: &FabricId, side: Side, published_at_rafka_ms: u64, prior: Prior) -> SnapshotTaken {
+        self.learn_mesh_ids(&i.full.digests());
         tracing::info_span!(
             "rdm.mesh.membership.update.via-snapshot-installed",
             node = %self.node,
@@ -2947,6 +3055,9 @@ impl Membership {
     /// snapshot carries is held as heard and its location registered.
     pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
         let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
+        if let Some(mesh_id) = self.view.refuse_left_mesh(side, "read", &chunk.mesh, &chunk.publisher.to_string(), &chunk.digests, chunk.in_flight.iter().chain(chunk.departed.iter())) {
+            return Taken::Refused(crate::snapshot::Refusal::MeshLeft { mesh_id });
+        }
         let mut rx = self.view.mesh_rx.lock().unwrap();
         let held = rx.held_version(&chunk.mesh);
         if let Some((reason, seat)) = self.view.predecessor(&chunk.mesh, &chunk.publisher, held.as_ref().map(|(p, _)| p), side) {
@@ -6378,9 +6489,12 @@ mod tests {
     /// accepted Build. The fabric-primary's republish of the deleted mesh's aggregate (publisher
     /// itself, no digests, the final birth in `departed`) installs nothing on the backbone, nor
     /// forwarded on the mesh channel. A mesh created again at that path.name has a new MeshId and is
-    /// taken. Must NOT happen: the re-install the s49 acceptance cell saw at mesh2.admin.2,
-    /// mesh3.admin.2 and mesh2.rpc.1/.2 0.37 s after mesh-left (traces
-    /// fad0ff1bad18289a2c9e7734417dd456, 646ff8a73db798989f1208931f0fff1c).
+    /// taken. That holds when the projection held at mesh-left is already the fabric-primary's
+    /// aggregate (no digest states the MeshId any more): the MeshId names the mesh from what this
+    /// node learned of it. Must NOT happen: the re-install the s49 acceptance cell saw at
+    /// mesh2.admin.2, mesh3.admin.2 and mesh2.rpc.1/.2 after mesh-left (traces
+    /// fad0ff1bad18289a2c9e7734417dd456, 646ff8a73db798989f1208931f0fff1c,
+    /// 379b4094c48d8b852890734790b7b222).
     #[test]
     fn a_receiver_that_applied_mesh_left_refuses_every_later_aggregate_of_that_mesh_id() {
         use tracing_subscriber::layer::SubscriberExt;
@@ -6412,6 +6526,10 @@ mod tests {
         let rpc = View::new("mesh2", "mesh2.rpc.1");
         assert!(!admin.take_snapshot(&members(&primary, None, 1, 1, vec![last.clone()], Vec::new()), &fabric, Side::Backbone).carried.is_empty(), "the deleted mesh is held with its last admin");
         assert!(!rpc.take_snapshot(&members(&primary, Some("mesh2.admin.1"), 1, 1, vec![last.clone()], Vec::new()), &fabric, Side::MeshChannel).carried.is_empty());
+        // The last admin's node.delete: the fabric-primary's aggregate of the deleted mesh, no digests
+        // and the final birth departed, is the projection each holds when mesh-left arrives.
+        admin.take_snapshot(&members(&fp, None, 1, 1, Vec::new(), vec![deleted.clone()]), &fabric, Side::Backbone);
+        rpc.take_snapshot(&members(&fp, Some("mesh2.admin.1"), 1, 1, Vec::new(), vec![deleted.clone()]), &fabric, Side::MeshChannel);
         admin.take(&left, &fabric, "backbone");
         rpc.take(&left, &fabric, "mesh-channel");
         assert!(admin.backbone_rx.lock().unwrap().held_full("mesh1").is_none() && rpc.mesh_rx.lock().unwrap().held_full("mesh1").is_none(), "mesh-left removed the mesh");
