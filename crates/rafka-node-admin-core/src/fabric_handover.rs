@@ -1169,10 +1169,17 @@ impl HandoverDoor {
         // The holder gossips that its seat is updating to the successor.
         let successor_record = SeatHolder { mesh: successor.mesh.clone(), node_id: successor.node_id.clone(), incarnation: successor.incarnation.clone(), epoch: next };
         self.backbone.announce_primary_updating(op.clone(), seat, successor_record).await;
+        // The fabric seat's record moves from the successor's row until this holder installs the
+        // answer: the Build-log decision lock is held across that whole move, so no decision is made
+        // here under a fabric seat the successor's row already took (`HandoverDoor::decisions`).
+        let mut moving = if fabric_seat { Some(self.decisions.clone().lock_owned().await) } else { None };
         match self.call_once(&successor.node_id, &t.request()).await {
             Called::Reply(Reply::SeatsCommitted { seats }) if !seats.is_empty() => {
                 // The successor's row moved the seat: this holder's authority over it ended there.
-                let decisions = self.decisions.clone().lock_owned().await;
+                let decisions = match moving.take() {
+                    Some(held) => held,
+                    None => self.decisions.clone().lock_owned().await,
+                };
                 book.take_together(&op, &seats[0].record(), &seats, true);
                 drop(decisions);
                 (self.cut_off_writes)(WriteCutOff::Committed { reason, fabric_seat }).await;
@@ -1183,6 +1190,7 @@ impl HandoverDoor {
             }
             Called::Reply(refusal) => {
                 // Nothing moved: the writes are this holder's again.
+                drop(moving);
                 (self.cut_off_writes)(WriteCutOff::Lift).await;
                 let (why, detail) = refusal_reason(&refusal);
                 reject_seats("holder", why, &detail, &t);
@@ -1191,6 +1199,7 @@ impl HandoverDoor {
             Called::NotDispatched(why) => {
                 // The request never reached the successor's dispatch: no row was written for it, and
                 // the writes are this holder's again. The update is incomplete; a later attempt runs it.
+                drop(moving);
                 (self.cut_off_writes)(WriteCutOff::Lift).await;
                 let detail = format!("{}: node.primary.update {} to {} did not reach it, nothing moved and the cut-off is lifted; the update is incomplete: {why}", self.me, t.operation, births(&t.successor));
                 reject_seats("holder", "not-dispatched", &detail, &t);
@@ -1199,6 +1208,7 @@ impl HandoverDoor {
             Called::Indeterminate(why) => {
                 // The successor may have written the row: this holder never writes again under a seat
                 // it may have lost, so the cut-off stays. A later attempt reads the row (above).
+                drop(moving);
                 let detail = format!("{}: node.primary.update {} to {} is uncertain, the successor may hold the row and the cut-off stays set; the update is incomplete until a later attempt reads the row: {why}", self.me, t.operation, births(&t.successor));
                 reject_seats("holder", "indeterminate", &detail, &t);
                 Err(Reply::PeerUnresolved { reason: detail })
