@@ -130,6 +130,10 @@ impl FabricStorage for FailingStorage {
         self.check("fabric")?;
         self.inner.fabric().await
     }
+    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
+        self.check("fabric_rows")?;
+        self.inner.fabric_rows().await
+    }
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
         self.check("put_identity")?;
         self.inner.put_identity(identity).await
@@ -1625,7 +1629,7 @@ async fn failing_seats() -> (Seats, Arc<FailingStorage>) {
         move || {
             let store = Arc::new(FailingStorage::default());
             made.lock().unwrap().push(store.clone());
-            store as Arc<dyn FabricStorage>
+            async move { store as Arc<dyn FabricStorage> }
         }
     })
     .await;

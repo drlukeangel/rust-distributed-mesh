@@ -145,8 +145,8 @@ impl DeploymentProvider for Host {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         unreachable!("adoption stops nothing")
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        None
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(None)
     }
 }
 
