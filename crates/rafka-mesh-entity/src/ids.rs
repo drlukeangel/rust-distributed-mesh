@@ -233,6 +233,25 @@ mod tests {
         }
     }
 
+    /// R-BI5 (Luke 2026-10-12, "we only have one id type, never a hex"): an incarnation id is minted
+    /// as every other id is, 12 lowercase Crockford characters.
+    #[test]
+    fn an_incarnation_id_mints_twelve_lowercase_crockford_characters() {
+        for _ in 0..2000 {
+            let s = IncarnationId::mint().to_string();
+            assert_eq!(s.len(), 12, "{s}");
+            assert!(s.bytes().all(|b| CROCKFORD.contains(&b)), "{s}");
+        }
+    }
+
+    /// R-BI5: a stored 32-character hex incarnation is an old row; reading it is refused by name.
+    #[test]
+    fn a_stored_hex_incarnation_id_is_refused_by_name() {
+        let hex = "0123456789abcdef0123456789abcdef";
+        let e = serde_json::from_str::<IncarnationId>(&format!("\"{hex}\"")).unwrap_err().to_string();
+        assert!(e.contains("incarnation id") && e.contains(hex), "{e}");
+    }
+
     #[test]
     fn a_mint_carries_sixty_random_bits() {
         // Every bit position of the 60 takes both values across mints.

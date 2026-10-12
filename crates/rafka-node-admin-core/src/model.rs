@@ -253,7 +253,7 @@ mod tests {
         let a = IncarnationId::mint();
         let b = IncarnationId::mint();
         assert_ne!(a, b);
-        assert_eq!(a.0.len(), 32);
+        assert_eq!(a.to_string().len(), 12, "an incarnation id is a 12-character Crockford id");
     }
 
     #[test]

@@ -363,3 +363,16 @@ impl NodeAdminClient {
         self.post::<serde_json::Value>("/api/shutdown", None).await.map(|_| ())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BuildId;
+
+    /// R-BI5: a Build id the client reads is a Crockford id; a stored `bld-<24 hex>` value is refused by name.
+    #[test]
+    fn a_stored_bld_hex_build_id_is_refused_by_name() {
+        let old = "bld-0123456789abcdef01234567";
+        let e = serde_json::from_str::<BuildId>(&format!("\"{old}\"")).unwrap_err().to_string();
+        assert!(e.contains("build id") && e.contains(old), "{e}");
+    }
+}
