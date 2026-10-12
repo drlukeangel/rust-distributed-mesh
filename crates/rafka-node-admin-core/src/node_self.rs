@@ -150,11 +150,12 @@ pub trait Session: Send + Sync {
     async fn cut(&self, spare: Option<iroh::PublicKey>) -> CutReport;
     /// Rejoin as the same birth: join the authority, rejoin the mesh channel, take the topology and
     /// run the hydrate hook with `AfterStop` in its context under `retire`, the new cycle's token.
-    /// `authority` is the admin that commanded the start: it answers the join and is the hook's
-    /// accepting authority. `rows` is the start's hold on this birth's connections rows: the
+    /// `commander` is the endpoint key of the call that commanded the start: the admin that holds it
+    /// answers the join and is the hook's accepting authority
+    /// ([`crate::workflows::node_start::join_back`]). `rows` is the start's hold on this birth's connections rows: the
     /// session drops it once it holds the name its join answer handed, and no earlier, so the join's
     /// connection is recorded under that name (node-start.md step 2).
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: iroh::PublicKey, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
 }
 
 /// Declares a state this birth entered to its authority.
@@ -978,14 +979,11 @@ impl NodeSelf {
             };
             let _ = (self.set_status)(MemberStatus::Pending);
             self.server.resume();
-            // The admin that commanded the start answers its join: the caller as the call resolved
-            // it, else the node this birth's book holds at the calling endpoint now.
-            let joined = match commander.clone().or_else(|| self.node_at_endpoint(spare)) {
-                Some(authority) => session.rejoin(retire, &authority, rows).await,
-                None => Err(StartFailed {
-                    step: "node.join",
-                    reason: format!("{}: the endpoint {} that commanded the start is in no digest this birth holds, so the start has no admin to join through", self.held_name(), spare.map(|k| k.to_string()).unwrap_or_else(|| "(none)".into())),
-                }),
+            // The admin that commanded the start answers its join, reached back through its own call:
+            // the call's endpoint key names it (node-start.md step 2).
+            let joined = match spare {
+                Some(key) => session.rejoin(retire, key, rows).await,
+                None => Err(StartFailed { step: "node.join", reason: format!("{}: commander-uncalled: the start came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()) }),
             };
             let reply = match joined {
                 Ok(()) => {

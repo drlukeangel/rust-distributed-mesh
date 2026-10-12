@@ -2576,12 +2576,12 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: iroh::PublicKey, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), crate::node_self::StartFailed> {
         // The name this admin holds (its row's, as its last join or apply handed it): what its join
         // presents and what it is named by until the join answer hands it the row's (R12).
         let held = self.digest.lock().unwrap().node.name.clone();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
-        let mut start = AdminAfterStop { session: self, root, authority: authority.clone(), retire: Some(retire), rows };
+        let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows };
         crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
     }
 }
@@ -2592,8 +2592,9 @@ impl crate::node_self::Session for AdminSession {
 struct AdminAfterStop<'a> {
     session: &'a AdminSession,
     root: tracing::Span,
-    /// The admin that commanded the start: it answers the join and is the hook's accepting authority.
-    authority: NodeId,
+    /// The endpoint key of the call that commanded the start: the admin holding it answers the join
+    /// and is the hook's accepting authority.
+    commander: iroh::PublicKey,
     /// The new cycle's token: the hook runs under it.
     retire: Option<rafka_node_rpc::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
@@ -2611,19 +2612,13 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
-        crate::workflows::node_start::Joining::Authority { label: self.authority.to_string() }
+        crate::workflows::node_start::Joining::Authority { label: self.commander.fmt_short().to_string() }
     }
 
-    fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinThrough, crate::node_self::StartFailed> {
-        use crate::node_self::StartFailed;
-        let (s, authority) = (self.session, &self.authority);
+    async fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinThrough, crate::node_self::StartFailed> {
+        let s = self.session;
         let name = s.digest.lock().unwrap().node.name.to_string();
-        let Some((auth, _)) = s.membership.book.get(authority.as_str()) else {
-            return Err(StartFailed { step: "node.join", reason: format!("{name}: the admin that commanded the start ({authority}) is not held by this admin, so it cannot be joined through") });
-        };
-        let key = auth.node.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| StartFailed { step: "node.join", reason: format!("{}: its endpoint id is not an iroh key: {e}", auth.node.name) })?;
-        s.resolver.apply(rafka_node_rpc::ResolvedNode { node_id: auth.node.node_id.clone(), name: auth.node.name.clone(), endpoint_id: key, transport_addr: auth.node.transport_addr, incarnation: auth.node.incarnation.clone() }, None);
-        Ok(crate::workflows::node_start::JoinThrough { node_id: authority.clone(), name: auth.node.name.clone(), incarnation: auth.node.incarnation.clone(), anchor: key.fmt_short().to_string() })
+        crate::workflows::node_start::join_back(&name, &s.membership, &s.client, &s.resolver, &self.commander).await
     }
 
     fn join_digest(&self) -> MeshDigest {

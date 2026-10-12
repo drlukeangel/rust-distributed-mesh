@@ -705,13 +705,13 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, authority: &NodeId, rows: Option<rafka_node_admin_core::connections_writer::RowsHeld>) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: iroh::PublicKey, rows: Option<rafka_node_admin_core::connections_writer::RowsHeld>) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
         let held = self.membership.with_config(&self.digest);
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
-        let mut start = AfterStop { session: self, root, name, held, authority: authority.clone(), retire: Some(retire), rows };
+        let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows };
         rafka_node_admin_core::workflows::node_start::node_start(&mut start, rafka_node_admin_core::app_hydration::StartKind::AfterStop).await
     }
 }
@@ -725,8 +725,9 @@ struct AfterStop<'a> {
     name: String,
     /// The digest the birth holds: the one its join presents.
     held: MeshDigest,
-    /// The admin that commanded the start: it answers the join and is the hook's accepting authority.
-    authority: NodeId,
+    /// The endpoint key of the call that commanded the start: the admin holding it answers the join
+    /// and is the hook's accepting authority.
+    commander: iroh::PublicKey,
     /// The new cycle's token: the hook runs under it.
     retire: Option<rafka_node_rpc::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
@@ -743,18 +744,12 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
     }
 
     fn joining(&self) -> rafka_node_admin_core::workflows::node_start::Joining {
-        rafka_node_admin_core::workflows::node_start::Joining::Authority { label: self.authority.to_string() }
+        rafka_node_admin_core::workflows::node_start::Joining::Authority { label: self.commander.fmt_short().to_string() }
     }
 
-    fn resolve_authority(&mut self) -> Result<rafka_node_admin_core::workflows::node_start::JoinThrough, rafka_node_admin_core::node_self::StartFailed> {
-        use rafka_node_admin_core::node_self::StartFailed;
-        let (s, name, authority) = (self.session, &self.name, &self.authority);
-        let Some((auth, _)) = s.membership.book.get(authority.as_str()) else {
-            return Err(StartFailed { step: "node.join", reason: format!("{name}: the admin that commanded the start ({authority}) is not held by this node, so it cannot be joined through") });
-        };
-        let key = auth.node.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| StartFailed { step: "node.join", reason: format!("{}: its endpoint id is not an iroh key: {e}", auth.node.name) })?;
-        s.resolver.apply(rafka_node_rpc::ResolvedNode { node_id: auth.node.node_id.clone(), name: auth.node.name.clone(), endpoint_id: key, transport_addr: auth.node.transport_addr, incarnation: auth.node.incarnation.clone() }, None);
-        Ok(rafka_node_admin_core::workflows::node_start::JoinThrough { node_id: authority.clone(), name: auth.node.name.clone(), incarnation: auth.node.incarnation.clone(), anchor: key.fmt_short().to_string() })
+    async fn resolve_authority(&mut self) -> Result<rafka_node_admin_core::workflows::node_start::JoinThrough, rafka_node_admin_core::node_self::StartFailed> {
+        let s = self.session;
+        rafka_node_admin_core::workflows::node_start::join_back(&self.name, &s.membership, &s.client, &s.resolver, &self.commander).await
     }
 
     fn join_digest(&self) -> MeshDigest {
