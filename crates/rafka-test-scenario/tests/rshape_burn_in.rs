@@ -3343,23 +3343,24 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
 }
 
 /// The spans of one retirement: REST (a new accepted Build) -> reconcile (`retire-node:<node>`), or for
-/// a replace the recipe's delete of the parked predecessor (`delete-node:<node>.old`, an attempt of the
-/// accepted Build) -> node.delete.via-build -> pipeline -> the steps in their documented order;
-/// NodeDeleting and NodeDeleted naming the old birth; the receivers' removal; and no Ready span of the
-/// NodeId at or after its departure. A replace's own operation is checked against the recipe too.
+/// a replace the recipe's delete of the stopped predecessor (`retire-node:<node>.old`, node.delete's one
+/// key, a step of the recipe's attempt of the accepted Build) -> node.delete.via-build -> pipeline -> the
+/// steps in their documented order; NodeDeleting and NodeDeleted naming the old birth; the receivers'
+/// removal; and no Ready span of the NodeId at or after its departure. A replace's whole recipe is
+/// checked too (`recipe_ops_of`).
 fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let (bid, id, old) = (s(&rec["build_id"]), s(&rec["node_id"]), s(&rec["old_incarnation_id"]));
-    // A removal is `retire-node:<path>`; a replace is ONE `replace-node:<path>` operation (the predecessor
-    // drains, stops parked and is renamed `<path>.old`, the successor is created at the path), and the
-    // old identity's NodeDeleted is the recipe's later `delete-node:<path>.old`, an attempt its own
-    // request opened, after the successor's Ready: the chain below follows that delete; the replace
-    // operation's own order is checked after (`replace_steps_of`).
+    // A removal is `retire-node:<path>`; a replace is the recipe (node-replace.md), whose last step
+    // deletes the stopped predecessor at `<path>.old` under node.delete's one key, after the
+    // successor's Ready: the chain below follows that delete; the recipe's own order is checked after
+    // (`recipe_ops_of`).
     let opener = s(&rec["opened_by"]);
-    let replace = opener == "rdm.node_admin.build.update.via-rest";
-    let (op, target) = if replace { (format!("delete-node:{node}.old"), format!("{node}.old")) } else { (format!("retire-node:{node}"), node.clone()) };
-    // The request that opened the retiring reconcile: an accepted Build (a retirement), or the attempt
-    // the delete route opened on the accepted Build (it names the `.old` path it acts on).
+    let replace = opener == "rdm.node_admin.build.update.via-recipe";
+    let target = if replace { format!("{node}.old") } else { node.clone() };
+    let op = format!("retire-node:{target}");
+    // The request that opened the retiring reconcile: an accepted Build (a retirement), or the
+    // recipe's attempt of the accepted Build.
     let create = named(spans, &opener)
         .into_iter()
         .find(|sp| sp["attributes"]["build_id"] == bid.as_str() && sp["attributes"]["node"].as_str().is_none_or(|n| n == target.as_str()))
@@ -3379,7 +3380,7 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
     let wanted: &[&str] = if replace {
-        // node.delete of the parked birth: its stop steps are done, nothing is released but its id and name.
+        // node.delete of the stopped birth: its stop steps are done, nothing is released but its id and name.
         &["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]
     } else {
         &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
@@ -3401,41 +3402,33 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
             assert!(!names.iter().any(|x| x == never), "{node}: the delete of the parked {target} runs no `{never}` step: {names:?}");
         }
     }
-    let replace_steps = replace.then(|| replace_steps_of(spans, &node, &bid));
+    let recipe_ops = replace.then(|| recipe_ops_of(spans, &node, &bid));
     let removed = named(spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
     let after: Vec<&&Value> = ready.iter().filter(|r| r["attributes"]["node_id"] == id.as_str() && start_ns(r) > start_ns(deleted[0])).collect();
     assert!(after.is_empty(), "{node}: the retired NodeId {id} was Ready again after its departure: {after:?}");
     json!({"node": node, "op": op, "rest_span": create["span_id"], "reconcile_span": reconcile["span_id"], "delete_span": del["span_id"], "pipeline_span": pipeline["span_id"], "steps": outcomes,
-        "node_deleting_spans": deleting.len(), "node_deleted_span": deleted[0]["span_id"], "receivers_removed": removed, "ready_after_departure": 0, "replace_steps": replace_steps})
+        "node_deleting_spans": deleting.len(), "node_deleted_span": deleted[0]["span_id"], "receivers_removed": removed, "ready_after_departure": 0, "recipe_ops": recipe_ops})
 }
 
-/// The replace operation `replace-node:<node>` of `build_id` ran Rafka's recipe (node-replace.md 1-3):
-/// the predecessor drains and stops (parked), is renamed `<node>.old`, and node.create starts the
-/// successor at the freed name; it deletes nothing (no NodeDeleting, terminal proof, storage hand-over,
-/// NodeDeleted or ReleaseStorage), the delete being the recipe's later step.
-fn replace_steps_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
-    let replace = format!("replace-node:{node}");
-    let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
-        .into_iter()
-        .find(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == replace)))
-        .cloned()
-        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} executed {replace}"));
-    let make = named(spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| sp["attributes"]["node"] == node && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.update.via-build under the replacing reconcile"));
-    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its node.update.via-build"));
-    let mut steps: Vec<&Value> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).collect();
-    steps.sort_by_key(|st| start_ns(st));
-    let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
-    let mut last = 0usize;
-    for want in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor", "AllocateIdentity", "DeployRuntime", "WaitForNodeReady", "Complete"] {
-        let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the replace pipeline has no `{want}` step: {names:?}"));
-        assert!(at >= last, "{node}: replace steps out of order at `{want}`: {names:?}");
-        last = at;
+/// The replace recipe of `node` in `build_id` (node-replace.md "Numbered end-to-end sequence"): its
+/// reconciles executed the recipe's seven operations, each under its op's own key, in order, and no
+/// other operation of the node, its successor or its predecessor.
+fn recipe_ops_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
+    let (new, old) = (format!("{node}.new"), format!("{node}.old"));
+    let mut reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| sp["attributes"]["build_id"] == build_id).collect();
+    reconciles.sort_by_key(|sp| start_ns(sp));
+    let mut ops: Vec<String> = Vec::new();
+    for sp in reconciles {
+        for op in s(&sp["attributes"]["operations"]).split(',').filter(|o| o.split_once(':').is_some_and(|(_, p)| p == node || p == new || p == old)) {
+            if !ops.iter().any(|x| x == op) {
+                ops.push(op.to_string());
+            }
+        }
     }
-    for never in ["NodeDeleting", "TerminateRuntime", "HandoffStorage", "NodeDeleted", "ReleaseStorage"] {
-        assert!(!names.iter().any(|x| x == never), "{node}: a replace runs no `{never}` step, the predecessor stays parked until the recipe's delete: {names:?}");
-    }
-    names
+    let want = [format!("create-node:{new}"), format!("stop-node:{node}"), format!("update-node:{node}"), format!("stop-node:{new}"), format!("update-node:{new}"), format!("start-node:{node}"), format!("retire-node:{old}")];
+    assert_eq!(ops, want.to_vec(), "{node}: the recipe's operations, in order");
+    ops
 }
 
 /// The drain the retiring node obeyed, read from its own span and the pipeline's: the `drain-node`
@@ -3651,24 +3644,24 @@ async fn hold_phase(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, 
     rec
 }
 
-/// The creating half of a replace: the one reconcile that replaced the old birth (its operation is
-/// `replace-node:<node>`) ran `node.update.via-build` through the replace pipeline, whose steps create
-/// the successor at the path (AllocateIdentity .. WaitForNodeReady), and the new NodeId's own ready
-/// span follows; the old identity's NodeDeleted comes later, from the recipe's delete of `<node>.old`.
+/// The creating half of a replace: the recipe's first step, node.create of the successor at
+/// `<node>.new` (`create-node:<node>.new`, node-replace.md step 1), ran `node.create.via-build` through
+/// the create pipeline (AllocateIdentity .. WaitForNodeReady), and the new NodeId's own ready span
+/// follows; the old identity's NodeDeleted comes later, from the recipe's delete of `<node>.old`.
 fn check_replace_create_chain(spans: &[Value], node: &str, build_id: &str, node_id: &str, incarnation: &str) -> Value {
-    let replace = format!("replace-node:{node}");
+    let (successor, create) = (format!("{node}.new"), format!("create-node:{node}.new"));
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
-        .find(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == replace)))
+        .find(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == create)))
         .cloned()
-        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} executed {replace}"));
+        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} executed {create}"));
     let action = s(&reconcile["attributes"]["action"]);
-    assert!(action.contains("\"replace\"") && action.contains(node), "{node}: the reconcile carries the Replace action: {action}");
-    let make = named(spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| sp["attributes"]["node"] == node && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.update.via-build under the replacing reconcile"));
-    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its node.update.via-build"));
+    assert!(action.contains("\"recipe\"") && action.contains(&successor), "{node}: the reconcile carries the recipe: {action}");
+    let make = named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| sp["attributes"]["node"] == successor.as_str() && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.create.via-build of {successor} under the recipe's reconcile"));
+    let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its node.create.via-build"));
     let names: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).map(|st| s(&st["attributes"]["step"])).collect();
     for want in ["AllocateIdentity", "DeployRuntime", "WaitForNodeReady"] {
-        assert!(names.iter().any(|x| x == want), "{node}: the replace pipeline has no `{want}` step creating the successor: {names:?}");
+        assert!(names.iter().any(|x| x == want), "{node}: the create pipeline has no `{want}` step creating the successor: {names:?}");
     }
     let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id && sp["attributes"]["incarnation_id"] == incarnation).cloned().unwrap_or_else(|| panic!("{node}: the new node {node_id} left no ready span"));
     json!({"node": node, "reconcile_span": reconcile["span_id"], "action": action, "create_span": make["span_id"], "pipeline_span": pipeline["span_id"], "steps": names.len(), "ready_span": ready["span_id"], "new_node_id": node_id})
@@ -3816,7 +3809,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     });
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([formation_build.clone()]), "the only Build accepted is the formation: the planned replacement and the death's recovery are attempts of it");
-    inv.holds("no topology changed after the formation: the planned replacement (a Replace attempt: one replace-node operation) and the death's recovery (the mesh-primary's recovery attempt: its delete, create and update) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
+    inv.holds("no topology changed after the formation: the planned replacement (the replace recipe's attempt: its seven node primitives) and the death's recovery (the mesh-primary's recovery attempt: its delete, create and update) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);

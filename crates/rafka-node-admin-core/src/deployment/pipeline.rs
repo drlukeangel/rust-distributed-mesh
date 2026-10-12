@@ -1775,8 +1775,8 @@ impl DeploymentPipeline<'_> {
         self.step(run, RetireStep::Complete.name(), async { Ok(()) }).await
     }
 
-    /// `node.delete` of the stopped birth `req.node` a rename left at its `.old` path
-    /// (node-decommission.md), as ONE operation `delete-node:<path>.old`:
+    /// `node.delete` of the stopped birth `req.node` (node-decommission.md), as ONE operation under
+    /// node.delete's one key, `retire-node:<path>`:
     ///
     /// ```text
     /// NodeDeleting -> TerminateRuntime (the provider's exact Exited) -> NodeDeleted -> Complete (the birth)
@@ -1792,7 +1792,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("delete-node:{name}")).await;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await;
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?;
             let op = LifecycleOp {
                 build_id: req.build_id.to_string(),

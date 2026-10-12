@@ -490,8 +490,7 @@ impl ActionProgress {
             let (operation, first) = match action {
                 AttemptAction::Drain { .. } => (format!("drain-node:{path}"), "DrainNode"),
                 AttemptAction::Start { .. } => (format!("start-node:{path}"), "StartNode"),
-                AttemptAction::Delete { .. } if path.old => (format!("delete-node:{path}"), "NodeDeleting"),
-                // The last admin of a deleted mesh: the ordinary node.delete (`plan_with`).
+                // node.delete's one key, whether the birth is deleted stopped or live (`plan_with`).
                 AttemptAction::Delete { .. } => (format!("retire-node:{path}"), "NodeDeleting"),
                 _ => (format!("stop-node:{path}"), "StopNode"),
             };
@@ -1174,7 +1173,7 @@ mod tests {
     /// pins the birth its predecessor path holds and plans its steps in order, each its op's own
     /// operation (`create-node:<name>.new`, `stop-node:<name>`, `update-node:<name>`,
     /// `stop-node:<name>.new`, `update-node:<name>.new`, `start-node:<name>`,
-    /// `delete-node:<name>.old`), never a replace operation and never a generic create or retire beside
+    /// `retire-node:<name>.old`), never a replace operation and never a generic create or retire beside
     /// them. The predecessor's steps carry its pinned birth, followed through its rename to `.old`; the
     /// successor's carry none (its executor resolves the node its create made). A step whose `Complete`
     /// is receipted in an attempt that carried this recipe is not planned again; a `Complete` of the
@@ -1198,7 +1197,7 @@ mod tests {
         let keys: Vec<String> = all.iter().map(BuildOperation::key).collect();
         assert_eq!(
             keys,
-            ["create-node:mesh1.rpc.1.new", "stop-node:mesh1.rpc.1", "update-node:mesh1.rpc.1", "stop-node:mesh1.rpc.1.new", "update-node:mesh1.rpc.1.new", "start-node:mesh1.rpc.1", "delete-node:mesh1.rpc.1.old"]
+            ["create-node:mesh1.rpc.1.new", "stop-node:mesh1.rpc.1", "update-node:mesh1.rpc.1", "stop-node:mesh1.rpc.1.new", "update-node:mesh1.rpc.1.new", "start-node:mesh1.rpc.1", "retire-node:mesh1.rpc.1.old"]
         );
         assert!(!keys.iter().any(|k| k.starts_with("replace-node:")));
         let receipt = |attempt: u32, operation: &str| BuildStepReceipt {
@@ -1276,7 +1275,7 @@ mod tests {
     }
 
     /// CONTRACT (node-decommission.md): the delete of the parked predecessor at `<path>.old` plans its
-    /// one operation `delete-node:<path>.old` until its `Complete` names the birth, whatever the view
+    /// one operation `retire-node:<path>.old` until its `Complete` names the birth, whatever the view
     /// holds: the fabric-primary admitted it from the record it holds of that exact birth, and no view
     /// names a `.old` path but its replace's executor's. It never plans a create or repair of the
     /// path's successor.
@@ -1297,12 +1296,12 @@ mod tests {
         let delete = AttemptAction::Delete { path: path.clone(), from_incarnation: from.clone() };
         let op = vec![BuildOperation::DeleteNode { node: path.clone(), from_incarnation: from.clone() }];
         assert_eq!(plan(&cur, &held, Some(&delete)).operations, op, "only the delete, never a repair of mesh1.rpc.3");
-        assert_eq!(op[0].key(), "delete-node:mesh1.rpc.2.old");
+        assert_eq!(op[0].key(), "retire-node:mesh1.rpc.2.old");
         // The Complete commits no output: the attempt's fenced action names the birth.
         let step = |attempt: u32, step: &str| BuildStepReceipt {
             build_id: crate::build::BuildId("b1".into()),
             attempt,
-            operation: format!("delete-node:{path}"),
+            operation: format!("retire-node:{path}"),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: None,

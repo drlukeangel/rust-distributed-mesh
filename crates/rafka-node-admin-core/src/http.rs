@@ -516,7 +516,8 @@ pub enum ActionKind {
     Stop,
     /// `start-node:<path>`.
     Start,
-    /// `delete-node:<path>.old`.
+    /// `retire-node:<path>` (node.delete) of a stopped birth at its `.old` path, or of a deleted
+    /// mesh's last admin.
     Delete,
 }
 

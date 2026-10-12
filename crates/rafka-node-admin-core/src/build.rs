@@ -215,9 +215,9 @@ pub enum BuildOperation {
         /// The birth started.
         from_incarnation: IncarnationId,
     },
-    /// Delete the stopped exact birth `from_incarnation` at `node`, a `.old` path a recipe renamed it
-    /// to (node-delete.md): its stop steps are done; `NodeDeleting`, the provider's exact Exited
-    /// proof, `NodeDeleted`, and `Complete` naming the birth. Storage is kept.
+    /// node.delete of the stopped exact birth `from_incarnation` at `node` (node-delete.md): its stop
+    /// steps are done; `NodeDeleting`, the provider's exact Exited proof, `NodeDeleted`, and `Complete`
+    /// naming the birth. Storage is kept. Its key is node.delete's one key, `retire-node:<path>`.
     DeleteNode {
         /// The parked node's `.old` path.
         node: PathName,
@@ -245,7 +245,7 @@ pub enum BuildOperation {
     /// One step of a recipe (`BuildChange::Recipe`; build.md §1, lifecycles/node-replace.md): its op's
     /// own workflow on the node its path names when it runs, `create-node`, `stop-node`,
     /// `update-node` (node.update's own core at the node's mesh-primary), `start-node`, or
-    /// `delete-node` / `retire-node` (node.delete). `birth` fences it to the exact birth its node was
+    /// `retire-node` (node.delete). `birth` fences it to the exact birth its node was
     /// when the recipe was accepted; `None` for a node an earlier step of the recipe created, which
     /// the executor resolves at its path when the step runs.
     RecipeStep {
@@ -287,16 +287,16 @@ impl BuildOperation {
             Self::StartNode { node, .. } => format!("start-node:{node}"),
             Self::UpdateNode { node, .. } => format!("update-node:{node}"),
             Self::RecipeStep { step, .. } => recipe_step_key(step),
-            Self::DeleteNode { node, .. } => format!("delete-node:{node}"),
-            Self::RetireNode { node, .. } => format!("retire-node:{node}"),
+            // node.delete has one key, whatever the node's name and whatever state the birth is
+            // deleted from (a stopped birth's delete runs no stop steps, a live one's stops it first).
+            Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }
     }
 }
 
-/// The operation key of a recipe step: its op's own key, the one that op's workflow receipts under
-/// (a stopped node at a `.old` path is deleted by `delete-node`, any other by node.delete's
-/// `retire-node`).
+/// The operation key of a recipe step: its op's own key, the one that op's workflow receipts under.
+/// One op has one key, whatever the node's name: node.delete's is `retire-node:<path>`.
 pub fn recipe_step_key(step: &rafka_node_rpc_contract::build::RecipeStep) -> String {
     use rafka_node_rpc_contract::build::RecipeStep as S;
     match step {
@@ -304,7 +304,6 @@ pub fn recipe_step_key(step: &rafka_node_rpc_contract::build::RecipeStep) -> Str
         S::Stop { node } => format!("stop-node:{node}"),
         S::Update { node, .. } => format!("update-node:{node}"),
         S::Start { node } => format!("start-node:{node}"),
-        S::Delete { node } if node.old => format!("delete-node:{node}"),
         S::Delete { node } => format!("retire-node:{node}"),
     }
 }

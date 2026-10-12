@@ -3889,14 +3889,14 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// `delete-node:<path>.old` (node-delete.md): the stopped birth `from` a rename left at
-    /// `node`, fenced by incarnation, ended with the provider's exact Exited proof and deleted
+    /// node.delete of a stopped birth (`retire-node:<path>`, node-delete.md): the stopped birth `from`
+    /// at `node`, fenced by incarnation, ended with the provider's exact Exited proof and deleted
     /// (`DeploymentPipeline::delete_parked`); what follows its proven exit follows.
     async fn delete_parked(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId) -> Result<(), String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
             Some(n) if n.incarnation_id.as_ref() == Some(from) => self.handle_for(&n).await?,
-            Some(n) => return Err(format!("delete-node:{node} is fenced to birth {}, the view holds {} at that path", from.0, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("none"))),
+            Some(n) => return Err(format!("retire-node:{node} is fenced to birth {}, the view holds {} at that path", from.0, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("none"))),
             None => {
                 let launched = self.handles.lock().unwrap().get(node).cloned().filter(|(rec, _)| rec.incarnation_id.as_ref() == Some(from));
                 match launched {
@@ -3934,10 +3934,10 @@ impl AdminRunner {
             return Ok(birth);
         }
         let Some(store) = self.records.contacts.get() else {
-            return Err(format!("delete-node:{node}: birth {} is not in this admin's view or membership, and this admin has no nodes store to read its runtime row from", from.0));
+            return Err(format!("retire-node:{node}: birth {} is not in this admin's view or membership, and this admin has no nodes store to read its runtime row from", from.0));
         };
-        let rows = store.runtimes().await.map_err(|e| format!("delete-node:{node}: birth {} is not in this admin's view or membership, and its runtime rows could not be read: {e}", from.0))?;
-        let row = rows.into_iter().find(|r| &r.incarnation_id == from).ok_or_else(|| format!("delete-node:{node}: birth {} is not in this admin's view or membership, and this admin holds no runtime row of it", from.0))?;
+        let rows = store.runtimes().await.map_err(|e| format!("retire-node:{node}: birth {} is not in this admin's view or membership, and its runtime rows could not be read: {e}", from.0))?;
+        let row = rows.into_iter().find(|r| &r.incarnation_id == from).ok_or_else(|| format!("retire-node:{node}: birth {} is not in this admin's view or membership, and this admin holds no runtime row of it", from.0))?;
         birth.node_id = row.node_id;
         birth.data_dir = row.data_dir;
         Ok(birth)
@@ -4210,7 +4210,7 @@ impl AdminRunner {
     /// node an earlier step of the recipe created, the birth this executor holds at the step's path.
     /// node.create is the create workflow; node.stop the standalone stop; node.update node.update's
     /// own core at this admin as the node's mesh-primary; node.start the start of the stopped birth;
-    /// node.delete the delete of the stopped birth at a `.old` path, or node.delete's workflow.
+    /// node.delete node.delete's workflow from the state the birth is in.
     async fn recipe_step(&self, build_id: &crate::build::BuildId, attempt: u32, step: &rafka_node_rpc_contract::build::RecipeStep, birth: Option<&crate::build::PinnedBirth>) -> Result<(), String> {
         use rafka_node_rpc_contract::build::RecipeStep as S;
         let node = step.node();
@@ -4234,8 +4234,18 @@ impl AdminRunner {
             S::Create { .. } => unreachable!("a create returned above"),
             S::Stop { node } => self.run_op(build_id, attempt, &BuildOperation::StopNode { node: node.clone(), from_incarnation }).await,
             S::Start { node } => self.run_op(build_id, attempt, &BuildOperation::StartNode { node: node.clone(), from_incarnation }).await,
-            S::Delete { node } if node.old => self.run_op(build_id, attempt, &BuildOperation::DeleteNode { node: node.clone(), from_incarnation }).await,
-            S::Delete { node } => self.run_op(build_id, attempt, &BuildOperation::RetireNode { node: node.clone(), exited: None }).await,
+            S::Delete { node } => {
+                // node.delete runs no stop steps for a stopped or proven-exited birth and stops a live
+                // one first (node-delete.md): the birth's state decides, never its name. A birth this
+                // view no longer holds (a resumed delete whose NodeDeleting it already heard) is
+                // deleted fenced to its exact birth, its runtime read from its row.
+                let held = self.topology.read().await.node(node).filter(|n| n.incarnation_id.as_ref() == Some(&from_incarnation)).cloned();
+                let op = match held {
+                    Some(n) if !n.parked && n.status != crate::model::NodeStatus::Dead => BuildOperation::RetireNode { node: node.clone(), exited: None },
+                    _ => BuildOperation::DeleteNode { node: node.clone(), from_incarnation },
+                };
+                self.run_op(build_id, attempt, &op).await
+            }
             S::Update { node, name } => {
                 use tracing::Instrument;
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt, node_id = %birth.node_id, incarnation_id = %birth.incarnation.0, to = %name);

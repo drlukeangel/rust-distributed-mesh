@@ -62,7 +62,8 @@ pub enum AttemptReason {
     /// A mesh-primary proved a member's exact birth exited and submitted its recovery
     /// (`retire-node:<path>`, `create-node:<path>`, `update-node:<path>`, node-recovery.md "Steps").
     Recovery,
-    /// The delete of a parked birth at its `.old` path was requested (`delete-node:<path>.old`).
+    /// The delete of a stopped birth at its `.old` path, or of a deleted mesh's last admin, was
+    /// requested (`retire-node:<path>`, node.delete's one key).
     Delete,
     /// A recipe was submitted: one Build of node primitives (build.md §1).
     Recipe,

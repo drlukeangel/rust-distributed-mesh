@@ -213,8 +213,8 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_eq!(fences.len(), 1, "the exited birth is fenced once: {fences:?}");
     assert!(start(create) <= start(fences[0]) && end(fences[0]) <= end(create), "the fence runs inside the create operation: {} vs {create}", fences[0]);
     assert!(end(fences[0]) <= start(boot), "the fence is done before the new node with the same key boots: {} vs {boot}", fences[0]);
-    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor"] {
-        assert!(step_span(&spans, &birth_build, &attempt, node_path, step).is_none(), "no RPC to the exited process and no .old rename: {step} ran");
+    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
+        assert!(step_span(&spans, &birth_build, &attempt, node_path, step).is_none(), "no RPC to the exited process: {step} ran");
     }
     assert!(!named(&spans, "rdm.mesh.node.delete.via-transport-stopped").is_empty(), "the exiting runtime's own span names the reason");
     // The fabric-primary's drift check opens nothing for a member: its mesh-primary recovers it.
@@ -289,8 +289,8 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
         assert!(start(sp) >= last, "{step} runs after the step before it");
         last = start(sp);
     }
-    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor", "HandoffStorage"] {
-        assert!(step_span(&spans, &birth_build, &attempt, NODE, step).is_none(), "no RPC to the exited process, no .old rename, no storage hand-over: {step} ran");
+    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
+        assert!(step_span(&spans, &birth_build, &attempt, NODE, step).is_none(), "no RPC to the exited process: {step} ran");
     }
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert_eq!(deleted.len(), 1, "node.deleted of the exited birth, exactly once: {deleted:?}");
@@ -648,10 +648,9 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
         format!("stop-node:{NODE}.new"),
         format!("update-node:{NODE}.new"),
         format!("start-node:{NODE}"),
-        format!("delete-node:{NODE}.old"),
+        format!("retire-node:{NODE}.old"),
     ];
     assert_eq!(operations, keys.to_vec(), "the recipe's operations, in order: {b:#}");
-    assert!(!steps.iter().any(|r| s(&r["operation"]).starts_with("replace-node:")), "no replace operation exists: {b:#}");
 
     // The end state: the successor holds the name, ready; nothing at `.new` or `.old`.
     let after = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get");
@@ -692,7 +691,7 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
     // The predecessor's delete at `.old`: the provider's exit proof, NodeDeleted once, the Deleted row.
     let deleted = of("rdm.node_admin.node.delete.via-node-deleted", &before.node_id);
     assert_eq!(deleted.len(), 1, "NodeDeleted once for the predecessor: {deleted:#?}");
-    assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("delete-node:{NODE}.old"));
+    assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("retire-node:{NODE}.old"));
     let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == format!("{NODE}.old")).collect();
     assert!(rows.len() == 1 && s(&rows[0]["attributes"]["outcome"]) == "row-deleted" && s(&rows[0]["attributes"]["node_id"]) == before.node_id.to_string(), "one Deleted row at .old for the predecessor: {rows:#?}");
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "nothing of the recipe is drift");
@@ -711,7 +710,7 @@ const DELETE_PARKED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "Nod
 /// (lifecycles/node-replace.md 3; node-delete.md) as its own call: `mesh1.rpc.1` is stopped and
 /// renamed `mesh1.rpc.1.old` by node.update at its mesh-primary, then `DELETE /api/nodes/<path>.old`
 /// is the next attempt of the accepted Build (reason delete, action delete fenced to the exact
-/// stopped birth, no Build minted). One operation `delete-node:<path>.old` asks the provider to end
+/// stopped birth, no Build minted). One operation `retire-node:<path>.old` (node.delete's one key) asks the provider to end
 /// the stopped runtime and inspects it; only the provider's Exited is the proof, after which the
 /// executor publishes NodeDeleted for the exact birth and the mesh's primary, which executes it,
 /// writes the Deleted row at `<path>.old`, its record kept (R13). The process is gone; its data dir
@@ -727,7 +726,7 @@ async fn deleting_the_parked_predecessor_proves_its_exit_publishes_node_deleted_
 
 /// CONTRACT: the same delete when the fabric-primary is in another mesh than the node (R13: the
 /// mesh-primary of a node's mesh is the only writer of that mesh's rows). The fabric-primary in mesh1
-/// admits `delete-node:<path>.old` of a mesh2 node from its view, which reads the stopped birth at the
+/// admits `retire-node:<path>.old` of a mesh2 node from its view, which reads the stopped birth at the
 /// row's name by its node id (R12), fenced to that exact birth; mesh2's primary executes the delete
 /// and writes the Deleted row at `<path>.old`; the fabric-primary writes no row of mesh2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -861,7 +860,7 @@ async fn delete_parked_and_assert(estate: &Estate, birth_build: &str, parked: &P
     })
     .await;
     let reconcile = reconcile_span(&spans, birth_build, &attempt).unwrap();
-    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("delete-node:{old_name}"), "one delete operation of the stopped birth: {reconcile}");
+    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("retire-node:{old_name}"), "one delete operation of the stopped birth: {reconcile}");
     let mut last = 0u64;
     for step in DELETE_PARKED_ORDER {
         let sp = step_span(&spans, birth_build, &attempt, &old_name, step).unwrap_or_else(|| panic!("step {step} of the delete ran"));
@@ -877,7 +876,7 @@ async fn delete_parked_and_assert(estate: &Estate, birth_build: &str, parked: &P
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
     assert_eq!(deleted.len(), 1, "NodeDeleted once for the stopped birth: {deleted:?}");
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], before["incarnation_id"], "named by the exact birth");
-    assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("delete-node:{old_name}"));
+    assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("retire-node:{old_name}"));
     assert!(end(terminate) <= start(deleted[0]), "NodeDeleted follows the exit proof: {terminate} vs {}", deleted[0]);
     // The Deleted row at `<path>.old`, written by the mesh's primary that executes the delete (R13).
     let dispatched = dispatch(&spans, birth_build, &attempt).unwrap();
