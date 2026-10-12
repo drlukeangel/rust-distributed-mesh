@@ -6484,7 +6484,8 @@ mod tests {
     ///   refused, naming the publisher stopped;
     /// - on an ordinary node's mesh channel, mesh1.admin.2 took mesh1's seat (epoch 2) and its full is
     ///   installed over mesh1.admin.1's; mesh1.admin.1's delayed full and its delayed delta are each
-    ///   refused, naming the seat holder, and the delta desynchronizes nothing.
+    ///   refused, naming the seat holder; the unknown epoch marks the source for GetTopology repair
+    ///   (gossip.md §3.1) and the held projection stays the successor's.
     /// Must NOT happen: a receiver holding an earlier publisher's snapshot again after the next
     /// epoch's, or a predecessor's delta read as a version gap.
     #[test]
