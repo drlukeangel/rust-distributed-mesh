@@ -201,6 +201,36 @@ async fn a_workflow_is_admitted_once_the_fabric_has_reached_ready_for_traffic_an
     assert_eq!(opened.attempt, 2);
 }
 
+/// CONTRACT (states.md "The initial fabric before ready-for-traffic"; status_storage.rs: a Fabric event is a
+/// keyed row of its mesh's status rows): an admin that boots reads the one durable fact that the fabric
+/// first reached ready-for-traffic, the ready-for-traffic event's row of its fabric among its mesh's status
+/// rows. On a root where the fabric is in state-commit, the Fabric row published and no such row, the
+/// admin refuses a caller's workflow `fabric-not-ready`; another fabric's row, or a different event's, is
+/// not the fact. Once the row stands the admin admits the same workflow, though the fabric it hears is pending.
+/// What must NOT happen: a boot in state-commit admitting, or a boot after the row refusing.
+#[tokio::test]
+async fn an_admin_booting_on_a_root_in_state_commit_refuses_and_one_booting_after_the_ready_for_traffic_row_admits() {
+    use rafka_node_admin_core::status_storage::{FabricEventRow, MemoryStatusStorage, StatusStorage};
+    let r = rig(ScopeStatus::StateCommit).await;
+    let fabric = r.cp.topology.read().await.fabric.id.clone();
+    let status = MemoryStatusStorage::default();
+
+    // The root: a different fabric's ready-for-traffic row and this fabric's other event.
+    status.put_fabric_event(&FabricEventRow { fabric_id: FabricId::mint(), event: "ready-for-traffic".into() }).await.unwrap();
+    status.put_fabric_event(&FabricEventRow { fabric_id: fabric.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
+    r.cp.first_ready.read_from(&status, &fabric).await.unwrap();
+    let (workflow, at) = refused(r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await);
+    assert_eq!((workflow.as_str(), at.as_str()), ("node.stop mesh1.rpc.1", "state-commit"), "no row of this fabric's ready-for-traffic: the fabric has not first reached it");
+
+    // The ready-for-traffic row of the fabric stands: the next boot, hearing pending, knows.
+    let booted = rig(ScopeStatus::Pending).await;
+    let fabric = booted.cp.topology.read().await.fabric.id.clone();
+    status.put_fabric_event(&FabricEventRow { fabric_id: fabric.clone(), event: "ready-for-traffic".into() }).await.unwrap();
+    booted.cp.first_ready.read_from(&status, &fabric).await.unwrap();
+    let opened = booted.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await.expect("admitted: the row says the fabric first reached ready-for-traffic");
+    assert_eq!(opened.attempt, 2);
+}
+
 /// CONTRACT (node-rpc-envelope.md, "Build refusals": "the existing `Rejected { reason, detail }` reply with
 /// reason `fabric-not-ready`, whose `detail` names the refused workflow and the fabric's current
 /// status"): the refusal the Build door answers is `Rejected` with that reason, and its detail names

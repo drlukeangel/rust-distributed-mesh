@@ -463,7 +463,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
     }
 }
 
-fn event_key(e: &FabricEvent) -> String {
+pub(crate) fn event_key(e: &FabricEvent) -> String {
     match e {
         FabricEvent::ReadyForTraffic => "ready-for-traffic".into(),
         FabricEvent::ShutdownInitiated { initiated_by } => format!("shutdown-initiated:{initiated_by}"),
@@ -857,6 +857,13 @@ impl StatusAuthority {
                 }
             }
         };
+        // The row of the ready-for-traffic event is the durable fact that the fabric first reached
+        // ready-for-traffic: the admin that put it knows it from that moment (`FirstReady`).
+        if let (StatusReply::Applied | StatusReply::AlreadyApplied, Effect::Fabric(_, event)) = (&reply, &effect) {
+            if *event == event_key(&FabricEvent::ReadyForTraffic) {
+                self.first_ready.reach("ready-for-traffic-row-put");
+            }
+        }
         if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
             // The node's report, applied, sets its status (node-status.md "Status report": "A node
             // reports to its mesh's primary, which sets its status"), carried by this primary's member

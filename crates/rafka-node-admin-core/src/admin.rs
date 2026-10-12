@@ -4951,10 +4951,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // Before the fabric's first state-commit every row this admin writes is held in its scratchpad;
     // its commit-state action publishes them (states.md, Rounds).
     storage_step.record("writes_to", store_root.writes_to());
-    // A root that already holds the Fabric row was published at the fabric's first state-commit: its rows no
-    // longer live in a scratchpad, so this admin knows the fabric has first reached ready-for-traffic
-    // whatever status it hears next (a resize puts the fabric back to pending).
-    let fabric_row_on_root = store_root.scratchpad().is_none();
     let round_actions: Arc<dyn crate::fabric_rounds::RoundActions> = Arc::new(crate::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), embedding_round_actions));
     let fabric_files = Arc::new(crate::fabric_storage::FileFabricStorage::open(&store_root, &incarnation).await.map_err(storage_err)?);
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_files.clone());
@@ -5353,9 +5349,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // its entry pull or the fabric control topic.
                 let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
                 let records = Arc::new(Records::default());
-                if fabric_row_on_root {
-                    records.first_ready.reach("fabric-row-on-store-root");
-                }
                 records.set_me(node_id.clone());
                 // Only the fabric seat holder puts a pointer, and only its held `fabric/` rows are published: the
                 // file store reads the committed fabric seat record, as the Build gate does.
@@ -5384,6 +5377,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).await.map_err(storage_err)?);
                 let status_storage: Arc<dyn crate::status_storage::StatusStorage> = status_files.clone();
                 records.set_status(status_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
+                // The ready-for-traffic event's row among this mesh's status rows is the durable fact that the fabric
+                // first reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"): an
+                // admin booting on a root that holds it knows it whatever status it hears next (a resize puts the
+                // fabric back to pending). The Fabric row is published at the first state-commit, before it.
+                records.first_ready.read_from(&*status_storage, &cfg.fabric_id).await.map_err(storage_err)?;
                 records.set_book(membership.book.clone());
                 let builds = Arc::new(
                     FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name), wiring.catch_up_seam.take())
@@ -5599,7 +5597,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             }
                             // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
                             // a fabric round is owed through it.
-                            let declarer = crate::status_declare::Declarer::new();
+                            let declarer = crate::status_declare::Declarer::with_first_ready(records.first_ready.clone());
                             let _ = rounds_slot.set(crate::fabric_rounds::FabricRounds::new(crate::fabric_rounds::RoundEnv {
                                 me: name.clone(),
                                 node_id: node_id.clone(),
