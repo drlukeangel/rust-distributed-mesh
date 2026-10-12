@@ -1038,6 +1038,12 @@ impl LeaveRuns {
         }
     }
 
+    /// Whether a leave of `mesh_id` is held, running or exited: only a round admitted after its
+    /// mesh row was committed Leaving begins one ([`admit_leave_mesh`]).
+    pub fn holds(&self, mesh_id: &MeshId) -> bool {
+        self.0.lock().unwrap().contains_key(mesh_id)
+    }
+
     /// The `leave-mesh` admitted last for `mesh_id` while its member workflows run, and its sender.
     fn running(&self, mesh_id: &MeshId) -> Option<(LeaveKey, NodeId)> {
         match self.0.lock().unwrap().get(mesh_id) {
@@ -1083,9 +1089,17 @@ pub struct LeaveMeshAdmission {
 /// `leave-mesh` for `key` from `sender` at the leaving mesh-primary (states.md: the mesh's
 /// `leaving` is entered by this down op, and "one commit stores the row, applies it, gossips it and
 /// answers the op"; fabric-node-lifecycle.md 2.7: the mesh's primary writes every status of its own
-/// mesh row). The row is put and applied before the round is admitted: a refused put admits nothing
-/// and is the reply, so the owner's repeated `leave-mesh` is decided afresh.
+/// mesh row). The first round of the mesh's leave puts and applies the row before it is admitted: a
+/// refused put admits nothing and is the reply, so the owner's repeated `leave-mesh` is decided
+/// afresh. A round that finds a leave of the mesh held commits nothing: the round that began the
+/// leave committed the row, and the leave may since have written it Dead (mesh.deleted, before its
+/// handoff); it is decided on the round held alone ([`LeaveRuns::admit`]), so the round held resends
+/// a lost handoff, a later attempt resumes from the receipts and a stale or conflicting round is
+/// refused by name.
 pub async fn admit_leave_mesh(runs: &LeaveRuns, storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<crate::status_rpc::Declared>, key: &LeaveKey, sender: &NodeId) -> LeaveMeshAdmission {
+    if runs.holds(&key.mesh_id) {
+        return LeaveMeshAdmission { leaving_row: None, admission: runs.admit(key, sender) };
+    }
     let committed = crate::status_rpc::commit_mesh_state(storage, declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Leaving).await;
     let admission = match &committed {
         StatusReply::Applied | StatusReply::AlreadyApplied => runs.admit(key, sender),
