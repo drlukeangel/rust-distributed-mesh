@@ -10,11 +10,11 @@
 //! `TerminateRuntime` step proves its exit (mesh-delete.md step 7). The last admin's departure is read
 //! from its own leg spans, the executor's steps and a peer's resolver.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_mesh_entity::NodeKind;
+use rafka_node_admin_client::{NodeStatus, NodeView};
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::time::Duration;
 
 /// The unchanged observation bound.
 const OBSERVE_BOUND_MS: u64 = 10_000;
@@ -53,12 +53,9 @@ fn attr_u64(sp: &Value, k: &str) -> u64 {
     sp["attributes"][k].as_str().and_then(|v| v.parse().ok()).unwrap_or(u64::MAX)
 }
 
-fn mesh(name: &str) -> Value {
-    json!({"name": name, "node_admin": 2, "rpc_node": 2})
-}
-
-fn names(meshes: &[&str]) -> BTreeSet<String> {
-    meshes.iter().flat_map(|m| [format!("{m}.admin.1"), format!("{m}.admin.2"), format!("{m}.rpc.1"), format!("{m}.rpc.2")]).collect()
+/// A mesh of two node-admins and two rpc nodes.
+fn mesh(name: &str) -> (&str, u32, u32) {
+    (name, 2, 2)
 }
 
 fn alive(pid: u64) -> bool {
@@ -78,13 +75,12 @@ struct Retired {
 /// mesh1 deleted, then its last admin's own node.delete, run to their end and read back.
 async fn retire_mesh1(test: &str) -> Retired {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
-    let before = estate.settled(&names(&["mesh1", "mesh2"]), Duration::from_secs(30)).await;
+    let both = [mesh("mesh1"), mesh("mesh2")];
+    estate.reconcile_shape("fabric1", &both).await;
+    let before = estate.settled_views(&both).await;
     let mut pids: Vec<(String, u64)> = Vec::new();
-    for n in before.iter().filter(|n| n["mesh"] == "mesh1") {
-        let name = s(&n["name"]);
+    for n in before.iter().filter(|n| n.mesh == "mesh1") {
+        let name = n.name.to_string();
         let pid = match estate.bootstrap_pid() {
             Some(p) if name == "mesh1.admin.1" => u64::from(p),
             _ => estate.pid_of(&name).await,
@@ -94,40 +90,28 @@ async fn retire_mesh1(test: &str) -> Retired {
     // Control moves to mesh2 before mesh1 goes.
     estate.admin = before
         .iter()
-        .find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["status"] == "ready-for-traffic")
-        .map(|n| s(&n["admin_api_base"]))
+        .find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic)
+        .and_then(|n| n.admin_api_base.clone())
         .expect("a ready mesh2 admin");
-    let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh2")]})).await;
-    assert_eq!(status, 202, "{b}");
-    let b = s(&b["build_id"]);
-    estate.await_build(&b, Duration::from_secs(240)).await;
+    let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.0;
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
-    let last = wait_for("mesh1's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), || async {
-        let nodes = estate.nodes().await;
-        let mesh1: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh1").map(|n| s(&n["name"])).collect();
-        let alive = nodes.iter().any(|n| n["mesh"] == "mesh1" && n["status"] == "ready-for-traffic");
-        (mesh1.len() == 1 && alive).then(|| mesh1[0].clone())
-    })
-    .await;
-    let last_id = before.iter().find(|n| s(&n["name"]) == last).map(|n| s(&n["node_id"])).unwrap();
-    let (_, fabric_now) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric_now["admin_api_base"]);
-    let (status, c) = estate.delete(&format!("/api/nodes/{last}")).await;
-    assert_eq!(status, 202, "the node.delete of mesh1's last admin {last}: {c}");
-    let c_attempt = Estate::attempt_of(&c);
-    let c = s(&c["build_id"]);
-    estate.await_attempt(&c, c_attempt, Duration::from_secs(120)).await;
-    estate.settled(&names(&["mesh2"]), Duration::from_secs(60)).await;
+    let left: Vec<NodeView> = estate.mesh_node_views("mesh1").await;
+    assert!(left.len() == 1 && left[0].status == NodeStatus::ReadyForTraffic, "mesh1's last admin is alive after mesh.deleted, its members deleted: {:?}", left.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect::<Vec<_>>());
+    let last = left[0].name.to_string();
+    let last_id = before.iter().find(|n| n.name.to_string() == last).map(|n| n.node_id.to_string()).unwrap();
+    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    let mut delete = estate.nodes_obj().await.delete(&last.parse().unwrap()).await.unwrap_or_else(|e| panic!("the node.delete of mesh1's last admin {last} was refused: {e}"));
+    let c = Estate::complete(&mut delete).await.build_id.0;
+    estate.settled_views(&[mesh("mesh2")]).await;
     for (name, pid) in &pids {
-        wait_for(&format!("{name}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
+        assert!(!alive(*pid), "{name}'s runtime is gone once the mesh.delete and the last admin's node.delete are complete");
     }
     // A peer mesh's ordinary node holds the deleted birth Gone, from its executor's NodeDeleted.
+    let peer = estate.node_view("mesh2.rpc.1").await;
+    let dead: rafka_mesh_entity::NodeId = last_id.parse().expect("a minted node id");
+    estate.peers().await.fact(&peer, "mesh2", &format!("mesh2.rpc.1 holds {last} Gone"), |v| v.departed.iter().any(|o| o.node_id == dead)).await;
     let query = format!("exact:{last_id}");
-    let resolution = wait_for(&format!("mesh2.rpc.1 holds {last} Gone"), Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", "path:mesh2.rpc.1", "--query", &query]);
-        (r["reply"]["resolution"] == "gone").then_some(r)
-    })
-    .await;
+    let resolution = estate.probe(&["resolve", "--target", "path:mesh2.rpc.1", "--query", &query]);
     estate.stop().await;
     let mut builds = vec![b];
     if !builds.contains(&c) {

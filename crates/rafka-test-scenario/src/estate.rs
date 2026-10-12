@@ -562,6 +562,8 @@ pub struct Estate {
     /// Admins this estate restarted on their own data dirs.
     restarted: Vec<Child>,
     http: reqwest::Client,
+    /// The handover of the typed objects (`crate::typed`): made once per control base.
+    pub(crate) wire: tokio::sync::Mutex<Option<crate::typed::Wire>>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
 }
@@ -646,7 +648,7 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), wire: tokio::sync::Mutex::new(None), _scope: scope };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.

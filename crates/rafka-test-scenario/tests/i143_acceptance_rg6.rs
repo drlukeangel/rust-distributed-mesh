@@ -8,7 +8,6 @@
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
-use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
     Owner {
@@ -47,17 +46,13 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
     let mut estate = Estate::bootstrap_external(owner("joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_completes"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
         .await
         .expect("the faulted-admin binding set is accepted");
-    let nodes = estate.nodes().await;
-    let day0 = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").expect("the Day-0 admin");
-    Door::open(&estate.root, "mesh1.admin.1", &s(&day0["admin_api_base"])).await.arm("catch-up-withheld", json!({"kind": "catch-up"})).await;
+    let day0 = estate.node_view("mesh1.admin.1").await;
+    Door::open(&estate.root, "mesh1.admin.1", day0.admin_api_base.as_deref().expect("the Day-0 admin advertises its door")).await.arm("catch-up-withheld", json!({"kind": "catch-up"})).await;
     for joiner in ["mesh1.admin.2", "mesh1.admin.3"] {
         arm_at_birth(&estate, joiner, "catch-up-withheld", json!({"kind": "catch-up"}));
     }
 
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 3, "rpc_node": 0}]})).await;
-    assert_eq!(status, 202, "{a}");
-    let build = s(&a["build_id"]);
-    estate.await_build(&build, Duration::from_secs(60)).await;
+    let build = estate.reconcile_shape("fabric1", &[("mesh1", 3, 0)]).await.build_id.0;
     estate.stop().await;
 
     let spans = estate.spans();
@@ -85,11 +80,7 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_build_of_three_node_admins_completes_with_every_joiner_ready() {
     let mut estate = Estate::bootstrap(owner("a_build_of_three_node_admins_completes_with_every_joiner_ready"), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 3, "rpc_node": 0}]})).await;
-    assert_eq!(status, 202, "{a}");
-    let build = s(&a["build_id"]);
-    estate.await_build(&build, Duration::from_secs(60)).await;
-    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.admin.3"].iter().map(|n| n.to_string()).collect();
-    estate.settled(&names, Duration::from_secs(30)).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 3, 0)]).await;
+    estate.settled_views(&[("mesh1", 3, 0)]).await;
     estate.stop().await;
 }

@@ -63,19 +63,20 @@ fn now_ns() -> u64 {
 /// The born estate: two node-admins and three rpc nodes, every one ready.
 async fn born(cell: &str) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let shape = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]});
-    let (status, accepted) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "POST /api/build: {accepted}");
-    estate.await_build(accepted["build_id"].as_str().expect("build_id"), SETTLE).await;
-    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", SOURCE, CARRIER, DEST].iter().map(|n| n.to_string()).collect();
-    estate.settled(&names, SETTLE).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The settled view is the admin's. The source records a Proxy to the destination through the
     // carrier, so its own resolver must hold both births first: a node learns a peer's birth by
     // gossip, and a source that has not heard the destination yet refuses it Unknown by name.
     for peer in [CARRIER, DEST] {
-        estate.witness_holds(&format!("path:{SOURCE}"), peer).await;
+        estate.witness_holds_birth(SOURCE, peer).await;
     }
     estate
+}
+
+/// `node.get` of `name`, as the JSON the cell records.
+async fn view(estate: &Estate, name: &str) -> Value {
+    serde_json::to_value(estate.node_view(name).await).expect("a view serializes")
 }
 
 /// One probe invocation: the typed answer, and the instants it ran between.
@@ -133,7 +134,7 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = born(cell).await;
-    let (dest, carrier, source) = (estate.node(DEST).await, estate.node(CARRIER).await, estate.node(SOURCE).await);
+    let (dest, carrier, source) = (view(&estate, DEST).await, view(&estate, CARRIER).await, view(&estate, SOURCE).await);
 
     // 1. The facts a proven carried path leaves: Direct Failed(E1,1) and Proxy Connected via the carrier.
     let seeded = seed_proxy(&estate, 1);
@@ -150,11 +151,12 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     let old_inc = s(&source["incarnation_id"]);
     let killed_at = now_ns();
     estate.kill_node(SOURCE).await;
-    let after = wait_for("the source is recovered as a new node at its path.name", crate::node_recovery_due(), || async {
-        let n = estate.node_opt(SOURCE).await?;
-        (ready(&n) && n["node_id"] != source["node_id"]).then_some(n)
-    })
-    .await;
+    let after = estate
+        .until_node(SOURCE, "the source is recovered as a new node at its path.name", crate::node_recovery_due(), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (ready(&n) && n["node_id"] != source["node_id"]).then_some(n)
+        })
+        .await;
     assert_ne!(s(&after["incarnation_id"]), old_inc, "a new incarnation");
     assert_eq!(after["endpoint_id"], source["endpoint_id"], "the same path.name and endpoint key, loaded from the inherited data dir");
     let recovery = wait_for("the mesh-primary's recovery submit for the source is exported", Duration::from_secs(60), || async {
@@ -260,7 +262,7 @@ async fn source_accepts_inbound_direct_retires_proxy_before_cutback() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = born(cell).await;
-    let (dest, source) = (estate.node(DEST).await, estate.node(SOURCE).await);
+    let (dest, source) = (view(&estate, DEST).await, view(&estate, SOURCE).await);
 
     // 1. The Proxy, and a healthy call over it.
     let seeded = seed_proxy(&estate, 1);

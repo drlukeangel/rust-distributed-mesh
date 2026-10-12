@@ -20,7 +20,9 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use rafka_mesh_entity::{FabricId, MemberStatus, MeshDigest, MeshId};
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_node_admin_client::{NodeStatus, NodeView};
+use rafka_test_scenario::estate::{named, Estate, Owner};
+use rafka_test_scenario::typed::until_arrival;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -69,6 +71,8 @@ struct Observer {
     endpoint: Endpoint,
     _router: iroh::protocol::Router,
     seen: Arc<Mutex<Vec<Seen>>>,
+    /// Woken by every frame the observer records.
+    arrivals: Arc<tokio::sync::Notify>,
     mesh_sender: GossipSender,
 }
 
@@ -80,6 +84,7 @@ impl Observer {
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
         let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
+        let arrivals = Arc::new(tokio::sync::Notify::new());
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
         let mut mesh_sender = None;
         for (channel, topic) in [("backbone", backbone_topic(fabric)), ("mesh1", mesh_topic(fabric, mesh_id))] {
@@ -87,19 +92,20 @@ impl Observer {
             if channel == "mesh1" {
                 mesh_sender = Some(sender.clone());
             }
-            let seen = seen.clone();
+            let (seen, arrivals) = (seen.clone(), arrivals.clone());
             tokio::spawn(async move {
                 let _keep = sender;
                 while let Some(ev) = receiver.next().await {
                     if let Ok(Event::Received(m)) = ev {
                         if let Ok(frame) = Frame::decode(&Bytes::copy_from_slice(&m.content)) {
                             seen.lock().unwrap().push(Seen { heard_at_ms: os_now_ms(), channel, frame });
+                            arrivals.notify_waiters();
                         }
                     }
                 }
             });
         }
-        Self { endpoint, _router: router, seen, mesh_sender: mesh_sender.unwrap() }
+        Self { endpoint, _router: router, seen, arrivals, mesh_sender: mesh_sender.unwrap() }
     }
 
     fn all(&self) -> Vec<Seen> {
@@ -123,14 +129,13 @@ impl Observer {
     }
 }
 
-fn seeds_of(nodes: &[Value]) -> Vec<EndpointAddr> {
+fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
     nodes
         .iter()
-        .filter(|n| n["kind"] == "node_admin")
+        .filter(|n| n.kind == rafka_mesh_entity::NodeKind::NodeAdmin)
         .filter_map(|n| {
-            let key = s(&n["endpoint_id"]).parse::<iroh::PublicKey>().ok()?;
-            let addr = s(&n["transport_addr"]).parse::<std::net::SocketAddr>().ok()?;
-            Some(EndpointAddr::new(key).with_ip_addr(addr))
+            let key = n.endpoint_id.as_deref()?.parse::<iroh::PublicKey>().ok()?;
+            Some(EndpointAddr::new(key).with_ip_addr(n.transport_addr?))
         })
         .collect()
 }
@@ -145,17 +150,15 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
 
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let nodes = estate.settled_shape(&[("mesh1", 1, 1)], Duration::from_secs(30)).await;
-    let (_, fabric_view) = estate.get("/api/fabric").await;
-    let fabric = FabricId::parse(&s(&fabric_view["id"])).expect("the fabric id");
-    let mesh1_id = MeshId::parse(&s(&fabric_view["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh1").expect("mesh1")["id"])).expect("the mesh1 id");
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
+    let nodes = estate.settled_views(&[("mesh1", 1, 1)]).await;
+    let fabric_view = estate.fabric_view().await;
+    let fabric = fabric_view.id.clone();
+    let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
 
     // The real frames: several heartbeats of the rpc node's one birth, and a Members publication.
     let observer = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
-    wait_for("the observer decodes six heartbeats of the rpc node and a Members publication", Duration::from_secs(60), || async {
+    until_arrival("the observer decodes six heartbeats of the rpc node and a Members publication", Duration::from_secs(60), &observer.arrivals, || {
         let members = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame, Frame::Members { .. }));
         (observer.heartbeats_of(NODE).len() >= 6 && members).then_some(())
     })
@@ -183,8 +186,8 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     assert!(!members_published.is_empty() && members_published.iter().all(|skew| *skew < 5_000), "published_at_rafka_ms is Rafka-time from the composed clock: skews {members_published:?}");
 
     // The adversary: the very birth, an OLDER sequence, a stamp a year ahead, saying Leaving.
-    let held_before = estate.nodes().await.into_iter().find(|n| n["name"] == NODE).expect("the rpc node is in the view");
-    assert_eq!(held_before["status"], "ready-for-traffic");
+    let held_before = estate.node_view(NODE).await;
+    assert_eq!(held_before.status, NodeStatus::ReadyForTraffic);
     let last = before.last().unwrap().1.clone();
     let mut forged = last.clone();
     forged.status = MemberStatus::Leaving;
@@ -195,10 +198,9 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     observer.broadcast(&Frame::Digest { digest: forged.clone() }).await;
     // Well past the silence window (3 s) and many heartbeats (500 ms): the live heartbeats are the control.
     tokio::time::sleep(Duration::from_secs(9)).await;
-    let view = estate.nodes().await;
-    let held_after = view.iter().find(|n| n["name"] == NODE).cloned().expect("the rpc node is still in the view");
-    assert_eq!(held_after["status"], "ready-for-traffic", "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after}");
-    assert_eq!(held_after["incarnation_id"], held_before["incarnation_id"], "the same birth");
+    let held_after = estate.node_view(NODE).await;
+    assert_eq!(held_after.status, NodeStatus::ReadyForTraffic, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
+    assert_eq!(held_after.incarnation_id, held_before.incarnation_id, "the same birth");
     let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(NODE).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.status == MemberStatus::ReadyForTraffic).collect();
     assert!(live_after.len() >= 8, "the node kept publishing live heartbeats for the whole window ({} heard)", live_after.len());
     assert!(live_after.iter().all(|h| h.1.digest_seq > last.digest_seq), "every live heartbeat after the forged one carries a higher sequence than the last one before it");
@@ -215,8 +217,8 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
         "digest_seq_rises": seqs,
         "members_publication_skews_ms": members_published,
         "forged": { "digest_seq": forged.digest_seq, "emitted_at_rafka_ms": forged.emitted_at_rafka_ms, "status": "Leaving", "last_real_digest_seq": last.digest_seq, "last_real_emitted_at_rafka_ms": last.emitted_at_rafka_ms },
-        "member_before": { "status": held_before["status"], "incarnation_id": held_before["incarnation_id"] },
-        "member_after_9s": { "status": held_after["status"], "incarnation_id": held_after["incarnation_id"] },
+        "member_before": { "status": held_before.status, "incarnation_id": held_before.incarnation_id },
+        "member_after_9s": { "status": held_after.status, "incarnation_id": held_after.incarnation_id },
         "live_heartbeats_after_forgery": live_after.len(),
         "live_first_seq_after_forgery": live_after.first().map(|h| h.1.digest_seq),
         "longest_gap_between_live_heartbeats_ms": silent_ms,

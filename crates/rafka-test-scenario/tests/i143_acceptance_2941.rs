@@ -8,10 +8,10 @@
 //! by the admin that launched it; the reborn birth's own entry pull and its mesh-channel join are
 //! read from its spans, against the admin's serve span, by the birth's own records.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_node_admin_client::{NodeStatus, NodeView};
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::time::Duration;
 
 const NODE: &str = "mesh1.rpc.1";
 
@@ -50,25 +50,20 @@ fn now_nano() -> u64 {
 /// restart's wall time, every span).
 async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>) {
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 2}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let nodes = estate.settled_shape(&[("mesh1", 1, 2)], Duration::from_secs(30)).await;
-    let admin = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").cloned().expect("the launching admin");
-    let before = nodes.iter().find(|n| n["name"] == NODE).cloned().expect("the member to restart");
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    let nodes = estate.settled_views(&[("mesh1", 1, 2)]).await;
+    let admin = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").cloned().expect("the launching admin");
+    let before = nodes.iter().find(|n| n.name.to_string() == NODE).cloned().expect("the member to restart");
     let restart_at = now_nano();
-    let (status, r) = estate.post(&format!("/api/nodes/{NODE}/restart"), &Value::Null).await;
-    assert_eq!(status, 202, "{r}");
-    estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
-    let after = wait_for("the restarted birth is ready under a new incarnation", Duration::from_secs(30), || async {
-        let n = estate.node_opt(NODE).await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
-    })
-    .await;
-    assert_eq!(after["node_id"], before["node_id"], "a restart keeps the NodeId");
+    let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
+    Estate::complete(&mut restart).await;
+    let after = estate.node_view(NODE).await;
+    assert!(after.status == NodeStatus::ReadyForTraffic && after.incarnation_id != before.incarnation_id, "the restarted birth is ready under a new incarnation: {after:?}");
+    assert_eq!(after.node_id, before.node_id, "a restart keeps the NodeId");
     estate.stop().await;
     let spans = estate.spans();
-    (admin, before, after, restart_at, spans)
+    let json = |n: &NodeView| serde_json::to_value(n).expect("a view serializes");
+    (json(&admin), json(&before), json(&after), restart_at, spans)
 }
 
 /// The reborn birth's entry pull is answered within one staleness window by the admin its launch

@@ -7,10 +7,10 @@
 //! settled through a Build; every birth joined its maker with `JoinNode` and read the maker's
 //! topology with `GetTopology`.
 
+use rafka_node_admin_client::NodeView;
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::time::Duration;
 
 const MEMBER: &str = "mesh1.rpc.1";
 
@@ -44,22 +44,16 @@ fn at(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
-async fn estate(cell: &str) -> (Estate, Vec<Value>) {
+async fn estate(cell: &str) -> (Estate, Vec<NodeView>) {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [
-            {"name": "mesh1", "node_admin": 1, "rpc_node": 1},
-            {"name": "mesh2", "node_admin": 1, "rpc_node": 2},
-        ]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let nodes = estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 1, 2)], Duration::from_secs(60)).await;
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    let nodes = estate.settled_views(&shape).await;
     (estate, nodes)
 }
 
-fn node_id(nodes: &[Value], name: &str) -> String {
-    nodes.iter().find(|n| n["name"] == name).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{name} is not in the view"))
+fn node_id(nodes: &[NodeView], name: &str) -> String {
+    nodes.iter().find(|n| n.name.to_string() == name).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{name} is not in the view"))
 }
 
 /// The members of `mesh` across every chunk of its one snapshot, with the snapshot's identity.

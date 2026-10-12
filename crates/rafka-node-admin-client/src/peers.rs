@@ -4,15 +4,20 @@
 //! of the mesh (`node.get` through `node.topology.get`), never a span count. A peer that never reports the
 //! fact is named, with the fact and the last thing it reported.
 
-use crate::{HeldView, NodeRpc, NodeView};
+use crate::{HeldView, NodeRpc, NodeStatus, NodeView};
+use rafka_mesh_entity::{NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// A client over a table of the mesh's nodes, taken from `node.get`.
 pub struct Peers {
     rpc: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
+    /// The birth each `path.name` resolves to now: a name that moves to another node id retires the
+    /// id it held, so a call by path reaches the current birth and never a departed one.
+    held: Mutex<HashMap<PathName, NodeId>>,
     _endpoint: iroh::Endpoint,
 }
 
@@ -21,7 +26,7 @@ impl Peers {
     pub async fn of(views: &[NodeView]) -> Self {
         let endpoint = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the test endpoint binds");
         let resolver = Arc::new(StaticResolver::new());
-        let me = Self { rpc: Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm")), resolver, _endpoint: endpoint };
+        let me = Self { rpc: Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm")), resolver, held: Mutex::new(HashMap::new()), _endpoint: endpoint };
         me.learn(views);
         me
     }
@@ -48,6 +53,31 @@ impl Peers {
         let birth = held.iter().find(|n| n.name == fp).ok_or_else(|| crate::CallEnd::Indeterminate { reason: format!("the admin's fabric names {fp} its fabric-primary and its node list holds no {fp}") })?;
         self.learn(std::slice::from_ref(birth));
         Ok(crate::Nodes::new(crate::BuildCarrier::new(self.rpc.clone(), fp)))
+    }
+
+    /// Make reachable every node of `views` that carries its whole birth (endpoint, incarnation and
+    /// address) and is not deleted, retiring the node id a `path.name` held before: a view read
+    /// while a node is pending names a node that cannot be dialled yet, and it is learned by the
+    /// read that finds it ready.
+    pub fn learn_known(&self, views: &[NodeView]) {
+        for n in views {
+            if n.status == NodeStatus::Deleted {
+                continue;
+            }
+            let (Some(endpoint), Some(incarnation), Some(addr)) = (n.endpoint_id.as_deref().and_then(|e| e.parse().ok()), n.incarnation_id.clone(), n.transport_addr) else { continue };
+            if let Some(before) = self.held.lock().unwrap().insert(n.name.clone(), n.node_id.clone()) {
+                if before != n.node_id {
+                    self.resolver.remove_gone(&before);
+                }
+            }
+            self.resolver.insert(ResolvedNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: endpoint, incarnation, transport_addr: addr });
+        }
+    }
+
+    /// A carrier whose calls start at the node-admin `admin`: its reads answer from that admin's
+    /// view, and a Build call it does not own follows the redirect to the fabric-primary.
+    pub fn carrier_at(&self, admin: PathName) -> crate::BuildCarrier {
+        crate::BuildCarrier::new(self.rpc.clone(), admin)
     }
 
     /// Await the typed fact `fact` of `peer`'s held view of `mesh`; a peer that never reports it is named
