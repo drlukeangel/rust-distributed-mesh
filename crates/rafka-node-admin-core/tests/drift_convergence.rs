@@ -1409,9 +1409,9 @@ mod fully_crashed_mesh {
 
     /// The fabric-primary's gate while the investigation holds one peer mesh unheard: the drive's fence
     /// reads what the ladder holds of it.
-    struct HeldPeer {
-        mesh: String,
-        held: PeerMesh,
+    pub(super) struct HeldPeer {
+        pub(super) mesh: String,
+        pub(super) held: PeerMesh,
     }
 
     #[async_trait::async_trait]
@@ -1581,6 +1581,61 @@ mod fully_crashed_mesh {
 /// R-D1: a peer mesh the fabric primary holds unheard is held as a mesh. The provider's proof that one of
 /// its births exited is kept as evidence and authorizes no Restart, Replace or NodeDeleted; a heard mesh is
 /// repaired as ever; the hold ends with the silence and leaves nothing behind.
+/// A peer mesh whose rebirth the ladder decided (`carrier-edge-lost`), after the verdict's create of
+/// its first node-admin ran.
+mod decided_mesh {
+    use super::fully_crashed_mesh::HeldPeer;
+    use super::unheard_mesh_hold::{meshes, pass, Held};
+    use super::*;
+    use rafka_node_admin_core::investigate::PeerMesh;
+
+    /// CONTRACT (R-D1, Luke 10-08: "Only the peer-mesh investigation may authorize restoration of the
+    /// mesh's first recovering node-admin; once mesh authority is restored, that mesh performs its own
+    /// ordinary-node reconciliation"; mesh-recovery.md:8-9: "A lost member of a mesh with a live
+    /// mesh-primary is node recovery, driven by that mesh-primary"): both node-admins of the peer mesh
+    /// exited while its rpc nodes live. The ladder decided the rebirth, the verdict's create of the
+    /// first node-admin ran, and that admin is the mesh's primary in the view. The fabric-primary hears
+    /// the mesh again before its ladder steps the decision off: the mesh's second node-admin, proven
+    /// exited, is its new primary's to recover, and the fabric-primary's drift pass opens nothing for
+    /// it, with the decision still held or once it is gone. Must NOT happen: the decision still held
+    /// letting the drift pass repair the second node-admin from its exit proof (a second recoverer of
+    /// the same member beside its mesh-primary).
+    #[tokio::test]
+    async fn the_rest_of_a_reborn_mesh_is_its_new_primarys_to_recover_while_the_decision_is_still_held() {
+        let e = estate().await;
+        let (_, peer_mesh) = meshes(&e).await;
+        let admins = [format!("{peer_mesh}.admin.1"), format!("{peer_mesh}.admin.2")];
+        for p in &admins {
+            let id = e.node_id(p).await;
+            e.world.exit_with(&id, Some(137));
+        }
+        e.unheard(&admins.iter().map(String::as_str).collect::<Vec<_>>()).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let decided = PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true, unreachable_decided: false };
+        let (mut held, mut started) = (Held::new(), HashSet::new());
+        let peer = peer_mesh.clone();
+        let unheard = move |m: &str| (m == peer).then_some(decided);
+        assert_eq!(pass(&e, &mut started, &mut held, &unheard).await, Some((before.build_id.clone(), before.attempt + 1)), "the verdict opens the first node-admin's create");
+        e.converge_under(Arc::new(HeldPeer { mesh: peer_mesh.clone(), held: decided })).await;
+        assert_eq!(e.born(), vec![admins[0].clone()], "the verdict's create ran, and only it");
+        // The create's Complete receipt, as the executor's pipeline writes it (the estate's runner writes none).
+        let receipt = rafka_node_admin_core::build_state::BuildStepReceipt { build_id: before.build_id.clone(), attempt: before.attempt + 1, operation: format!("create-node:{}", admins[0]), step: "Complete".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: None, executor: None };
+        rafka_node_admin_core::build_state::BuildStateAdapter::append_step_receipt(&*e.builds, &receipt).await.unwrap();
+        let t = e.view.read().await.clone();
+        assert!(t.holds_mesh_seat(&peer_mesh, &own_id(&t, &admins[0].parse().unwrap())), "the reborn first node-admin is the mesh's primary in the view");
+        // Heard again; the ladder still holds its decision until its next round.
+        let peer = peer_mesh.clone();
+        let heard_still_decided = move |m: &str| (m == peer).then_some(PeerMesh { unheard_ms: None, rebirth_decided: true, unreachable_decided: false });
+        let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-decided-mesh-rest");
+        assert_eq!(pass(&e, &mut started, &mut held, &heard_still_decided).await, None, "the second node-admin is its mesh-primary's to recover while the decision is still held");
+        let opened: Vec<_> = ["rdm.node_admin.build.update.via-proven-drift", "rdm.node_admin.build.update.via-carrier-edge-lost"].iter().flat_map(|n| capture.spans(n)).collect();
+        assert!(opened.is_empty(), "no attempt was opened from here: {opened:?}");
+        assert_eq!(pass(&e, &mut started, &mut held, &|_| None).await, None, "and once the decision is gone");
+        let settled = e.accepted.current(&*e.builds).await.unwrap();
+        assert_eq!((settled.build_id, settled.attempt), (before.build_id, before.attempt + 1), "no attempt opened past the verdict's");
+    }
+}
+
 mod unheard_mesh_hold {
     use super::*;
     use rafka_node_admin_core::investigate::PeerMesh;
