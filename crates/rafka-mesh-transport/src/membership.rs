@@ -7395,6 +7395,30 @@ mod tests {
         }
     }
 
+    /// Opens the span every thread of the capture cell below opens, at one callsite.
+    fn open_shared_callsite() {
+        tracing::info_span!("capture.shared-callsite").in_scope(|| {});
+    }
+
+    /// CONTRACT: a cell's capture receives the span its own thread opens at a callsite that another
+    /// thread, one with no subscriber of its own (an uncaptured cell's), opened first. tracing-core
+    /// caches a callsite's interest for the whole process when the callsite is first hit; with one
+    /// dispatcher registered it asks only the thread that hit it (tracing-core 0.1.36 callsite.rs,
+    /// `Rebuilder::JustOne`), and that thread answers never. Must NOT happen: a cell's own span lost
+    /// because an uncaptured cell hit its callsite first (the mesh-left cell lost every
+    /// `rdm.mesh.membership.reject.via-mesh-left` span in the whole-crate run of gate e588aaea, where
+    /// `an_old_aggregate_of_a_mesh_the_build_no_longer_names_installs_nothing` opens that callsite
+    /// with no subscriber, and passed alone).
+    #[test]
+    fn a_capture_receives_its_own_span_at_a_callsite_another_thread_hit_first() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        std::thread::spawn(open_shared_callsite).join().unwrap();
+        open_shared_callsite();
+        assert_eq!(spans.named("capture.shared-callsite").len(), 1, "the capture's own span reached it");
+    }
+
     fn op_at(path: &str, id: &NodeId, inc: &IncarnationId, operation: &str) -> LifecycleOp {
         LifecycleOp { name: path.parse().unwrap(), ..op(id, inc, operation) }
     }
