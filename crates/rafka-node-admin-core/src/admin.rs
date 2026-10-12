@@ -9797,8 +9797,9 @@ mod tests {
     #[test]
     fn a_launch_record_never_revives_a_birth_that_another_admin_retired() {
         // This admin launched mesh1.rpc.1; another admin (the primary) retired
-        // it: its last word is Leaving, then silence. This admin's own launch
-        // record must not bring it back as ready.
+        // it: its last word is Leaving, then silence. Membership speaks for the
+        // birth (silent past the floor), so this admin's own launch record must
+        // not bring it back as ready.
         let book = DigestBook::default();
         let left = digest("mesh1.rpc.1", MemberStatus::Leaving);
         book.record(left.clone());
@@ -9809,7 +9810,7 @@ mod tests {
         records.publish(n.clone());
         let past_floor = std::time::Instant::now() + book.staleness_floor() + Duration::from_millis(1);
         let t = project_at("fabric1", &fabric1(), ProviderKind::Process, &book, &records, past_floor);
-        assert!(t.node(&left.node.name).is_none(), "{:?}", t.node(&left.node.name));
+        assert_eq!(t.node(&left.node.name).map(|n| n.status), Some(NodeStatus::PendingReconnect), "the book speaks for the birth, silent past the floor; the launch record's ready never stands in: {:?}", t.node(&left.node.name));
         // A birth it launched that membership has not spoken for yet is shown.
         let fresh = Records::default();
         let mut pending = Node::allocated("mesh1.rpc.2".parse().unwrap());
