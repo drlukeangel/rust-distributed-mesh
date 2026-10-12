@@ -1,4 +1,4 @@
-//! i143.e4.s18 acceptance (rafka-v2 #2942, hardened 2026-10-07), PROCESS layer: run by
+//! i143.e4.s18 acceptance (rafka-v2 #2942), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2942-process`, which exports `I143_ACCEPTANCE_DIR`
 //! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the
 //! estate's manifest and every process's spans land under it, feature `i143-2942`, test the
@@ -7,20 +7,17 @@
 //! The estate is the mesh delete of `mesh_lifecycle__fabric_primary_handover`: {mesh1, mesh2} -> {mesh2}, owned by the
 //! fabric-primary (a mesh2 admin). The mesh.delete ends at mesh.deleted with mesh1's last admin, its
 //! final primary, alive; its end is its own node.delete, which the fabric-primary executes and whose
-//! `TerminateRuntime` step proves its exit (mesh-delete.md step 7); its own leave is read from its
-//! leg spans.
+//! `TerminateRuntime` step proves its exit (mesh-delete.md step 7). The last admin's departure is read
+//! from its own leg spans, the executor's steps and a peer's resolver.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
-use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// The unchanged linger (`RDM_LEAVE_LINGER_MS` default) and the unchanged observation bound.
-const LINGER_MS: u64 = 1000;
+/// The unchanged observation bound.
 const OBSERVE_BOUND_MS: u64 = 10_000;
-const ANNOUNCEMENTS: usize = 5;
 
 fn owner(test: &str) -> Owner {
     Owner {
@@ -68,64 +65,23 @@ fn alive(pid: u64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
 
-/// A mesh1 delete run to its end and read back: the mesh.delete's Build and its last admin's
-/// node.delete's, and every span.
-async fn retire_mesh1(test: &str) -> (Vec<String>, Vec<Value>) {
-    let (builds, spans, _) = retire_mesh1_with(test, &[]).await;
-    (builds, spans)
+/// What a mesh1 delete run to its end leaves to read: the last admin, the mesh.delete's Build and
+/// its last admin's node.delete's (an attempt of the accepted Build), what a peer's resolver answers
+/// for the last admin's birth after the delete, and every span.
+struct Retired {
+    last: String,
+    builds: Vec<String>,
+    resolution: Value,
+    spans: Vec<Value>,
 }
 
-/// What a faulted retirement armed on one admin.
-struct Cut {
-    admin: &'static str,
-    id: &'static str,
-    spec: Value,
-}
-
-/// A cut's door: the acknowledgement of the arm, and the door's last reading of the cut.
-struct Fired {
-    admin: &'static str,
-    arm_ack: Value,
-    after: Value,
-}
-
-/// A mesh1 retirement under `cut`, when there is one. With a cut, every admin of the estate is the
-/// testkit's faulted node-admin; the cut is armed on its admin's door before the retire Build is
-/// posted, and its door state is read after the retired runtime is gone.
-async fn retire_mesh1_with(test: &str, cuts: &[Cut]) -> (Vec<String>, Vec<Value>, Vec<Fired>) {
-    let mut estate = if cuts.is_empty() {
-        Estate::bootstrap(owner(test), "fabric1", "mesh1").await
-    } else {
-        let sha = candidate_sha();
-        Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted")
-    };
+/// mesh1 deleted, then its last admin's own node.delete, run to their end and read back.
+async fn retire_mesh1(test: &str) -> Retired {
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
     assert_eq!(status, 202, "{a}");
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
     let before = estate.settled(&names(&["mesh1", "mesh2"]), Duration::from_secs(30)).await;
-    // Each armed admin's door dies with its runtime: the last reading is the one taken while its
-    // leave was running (the transport shutdown after the linger keeps the door up for seconds).
-    let mut armed = Vec::new();
-    for c in cuts {
-        let api = before.iter().find(|n| n["name"] == c.admin).map(|n| s(&n["admin_api_base"])).unwrap_or_else(|| panic!("{} advertises its control API", c.admin));
-        let d = Door::open(&estate.root, c.admin, &api).await;
-        let arm_ack = d.arm(c.id, c.spec.clone()).await;
-        let last = std::sync::Arc::new(std::sync::Mutex::new(Value::Null));
-        let poller = {
-            let (d, last) = (d.clone(), last.clone());
-            tokio::spawn(async move {
-                loop {
-                    if let Ok(r) = d.http.get(format!("{}/faults", d.base)).send().await {
-                        if let Ok(v) = r.json::<Value>().await {
-                            *last.lock().unwrap() = v;
-                        }
-                    }
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-            })
-        };
-        armed.push((c, arm_ack, last, poller));
-    }
     let mut pids: Vec<(String, u64)> = Vec::new();
     for n in before.iter().filter(|n| n["mesh"] == "mesh1") {
         let name = s(&n["name"]);
@@ -153,52 +109,56 @@ async fn retire_mesh1_with(test: &str, cuts: &[Cut]) -> (Vec<String>, Vec<Value>
         (mesh1.len() == 1 && alive).then(|| mesh1[0].clone())
     })
     .await;
+    let last_id = before.iter().find(|n| s(&n["name"]) == last).map(|n| s(&n["node_id"])).unwrap();
     let (_, fabric_now) = estate.get("/api/fabric").await;
     estate.admin = s(&fabric_now["admin_api_base"]);
     let (status, c) = estate.delete(&format!("/api/nodes/{last}")).await;
     assert_eq!(status, 202, "the node.delete of mesh1's last admin {last}: {c}");
+    let c_attempt = Estate::attempt_of(&c);
     let c = s(&c["build_id"]);
-    estate.await_build(&c, Duration::from_secs(120)).await;
+    estate.await_attempt(&c, c_attempt, Duration::from_secs(120)).await;
     estate.settled(&names(&["mesh2"]), Duration::from_secs(60)).await;
     for (name, pid) in &pids {
         wait_for(&format!("{name}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
     }
-    let fired: Vec<Fired> = armed
-        .into_iter()
-        .map(|(c, arm_ack, last, poller)| {
-            poller.abort();
-            let after = last.lock().unwrap()["cuts"][c.id].clone();
-            Fired { admin: c.admin, arm_ack, after }
-        })
-        .collect();
+    // A peer mesh's ordinary node holds the deleted birth Gone, from its executor's NodeDeleted.
+    let query = format!("exact:{last_id}");
+    let resolution = wait_for(&format!("mesh2.rpc.1 holds {last} Gone"), Duration::from_secs(30), || async {
+        let r = estate.probe(&["resolve", "--target", "path:mesh2.rpc.1", "--query", &query]);
+        (r["reply"]["resolution"] == "gone").then_some(r)
+    })
+    .await;
     estate.stop().await;
-    (vec![b, c], estate.spans(), fired)
+    let mut builds = vec![b];
+    if !builds.contains(&c) {
+        builds.push(c);
+    }
+    Retired { last, builds, resolution, spans: estate.spans() }
 }
 
-/// The last admin of mesh1 completes five `Leaving` announcements on the mesh channel and five on
-/// the backbone inside the unchanged one-second linger, and the fabric-primary's TerminateRuntime
-/// for that exact birth completes inside the unchanged 10 s.
+/// mesh1's last admin, stopped by its own node.delete, announces nothing after its stop's cut, and
+/// the fabric-primary that executes the node.delete proves its exit inside the unchanged 10 s; a peer
+/// holds the birth Gone from the executor's NodeDeleted.
 ///
-/// CONTRACT: a retiring last admin must put every one of its linger announcements out, on both
-/// channels, before the linger ends; the fabric-primary that stops it proves its exit by the
-/// provider's exact inspection, never from silence or a gossip frame.
+/// CONTRACT: R-ON1 (Luke 2026-10-10): "a stopping node gossips nothing; node.left is a reply frame
+/// on the stop call's stream; the mesh primary publishes NodeStopped in its in-flight overlay";
+/// node-stop.md step 4: "Emit node.stopped on that same reply stream. The node gossips nothing for
+/// this step." A stopped birth's departure is the executor's: the provider's exact exit proof
+/// (TerminateRuntime), then NodeDeleted, from which every peer holds the birth Gone (node-delete.md
+/// steps 2-5). Must NOT happen: a stopped node announcing its own Leaving after its cut, or a peer
+/// that learns the departure from anything but the executor's NodeDeleted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
-    let cell = "retiring_admin_completes_five_leaving_announcements_within_linger";
+async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound() {
+    let cell = "a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let (b, spans) = retire_mesh1(cell).await;
-    let of_b = |sp: &Value| b.iter().any(|x| sp["attributes"]["build_id"] == x.as_str());
+    let Retired { last, builds, resolution, spans } = retire_mesh1(cell).await;
+    let of_builds = |sp: &Value| builds.iter().any(|x| sp["attributes"]["build_id"] == x.as_str());
 
-    // The last admin: the mesh1 admin whose exit was proved last, by its own node.delete.
-    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && of_b(sp) && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.")).collect();
-    assert!(!observe.is_empty(), "the mesh delete proved a mesh1 admin's exit under {b:?}");
-    let obs = *observe.iter().max_by_key(|sp| start(sp)).unwrap();
-    let last = s(&obs["attributes"]["node"]);
-    assert!(last.starts_with("mesh1.admin."), "the exit proved last is an admin's: {last}");
-
-    // Executor side: the step completed inside the unchanged bound, a child of the pipeline run
-    // for this node and Build in the same trace.
+    // The executor's exit proof: the TerminateRuntime of the last admin's node.delete, complete inside
+    // the unchanged bound, a child of the pipeline run for this node and Build in the same trace.
+    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && of_builds(sp) && sp["attributes"]["node"] == last.as_str()).collect();
+    let obs = *observe.iter().max_by_key(|sp| start(sp)).unwrap_or_else(|| panic!("the node.delete proved {last}'s exit under {builds:?}"));
     let obs_elapsed = attr_u64(obs, "elapsed_ms");
     assert_eq!(obs["attributes"]["outcome"], "complete", "TerminateRuntime of {last} completed: {obs}");
     assert!(obs_elapsed < OBSERVE_BOUND_MS, "TerminateRuntime of {last} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
@@ -209,167 +169,39 @@ async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
     assert_eq!(pipeline["attributes"]["node"], last.as_str());
     assert_eq!(pipeline["attributes"]["build_id"], obs["attributes"]["build_id"]);
 
-    // The retiring admin's own leave: the signal span and every leg beneath it.
+    // The stopped node's own legs: its stop's cut, then nothing said by it on any channel, no
+    // Draining and no Leaving announcement; its transport closes.
     let mine = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str()).collect() };
-    let signals: Vec<&Value> = named(&spans, "rdm.mesh.node.delete.via-signal");
-    // A stop-node has no drain leg: the drain was the separate drain-node, so this leave says no Draining.
+    let cut = mine("rdm.node_admin.node.connections.delete.via-stop-cut");
+    assert_eq!(cut.len(), 1, "{last}'s stop cut its connections once: {cut:?}");
+    let cut_at = start(cut[0]);
+    let announced: Vec<&Value> = mine("rdm.mesh.node.update.via-leave-announcement");
+    assert!(announced.is_empty(), "{last} announced nothing, stopped (R-ON1): {announced:#?}");
     let draining = mine("rdm.mesh.node.update.via-leave-draining");
-    assert!(draining.is_empty(), "{last} said no Draining in its stop-node leave: {draining:?}");
+    assert!(draining.is_empty(), "{last} said no Draining of its own: {draining:?}");
     let shutdown = mine("rdm.mesh.node.update.via-leave-shutdown");
     assert_eq!(shutdown.len(), 1, "one transport shutdown by {last}: {shutdown:?}");
-    let signal = signals.iter().find(|sp| sp["span_id"] == shutdown[0]["parent_span_id"] && sp["trace_id"] == shutdown[0]["trace_id"]).unwrap_or_else(|| panic!("the shutdown leg sits under the leave's signal span: {}", shutdown[0]));
-    assert_eq!(shutdown[0]["attributes"]["outcome"], "closed");
+    assert!(start(shutdown[0]) > cut_at, "{last}'s transport shut down after its stop's cut");
 
-    let all = mine("rdm.mesh.node.update.via-leave-announcement");
-    let on = |ch: &str| -> Vec<&Value> {
-        let mut v: Vec<&Value> = all.iter().copied().filter(|sp| sp["attributes"]["channel"] == ch).collect();
-        v.sort_by_key(|sp| start(sp));
-        v
-    };
-    let (mesh_ch, bb_ch, view_ch) = (on("mesh"), on("backbone"), on("view"));
-    let t0 = start(mesh_ch.first().expect("the first mesh announcement"));
-    let deadline = t0 + LINGER_MS * 1_000_000;
-    let mut rows = Vec::new();
-    for (ch, legs) in [("mesh", &mesh_ch), ("backbone", &bb_ch)] {
-        assert_eq!(legs.len(), ANNOUNCEMENTS, "{last} completed {ANNOUNCEMENTS} announcements on the {ch} channel inside its linger, not {}: {legs:#?}", legs.len());
-        let mut seen: BTreeSet<u64> = BTreeSet::new();
-        for sp in legs {
-            assert_eq!(sp["attributes"]["outcome"], "sent", "{ch} announcement sent: {sp}");
-            assert_eq!(sp["parent_span_id"], signal["span_id"], "{ch} announcement sits under the leave: {sp}");
-            assert!(end(sp) <= deadline, "{ch} announcement {} completed inside the {LINGER_MS} ms linger ({} ms after the first)", sp["attributes"]["announcement"], (end(sp).saturating_sub(t0)) / 1_000_000);
-            seen.insert(attr_u64(sp, "announcement"));
-            rows.push(json!({
-                "channel": ch, "announcement": sp["attributes"]["announcement"], "start_unix_nano": start(sp), "end_unix_nano": end(sp),
-                "after_first_ms": (start(sp).saturating_sub(t0)) / 1_000_000, "elapsed_ms": sp["attributes"]["elapsed_ms"], "outcome": sp["attributes"]["outcome"],
-                "publishing": sp["attributes"]["publishing"], "members": sp["attributes"]["members"], "trace_id": sp["trace_id"], "span_id": sp["span_id"], "parent_span_id": sp["parent_span_id"],
-            }));
-        }
-        assert_eq!(seen, (1..=ANNOUNCEMENTS as u64).collect::<BTreeSet<_>>(), "{ch}: announcements 1..={ANNOUNCEMENTS} each once");
-    }
-    // A backbone say counts only from a publishing seat: a non-publisher's `sent` is a no-op.
-    assert!(bb_ch.iter().all(|sp| sp["attributes"]["publishing"] == "true"), "the last admin of the mesh is the backbone's publisher for it: {bb_ch:#?}");
-    assert_eq!(view_ch.len(), ANNOUNCEMENTS, "the topology read before each backbone say ran {ANNOUNCEMENTS} times");
+    // The departure is the executor's: NodeDeleted for the exact birth after the exit proof, and a
+    // peer's resolver holds it Gone.
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str() && of_builds(sp)).collect();
+    assert_eq!(deleted.len(), 1, "NodeDeleted published once for {last}: {deleted:?}");
+    assert!(start(deleted[0]) >= end(obs), "NodeDeleted follows the exit proof: {}", deleted[0]);
+    assert_eq!(resolution["reply"]["resolution"], "gone", "a peer holds {last} Gone: {resolution}");
 
     let result = json!({
         "cell": cell,
-        "build_id": b,
+        "builds": builds,
         "retiring_admin": last,
-        "linger_ms": LINGER_MS,
-        "leave": { "signal_span_id": signal["span_id"], "trace_id": signal["trace_id"], "start_unix_nano": start(signal), "end_unix_nano": end(signal) },
-        "draining_legs": draining.len(),
-        "announcements": rows,
-        "topology_reads": view_ch.iter().map(|sp| json!({ "announcement": sp["attributes"]["announcement"], "elapsed_ms": sp["attributes"]["elapsed_ms"], "span_id": sp["span_id"] })).collect::<Vec<_>>(),
+        "stop_cut": { "start_unix_nano": cut_at, "trace_id": cut[0]["trace_id"], "span_id": cut[0]["span_id"] },
+        "announcements_after_stop": announced.len(),
         "shutdown": { "start_unix_nano": start(shutdown[0]), "elapsed_ms": shutdown[0]["attributes"]["elapsed_ms"], "outcome": shutdown[0]["attributes"]["outcome"], "span_id": shutdown[0]["span_id"] },
         "executor": { "step": "TerminateRuntime", "node": last, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"], "pipeline_span_id": pipeline["span_id"] },
+        "node_deleted": { "trace_id": deleted[0]["trace_id"], "span_id": deleted[0]["span_id"] },
+        "peer_resolution": resolution["reply"],
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
-}
-
-// ---- the faulted retirements ---------------------------------------------------------------------
-//
-// The retiring last admin withholds named announcements at its own publish seam (the testkit's
-// `leave-announcement` cut: the leave skips that publish call, so the frame is never offered to
-// the channel). This models a lost announcement at the send seam; it is not pressure on a peer
-// queue, which no door of the product or the testkit can apply without touching iroh-gossip.
-
-/// A retirement whose mesh1 admins both withhold `announcements` on `channel` (`mesh`, `backbone`
-/// or `any`) from their leaves. Whichever admin of mesh1 is retired last, its legs withheld are
-/// exactly the armed ones, its door acknowledged the cut active and counted the publishes it
-/// withheld, and the fabric-primary's TerminateRuntime for that exact birth still completed inside the
-/// unchanged bound. The matched healthy control is cell 1 of this job (the same retirement
-/// unarmed); a cut with nothing left to repair it is the retire Build's failure, which is Luke's
-/// to rule and has no cell here.
-async fn retire_with_lost_announcements(cell: &'static str, announcements: &[u32], channel: &'static str) {
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    let spec = json!({"kind": "leave-announcement", "announcements": announcements, "channel": channel});
-    let cuts = [Cut { admin: "mesh1.admin.1", id: "lose-leaving", spec: spec.clone() }, Cut { admin: "mesh1.admin.2", id: "lose-leaving", spec: spec.clone() }];
-    let (b, spans, fired) = retire_mesh1_with(cell, &cuts).await;
-    for f in &fired {
-        assert_eq!(f.arm_ack["armed"], "lose-leaving", "the door of {} acknowledged the arm: {}", f.admin, f.arm_ack);
-    }
-
-    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && b.iter().any(|x| sp["attributes"]["build_id"] == x.as_str()) && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.")).collect();
-    let obs = *observe.iter().max_by_key(|sp| start(sp)).expect("the mesh delete proved a mesh1 admin's exit");
-    let last = s(&obs["attributes"]["node"]);
-    assert!(last.starts_with("mesh1.admin."), "the exit proved last is an admin's: {last}");
-    let obs_elapsed = attr_u64(obs, "elapsed_ms");
-    assert_eq!(obs["attributes"]["outcome"], "complete", "TerminateRuntime of {last} completed: {obs}");
-    assert!(obs_elapsed < OBSERVE_BOUND_MS, "TerminateRuntime of {last} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
-
-    let legs_of = |node: &str, ch: &str| -> Vec<&Value> {
-        let mut v: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-leave-announcement").into_iter().filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["channel"] == ch).collect();
-        v.sort_by_key(|sp| attr_u64(sp, "announcement"));
-        v
-    };
-    let mut withheld_total = 0u64;
-    let mut rows = Vec::new();
-    for ch in ["mesh", "backbone"] {
-        let legs = legs_of(&last, ch);
-        assert_eq!(legs.len(), ANNOUNCEMENTS, "{last} reached all {ANNOUNCEMENTS} announcement legs on the {ch} channel: {legs:#?}");
-        for (i, sp) in legs.iter().enumerate() {
-            let n = i as u32 + 1;
-            let lost = announcements.contains(&n) && (channel == "any" || channel == ch);
-            assert_eq!(attr_u64(sp, "announcement"), u64::from(n));
-            assert_eq!(sp["attributes"]["outcome"], if lost { "withheld" } else { "sent" }, "{ch} announcement {n} of {last}: {sp}");
-            withheld_total += u64::from(lost);
-            rows.push(json!({"channel": ch, "announcement": n, "outcome": sp["attributes"]["outcome"], "elapsed_ms": sp["attributes"]["elapsed_ms"], "span_id": sp["span_id"], "trace_id": sp["trace_id"]}));
-        }
-    }
-    // The injection was active on the retired-last admin's door, and the door counted exactly the
-    // publishes the leave spans show withheld.
-    let door = fired.iter().find(|f| f.admin == last).unwrap_or_else(|| panic!("{last} was armed"));
-    assert_eq!(door.after["held"], true, "the cut was active when last read: {}", door.after);
-    assert!(!door.after["hit"].is_null(), "the cut names the first publish it withheld: {}", door.after);
-    assert_eq!(door.after["seen_while_held"], withheld_total, "the door counted every publish the leave spans show withheld: {}", door.after);
-
-    let result = json!({
-        "cell": cell, "build_id": b, "retiring_admin": last, "cut": spec, "linger_ms": LINGER_MS,
-        "models": "announcements withheld at the retiring admin's send seam; not peer-queue pressure in iroh-gossip",
-        "arm_acks": fired.iter().map(|f| json!({"admin": f.admin, "ack": f.arm_ack})).collect::<Vec<_>>(),
-        "door_last_reading": door.after, "withheld_publishes": withheld_total, "legs": rows,
-        "executor": { "step": "TerminateRuntime", "node": last, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"] },
-        "spans_read": spans.len(),
-    });
-    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
-}
-
-/// Only the last of the five announcements gets out on either channel: it alone carries the
-/// departure to the executor.
-///
-/// CONTRACT: a retiring last admin whose first four announcements are lost on both channels is
-/// still observed departing, by its exact birth, inside the unchanged 10 s; the cut was active
-/// (acknowledged by its door), and the admin's unarmed sibling left whole in the same retirement.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retire_executor_observes_exact_admin_departure_after_peer_queue_cut() {
-    retire_with_lost_announcements("retire_executor_observes_exact_admin_departure_after_peer_queue_cut", &[1, 2, 3, 4], "any").await;
-}
-
-/// Announcement five is the one lost; one through four carry the departure.
-///
-/// CONTRACT: the last announcement of the linger is not load-bearing: with it withheld on both
-/// channels the executor still observes the exact birth depart inside the unchanged 10 s.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn executor_observes_admin_departure_when_the_last_announcement_is_lost() {
-    retire_with_lost_announcements("executor_observes_admin_departure_when_the_last_announcement_is_lost", &[5], "any").await;
-}
-
-/// The first announcement is the one lost.
-///
-/// CONTRACT: the first announcement of the linger is not load-bearing: with it withheld on both
-/// channels the executor still observes the exact birth depart inside the unchanged 10 s.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn executor_observes_admin_departure_when_the_first_announcement_is_lost() {
-    retire_with_lost_announcements("executor_observes_admin_departure_when_the_first_announcement_is_lost", &[1], "any").await;
-}
-
-/// The backbone loses announcements one through four; the mesh channel is whole.
-///
-/// CONTRACT: the executor, in the peer mesh, hears the retiring admin's departure through the
-/// backbone aggregate; with its first four backbone announcements withheld the fifth alone carries
-/// it, and it is observed inside the unchanged 10 s.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn executor_observes_admin_departure_when_the_first_four_backbone_announcements_are_lost() {
-    retire_with_lost_announcements("executor_observes_admin_departure_when_the_first_four_backbone_announcements_are_lost", &[1, 2, 3, 4], "backbone").await;
+    eprintln!("2942: {last} stopped (cut trace {}), nothing announced, TerminateRuntime {obs_elapsed} ms (trace {}), NodeDeleted trace {}", s(&cut[0]["trace_id"]), s(&obs["trace_id"]), s(&deleted[0]["trace_id"]));
 }

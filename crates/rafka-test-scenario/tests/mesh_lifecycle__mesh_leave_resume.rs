@@ -14,7 +14,7 @@
 //! survives and the fabric-primary creates the one node-admin the leaving mesh may gain, is
 //! `mesh_lifecycle__mesh_leave_no_survivor`, over the shared run and assertions here.
 
-use rafka_test_scenario::estate::{named, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -70,6 +70,14 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1_s
     let mut want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh2.rpc.1", "mesh2.rpc.2"].iter().map(|n| n.to_string()).collect();
     want.extend((1..=mesh2_admins).map(|i| format!("mesh2.admin.{i}")));
     let before = estate.settled(&want, Duration::from_secs(60)).await;
+    // The rows mesh2's primary commits (its mesh row Leaving at leave-mesh) are durable only once the
+    // fabric's state-commit published them (states.md, Rounds: "Before state-commit, RDM holds its
+    // rows in the scratchpad"; R14 item 9): the fabric is ready-for-traffic before mesh2 goes, so the
+    // admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
+    wait_for("the fabric is ready-for-traffic: its state-commit published every node's rows", Duration::from_secs(90), || async {
+        (estate.get("/api/fabric").await.1["status"] == "ready-for-traffic").then_some(())
+    })
+    .await;
     let (_, m2) = estate.get("/api/meshes/mesh2").await;
     let mesh2_id = s(&m2["id"]);
     let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
