@@ -1398,7 +1398,7 @@ async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
 /// exact exit proof of every node-admin of the mesh and, only if every one is proven exited, opens
 /// node.create of the mesh's first node-admin as the one-step recipe on the same accepted Build.
 mod fully_crashed_mesh {
-    use super::unheard_mesh_hold::{meshes, pass, Held};
+    use super::unheard_mesh_hold::{meshes, pass, pass_with, Held};
     use super::*;
     use rafka_node_admin_core::investigate::PeerMesh;
 
@@ -1620,6 +1620,81 @@ mod fully_crashed_mesh {
         println!("trace_id={} held={held} proven={proven}", proofs[0]["trace_id"].as_str().unwrap_or_default());
     }
 
+    /// CONTRACT (R-DG1; mesh-investigation.md steps 5-7): the fabric-primary gives a fully crashed
+    /// mesh a new node-admin and, at that same moment, authors the fabric `degraded` (the fabric-primary's
+    /// `peer_recovery`, the one slot the carrier-edge-lost verdict sets and the status projection
+    /// reads): not before the create is opened (an exit proof held for the decision opens nothing and
+    /// degrades nothing), naming the mesh and every node-admin the proof found. It is cleared only on the
+    /// report of the new mesh-primary after that moment: not by the reborn mesh's view alone, not by
+    /// a report of a node-admin the proof found, only by a birth the proof did not find reporting
+    /// after the create opened ("Only on that report, the fabric-primary clears the degraded
+    /// health observation"). Must NOT happen: a create of a node-admin that leaves the fabric
+    /// `ready-for-traffic`, or `degraded` that never clears.
+    #[tokio::test]
+    async fn the_fabric_primary_authors_degraded_when_it_creates_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it() {
+        if crate::own_process::delegated(module_path!(), "the_fabric_primary_authors_degraded_when_it_creates_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it") {
+            return;
+        }
+        let dir = evidence_dir("the_fabric_primary_authors_degraded_when_it_creates_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s56");
+        let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-degraded");
+        use tracing::Instrument as _;
+        async {
+            let e = estate().await;
+            let (peer_mesh, admins) = crash_the_peer_mesh(&e, &[]).await;
+            let found: HashSet<IncarnationId> = e.view.read().await.cohort(&peer_mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
+            assert_eq!(found.len(), 2, "the proof finds both node-admins");
+            let me: PathName = e.fabric_primary().await.parse().unwrap();
+            let records = exit_records();
+            let (mut held, mut started) = (Held::new(), HashSet::new());
+            let peer = peer_mesh.clone();
+            let decided = move |m: &str| (m == peer).then_some(DECIDED_UNREACHABLE).flatten();
+            assert_eq!(pass_with(&e, &mut started, &mut held, &|_| BEFORE_THE_DECISION, &records).await, None, "no decision yet: nothing opens");
+            assert_eq!(records.peer_recovery(), None, "nothing was given to the mesh: the fabric is not degraded");
+            let before = e.accepted.current(&*e.builds).await.unwrap();
+            assert!(pass_with(&e, &mut started, &mut held, &decided, &records).await.is_some(), "the decision plus the proof opens the create of {}", admins[0]);
+            let recovery = records.peer_recovery().expect("the create of the mesh's node-admin opened: the fabric-primary authors degraded");
+            assert_eq!(recovery.mesh, peer_mesh, "degraded names the mesh given a node-admin");
+            assert_eq!(recovery.lost.iter().cloned().collect::<HashSet<_>>(), found, "it names every node-admin the proof found");
+            assert_eq!(e.accepted.current(&*e.builds).await.unwrap().attempt, before.attempt + 1);
+            // The mesh's new primary: a birth the proof did not find, in the view the fabric-primary reads.
+            let reborn = IncarnationId::mint();
+            let mut view = e.view.read().await.clone();
+            for n in view.nodes.iter_mut().filter(|n| n.mesh == peer_mesh && n.kind == NodeKind::NodeAdmin) {
+                n.is_primary = n.name.to_string() == admins[0];
+                if n.is_primary {
+                    n.incarnation_id = Some(reborn.clone());
+                    n.status = NodeStatus::ReadyForTraffic;
+                }
+            }
+            let clear = || rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &view);
+            clear();
+            assert!(records.peer_recovery().is_some(), "the view of a reborn primary alone clears nothing");
+            records.declared.lock().unwrap().record_report(&peer_mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(found.iter().next().unwrap().clone()), std::time::Instant::now());
+            clear();
+            assert!(records.peer_recovery().is_some(), "a report of a node-admin the proof found is not the new primary's");
+            records.declared.lock().unwrap().record_report(&peer_mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(reborn), std::time::Instant::now());
+            clear();
+            assert_eq!(records.peer_recovery(), None, "the new mesh-primary reported after the create opened: degraded clears");
+        }
+        .instrument(root.clone())
+        .await;
+        drop(root);
+        drop(telemetry);
+        let spans = collect_spans(&dir);
+        let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
+        let drift = named("rdm.node_admin.build.update.via-proven-drift");
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert_eq!(drift[0]["attributes"]["fabric_status"], "degraded", "the opening span says the fabric-primary authored degraded: {}", drift[0]["attributes"]);
+        let recovered = named("rdm.node_admin.mesh.update.via-recovered");
+        assert_eq!(recovered.len(), 1, "the clear is named once: {recovered:?}");
+        assert_eq!(recovered[0]["trace_id"], drift[0]["trace_id"], "set and cleared are one story");
+        println!("trace_id={} opening={} cleared={}", drift[0]["trace_id"].as_str().unwrap_or_default(), drift[0]["attributes"], recovered[0]["attributes"]);
+    }
+
     /// CONTRACT: the proof is read for a mesh whose ladder decision came out `unreachable`, not
     /// before: with every node of the mesh proven exited and the ladder at 30 s (silent-marked, probes
     /// outstanding, no decision), nothing opens, and once the mesh is heard again (no hold) the exits
@@ -1712,9 +1787,14 @@ mod unheard_mesh_hold {
     }
 
     pub(super) async fn pass(e: &Estate, started: &mut HashSet<(BuildId, u32, Vec<String>)>, held: &mut Held, peer: &(dyn Fn(&str) -> Option<PeerMesh> + Sync)) -> Option<(BuildId, u32)> {
+        pass_with(e, started, held, peer, &exit_records()).await
+    }
+
+    /// [`pass`] over `records`, the fabric-primary's records the pass sets the fabric's health on.
+    pub(super) async fn pass_with(e: &Estate, started: &mut HashSet<(BuildId, u32, Vec<String>)>, held: &mut Held, peer: &(dyn Fn(&str) -> Option<PeerMesh> + Sync), records: &rafka_node_admin_core::admin::Records) -> Option<(BuildId, u32)> {
         let me: PathName = e.fabric_primary().await.parse().expect("a fabric-primary");
         let t = e.view.read().await.clone();
-        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.accepted, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), &exit_records()).await
+        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.accepted, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), records).await
     }
 
     const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), rebirth_decided: false, unreachable_decided: false });

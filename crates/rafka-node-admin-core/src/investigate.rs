@@ -431,7 +431,7 @@ pub async fn run(w: Watch) {
                 }
             }
         }
-        restore(&w, &view);
+        restore_peer_recovery(&w.me, &w.records, &view);
     }
 }
 
@@ -451,17 +451,19 @@ fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
     }
 }
 
-/// The fabric returns to ready when the mesh that was reborn has reported for its round: its
-/// current node-admin primary, a birth the decision did not find, declared the Mesh ready to this
-/// fabric primary after the decision. A ready primary of a newer birth in the view, with no report,
-/// is not this (`crate::round::recovered`).
-fn restore(w: &Watch, view: &Topology) {
-    let Some(recovery) = w.records.peer_recovery() else { return };
+/// The fabric returns to ready when the mesh the fabric primary gave a new node-admin (the
+/// carrier-edge-lost verdict's, or the fully crashed mesh's) has reported for its round: its current
+/// node-admin primary, a birth the decision did not find, declared the Mesh ready to this fabric
+/// primary after the decision (mesh-investigation.md step 7: "Only on that report, the fabric-primary
+/// clears the degraded health observation"). A ready primary of a newer birth in the view, with no
+/// report, is not this (`crate::round::recovered`).
+pub fn restore_peer_recovery(me: &PathName, records: &Records, view: &Topology) {
+    let Some(recovery) = records.peer_recovery() else { return };
     let primary = view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin).and_then(|p| p.incarnation_id.clone());
-    let report = w.records.declared.lock().unwrap().report_of(&recovery.mesh, view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin));
+    let report = records.declared.lock().unwrap().report_of(&recovery.mesh, view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin));
     if crate::round::recovered(&recovery, primary.as_ref(), report.as_ref()) {
-        w.records.set_peer_recovery(None);
-        tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %w.me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = recovery.verdict_rafka_ms)
+        records.set_peer_recovery(None);
+        tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = recovery.verdict_rafka_ms)
             .in_scope(|| tracing::info!("the reborn mesh's primary reported its round complete: the fabric is ready again"));
     }
 }
