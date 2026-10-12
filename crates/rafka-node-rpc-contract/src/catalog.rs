@@ -85,7 +85,7 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
         LedgerEntry { op: 0x1E, family: "topology".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
         LedgerEntry { op: 0x1F, family: "build-facts".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
         LedgerEntry { op: 0x20, family: "build".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
-        LedgerEntry { op: 0x21, family: "fabric-primary-handover".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
+        LedgerEntry { op: 0x21, family: "node-primary-update".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
         LedgerEntry { op: 0x70, family: "proof-store".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x71, family: "resolve-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x72, family: "declare-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },

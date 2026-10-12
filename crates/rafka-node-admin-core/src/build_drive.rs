@@ -603,9 +603,11 @@ impl DriveEnv {
         end
     }
 
-    /// The seat, the cut-off rule and the fence: `Some` when this admin may not claim or dispatch now.
-    /// The committed fabric seat record is read first: it is the fence (node-rpc-envelope.md
-    /// TakeSeats), and it names the holder this admin's authority ended at, while the view follows it.
+    /// The seat, the cut-off rule and the target: `Some` when this admin may not claim or dispatch now.
+    /// The committed fabric seat record is read first: it is the target every decision is judged
+    /// against (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 5:
+    /// "From this write the holder is no longer primary"), and it names the holder this admin's
+    /// authority ended at, while the view follows it.
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
         let record_holder = match self.gate.fence().await {
             Ok(holder) => holder,
@@ -1152,8 +1154,8 @@ pub fn describe(r: &BuildReply) -> String {
 mod tests {
     use super::*;
 
-    /// CONTRACT (R-BI4; node-rpc-envelope.md TakeSeats: "N resumes the same attempt as the new
-    /// fabric-primary"): an attempt ended incomplete only when this admin ran it itself and it came
+    /// CONTRACT (R-BI4; proposal node-primary-update Part C1 step 8: the commanding Build continues
+    /// at the new fabric-primary, which resumes the same attempt): an attempt ended incomplete only when this admin ran it itself and it came
     /// back to this admin having moved nothing. A hand-off to this admin that another executor
     /// reported (the old fabric-primary's attempt, handed to the new seat before its operation ran, and
     /// replayed from its run when the new seat's drive attaches to it) is that executor's end: the

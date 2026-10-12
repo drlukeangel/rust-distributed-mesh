@@ -579,8 +579,8 @@ mod tests {
         assert_eq!(executor_for(&BuildOperation::RetireNode { node: fp, exited: None }, &alone), None);
     }
 
-    /// CONTRACT (#3016; node-rpc-envelope.md TakeSeats: the executor is "the same-mesh successor
-    /// N"; R-A2: cross-mesh only when the whole cohort is proven lost): mesh2's seated admin is
+    /// CONTRACT (#3016; elections §5: a holder proven gone "hands the seat to the lowest
+    /// ReadyForTraffic NodeId of its own mesh"; R-A2: cross-mesh only when the whole cohort is proven lost): mesh2's seated admin is
     /// proven exited and its other admin is held but silent (`PendingReconnect`, not proven gone).
     /// No admin of mesh2 holds the seat yet, and the fabric primary of mesh1 executes nothing of
     /// mesh2: the answer is `None` and the reason names the held admin. With every mesh2 admin
@@ -638,16 +638,19 @@ mod tests {
         assert_eq!(who(&shutdown("mesh1"), &moved), "mesh2.admin.1", "once the seat moved, the new fabric primary is the executor");
     }
 
-    /// CONTRACT (R-MT1: the holder computes its successor; fabric-node-lifecycle-elections.md section
-    /// 5: "a holder that yields ... hands the seat to the lowest ReadyForTraffic NodeId of its own
-    /// mesh"; section 4.3: the fabric seat leaves its holder's mesh only when no node-admin of that
-    /// mesh can take it): the fabric primary P holds both seats of mesh1; mesh1.admin.2 is Ready with
-    /// a HIGHER NodeId than mesh2's primary. Both of P's seats go to mesh1.admin.2, the mesh seat by
-    /// the cohort election and the fabric seat once mesh1.admin.2 holds the mesh seat, never to the
-    /// lowest-NodeId mesh primary of another mesh. With no other admin in mesh1 the mesh seat has no
-    /// successor (node.primary.update refuses it) and the fabric seat would leave the mesh.
+    /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2
+    /// "Successor search for the commanded transfer": "1. the holder's own mesh: the lowest
+    /// ReadyForTraffic node-admin NodeId there ... 2. only when that mesh has none, or it is the
+    /// departing mesh under mesh.delete: the lowest NodeId among the other ReadyForTraffic
+    /// mesh-primaries; 3. neither found: refused by name"; Q1: both seats go to the same-mesh
+    /// successor in one row): P, mesh1's primary and the fabric-primary, has a HIGHER NodeId than
+    /// mesh2's primary. Both seats go to mesh1.admin.2, never to the lowest-NodeId mesh primary of
+    /// another mesh. Under mesh.delete the fabric seat alone goes to mesh2's primary. With no other
+    /// admin in mesh1 both seats are refused with Q7's mesh text (mesh2's primary could take the fabric
+    /// seat, the mesh seat has no secondary), and with mesh2 gone too with the fabric seat's text.
     #[test]
     fn the_fabric_primarys_seats_go_to_its_own_meshs_successor_whatever_the_node_ids() {
+        use crate::election::{commanded_successor, Moving};
         let with = |path: &str, id: &str, primary: bool, fabric: bool| {
             let mut n = node(path, primary, fabric);
             n.node_id = rafka_mesh_entity::ids::NodeId::parse(id).unwrap();
@@ -661,18 +664,17 @@ mod tests {
         ];
         let inc = crate::election::Incumbency::default();
         let p = nodes[0].clone();
-        let name = |n: Option<crate::model::Node>| n.map(|n| n.name.to_string()).unwrap_or_default();
-        assert_eq!(name(crate::election::cohort_successor(&nodes, &inc, &p)), "mesh1.admin.2", "the mesh seat: mesh1's other admin; mesh2.admin.1's lower NodeId is no input");
-        assert_eq!(name(crate::election::fabric_successor_yielding(&nodes, &inc, &p)), "mesh1.admin.2", "the fabric seat stays in mesh1");
-        // The mesh seat moved first: mesh1.admin.2 is mesh1's primary and takes the fabric seat.
-        nodes[0].is_primary = false;
-        nodes[1].is_primary = true;
-        assert_eq!(name(crate::election::fabric_successor_yielding(&nodes, &inc, &p)), "mesh1.admin.2");
-        // mesh1's only admin: no successor for the mesh seat; the fabric seat would leave mesh1.
+        let name = |n: Result<crate::model::Node, String>| n.map(|n| n.name.to_string()).unwrap_or_else(|e| e);
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothSeats)), "mesh1.admin.2", "both seats: mesh1's other admin; mesh2.admin.1's lower NodeId is no input");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::MeshSeat)), "mesh1.admin.2");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricSeatOutside)), "mesh2.admin.1", "mesh.delete: the fabric seat leaves the departing mesh");
+        // mesh1's only admin: the mesh seat has no secondary though mesh2's primary is Ready.
         nodes.retain(|n| n.name.to_string() != "mesh1.admin.2");
-        nodes[0].is_primary = true;
-        assert_eq!(name(crate::election::cohort_successor(&nodes, &inc, &p)), "", "no other node-admin of mesh1");
-        assert_eq!(name(crate::election::fabric_successor_yielding(&nodes, &inc, &p)), "mesh2.admin.1");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothSeats)), "cannot transfer: no secondary of type node-admin in mesh mesh1");
+        // And no other mesh-primary either: both searches named.
+        nodes.retain(|n| n.mesh != "mesh2");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothSeats)), "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricSeatOutside)), "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic");
     }
 
     #[test]

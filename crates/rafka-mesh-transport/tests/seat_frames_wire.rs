@@ -149,13 +149,13 @@ fn a_seat_book_holds_seats_together_and_replays_them_together() {
     let book = SeatBook::default();
     book.take(Seat::MeshPrimary, &holder(3));
     book.take(Seat::FabricPrimary, &holder(8));
-    assert!(book.take_together(&op(), &both(4, 9), false).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
+    assert!(book.take_together(&op(), &both(4, 9)).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
     assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(9))));
     assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![primary_updated(4, 9).encode()], "both seats replay as the one update");
     // A later record of one seat supersedes the update: the records replay one by one again.
     book.take(Seat::FabricPrimary, &holder(10));
     assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![Frame::Seated { seat: Seat::MeshPrimary, holder: holder(4) }.encode(), Frame::Seated { seat: Seat::FabricPrimary, holder: holder(10) }.encode()]);
     // An older update moves neither seat.
-    assert!(book.take_together(&op(), &both(2, 2), false).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
+    assert!(book.take_together(&op(), &both(2, 2)).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
     assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(10))));
 }

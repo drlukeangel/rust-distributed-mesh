@@ -66,10 +66,10 @@ impl std::fmt::Display for SeatHolder {
     }
 }
 
-/// The seat transfer's own wire types (node-rpc-envelope.md, "Fabric-primary-handover, op `0x21`"
-/// and "TakeSeats: Build-driven seat transfer"; gossip.md "Seated-together seat transfer"): the
-/// shapes the 0x21 family and the `SeatedTogether` frame carry, in the doc's field order and enum
-/// positions. They convert to and from the seat records ([`super::Seat`], [`SeatHolder`]) at the
+/// The seat update's own wire types (the approved proposal node-primary-update-fabric-mesh-and-node-type.md,
+/// Part C3 edits 5 and 6: node.primary.update on op `0x21`, and the "primary updating" and "primary
+/// updated" gossip frames): the shapes the 0x21 family and the `PrimaryUpdating` / `PrimaryUpdated`
+/// frames carry, in the doc's field order and enum positions. They convert to and from the seat records ([`super::Seat`], [`SeatHolder`]) at the
 /// edges; nothing else reads them.
 pub mod transfer {
     use super::SeatHolder;

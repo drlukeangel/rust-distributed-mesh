@@ -1723,8 +1723,10 @@ pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::Fabri
 /// `fabric/` on the fabric's store root, written by the fabric-primary alone (R14 item 2): while this
 /// birth holds the fabric seat it writes the Fabric identity it is configured for, so a seat that
 /// came to it before the fabric's first state-commit, from a holder whose held rows were dropped,
-/// still leaves the Fabric row on the store root, and every seat record it holds as its own row. The
-/// Fabric row carries no pointer to the newest Build (R-BI3). The claim of the
+/// still leaves the Fabric row on the store root. Seats are no `fabric/` rows: the leadership view is
+/// folded from the seat-transfer rows (proposal node-primary-update-fabric-mesh-and-node-type.md
+/// Part C2: "The per-seat rows under `fabric/seats` go"). The Fabric row carries no pointer to the
+/// newest Build (R-BI3). The claim of the
 /// fabric's name comes first: nothing else is written to `fabric/` until it wins, and a name another
 /// Fabric's identity holds leaves `fabric/` unwritten by this writer, named once. While it does not
 /// hold the seat it writes nothing to `fabric/`.
@@ -1733,8 +1735,6 @@ pub(crate) struct FabricRowsWriter {
     me: (NodeId, IncarnationId),
     identity: crate::fabric_storage::FabricIdentity,
     storage: Arc<dyn crate::fabric_storage::FabricStorage>,
-    /// The seat records written (or held durable by a seat transfer's own row).
-    written: HashSet<(rafka_mesh_entity::Seat, String, u64)>,
     /// The claim of the fabric's name: `None` before the store answered it; `Some(Ok)` once it won;
     /// `Some(Err)` when another Fabric's identity holds the key (a held identity is never rewritten).
     claim: Option<Result<(), crate::fabric_storage::FabricNameHeld>>,
@@ -1742,10 +1742,11 @@ pub(crate) struct FabricRowsWriter {
 
 impl FabricRowsWriter {
     pub(crate) fn new(me: (NodeId, IncarnationId), identity: crate::fabric_storage::FabricIdentity, storage: Arc<dyn crate::fabric_storage::FabricStorage>) -> Self {
-        Self { me, identity, storage, written: HashSet::new(), claim: None }
+        Self { me, identity, storage, claim: None }
     }
 
-    /// One round over the seat records `seats` holds.
+    /// One round on the seat records `seats` holds: while the fabric seat names this birth, the claim
+    /// of the fabric's name (which writes the identity row) until the store answers it.
     pub(crate) async fn round(&mut self, seats: &rafka_mesh_transport::membership::SeatBook) {
         if !seats.fabric().is_some_and(|h| h.is_birth(&self.me.0, &self.me.1)) {
             return;
@@ -1754,24 +1755,6 @@ impl FabricRowsWriter {
         if self.claim.is_none() {
             // A store that did not answer decides nothing: the next round asks again.
             self.claim = claim_fabric_name(&**storage, identity, &self.me.0).await.ok().map(|c| c.map(|_| ()));
-        }
-        if !matches!(self.claim, Some(Ok(()))) {
-            return;
-        }
-        let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
-        rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
-        for row in rows {
-            // A record a seat transfer's own row already holds is durable: nothing more is written for it.
-            if seats.is_durable(row.seat, &row.holder) {
-                self.written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch));
-                continue;
-            }
-            if self.written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch)) {
-                if let Err(e) = storage.put_seat(&row).await {
-                    self.written.remove(&(row.seat, row.holder.mesh.clone(), row.holder.epoch));
-                    tracing::info_span!("rdm.node_admin.seat.reject.via-storage", seat = row.seat.name(), holder = %row.holder, error = %e).in_scope(|| tracing::info!("a seat record could not be written to fabric.storage"));
-                }
-            }
         }
     }
 }
@@ -2319,28 +2302,31 @@ impl crate::build_drive::Gate for SeatGate {
     fn peer_mesh(&self, mesh: &str) -> Option<crate::investigate::PeerMesh> {
         self.control.peer_mesh.get().and_then(|f| f(mesh))
     }
-    /// R-MT1: a mesh-primary's seat moves by node.primary.update commanded from here; the
-    /// fabric-primary's own seats it moves itself, having nothing above it. When it holds both, its
-    /// mesh seat moves first: the fabric seat's candidates are the mesh primaries and it stays in its
-    /// holder's mesh (elections §4.3), so the successor must hold the mesh seat to take it, and this
-    /// admin keeps its authority to command until the fabric seat moves.
+    /// node.primary.update before an operation on a seat holder (the approved proposal
+    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1: "The holder is commanded from
+    /// above"): a mesh-primary's seat is commanded from here (the fabric-primary commands a
+    /// mesh-primary); the fabric-primary's own seats it moves itself, having nothing above it, both in
+    /// ONE row when it holds both (Q1: "the one row of C1 commits both seats to NA2 at their next
+    /// epochs").
     async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<(), String> {
-        let door = &self.handover;
-        let refused = |r: rafka_node_rpc_contract::handover::FabricPrimaryHandoverReply| format!("{}: {r:?}", r.name());
+        use crate::election::Moving;
         use crate::fabric_handover::update_operation;
         use rafka_mesh_entity::Seat;
+        let door = &self.handover;
+        let refused = |r: rafka_node_rpc_contract::handover::NodePrimaryUpdateReply| format!("{}: {r:?}", r.name());
         if m.holder.node_id != door.node_id {
             if m.mesh_seat {
                 door.command_update_primary(&m.holder, &build_id.0, attempt, &update_operation(Seat::MeshPrimary, &build_id.0, operation)).await?;
             }
             return Ok(());
         }
-        if m.mesh_seat {
-            door.update_primary(Seat::MeshPrimary, None, &build_id.0, attempt, &update_operation(Seat::MeshPrimary, &build_id.0, operation)).await.map_err(refused)?;
-        }
-        if m.fabric_seat {
-            door.update_primary(Seat::FabricPrimary, None, &build_id.0, attempt, &update_operation(Seat::FabricPrimary, &build_id.0, operation)).await.map_err(refused)?;
-        }
+        let moving = match (m.mesh_seat, m.fabric_seat) {
+            (true, true) => Moving::BothSeats,
+            (true, false) => Moving::MeshSeat,
+            (false, true) => return Err(format!("{}: the view names this admin the fabric-primary without its mesh's primary seat: a fabric-primary is one of the mesh-primaries (elections §4.3), so no node.primary.update moves the seat from here", door.me)),
+            (false, false) => return Ok(()),
+        };
+        door.update_primary(moving, None, &build_id.0, attempt, &update_operation(Seat::MeshPrimary, &build_id.0, operation)).await.map_err(refused)?;
         Ok(())
     }
 }
@@ -2844,7 +2830,7 @@ pub struct MembershipObserver {
     /// This admin's status authority, once it holds a view: a start begins a new cycle of the birth's
     /// declared states.
     pub authority: crate::status_rpc::AuthoritySlot,
-    /// This admin's 0x21 door, once it holds a view: the SeatTransfer step's TakeSeats goes through it.
+    /// This admin's 0x21 door, once it holds a view: node.primary.update goes through it.
     pub handover: crate::fabric_handover::HandoverSlot,
 }
 
@@ -4402,18 +4388,22 @@ impl OperationRunner for AdminRunner {
         r
     }
 
-    /// A mesh retire whose fabric-primary (this admin) sits inside the leaving mesh hands the
-    /// fabric seat to an outside mesh-primary first (fabric-primary-handover.md); the executor of
-    /// the retire is then the new fabric-primary, by the Build's ordinary hand-off.
-    async fn prepare(&self, _build_id: &crate::build::BuildId, _attempt: u32, op: &BuildOperation) -> Result<(), String> {
-        let BuildOperation::ShutdownMesh { mesh, mesh_id } = op else { return Ok(()) };
+    /// A mesh.delete whose fabric-primary (this admin) sits inside the departing mesh moves the
+    /// fabric seat first by node.fabric-primary.update with that mesh excluded from the successor
+    /// search (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 2:
+    /// "If the mesh holds the fabric-primary seat, node.fabric-primary.update runs first with this mesh
+    /// excluded from the successor search"); the mesh seat does not move. The executor of the delete is
+    /// then the new fabric-primary, by the Build's ordinary hand-off.
+    async fn prepare(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        let BuildOperation::ShutdownMesh { mesh, .. } = op else { return Ok(()) };
         let holds_seat_inside = self.topology.read().await.fabric_primary().is_some_and(|fp| fp.node_id == self.node_id && fp.mesh == *mesh);
         if !holds_seat_inside {
             return Ok(());
         }
-        let r = self.handover.hand_over(mesh, mesh_id).await;
+        let operation = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, &build_id.0, &op.key());
+        let r = self.handover.update_primary(crate::election::Moving::FabricSeatOutside, None, &build_id.0, attempt, &operation).await;
         self.refresh_view().await;
-        r.map_err(|e| format!("{mesh} holds the fabric seat and it was not handed over: {e}"))
+        r.map(|_| ()).map_err(|e| format!("{mesh} holds the fabric seat and node.fabric-primary.update did not move it: {}: {e:?}", e.name()))
     }
 
 }
@@ -4732,7 +4722,8 @@ impl Running {
     async fn leave_with(self, parked: bool) {
         // A leaving admin hands its committed Build facts to the neighbours before it says
         // anything. Its Build authority is what its fabric seat record says: a seat moved by
-        // TakeSeats or TakeFabricPrimary ended it at that record; a fabric shutdown freezes the drive.
+        // node.primary.update or node.fabric-primary.update ended it at that record; a fabric shutdown
+        // freezes the drive.
         self.builds.hand_over_facts("leaving", None).await;
         self.executor.abort();
         self.hierarchy.abort();
@@ -5310,12 +5301,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     // The admin that holds the fabric seat in its own seat records is the fabric's root: it
                     // adopts its own clock at once (fabric-node-lifecycle.md 2.5). Every other admin takes
                     // rafka-time from the first node it reaches that holds one.
-                    let holds_fabric_seat = fabric_storage
-                        .seats()
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .iter()
-                        .any(|row| row.seat == rafka_mesh_entity::Seat::FabricPrimary && row.holder.node_id == node_id);
+                    let held = rafka_mesh_transport::membership::SeatBook::default();
+                    crate::fabric_handover::hydrate_seats(&*fabric_storage, &held).await?;
+                    let holds_fabric_seat = held.fabric().is_some_and(|h| h.node_id == node_id);
                     if holds_fabric_seat {
                         crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_FABRIC_SEAT);
                     } else {
@@ -5351,11 +5339,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // such mesh, as every node does. Held behind the gate: a parked admin tops up nothing, and a
                 // gap signalled while it was parked is topped up once it runs again.
                 tasks_early.push(park_gate.spawn(membership.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
-                // The seat records on the store root (`fabric.storage`): this admin enters knowing who held the
-                // seats.
-                for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
-                    membership.seats().take(row.seat, &row.holder);
-                }
+                // The seat-transfer rows on the store root: this admin enters knowing who holds every seat a
+                // committed node.primary.update moved, its own included (proposal Part C1 failure contract:
+                // a holder that died between its drain and its rename reads here whether its row committed).
+                crate::fabric_handover::hydrate_seats(&*fabric_storage, membership.seats()).await?;
                 // The current Build: Day 0 accepts the first Build itself; every other admin hydrates it from
                 // its entry pull or the fabric control topic.
                 let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
@@ -5671,13 +5658,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 client: node_rpc.client.clone(),
                                 book: book.clone(),
                                 records: records.clone(),
-                                contacts: crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) },
-                                handovers: Default::default(),
+                                locks: Default::default(),
                                 decisions: builds.decisions(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                 cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
                             });
-                            handover.restore().await?;
                             let _ = handover_slot.set(handover.clone());
                             let runner = Arc::new(AdminRunner {
                                 status_storage: status_storage.clone(),
@@ -7705,12 +7690,11 @@ mod tests {
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
     /// insert-and-fail on its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming a
     /// different one"; CLAUDE.md: the claim is the first durable write of a create, nothing is written
-    /// for the entity until it wins): `fabric/` holds another Fabric's identity and its fabric-primary's
-    /// seat record (a root an embedding app handed in). This fabric-primary's rounds claim the
-    /// fabric's name, are refused naming the holder, and write nothing of the fabric: the standing seat
-    /// record stays the holder's, and the claim is made once, one
+    /// for the entity until it wins): `fabric/` holds another Fabric's identity (a root an embedding app
+    /// handed in). This fabric-primary's rounds claim the fabric's name, are refused naming the holder,
+    /// and write nothing of the fabric: the held identity stands, and the claim is made once, one
     /// `rdm.node_admin.fabric.create.via-fabric-row` span `name-held` naming the holder. Must NOT happen:
-    /// a seat record written into another Fabric's `fabric/` beside a refused claim.
+    /// a row written into another Fabric's `fabric/` beside a refused claim.
     // @feature: mesh-lifecycle
     #[tokio::test]
     async fn a_fabric_primarys_refused_fabric_claim_writes_nothing_of_the_fabric() {
@@ -7724,8 +7708,7 @@ mod tests {
         h_seats.take(rafka_mesh_entity::Seat::FabricPrimary, &h_birth);
         let mut hw = FabricRowsWriter::new((h_birth.node_id.clone(), h_birth.incarnation.clone()), holder.clone(), storage.clone());
         hw.round(&h_seats).await;
-        let held_seat = vec![crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder: h_birth.clone() }];
-        assert_eq!(storage.seats().await.unwrap(), held_seat, "the holder's fabric-primary writes its seat record once its claim won");
+        assert_eq!(storage.fabric().await.unwrap(), Some(holder.clone()), "the holder's fabric-primary writes its identity once its claim won");
         let o_seats = rafka_mesh_transport::membership::SeatBook::default();
         o_seats.take(rafka_mesh_entity::Seat::FabricPrimary, &o_birth);
         let mut ow = FabricRowsWriter::new((o_birth.node_id.clone(), o_birth.incarnation.clone()), ours.clone(), storage.clone());
@@ -7733,7 +7716,6 @@ mod tests {
             ow.round(&o_seats).await;
         }
         assert_eq!(storage.fabric().await.unwrap().map(|f| f.fabric_id), Some(holder.fabric_id.clone()), "the held identity stands");
-        assert_eq!(storage.seats().await.unwrap(), held_seat, "a refused fabric claim writes no seat record into another Fabric's fabric/");
         let spans = capture.named("rdm.node_admin.fabric.create.via-fabric-row");
         let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("fabric_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("holder").cloned().unwrap_or_default())).collect();
         assert_eq!(
@@ -9181,11 +9163,11 @@ mod tests {
     }
 
     /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md §5 "a living holder keeps its seat";
-    /// R-EL1a, node-rpc-envelope.md TakeSeats: the committed seat row is the fence and the
-    /// authority, SeatedTogether only disseminates it): the view's seat readers name the holder the
+    /// proposal node-primary-update Part C3 edit 6: the committed seat row is the authority, "primary
+    /// updated" only announces it): the view's seat readers name the holder the
     /// seat records give, whatever its status. A holder that is Leaving (drained and stopped by its
     /// Build) whose yield this observer has not heard yet keeps both seats; once the yield is held
-    /// (SeatedTogether: both records at the next epoch naming the successor), the readers name the
+    /// (PrimaryUpdated: both records at the next epoch naming the successor), the readers name the
     /// successor. Must NOT happen: an observer reading a Leaving holder's seats as vacant (the
     /// sticky_seat hand-over cell's via-fabric-recompute with winner "" while the record names P).
     #[test]
@@ -9211,7 +9193,7 @@ mod tests {
         assert!(t.holds_fabric_seat(&holder.node.node_id) && t.holds_mesh_seat("mesh1", &holder.node.node_id));
         assert_eq!(t.mesh_view("mesh1").and_then(|m| m.primary_admin).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"));
 
-        // The yield is held: SeatedTogether's records name the successor at the next epochs.
+        // The yield is held: PrimaryUpdated's records name the successor at the next epochs.
         book.seats.take(MeshPrimary, &holder_of(&successor, 2));
         book.seats.take(FabricPrimary, &holder_of(&successor, 2));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);

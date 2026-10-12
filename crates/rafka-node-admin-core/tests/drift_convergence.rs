@@ -432,7 +432,7 @@ impl Estate {
 
     /// The fabric-primary's first drive pass after a peer mesh lost its primary while its other
     /// node-admin `survivor` is held silent (R-D1; R-A2 "cross-mesh only when the whole cohort is
-    /// proven lost"; node-rpc-envelope.md TakeSeats: the executor is the same-mesh successor): the
+    /// proven lost"; elections §5: the seat goes to the lowest ReadyForTraffic NodeId of its own mesh): the
     /// drive stalls naming the mesh and `survivor`, nothing is dispatched and nothing is born; then
     /// `survivor` is seated by its own mesh and is the executor from there.
     async fn stalls_until_seated(&self, lost_mesh: &str, lost: &str) -> String {

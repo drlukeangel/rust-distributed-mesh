@@ -91,9 +91,10 @@ pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view
     }
 }
 
-/// What the committed fabric seat record says of `me`'s Build authority (node-rpc-envelope.md
-/// TakeSeats: "The row is the fence: P's execution authority ends at the row's epoch ... and no
-/// separate fence write precedes or follows it"). A record naming this birth, naming none, or naming
+/// What the committed fabric seat record says of `me`'s Build authority (the approved proposal
+/// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 5: "The writer writes the one seat
+/// row at the next epoch(s) naming the successor. This is the commit. From this write the holder is no
+/// longer primary"; nothing else is written). A record naming this birth, naming none, or naming
 /// a birth proven gone (`lost`: a vacancy the election fills before this birth's own record lands)
 /// ends nothing; a record naming another live birth ended this birth's authority at its epoch, and
 /// names that birth's path.name from `name_of` (the digest book, which holds a birth before the

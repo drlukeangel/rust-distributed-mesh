@@ -98,10 +98,13 @@ impl AdminRunner {
             crate::mesh_leave::OwnerResume::Lead => {}
         }
         let node_rpc = &self.node_rpc;
-        // Step 1: this owner is the fabric-primary. When the leaving mesh held the fabric seat it
-        // was handed over first (fabric-primary-handover.md): the leave opens only on the confirmed
-        // transfer, and an unconfirmed one is reconciled here before anything is dismantled.
-        self.handover.confirmed(mesh_id).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric-primary handover is not confirmed: {e}"))?;
+        // Step 1: this owner is the fabric-primary. When the departing mesh held the fabric seat it
+        // moved first by node.fabric-primary.update with the mesh excluded: the leave opens only once
+        // that committed row is installed here, its node.primary.updated (the approved proposal
+        // node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 2: "`node.primary.updated`
+        // confirms the committed transfer before any member is deleted").
+        let fabric_update = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, &build_id.0, outer);
+        self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric seat's committed row is not installed: {e}"))?;
         // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
         // but cannot take the workflow: it goes to the lost-final-primary path below, which proves
         // its exit before anything is amended (R11).

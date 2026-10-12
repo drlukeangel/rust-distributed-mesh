@@ -190,7 +190,8 @@ async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_holding_the
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.is_none()), "the record names no holder");
 }
 
-/// CONTRACT (node-rpc-envelope.md TakeSeats: "The row is the fence"): the committed seat record,
+/// CONTRACT (proposal node-primary-update Part C1 step 5: "From this write the holder is no longer
+/// primary"): the committed seat record,
 /// never the view, names where the seat is. A fabric-primary whose record still names this birth
 /// while its view shows another admin holding the seat dispatches nothing, and the callers'
 /// streams end naming the holder the record names (this birth), never the view's; a record naming
@@ -224,8 +225,8 @@ async fn a_fabric_primary_whose_view_shows_another_holder_names_the_seat_records
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.is_none()), "a record naming none names no holder");
 }
 
-/// CONTRACT (node-rpc-envelope.md TakeSeats: "The row is the fence ... Build dispatch from the old
-/// seat is refused with Fenced"): the seat record decides before the view does. A fabric-primary
+/// CONTRACT (proposal node-primary-update Part C1 step 5: "From this write the holder is no longer
+/// primary"; Build dispatch from the old seat is refused `Fenced`): the seat record decides before the view does. A fabric-primary
 /// whose seat record moved is refused `Fenced` while its view still shows it as the holder and
 /// holds no row of the new one yet, and the callers' streams end naming the holder the record names,
 /// never the view's. No executor is called.
@@ -334,7 +335,7 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
     );
 }
 
-/// CONTRACT (#3016; node-rpc-envelope.md TakeSeats: the executor is "the same-mesh successor N";
+/// CONTRACT (#3016; elections §5: the seat goes to "the lowest ReadyForTraffic NodeId of its own mesh";
 /// "Executor departure proof, never silence, is required before claiming the next attempt for its
 /// successor"): mesh2's seated admin, the claimed executor, is lost and proven exited; mesh2's other
 /// admin is held but silent, not yet seated. The fabric-primary of mesh1 does not take mesh2's
@@ -570,7 +571,7 @@ async fn held_successor_rig(lands: bool) -> Rig {
     rig_for(t, change, move |ran, topology| Arc::new(Lands { ran, topology, lands })).await
 }
 
-/// CONTRACT (node-rpc-envelope.md TakeSeats, the same-mesh successor; R-A2: cross-mesh only when
+/// CONTRACT (elections §5, the same-mesh successor; R-A2: cross-mesh only when
 /// the whole cohort is proven lost): a run of the fabric-primary is cut before a later operation no
 /// admin executes in its view. The fabric-primary runs mesh1's rpc node and stops there: mesh2's
 /// admins are not carried by the run, and the drive stalls naming mesh2's held admin, whose seat the
@@ -894,8 +895,8 @@ impl OperationRunner for HeldOpen {
     }
 }
 
-/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer"): the committed seat row
-/// is the fence, and when the holder was the fabric-primary it ends the caller's outer stream with
+/// CONTRACT (proposal node-primary-update Part C1 step 5): the committed seat row is the target every
+/// decision is judged against, and when the holder was the fabric-primary it ends the caller's outer stream with
 /// the new seat after the row. The fence is set while the drive waits on the executor's run: the
 /// drive ends `SeatLost` at the fence, without waiting for that run's stream to end, the callers'
 /// streams end naming the successor the transfer committed, and no later attempt is claimed (the

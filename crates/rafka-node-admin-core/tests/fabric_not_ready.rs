@@ -116,7 +116,7 @@ async fn a_caller_node_workflow_before_the_fabric_first_reaches_ready_for_traffi
 /// its mesh's primary seat. Until the initial fabric has first reached ready-for-traffic that
 /// node.connections.delete is refused `fabric-not-ready`, naming the node; one of a node that holds no
 /// seat is admitted (it moves none).
-/// What must NOT happen: `TakeSeats` sent for a seat whose rows only its holder's scratchpad holds.
+/// What must NOT happen: node.primary.update called for a seat whose rows only its holder's scratchpad holds.
 #[tokio::test]
 async fn a_connections_delete_of_a_seat_holder_before_the_fabric_first_reaches_ready_for_traffic_is_refused_and_one_of_another_node_is_admitted() {
     let r = rig(ScopeStatus::StateSync).await;

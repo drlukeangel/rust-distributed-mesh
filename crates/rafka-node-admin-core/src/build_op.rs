@@ -61,8 +61,9 @@ pub struct BuildDoor {
 pub type BuildSlot = Arc<OnceLock<Arc<BuildDoor>>>;
 
 /// The facts of a Build this admin's own log holds no fact of, read from the incumbent the committed
-/// transfer of its fabric seat names (node-rpc-envelope.md, "TakeSeats": "the caller resubmits the
-/// same `build_id` to N, and N resumes the same attempt as the new fabric-primary"; build.md §5.2:
+/// update of its fabric seat names (node.fabric-primary.update; the approved proposal
+/// node-primary-update-fabric-mesh-and-node-type.md Part C1 step 8: "Only then does the commanding
+/// Build continue", at the new fabric-primary, which resumes the same attempt; build.md §5.2:
 /// "the fabric-primary's claim log reaches every admin through the Build topic and FetchBuildFacts
 /// (`0x1F`)"). The incumbent keeps serving after the seat row, so one read reaches the admin that
 /// accepted the Build; no other admin is asked and nothing is read again.
@@ -297,7 +298,7 @@ impl BuildDoor {
     /// A re-submitted Build this admin's own log holds no fact of: the new seat has not heard it yet
     /// (the Build topic carries the facts apart, and the re-submit outran it). Its facts are read once
     /// from the incumbent the committed transfer of this admin's fabric seat names, which accepted it
-    /// and keeps serving after the seat row (node-rpc-envelope.md, "TakeSeats"), and are absorbed into
+    /// and keeps serving after its row (proposal Part C1 step 6: the holder calls after the row), and are absorbed into
     /// this admin's own log as the Build topic's are (node-rpc-envelope.md, "Build facts": "Facts are
     /// absorbed through the existing Build log"). No Build gossip is authored and nothing is read again.
     ///

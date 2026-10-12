@@ -619,14 +619,17 @@ async fn last_admin_plane(second: Option<NodeStatus>) -> (Arc<ControlPlane>, Arc
     (cp, builds, app)
 }
 
-/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary; R-EL1a point 7):
-/// TakeSeats moves seats inside the holder's mesh only, so a Build that would restart, replace,
-/// delete the connections of, stop or retire the fabric-primary while no other live node-admin of its mesh can take its
-/// seats is refused by name, 422 `last-admin` with `rdm.node_admin.build.reject.via-last-admin`,
-/// before any attempt opens or any executor is picked: nothing is published. The fabric seat leaves
-/// such a mesh only through TakeFabricPrimary inside mesh-leave. A retire of a mesh's only admin
-/// stays refused at compile as `would-leave-mesh-without-admin`. With a second live admin in its mesh
-/// the same restart opens an attempt (its same-mesh successor executes it).
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
+/// no-successor cases", Q7 ruled Luke 2026-10-12: "refused by name, `cannot transfer: no secondary of
+/// type <node_type> in mesh <mesh>`, until a secondary is available ... the workflow that commanded it
+/// (the stop, restart or delete of that node) fails by name with that reason"): the fabric-primary is
+/// mesh1's only live node-admin and mesh2's primary is Ready, so its mesh seat has no secondary. A
+/// Build that would restart, replace, delete the connections of, stop or retire it is refused by name,
+/// 422 `last-admin` with exactly `cannot transfer: no secondary of type node-admin in mesh mesh1` under
+/// `rdm.node_admin.build.reject.via-last-admin`, before any attempt opens or any executor is picked:
+/// nothing is published. A retire of a mesh's only admin stays refused at compile as
+/// `would-leave-mesh-without-admin`. With a second live admin in its mesh the same restart opens an
+/// attempt (its same-mesh successor takes the seats first).
 #[tokio::test]
 async fn a_build_that_would_end_the_fabric_primarys_last_admin_is_refused_by_name_and_opens_nothing() {
     let spans = SpanNames::default();
@@ -635,10 +638,7 @@ async fn a_build_that_would_end_the_fabric_primarys_last_admin_is_refused_by_nam
     let refused = || spans.0.lock().unwrap().iter().filter(|(n, _)| n == "rdm.node_admin.build.reject.via-last-admin").count();
     let last_admin = |action: &str, s: StatusCode, v: &Value| {
         assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("last-admin")), "{action}: {v}");
-        assert!(
-            v["detail"].as_str().is_some_and(|d| d.contains("mesh1.admin.1") && d.contains("mesh `mesh1`") && d.contains("mesh-leave")),
-            "{action}: the refusal names the node, its mesh and the one way the seat leaves it: {v}"
-        );
+        assert_eq!(v["detail"].as_str(), Some("cannot transfer: no secondary of type node-admin in mesh mesh1"), "{action}: Q7's exact text: {v}");
     };
 
     // mesh1's only admin is the fabric-primary.

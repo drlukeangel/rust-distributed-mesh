@@ -445,7 +445,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     // (node-decommission.md 1, node-stop.md 6).
     let again: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .filter(|sp| s(&sp["attributes"]["build_id"]) == build && ["SeatTransfer", "DeleteConnections", "StopNode", "AwaitNodeLeft"].iter().any(|st| sp["attributes"]["step"] == *st))
+        .filter(|sp| s(&sp["attributes"]["build_id"]) == build && ["DeleteConnections", "StopNode", "AwaitNodeLeft"].iter().any(|st| sp["attributes"]["step"] == *st))
         .collect();
     assert!(again.is_empty(), "the delete of a stopped birth composes no stop again: {again:?}");
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == NODE).collect();
@@ -487,9 +487,10 @@ async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
 /// 1. The fabric-primary commands P (`seat.update.via-primary-update` at the fabric-primary, outcome
 ///    `updated`, successor NA2).
 /// 2. P pre-checks its successor NA2 (mesh2's other node-admin), publishes "primary updating"
-///    (`via-announce-primary-updating` at P, sent on the backbone and its mesh channel), cuts off and
-///    drains its seat's writes (`via-writes-drained`), and writes the ONE committed row itself
-///    (`seat.update.via-seat-row-written` at P, holder P, successor NA2, the mesh seat's next epoch).
+///    (`via-announce-primary-updating` at P, sent on the backbone and its mesh channel), cuts off its
+///    seat's writes with every issued one finished (`via-writes-cut-off`), and writes the ONE committed
+///    row itself (`seat.update.via-seat-row-written` at P, holder P, successor NA2, the mesh seat's
+///    next epoch).
 /// 3. P calls node.primary.update on NA2 carrying the row; NA2 installs from the row and answers
 ///    node.primary.updated (`seat.update.via-primary-updated` at NA2, under P's update) and publishes
 ///    "primary updated" (`via-announce-primary-updated` at NA2), which every other node of both meshes
@@ -539,7 +540,7 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
     assert!(attr(&row, "holder").contains(&p_id) && attr(&row, "successor").contains(&na2_id) && !attr(&row, "mesh_epoch").is_empty() && attr(&row, "fabric_epoch").is_empty(), "P, mesh2's writer, wrote the one committed row moving its mesh seat to NA2: {row:#?}");
     let updating = one("rdm.mesh.seat.update.via-announce-primary-updating", &|sp| attr(sp, "node") == p_name);
     assert_eq!((attr(&updating, "seats").contains(&na2_id), attr(&updating, "backbone"), attr(&updating, "mesh_channel")), (true, "sent".to_string(), "sent".to_string()), "{updating:#?}");
-    let drained = one("rdm.node_admin.seat.update.via-writes-drained", &|sp| attr(sp, "node") == p_name);
+    let cut_off = one("rdm.node_admin.seat.update.via-writes-cut-off", &|sp| attr(sp, "node") == p_name);
     let installed_at_na2 = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| attr(sp, "node") == na2_name);
     assert_eq!((attr(&installed_at_na2, "replay"), attr(&installed_at_na2, "holder").contains(&p_id), attr(&installed_at_na2, "successor").contains(&na2_id)), ("false".to_string(), true, true), "NA2 installed from P's row and answered node.primary.updated: {installed_at_na2:#?}");
     assert!(descends_from(&spans, &installed_at_na2, &upd), "NA2 installs under P's node.primary.update call: {installed_at_na2:#?}");
@@ -548,8 +549,8 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
     let installed = one("rdm.node_admin.seat.update.via-seats-installed", &|sp| attr(sp, "node") == fp);
     assert!(attr(&installed, "successor").contains(&na2_id), "{installed:#?}");
     // The order of the sequence (C1 steps 3-7).
-    assert!(start_ns(&updating) <= start_ns(&drained), "P said the primary is updating before its cut-off");
-    assert!(end_ns(&drained) <= start_ns(&row), "P drained its writes before it wrote the row");
+    assert!(start_ns(&updating) <= start_ns(&cut_off), "P said the primary is updating before its cut-off");
+    assert!(end_ns(&cut_off) <= start_ns(&row), "P cut off its writes before it wrote the row");
     assert!(end_ns(&row) <= start_ns(&installed_at_na2), "NA2 installed only after P's row");
     assert!(end_ns(&installed_at_na2) <= start_ns(&announced), "NA2 said the primary updated only after it installed");
     // Every other node of both meshes heard "primary updated" naming NA2.
@@ -591,7 +592,8 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     let target: PathName = "mesh2.admin.1".parse().unwrap();
     let refused = nodes.stop(&target).await.err().expect("the stop is refused");
     let rafka_node_admin_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the stop ends Rejected: {refused:?}") };
-    assert_eq!((reason.as_str(), detail.as_str()), ("last-admin", "cannot transfer: no secondary of type node-admin in mesh mesh2"), "{refused:?}");
+    // The typed carrier names the reason before the refusal's own text (build_stream.rs).
+    assert_eq!((reason.as_str(), detail.strip_prefix("last-admin: ")), ("last-admin", Some("cannot transfer: no secondary of type node-admin in mesh mesh2")), "{refused:?}");
     for mesh in ["mesh1", "mesh2"] {
         for now in estate.mesh_node_views(mesh).await {
             let was = before.iter().find(|n| n.name == now.name).unwrap_or_else(|| panic!("{} was there before", now.name));

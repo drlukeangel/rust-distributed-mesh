@@ -229,9 +229,10 @@ impl SeatSource {
 
 /// The gate of the fabric-primary's mutations: one lock, held from the decision through its
 /// durable commit and its broadcast, and the committed fabric seat record read under it. A seat
-/// commit on this admin (the handover door's, TakeSeats') holds the same lock across the record's
-/// move, so a decision is either wholly committed before the record moves or refused by it. The
-/// record is the fence (node-rpc-envelope.md TakeSeats): nothing else is written to fence the log.
+/// commit on this admin (node.primary.update's row at its holder, the install at its successor) holds
+/// the same lock across the record's move, so a decision is either wholly committed before the record
+/// moves or refused by it. The record is the target every decision is judged against (proposal
+/// node-primary-update Part C1 step 5): nothing else is written for the log.
 pub struct Authority {
     node: String,
     decisions: Arc<tokio::sync::Mutex<()>>,
@@ -740,9 +741,9 @@ mod tests {
         assert_eq!((named.node_id, named.incarnation), (op.node_id, op.incarnation), "the receipt names the exact old birth");
     }
 
-    /// CONTRACT (node-rpc-envelope.md TakeSeats: "The row is the fence: P's execution authority ends
-    /// at the row's epoch, Build dispatch from the old seat is refused with Fenced, and no separate
-    /// fence write precedes or follows it"): the Build log reads its authority from the committed
+    /// CONTRACT (proposal node-primary-update Part C1 step 5: "This is the commit. From this write the
+    /// holder is no longer primary"; Build dispatch from the old seat is refused `Fenced`, and nothing
+    /// else is written): the Build log reads its authority from the committed
     /// fabric seat record. Once the record names another live birth, every decision is refused by
     /// name, naming that birth's path.name from the digest book even when the projected view does not
     /// hold it yet, and a wait on the fence resolves; no fence write is made. A record naming a birth

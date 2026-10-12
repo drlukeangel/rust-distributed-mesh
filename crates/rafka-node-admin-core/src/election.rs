@@ -10,7 +10,7 @@
 //! - A holder that lives keeps its seat. A lower NodeId never displaces it. Lives means the record's
 //!   exact birth is in the view, not replaced by a later birth of its NodeId, and not proven gone,
 //!   whatever its status: a `Draining`, `Leaving` or `Restarting` holder keeps the seat until its
-//!   explicit yield (a new holder record, SeatedTogether) is held (R-EL1). Silent (`PendingReconnect`),
+//!   explicit yield (a new holder record, PrimaryUpdated) is held (R-EL1). Silent (`PendingReconnect`),
 //!   an observer-inferred `Dead` and an unheard route are NOT proof: the holder keeps the seat.
 //! - A holder whose record names a birth this view has not heard keeps its seat vacant for it.
 //! - A holder that yields, or whose exact birth is proven gone, hands the seat to its own mesh:
@@ -191,11 +191,10 @@ fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String,
     lowest_primary(Some(h.mesh.as_str()))
 }
 
-/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it (the
-/// explicit committed handover of fabric-node-lifecycle-elections.md section 4.4): the departing
-/// mesh holds no candidate, and the fabric record is the one the hand-over vacates, so the lowest
-/// Ready mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh
-/// primary: the handover is blocked.
+/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it (proposal Part
+/// C2 search step 2: "the lowest NodeId among the other ReadyForTraffic mesh-primaries"): the excluded
+/// mesh holds no candidate, and the fabric record is the one the update vacates, so the lowest Ready
+/// mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh primary.
 pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) -> Option<Node> {
     let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| n.mesh != mesh).cloned().collect();
     let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), lost: inc.lost.clone() };
@@ -213,20 +212,76 @@ pub fn cohort_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Opti
     lowest_ready(nodes, &members, inc).map(|i| nodes[i].clone())
 }
 
-/// The fabric-primary a yielding holder hands the fabric seat to (R-MT1, node.fabric-primary.update;
-/// fabric-node-lifecycle-elections.md §4.3: "The fabric seat stays in its holder's mesh: when its holder
-/// yields ... the lowest ReadyForTraffic node-admin NodeId of the same mesh fills it ... It leaves that
-/// mesh only when every node-admin birth of the mesh is proven gone or has left; then the lowest NodeId
-/// among the remaining mesh primaries wins"). The holder's mesh seat moves first (its successor is then
-/// that mesh's primary, a fabric candidate); its own mesh's successor otherwise; another mesh's lowest
-/// Ready primary only when no node-admin of the holder's mesh can take it.
-pub fn fabric_successor_yielding(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Option<Node> {
-    let ready = |n: &&Node| n.status == NodeStatus::ReadyForTraffic && !inc.is_lost(n);
-    if let Some(p) = nodes.iter().filter(ready).find(|n| n.mesh == holder.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary && n.node_id != holder.node_id) {
-        return Some(p.clone());
+/// The node type of the node-admin cohort as the no-successor refusal names it (proposal Part A1:
+/// "`node-admin` is the one value RDM gives meaning to"); every node carries its own `node_type` from
+/// e12.s41, and the cohort is read from the parsed kind until then.
+pub const NODE_ADMIN_TYPE: &str = "node-admin";
+
+/// Which seats a commanded node.primary.update moves from its holder (the approved proposal
+/// node-primary-update-fabric-mesh-and-node-type.md, Part C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moving {
+    /// node.primary.update of the holder's mesh-primary seat.
+    MeshSeat,
+    /// The holder holds both seats and both move in one row to its same-mesh successor (Q1: "the one
+    /// row of C1 commits both seats to NA2 at their next epochs").
+    BothSeats,
+    /// node.fabric-primary.update with the holder's own mesh excluded (C2 search step 2, mesh.delete):
+    /// the mesh seat does not move.
+    FabricSeatOutside,
+}
+
+impl Moving {
+    /// The seats as a span names them.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::MeshSeat => "mesh-primary",
+            Self::BothSeats => "mesh-primary+fabric-primary",
+            Self::FabricSeatOutside => "fabric-primary",
+        }
     }
+    /// The mesh-primary seat moves.
+    pub fn mesh_seat(self) -> bool {
+        matches!(self, Self::MeshSeat | Self::BothSeats)
+    }
+    /// The fabric-primary seat moves.
+    pub fn fabric_seat(self) -> bool {
+        matches!(self, Self::BothSeats | Self::FabricSeatOutside)
+    }
+}
+
+/// Q7's refusal of a cohort with no other node of its type (Luke 2026-10-12): `cannot transfer: no
+/// secondary of type <node_type> in mesh <mesh>`.
+pub fn no_secondary(node_type: &str, mesh: &str) -> String {
+    format!("cannot transfer: no secondary of type {node_type} in mesh {mesh}")
+}
+
+/// C2 search step 3's refusal of the fabric seat, naming both searches: `cannot transfer fabric seat:
+/// no other node-admin ReadyForTraffic in mesh <mesh>, no other mesh-primary ReadyForTraffic`.
+pub fn no_fabric_successor(mesh: &str) -> String {
+    format!("cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh {mesh}, no other mesh-primary ReadyForTraffic")
+}
+
+/// The successor the writer's pre-check names for a commanded transfer of `holder`'s seats (proposal
+/// Part C1 step 2: "the cohort election over the holder's cohort with the holder excluded names a
+/// ReadyForTraffic successor"; C2 "Successor search for the commanded transfer": "1. the holder's own
+/// mesh: the lowest ReadyForTraffic node-admin NodeId there ... 2. only when that mesh has none, or it
+/// is the departing mesh under mesh.delete: the lowest NodeId among the other ReadyForTraffic
+/// mesh-primaries; 3. neither found: refused by name"). `Err` is the refusal's exact text (Q7): the
+/// mesh seat with no secondary names its type and mesh; the fabric seat with neither search finding
+/// one names both. A holder of both seats whose mesh has no secondary while another mesh's primary is
+/// Ready cannot move its mesh seat: Q7's mesh text. The ordinary election is untouched by this search.
+pub fn commanded_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, moving: Moving) -> Result<Node, String> {
     let admin = Node { kind: NodeKind::NodeAdmin, ..holder.clone() };
-    cohort_successor(nodes, inc, &admin).or_else(|| fabric_successor_excluding(nodes, inc, &holder.mesh))
+    match moving {
+        Moving::MeshSeat => cohort_successor(nodes, inc, &admin).ok_or_else(|| no_secondary(NODE_ADMIN_TYPE, &holder.mesh)),
+        Moving::BothSeats => match cohort_successor(nodes, inc, &admin) {
+            Some(n) => Ok(n),
+            None if fabric_successor_excluding(nodes, inc, &holder.mesh).is_none() => Err(no_fabric_successor(&holder.mesh)),
+            None => Err(no_secondary(NODE_ADMIN_TYPE, &holder.mesh)),
+        },
+        Moving::FabricSeatOutside => fabric_successor_excluding(nodes, inc, &holder.mesh).ok_or_else(|| no_fabric_successor(&holder.mesh)),
+    }
 }
 
 /// A seat's holder as a span names it.

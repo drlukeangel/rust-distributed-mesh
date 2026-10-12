@@ -924,17 +924,16 @@ fn every_pipeline_step_is_named_by_the_client() {
     // Its stop half done, the restart is not over: the fold stands at the start.
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
     assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
-    // The SeatTransfer step runs only for a node-admin target (it moves the seats it holds before its
-    // connections are deleted or it stops; the pipeline decides on the target's kind): a node-admin's workflow has the
-    // row and its receipts fold to the same events; an rpc node's workflow has no such row.
+    // A node-admin's workflow is any node's: its seats move by node.primary.update before the operation
+    // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
+    // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
     let admin: rafka_mesh_entity::PathName = "mesh1.admin.2".parse().unwrap();
-    let admin_retire: Vec<&str> = ["NodeDeleting", "SeatTransfer"].into_iter().chain(retire.iter().copied().skip(1)).collect();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", admin_retire), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(admin.clone()), &view("stop-node:mesh1.admin.2", vec!["SeatTransfer", "StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(admin.clone()), &view("stop-node:mesh1.admin.2", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
     let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(name.clone()), &view("stop-node:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
@@ -942,25 +941,14 @@ fn every_pipeline_step_is_named_by_the_client() {
     // process is not stopped and nothing is deleted.
     let f = rafka_node_admin_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view("node.connections.delete:mesh1.rpc.3", vec!["DeleteConnections", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
-    let f = rafka_node_admin_client::fold(&WorkflowKind::DeleteConnections(admin.clone()), &view("node.connections.delete:mesh1.admin.2", vec!["SeatTransfer", "DeleteConnections", "Complete"]), 1).unwrap();
-    assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
-    // A node-admin whose transfer has not run yet: the fold stops at it, and a resume starts there.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!((f.frames.len(), f.next.as_ref().map(|(_, s)| s.as_str())), (0, Some("SeatTransfer")));
+    // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
     let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some(("retire-node".to_string(), "SeatTransfer".to_string())), "nothing after NodeDeleting is held: the workflow stands at SeatTransfer");
-    // A node-admin's SeatTransfer row is a step of its workflow whatever comes after: receipts past it
-    // with none for it fold no further than it (nothing is inferred from its absence).
-    let skipped: Vec<&str> = ["NodeDeleting"].into_iter().chain(retire.iter().copied().skip(1)).collect();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", skipped), 1).unwrap();
-    assert_eq!((f.frames.len(), f.next.as_ref().map(|(_, s)| s.as_str())), (0, Some("SeatTransfer")), "{:?}", f.frames);
-    // An rpc node's workflow has no SeatTransfer row: its delete with only NodeDeleting held resumes
-    // at StopNode, and a SeatTransfer receipt under it is refused by name, never folded.
-    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!(r.from, Some(("retire-node".to_string(), "StopNode".to_string())));
+    // A SeatTransfer receipt is a retired step: refused by name under any target, never folded.
     for (kind, op, steps) in [
         (WorkflowKind::Delete(name.clone()), "retire-node:mesh1.rpc.3", vec!["NodeDeleting", "SeatTransfer"]),
         (WorkflowKind::Stop(name.clone()), "stop-node:mesh1.rpc.3", vec!["SeatTransfer"]),
+        (WorkflowKind::Stop(admin.clone()), "stop-node:mesh1.admin.2", vec!["SeatTransfer"]),
     ] {
         assert_eq!(rafka_node_admin_client::fold(&kind, &view(op, steps), 1).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.into(), step: "SeatTransfer".into() }, "{kind:?}");
     }

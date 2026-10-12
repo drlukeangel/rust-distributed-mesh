@@ -22,7 +22,7 @@
 use crate::names::{NodeEvent, NodeOp, NodeStep};
 use crate::build_stream::{BuildFrame, BuildReceipts, BuildStream};
 use crate::{Accepted, BuildId, BuildView, CallEnd, StepView};
-use rafka_mesh_entity::{NodeKind, PathName};
+use rafka_mesh_entity::PathName;
 use rafka_node_rpc_contract::build::StepResult;
 
 /// A frame of a workflow's reply stream.
@@ -103,14 +103,6 @@ const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, e
     Row { operation, step, node_step, events, terminal }
 }
 
-/// The SeatTransfer row under `operation`, a row of the workflow only when `target` is a node-admin:
-/// the pipeline moves a node-admin target's seats to the executor by TakeSeats before it drains or
-/// stops (`seat_transfer_step`, decided by the target's kind); any other target has no such step,
-/// and so its workflow has no such row.
-fn seat_transfer_row(operation: &'static str, node_step: NodeStep, target: &PathName) -> Option<Row> {
-    (target.kind == NodeKind::NodeAdmin).then(|| row(operation, "SeatTransfer", node_step, &[], false))
-}
-
 /// The create leg, in pipeline order, under the operation prefix `op`; `last` is what the
 /// `Complete` receipt of that operation announces.
 macro_rules! create_rows {
@@ -147,16 +139,16 @@ macro_rules! start_rows {
 }
 
 /// The shutdown leg of `target` under `operation`: its stop call, whose one reply carries its
-/// `node.connections.delete { All }` receipt, to its `stopped` (the stop half of
-/// a delete under `retire-node`, the stop of a restart under `restart-node`); its SeatTransfer row
-/// exists for a node-admin target alone.
-fn shutdown_rows(operation: &'static str, target: &PathName) -> Vec<Row> {
-    let mut rows: Vec<Row> = seat_transfer_row(operation, NodeStep::Stop, target).into_iter().collect();
-    rows.extend([
+/// `node.connections.delete { All }` receipt, to its `stopped` (the stop half of a delete under
+/// `retire-node`, the stop of a restart under `restart-node`). A seat holder's seats move by
+/// node.primary.update before the operation is dispatched, never as a step of it (the approved
+/// proposal node-primary-update-fabric-mesh-and-node-type.md, Part D: the SeatTransfer step goes), so
+/// a node-admin target's rows are any target's.
+fn shutdown_rows(operation: &'static str) -> Vec<Row> {
+    vec![
         row(operation, "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
         row(operation, "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
-    ]);
-    rows
+    ]
 }
 
 impl WorkflowKind {
@@ -178,37 +170,29 @@ impl WorkflowKind {
             Self::Create => create_rows!("create-node", &[NodeEvent::Created]).into(),
             // The stop's one call deletes the node's connections, cuts its transport and answers
             // `stopped`: its receipts announce both events, and no runtime exits.
-            Self::Stop(n) => {
-                let mut rows: Vec<Row> = seat_transfer_row("stop-node", NodeStep::Stop, n).into_iter().collect();
-                rows.extend([
-                    row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
-                    row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
-                    row("stop-node", "Complete", NodeStep::Stop, &[], true),
-                ]);
-                rows
-            }
+            Self::Stop(_) => vec![
+                row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
+                row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
+                row("stop-node", "Complete", NodeStep::Stop, &[], true),
+            ],
             Self::Start(_) => start_rows!("start-node", &[], NodeStep::Start).into(),
             // A restart is one operation: the birth is held, drains and stops (it parks), then the
             // same process starts, and its one `Complete` ends it.
-            Self::Restart(n) => {
+            Self::Restart(_) => {
                 let mut rows = vec![row("restart-node", "NodeRestarting", NodeStep::Restart, &[NodeEvent::Restarting], false)];
-                rows.extend(shutdown_rows("restart-node", n));
+                rows.extend(shutdown_rows("restart-node"));
                 rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
             // A standalone node.connections.delete { All }: one call to the exact birth through its
             // mesh-primary, and its `Complete`. Nothing stops the process and nothing is deleted.
-            Self::DeleteConnections(n) => {
-                let mut rows: Vec<Row> = seat_transfer_row("node.connections.delete", NodeStep::ConnectionsDelete, n).into_iter().collect();
-                rows.extend([
-                    row("node.connections.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
-                    row("node.connections.delete", "Complete", NodeStep::ConnectionsDelete, &[], true),
-                ]);
-                rows
-            }
-            Self::Delete(n) => {
+            Self::DeleteConnections(_) => vec![
+                row("node.connections.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
+                row("node.connections.delete", "Complete", NodeStep::ConnectionsDelete, &[], true),
+            ],
+            Self::Delete(_) => {
                 let mut rows = vec![row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false)];
-                rows.extend(shutdown_rows("retire-node", n));
+                rows.extend(shutdown_rows("retire-node"));
                 rows.extend([
                     row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
                     row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),

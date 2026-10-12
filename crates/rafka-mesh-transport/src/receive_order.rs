@@ -11,7 +11,13 @@
 //! - the lifecycle facts `NodeDeleting`, `NodeRestarting` and `NodeStopped`: `topology_version`,
 //!   per publisher and subject mesh, for that is whose counter the version is (the publisher's
 //!   version of the subject's mesh, [`crate::membership::Frame::NodeStopped`]); a successor publisher
-//!   counts from 1 again.
+//!   counts from 1 again;
+//! - "primary updating" and "primary updated" (`PrimaryUpdating`, `PrimaryUpdated`): each seat's
+//!   committed epoch, per cohort, already in the body (the approved proposal
+//!   node-primary-update-fabric-mesh-and-node-type.md Part C1 step 7: "A late 'updating' never undoes
+//!   an 'updated': the committed epoch, per cohort, is these two frames' order key"). At one epoch the
+//!   "updated" is the later: a late "updating" of that epoch is ignored. A frame naming both seats is
+//!   ignored when either cohort holds a newer key, and then neither key moves.
 //!
 //! Every other frame carries none of these keys and is taken as it arrives; its handler applies the
 //! data rules it already has (a seat record's epoch, a status's `changed_at_rafka_ms`, a lifecycle
@@ -34,6 +40,8 @@ enum Source {
     Mesh(String),
     /// One publisher's lifecycle facts of one mesh.
     Lifecycle { publisher: String, mesh: String },
+    /// One seat's cohort: the mesh-primary seat of a mesh, or the fabric seat (`mesh` empty).
+    Cohort { seat: &'static str, mesh: String },
 }
 
 impl std::fmt::Display for Source {
@@ -42,6 +50,8 @@ impl std::fmt::Display for Source {
             Source::Birth { node_id, incarnation } => write!(f, "{node_id}/{incarnation}"),
             Source::Mesh(mesh) => f.write_str(mesh),
             Source::Lifecycle { publisher, mesh } => write!(f, "{publisher} {mesh}"),
+            Source::Cohort { seat, mesh } if mesh.is_empty() => f.write_str(seat),
+            Source::Cohort { seat, mesh } => write!(f, "{seat} {mesh}"),
         }
     }
 }
@@ -52,6 +62,8 @@ enum Key {
     DigestSeq(u64),
     Publication { published_at_rafka_ms: u64, topology_version: u64 },
     TopologyVersion(u64),
+    /// A seat update's committed epoch; at one epoch the "updated" is after the "updating".
+    SeatEpoch { epoch: u64, updated: bool },
 }
 
 impl std::fmt::Display for Key {
@@ -60,7 +72,23 @@ impl std::fmt::Display for Key {
             Key::DigestSeq(seq) => write!(f, "digest_seq={seq}"),
             Key::Publication { published_at_rafka_ms, topology_version } => write!(f, "published_at_rafka_ms={published_at_rafka_ms} topology_version={topology_version}"),
             Key::TopologyVersion(v) => write!(f, "topology_version={v}"),
+            Key::SeatEpoch { epoch, updated } => write!(f, "epoch={epoch} {}", if *updated { "updated" } else { "updating" }),
         }
+    }
+}
+
+/// The frame's name in spans and each source with its order key; empty for a frame with no order key.
+fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
+    let seats = |name: &'static str, seats: &[rafka_mesh_entity::seat::transfer::CommittedSeat], updated: bool| {
+        (name, seats.iter().map(|c| (Source::Cohort { seat: c.seat.name(), mesh: c.mesh_key().unwrap_or_default().to_string() }, Key::SeatEpoch { epoch: c.epoch, updated })).collect())
+    };
+    match f {
+        Frame::PrimaryUpdating { seats: s, .. } => seats("primary-updating", s, false),
+        Frame::PrimaryUpdated { seats: s, .. } => seats("primary-updated", s, true),
+        other => match order_of(other) {
+            Some((name, source, key)) => (name, vec![(source, key)]),
+            None => ("", Vec::new()),
+        },
     }
 }
 
@@ -104,15 +132,19 @@ impl ReceiveOrder {
     /// Whether `f` is taken: `Err` names the frame ignored, its source and both keys. A taken frame's
     /// key is held when it is newer than the held one.
     pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
-        let Some((frame, source, key)) = order_of(f) else { return Ok(()) };
-        match self.newest.get(&source) {
-            Some(held) if key < *held => Err(Earlier { frame, source: source.to_string(), held: held.to_string(), offered: key.to_string() }),
-            Some(held) if key == *held => Ok(()),
-            _ => {
-                self.newest.insert(source, key);
-                Ok(())
+        let (frame, keys) = orders_of(f);
+        // Every key is judged before any is held: a frame ignored for one of its sources moves none.
+        for (source, key) in &keys {
+            if let Some(held) = self.newest.get(source).filter(|held| key < *held) {
+                return Err(Earlier { frame, source: source.to_string(), held: held.to_string(), offered: key.to_string() });
             }
         }
+        for (source, key) in keys {
+            if self.newest.get(&source).is_none_or(|held| key > *held) {
+                self.newest.insert(source, key);
+            }
+        }
+        Ok(())
     }
 }
 

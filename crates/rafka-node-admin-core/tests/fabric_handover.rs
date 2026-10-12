@@ -1,8 +1,8 @@
 //! node.primary.update and node.fabric-primary.update (the approved proposal
 //! rafka-v2 docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md, Part C; R-MT1) between
 //! in-process node-admins over real Node RPC on op `0x21`. The holder of a seat is the row writer of
-//! its node-admin cohort: it pre-checks its successor, says "primary updating", cuts off and drains its
-//! seat's writes, writes the ONE committed row, then calls `PrimaryUpdate` on the successor, which
+//! its node-admin cohort: it pre-checks its successor, says "primary updating", cuts off its seat's
+//! writes (every issued one finished), writes the ONE committed row, then calls `PrimaryUpdate` on the successor, which
 //! installs from the row and answers `node.primary.updated`. Each cell reads the spans the update
 //! emitted, in the order they happened.
 // @feature: node-lifecycle
@@ -63,11 +63,8 @@ impl Spans {
     }
 }
 
-const CALL: &str = "rdm.node_rpc.request.update.via-call";
-/// The holder's whole update (C1 steps 2-7 at the holder).
-const UPDATE: &str = "rdm.node_admin.seat.update.via-primary-updating";
-/// The holder's cut-off and drain (C1 step 4).
-const DRAINED: &str = "rdm.node_admin.seat.update.via-writes-drained";
+/// The holder's write cut-off, every issued write finished (C1 step 4).
+const CUT_OFF: &str = "rdm.node_admin.seat.update.via-writes-cut-off";
 /// The holder's one committed row (C1 step 5).
 const ROW_WRITTEN: &str = "rdm.node_admin.seat.update.via-seat-row-written";
 /// The successor installed from the row and answered node.primary.updated (C1 step 6).
@@ -89,19 +86,18 @@ fn view(nodes: Vec<Node>) -> Topology {
 
 struct Admin {
     door: Arc<HandoverDoor>,
-    slot: HandoverSlot,
     client: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
     resolved: ResolvedNode,
     storage: Arc<dyn FabricStorage>,
     /// Every write cut-off the holder's SeatTransfer step applied, in order.
     cut_offs: Arc<Mutex<Vec<WriteCutOff>>>,
-    /// Holds the cut-off's drain open while `false`: a write still issued when the step cuts off.
-    drained: tokio::sync::watch::Sender<bool>,
+    /// Holds the cut-off open while `false`: a write still issued when the step cuts off.
+    writes_finish: tokio::sync::watch::Sender<bool>,
     /// Holds the admin's view projection while `false`: an admin that wrote or took a seat and has
     /// not answered yet (what a process that dies there leaves).
     view_open: tokio::sync::watch::Sender<bool>,
-    /// The admin's Node RPC server: a cell drains it as the admin's DrainNode does.
+    /// The admin's Node RPC server: a cell stops it taking new calls as node.connections.delete does.
     server: rafka_node_rpc::NodeRpcServer,
     /// The admin's `FetchBuildFacts` door (op `0x1F`): `NotReady` until a cell fills it.
     facts_slot: BuildFactsSlot,
@@ -214,7 +210,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
     let cut_offs: Arc<Mutex<Vec<WriteCutOff>>> = Arc::default();
-    let (drained, drain_gate) = tokio::sync::watch::channel(true);
+    let (writes_finish, writes_gate) = tokio::sync::watch::channel(true);
     let (view_open, view_gate) = tokio::sync::watch::channel(true);
     // The cell's view is set by hand, not projected from digests: the projection re-runs the one
     // election over its members with the seat records this admin holds now, as the admin's own
@@ -249,7 +245,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
             let cut_offs = cut_offs.clone();
             Arc::new(move |c: WriteCutOff| {
                 cut_offs.lock().unwrap().push(c);
-                let mut gate = drain_gate.clone();
+                let mut gate = writes_gate.clone();
                 Box::pin(async move {
                     let _ = gate.wait_for(|open| *open).await;
                 })
@@ -259,7 +255,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, slot, client, resolver, resolved, storage, cut_offs, drained, view_open, server, facts_slot, build_slot, _router: router }, ep)
+    (Admin { door, client, resolver, resolved, storage, cut_offs, writes_finish, view_open, server, facts_slot, build_slot, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -640,10 +636,11 @@ fn refusals(spans: &Spans) -> Vec<(String, String, String)> {
 /// (search step 1), the one row of C1 commits both seats to NA2 at their next epochs, which makes NA2
 /// mesh-primary and fabric-primary at the same boundary"): P, the fabric-primary, holds both seats and
 /// moves them by one node.primary.update to N, its pre-check's successor. In order: P says "primary
-/// updating", P cuts off and drains, P writes ONE row moving both seats to N (mesh1 4, fabric 8), N
+/// updating", P cuts off its writes, P writes ONE row moving both seats to N (mesh1 4, fabric 8), N
 /// installs from the row and answers node.primary.updated, N says "primary updated". P and N hold both
 /// committed records; M, a third admin that heard nothing, reads the one row from the store root and
-/// holds both too. P's moved fabric record fences its Build log naming N. What must NOT happen: two
+/// holds both too. P's moved fabric record is the target its Build log is judged against, naming N.
+/// What must NOT happen: two
 /// rows, a row written by N, a seat moved with no row, or a holder record naming P after the update.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
@@ -667,14 +664,14 @@ async fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
     let read = rafka_node_admin_core::fabric_handover::hydrate_seats(&*f.m.storage, f.m.door.membership.seats()).await.expect("M reads the store root");
     assert_eq!(read, 1, "one row read");
     assert_eq!((f.m.door.membership.seats().mesh("mesh1"), f.m.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "M holds both seats the one row commits");
-    // The moved record is P's fence: read for P's birth, it names N.
+    // The moved record is the target P's Build log is judged against: read for P's birth, it names N.
     let p_birth = (p_node.node_id.clone(), p_node.incarnation_id.clone().unwrap());
     let view = f.p.door.topology.read().await.clone();
-    let fence = rafka_node_admin_core::seat_watch::fabric_seat_record(f.p.door.membership.seats().fabric().as_ref(), &p_birth, &Default::default(), |id| view.own(id).map(|n| n.name.to_string()));
-    assert!(matches!(&fence, rafka_node_admin_core::fabric_builds::SeatRecord::Moved { to: Some(to), .. } if to == "mesh1.admin.2"), "P's seat record fences its Build log naming N: {fence:?}");
+    let target = rafka_node_admin_core::seat_watch::fabric_seat_record(f.p.door.membership.seats().fabric().as_ref(), &p_birth, &Default::default(), |id| view.own(id).map(|n| n.name.to_string()));
+    assert!(matches!(&target, rafka_node_admin_core::fabric_builds::SeatRecord::Moved { to: Some(to), .. } if to == "mesh1.admin.2"), "P's seat record names N to its Build log: {target:?}");
     let at = |n: &str| spans.position(n).unwrap_or_else(|| panic!("no {n} span among {:?}", spans.names()));
-    assert!(at(ANNOUNCE_UPDATING) < at(DRAINED), "P says the primary is updating before its cut-off");
-    assert!(at(DRAINED) < at(ROW_WRITTEN), "P drains before it writes the row");
+    assert!(at(ANNOUNCE_UPDATING) < at(CUT_OFF), "P says the primary is updating before its cut-off");
+    assert!(at(CUT_OFF) < at(ROW_WRITTEN), "P cuts off its writes before it writes the row");
     assert!(at(ROW_WRITTEN) < at(UPDATED), "N installs only after P's row");
     assert!(at(UPDATED) < at(ANNOUNCE_UPDATED), "N says the primary updated once it installed");
     let written = spans.named(ROW_WRITTEN);
@@ -690,39 +687,39 @@ async fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
 
 /// CONTRACT (proposal Part C1 step 4, R14 item 4: "NA1 sets its write cut-off and drains every store
 /// write already issued"; step 5: "The writer writes the one seat row"): the fabric-primary X commands
-/// P; while P's drain is held open (a write still on the disk) no seat row exists and X's command is
-/// unanswered; once it drains, P writes the one row and N's node.primary.updated is X's answer. What
+/// P; while P's cut-off is held open (a write still on the disk) no seat row exists and X's command is
+/// unanswered; once the write finished, P writes the one row and N's node.primary.updated is X's answer. What
 /// must NOT happen: the seat row written while an old-seat write is still issued, or a commit with no
 /// cut-off.
 #[test]
-fn the_holder_drains_its_seat_writes_before_it_writes_the_seat_row() {
+fn the_holder_cuts_off_its_seat_writes_before_it_writes_the_seat_row() {
     let cap = crate::mesh_leave_resume::capture();
-    let op = "drain-node:mesh1.admin.1";
+    let op = "stop-node:mesh1.admin.1";
     let trace_id = cap.run(async {
-        let root = tracing::info_span!("rdm.test.seat.update.via-primary-update-drain");
+        let root = tracing::info_span!("rdm.test.seat.update.via-primary-update-cut-off");
         let trace_id = crate::mesh_leave_resume::trace_id(&root);
-        tracing::Instrument::instrument(the_holder_drains(op), root).await;
+        tracing::Instrument::instrument(the_holder_cuts_off(op), root).await;
         trace_id
     });
     println!("trace_id={trace_id}");
     let spans = cap.spans();
     let ours = |name: &str| spans.iter().filter(|s| s["name"] == name && s["attributes"]["operation"] == op).collect::<Vec<_>>();
-    let drained = ours(DRAINED);
-    assert_eq!(drained.len(), 1, "one drain span for the update: {:?}", spans.iter().map(|s| s["name"].clone()).collect::<Vec<_>>());
-    assert_eq!(drained[0]["attributes"]["fabric_seat"], "false");
+    let cut_off = ours(CUT_OFF);
+    assert_eq!(cut_off.len(), 1, "one cut-off span for the update: {:?}", spans.iter().map(|s| s["name"].clone()).collect::<Vec<_>>());
+    assert_eq!(cut_off[0]["attributes"]["fabric_seat"], "false");
     let written = ours(ROW_WRITTEN);
     assert_eq!(written.len(), 1, "one row for the update");
     assert_eq!(written[0]["attributes"]["node"], "mesh1.admin.1", "the holder writes the row");
     let installed = ours(UPDATED);
     assert_eq!(installed.len(), 1, "one install at the successor");
-    for s in [drained[0], written[0], installed[0]] {
-        assert_eq!(s["trace_id"].as_str(), Some(trace_id.as_str()), "the holder's drain and row and the successor's install are the cell's own story: {s:?}");
+    for s in [cut_off[0], written[0], installed[0]] {
+        assert_eq!(s["trace_id"].as_str(), Some(trace_id.as_str()), "the holder's cut-off and row and the successor's install are the cell's own story: {s:?}");
     }
 }
 
-async fn the_holder_drains(op: &'static str) {
+async fn the_holder_cuts_off(op: &'static str) {
     let f = commanded_fabric().await;
-    f.p.drained.send_replace(false);
+    f.p.writes_finish.send_replace(false);
     let call = tokio::spawn({
         let (x, p) = (f.x.client.clone(), f.p.resolved.node_id.clone());
         let req = update_mesh_seat(&f.p, 3, "b1", op);
@@ -738,11 +735,11 @@ async fn the_holder_drains(op: &'static str) {
         f.p.cut_offs.lock().unwrap()
     );
     assert!(f.p.storage.seat_transfers().await.unwrap().is_empty(), "the seat row was written while a write of the old seat was still issued");
-    assert!(!call.is_finished(), "P answered before its writes drained");
-    f.p.drained.send_replace(true);
+    assert!(!call.is_finished(), "P answered before its issued writes finished");
+    f.p.writes_finish.send_replace(true);
     let reply = call.await.unwrap();
     assert_eq!(reply, Some(updated(committed_mesh(&f.n, 4))), "N's node.primary.updated is the answer");
-    assert_eq!(f.n.storage.seat_transfers().await.unwrap().len(), 1, "one row, written after the drain");
+    assert_eq!(f.n.storage.seat_transfers().await.unwrap().len(), 1, "one row, written after the cut-off");
     assert!(matches!(&f.p.cut_offs.lock().unwrap()[..], [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }]), "the committed row ends P's authority over the cut-off writes: {:?}", f.p.cut_offs.lock().unwrap());
     let _ = (&f.m, &f.x);
 }
@@ -757,7 +754,7 @@ async fn the_holder_drains(op: &'static str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_identical_retry_answers_the_same_seat_and_another_payload_is_refused() {
     let f = commanded_fabric().await;
-    let op = "drain-node:mesh1.admin.1";
+    let op = "restart-node:mesh1.admin.1";
     let first = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
     assert_eq!(first, updated(committed_mesh(&f.n, 4)));
     // The reply was lost: the fabric-primary sends the identical command again.
@@ -772,18 +769,18 @@ async fn an_identical_retry_answers_the_same_seat_and_another_payload_is_refused
 }
 
 /// CONTRACT (proposal Part C1: "the holder's ... call"; node-rpc-envelope.md, lost replies: a holder
-/// keeps serving after the row): the fabric-primary's reply was lost and P has since been drained (its
-/// Node RPC server refuses new calls typed Draining, as its DrainNode makes it): the identical command
-/// is still answered from the row with the same committed seat, never refused Draining, and nothing
+/// keeps serving after the row): the fabric-primary's reply was lost and P's Node RPC server has since
+/// stopped taking new calls (as node.connections.delete makes it): the identical command is still
+/// answered from the row with the same committed seat, never refused, and nothing
 /// commits twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_retry_after_the_holder_drained_is_answered_from_the_row() {
+async fn a_retry_after_the_holder_stopped_taking_new_calls_is_answered_from_the_row() {
     let f = commanded_fabric().await;
     let op = "replace-node:mesh1.admin.1";
     let first = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
     assert_eq!(first, updated(committed_mesh(&f.n, 4)));
     f.p.server.drain();
-    assert_eq!(send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await, first, "a drained holder answers the identical command from the row");
+    assert_eq!(send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await, first, "a holder that takes no new calls answers the identical command from the row");
     assert_eq!(f.n.storage.seat_transfers().await.unwrap().len(), 1, "nothing committed twice");
 }
 
@@ -868,7 +865,7 @@ async fn a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothin
         assert!(named.iter().any(|(side, reason, detail)| side == "holder" && reason == "no-successor" && detail == text), "no holder reject span no-successor with {text:?}: {named:?}");
     }
     assert_eq!(named.len(), 4, "{named:?}");
-    assert!(spans.named(ROW_WRITTEN).is_empty() && spans.named(DRAINED).is_empty(), "nothing cut off, no row");
+    assert!(spans.named(ROW_WRITTEN).is_empty() && spans.named(CUT_OFF).is_empty(), "nothing cut off, no row");
     assert!(f.x.storage.seat_transfers().await.unwrap().is_empty() && g.x.storage.seat_transfers().await.unwrap().is_empty());
     let _ = (&f.m, &f.n, &g.m, &g.n, &g.p);
 }
@@ -1007,7 +1004,19 @@ async fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_
     assert_eq!(attr(read("no-row"), "operation").as_deref(), Some(other));
     let installed_at_n: Vec<_> = ours(UPDATED).into_iter().filter(|s| attr(s, "node").as_deref() == Some("mesh1.admin.2")).collect();
     assert_eq!(installed_at_n.len(), 1, "N installed once, on X's call: {:?}", installed_at_n.iter().map(|s| attr(s, "replay")).collect::<Vec<_>>());
-    assert_eq!(installed_at_n[0].parent_span_id, held.span_context.span_id(), "N's install is the answer to X's call under its row read");
+    // N's install descends from X's row read: its ancestry, across the call, reaches that span.
+    let parent_of = |id: &str| finished.iter().find(|s| s.span_context.span_id().to_string() == id).map(|s| s.parent_span_id.to_string());
+    let (read_id, mut at) = (held.span_context.span_id().to_string(), installed_at_n[0].parent_span_id.to_string());
+    let mut under_read = false;
+    for _ in 0..64 {
+        if at == read_id {
+            under_read = true;
+            break;
+        }
+        let Some(up) = parent_of(&at) else { break };
+        at = up;
+    }
+    assert!(under_read, "N's install is the answer to X's call under its row read");
     let x_installed: Vec<_> = ours(INSTALLED).into_iter().filter(|s| attr(s, "via").as_deref() == Some("committed-row")).collect();
     assert_eq!(x_installed.len(), 1);
     assert!(x_installed[0].start_time >= installed_at_n[0].end_time, "X installs only after N answered node.primary.updated");
@@ -1072,7 +1081,7 @@ async fn a_successor_lost_mid_call_leaves_the_update_incomplete_and_the_seat_the
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_later_attempt_of_the_same_update_is_answered_from_the_row() {
     let f = commanded_fabric().await;
-    let op = "node.primary.update:b1:drain-node:mesh1.admin.1";
+    let op = "node.primary.update:b1:replace-node:mesh1.admin.1";
     let first = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
     assert_eq!(first, updated(committed_mesh(&f.n, 4)));
     assert_eq!(send(&f.p, &f.n, primary_update(&f.p, &f.n, 4, "b1", 2, op)).await, first, "attempt 2 of the same update replays the row");
@@ -1298,15 +1307,15 @@ async fn failing_seats() -> (Seats, Arc<FailingStorage>) {
 /// commands P.
 /// - The store cannot read the operation's row: P refuses `RejectedSourceFailed` naming it before
 ///   anything is cut off.
-/// - The store refuses P's row after the drain: P answers `RejectedSourceFailed` naming the row and the
+/// - The store refuses P's row after the cut-off: P answers `RejectedSourceFailed` naming the row and the
 ///   store's error, lifts its cut-off (`Set` then `Lift`) and is still mesh1's primary at epoch 3; N
 ///   is never called. Once the store writes again, X's next attempt of the same update has P write
 ///   the row under the unchanged epoch: the seat moves to N at 4.
 /// Each refusal is the holder's reject span `source-failed` with the three fields.
 #[test]
-fn a_seat_row_write_that_fails_after_the_drain_fails_the_step_by_name_and_the_holder_writes_again_under_the_unchanged_epoch() {
+fn a_seat_row_write_that_fails_after_the_cut_off_fails_the_step_by_name_and_the_holder_writes_again_under_the_unchanged_epoch() {
     let cap = crate::mesh_leave_resume::capture();
-    let seats_op = "drain-node:mesh1.admin.1";
+    let seats_op = "stop-node:mesh1.admin.1";
     let (replies, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.seat.reject.via-source-failed");
         let trace_id = crate::mesh_leave_resume::trace_id(&root);
@@ -1456,7 +1465,7 @@ async fn a_primary_update_command_from_an_endpoint_no_view_holds_is_decided_on_t
 #[test]
 fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
     let cap = crate::mesh_leave_resume::capture();
-    let seats_op = "drain-node:mesh1.admin.1";
+    let seats_op = "stop-node:mesh1.admin.1";
     let (reply, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.seat.reject.via-epoch-overflow");
         let trace_id = crate::mesh_leave_resume::trace_id(&root);
@@ -1483,7 +1492,7 @@ fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
     assert_eq!(refused.len(), 1, "one refusal of the seat update: {refused:?}");
     assert_eq!(refused[0]["attributes"]["reason"], "epoch-overflow");
     assert!(refused[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains("mesh-primary") && d.contains("18446744073709551615")), "{refused:?}");
-    for name in [ROW_WRITTEN, DRAINED, UPDATED] {
+    for name in [ROW_WRITTEN, CUT_OFF, UPDATED] {
         assert!(in_trace(&spans, &trace_id, name).is_empty(), "nothing commits: {name}");
     }
 }

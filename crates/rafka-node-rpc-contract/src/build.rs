@@ -457,7 +457,7 @@ pub enum BuildReply {
         reason: String,
     },
     /// Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a
-    /// planned handover, op `0x21`). The Build goes on at the new seat; the caller re-submits the
+    /// node.fabric-primary.update, op `0x21`). The Build goes on at the new seat; the caller re-submits the
     /// same `build_id` there. Never `Indeterminate` on a planned move.
     SeatMoved {
         /// The Build.
