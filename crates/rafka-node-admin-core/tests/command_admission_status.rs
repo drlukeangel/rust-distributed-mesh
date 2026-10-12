@@ -59,7 +59,7 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
-    let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap() };
+    let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap(), leaver: std::sync::Arc::new(std::sync::OnceLock::new()) };
 
     let rpc = member(&fabric, "mesh1.rpc.1", 10);
     assert!(membership.book.record(rpc.clone()), "the member's heartbeat is held");
