@@ -1,11 +1,14 @@
 //! `fabric.storage`: node-admin's Fabric control state behind a storage boundary
 //! (fabric-mesh-lifecycle.md §11.1, §13).
 //!
-//! It holds the Fabric's identity and pointer rows and, once a fabric shutdown begins, the
-//! [`FabricShutdown`] record. Every admin holds its own copy: the fabric-primary writes the shutdown
-//! when it initiates one, and every admin that learns it persists the same record before it
-//! freezes, so losing the fabric-primary and its storage loses nothing. A shutdown is never deleted
-//! while its Fabric lives, and an admin that starts on a data dir holding one comes up frozen.
+//! It holds the Fabric's identity and pointer rows, the seat records and, once a fabric shutdown
+//! begins, the [`FabricShutdown`] record. `fabric/` on the fabric's store root has one writer, the
+//! fabric-primary (R14 item 2: "Fabric-primary: `fabric/`. ... Keys never overlap across writers"):
+//! it writes the identity, each pointer move, the seat records and the shutdown it initiates. Every
+//! other admin reads them there, and holds what it learns before the fabric's first state-commit
+//! (its join answer, the Build topic) as its own runtime state, never as a row here. A shutdown is
+//! never deleted while its Fabric lives, and an admin that starts on a store root holding one comes
+//! up frozen.
 //!
 //! A handover of the fabric seat (`fabric_handover`) leaves one [`HandoverRow`] per stage it reached.
 //! A Build-driven seat transfer (TakeSeats) is ONE [`SeatTransferRow`] at the holder that committed
@@ -65,7 +68,7 @@ pub struct FabricPointer {
 }
 
 impl FabricPointer {
-    fn order(&self) -> (u64, &str) {
+    pub(crate) fn order(&self) -> (u64, &str) {
         (self.submitted_at_ms, self.build_id.0.as_str())
     }
 
@@ -252,6 +255,9 @@ pub use crate::record_store::StorageError as FabricStorageError;
 pub trait FabricStorage: Send + Sync {
     /// The identity row and the newest pointer row folded; `None` while no identity is held.
     async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError>;
+    /// The identity row and the newest pointer row, unfolded: what a reader folds with the pointer
+    /// it holds itself ([`crate::accepted::AcceptedStore`]).
+    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError>;
     /// Hold the Fabric's identity if none is held (insert-and-fail on its key). Returns the identity
     /// now held; a held identity naming another Fabric is returned unchanged for the caller to refuse.
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError>;
@@ -302,9 +308,11 @@ impl MemoryFabricStorage {
 #[async_trait]
 impl FabricStorage for MemoryFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        let identity = self.identity.lock().unwrap().clone();
-        let pointer = newest(self.pointers.lock().unwrap().iter().cloned());
+        let (identity, pointer) = self.fabric_rows().await?;
         Ok(folded(identity, pointer))
+    }
+    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
+        Ok((self.identity.lock().unwrap().clone(), newest(self.pointers.lock().unwrap().iter().cloned())))
     }
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
         Ok(self.identity.lock().unwrap().get_or_insert_with(|| identity.clone()).clone())
@@ -395,7 +403,8 @@ pub struct FileFabricStorage {
     seat: SeatSlot,
 }
 
-/// The fabric seat source a [`FileFabricStorage`] reads before it puts a pointer on the store root.
+/// The fabric seat source a [`FileFabricStorage`] reads before it puts a pointer, and when its
+/// held `fabric/` rows are published.
 #[derive(Default, Clone)]
 struct SeatSlot(std::sync::Arc<std::sync::OnceLock<crate::fabric_builds::SeatSource>>);
 
@@ -443,10 +452,10 @@ impl FileFabricStorage {
         })
     }
 
-    /// The committed fabric seat record this writer reads before it puts a pointer on the store root
-    /// (set once). The Fabric record and its pointers this writer holds in its scratchpad are
-    /// published only while the record says it holds the seat (R14 item 2); another admin's copy,
-    /// learned on the Build topic, stays its own.
+    /// The committed fabric seat record this writer reads before it puts a pointer (set once). The
+    /// `fabric/` rows it holds in its scratchpad (its Fabric identity, pointers and seat records,
+    /// written while it held the fabric seat) are published only while the record still says it
+    /// does; a writer whose seat moved before the publication drops them, named (R14 item 2).
     pub fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
         let _ = self.seat.0.set(seat);
         for store in self.fabric_primary_records() {
@@ -480,31 +489,36 @@ impl FileFabricStorage {
         Ok(meshes)
     }
 
-    /// The records the fabric-primary seat writes (the Fabric record and its pointers): what a seat
-    /// transfer moving that seat cuts off. Seat, handover and seat-transfer rows stay writable: the
-    /// transfer itself writes them.
-    pub fn fabric_primary_records(&self) -> [&crate::record_store::FileRecords; 2] {
-        [&self.records, &self.pointers]
+    /// The records the fabric-primary seat writes (R14 item 2): the Fabric identity and shutdown,
+    /// its pointers and the seat records. What a seat transfer moving that seat cuts off, and what a
+    /// publication writes only while the committed fabric seat record names this writer. Handover
+    /// rows are each party's own stage (node-rpc-envelope.md, TakeFabricPrimary: the successor
+    /// durably commits the transfer before it answers), and seat-transfer rows live under the
+    /// holder's own mesh.
+    pub fn fabric_primary_records(&self) -> [&crate::record_store::FileRecords; 3] {
+        [&self.records, &self.pointers, &self.seats]
     }
 }
 
 #[async_trait]
 impl FabricStorage for FileFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        let identity = self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?;
-        let pointer = newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT).await?);
+        let (identity, pointer) = self.fabric_rows().await?;
         Ok(folded(identity, pointer))
+    }
+    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
+        let identity = self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?;
+        Ok((identity, newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT).await?)))
     }
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
         self.records.insert(IDENTITY_KEY, IDENTITY_FORMAT, identity).await?;
         self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the identity row vanished after its insert".into() })
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        // The fabric-primary alone writes `fabric/` on the store root (R14 item 2): the committed
-        // fabric seat record is read before a put that reaches it. It is open to this birth when it
-        // names it, names none (Day 0, before any record) or names a birth proven gone. A put held in
-        // this admin's scratchpad (before the fabric's first state-commit) is its own copy of the
-        // pointer, published only while it holds the seat.
+        // The fabric-primary alone writes `fabric/` (R14 item 2): the committed fabric seat record
+        // is read under the store's write lock before the put is held or reaches the store root. It
+        // is open to this birth when it names it, names none (Day 0, before any record) or names a
+        // birth proven gone.
         let file = format!("{}/{}.json", POINTERS_DIR, pointer.key());
         let seat = || self.seat.open(&self.writer).map_err(|reason| crate::record_store::StorageError::NotSeatHolder { file: file.clone(), reason });
         self.pointers.write_gated(&pointer.key(), POINTER_FORMAT, pointer, seat).await

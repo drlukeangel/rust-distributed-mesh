@@ -4027,33 +4027,82 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("backbone: {e}"))?;
-    // fabric.storage: this admin's Fabric control state. A shutdown already held there (a restart
-    // or a join during one) is in force from the start (fabric-mesh-lifecycle.md §11.1).
-    let held = fabric_storage
-        .put_identity(&crate::fabric_storage::FabricIdentity { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone() })
-        .await.map_err(|e| e.to_string())?;
-    if held.fabric_id != cfg.fabric_id {
-        return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
+    // fabric.storage: `fabric/` on the store root, whose one writer is the fabric-primary (R14 item
+    // 2): Day 0 writes the Fabric identity (below), and every other admin reads it there. A store
+    // root holding another Fabric's identity is refused. A shutdown already held there (a restart or
+    // a join during one) is in force from the start.
+    let fabric_identity = crate::fabric_storage::FabricIdentity { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone() };
+    if let Some(held) = fabric_storage.fabric().await.map_err(|e| e.to_string())? {
+        if held.fabric_id != cfg.fabric_id {
+            return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
+        }
     }
     let shutdown_control = Arc::new(crate::shutdown::ShutdownControl::open(fabric_storage.clone(), name.to_string()).await.map_err(|e| e.to_string())?);
     let mut tasks_early: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     // When the fabric seat moves to another holder, this admin, if it is a mesh primary, pulls
     // rafka-time once from the new fabric-primary.
     tasks_early.push(park_gate.spawn(crate::rafka_time::run_seat_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), membership.clone())));
-    // The seat records this admin held before it stopped (`fabric.storage`): it enters knowing who
-    // held the seats, and every record it hears from here on is written as its own row.
+    // The seat records on the store root (`fabric.storage`): this admin enters knowing who held the
+    // seats.
     for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
         membership.seats().take(row.seat, &row.holder);
     }
+    // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
+    // its entry pull or the fabric control topic.
+    let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
+    let records = Arc::new(Records::default());
+    records.set_me(node_id.clone());
+    // Only the fabric seat holder puts a pointer, and only its held `fabric/` rows are published: the
+    // file store reads the committed fabric seat record, as the Build gate does.
+    fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
+    // `fabric/` has one writer, the fabric-primary (R14 item 2). While this admin holds the fabric
+    // seat it writes every seat record it holds as its own row, and the Fabric record it holds (the
+    // identity it is configured for, and the pointer it learned while another admin held the seat),
+    // so a seat that came to it before the fabric's first state-commit, from a holder whose held
+    // rows were dropped, still leaves the Fabric row on the store root. While it does not hold the
+    // seat it writes nothing to `fabric/`.
     {
-        let (seats, storage) = (membership.seats().clone(), fabric_storage.clone());
+        let (seats, storage, accepted, identity) = (membership.seats().clone(), fabric_storage.clone(), accepted.clone(), fabric_identity.clone());
+        let me = (node_id.clone(), incarnation.clone());
         let mut changed = seats.subscribe();
         let park = park_gate.clone();
         tasks_early.push(tokio::spawn(async move {
             let mut written: HashSet<(rafka_mesh_entity::Seat, String, u64)> = HashSet::new();
+            let mut fabric_row_written = false;
             loop {
                 // Held here while the admin is parked: its own wait, outside every lock.
                 let turn = park.turn("seat-rows").await;
+                if !seats.fabric().is_some_and(|h| h.is_birth(&me.0, &me.1)) {
+                    drop(turn);
+                    if changed.changed().await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                if !fabric_row_written {
+                    let identity_held = match storage.put_identity(&identity).await {
+                        Ok(held) if held.fabric_id == identity.fabric_id => true,
+                        Ok(held) => {
+                            tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, held = %held.fabric_id).in_scope(|| tracing::info!("fabric.storage holds another Fabric's identity"));
+                            false
+                        }
+                        Err(e) => {
+                            tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, error = %e).in_scope(|| tracing::info!("the Fabric identity could not be written to fabric.storage"));
+                            false
+                        }
+                    };
+                    let pointer_held = match accepted.learned_pointer() {
+                        None => true,
+                        Some(p) => match storage.put_pointer(&p).await {
+                            Ok(()) => true,
+                            Err(e) => {
+                                tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, build_id = %p.build_id, error = %e).in_scope(|| tracing::info!("the learned Fabric pointer could not be written to fabric.storage"));
+                                false
+                            }
+                        },
+                    };
+                    fabric_row_written = identity_held && pointer_held;
+                }
                 let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
                 rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
                 for row in rows {
@@ -4076,14 +4125,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             }
         }));
     }
-    // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
-    // its entry pull or the fabric control topic.
-    let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
-    let records = Arc::new(Records::default());
-    records.set_me(node_id.clone());
-    // Only the fabric seat holder puts a pointer on the store root: the file store reads the
-    // committed fabric seat record, as the Build gate does, before any pointer can be put.
-    fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
     // The status rows of this admin's mesh on the fabric's store root (`status/<mesh>/`): written by
     // the mesh's seat holder, folded into what this admin applied when it takes the seat.
     let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).map_err(storage_err)?);
@@ -4187,6 +4228,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     submitted_change: None,
                     submitted_at_ms: rafka_time.now_ms(),
                 };
+                // The fabric-primary claims the Fabric's identity at Day 0, into its scratchpad until
+                // the fabric's first state-commit (node-identity-and-state.md §2.8; fabric-create.md).
+                let held = fabric_storage.put_identity(&fabric_identity).await.map_err(|e| e.to_string())?;
+                if held.fabric_id != cfg.fabric_id {
+                    return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
+                }
                 attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                 builds.publish_accepted(&b0).await.map_err(|e| e.to_string())?;
                 accepted.point(&b0.build_id, b0.submitted_at_ms, "day-0").await.map_err(|e| e.to_string())?;

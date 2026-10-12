@@ -563,13 +563,18 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     BuildPlan { operations: ops }
 }
 
-/// `Fabric.build_id` as this admin holds it: the pointer in `fabric.storage`, and the Build it
-/// names in `builds.storage`. The fabric-primary moves it on acceptance (Build persisted first);
-/// every other admin learns the record on the Build topic and persists its own copy. A learned
-/// record is taken only once its Build is held locally. Each move is its own pointer row ordered by
-/// its Build's submission time, so a lagging copy never moves the pointer back.
+/// `Fabric.build_id` as this admin holds it: the pointer rows in `fabric.storage` folded with the
+/// pointer it learned, and the Build it names in `builds.storage`. `fabric/` has one writer, the
+/// fabric-primary (R14 item 2): it moves the pointer on acceptance (Build persisted first) through
+/// `fabric.storage`. Every admin that hears a Fabric record (its entry answer, the Build topic)
+/// holds it as its own runtime state, never as a row: before the fabric's first state-commit the
+/// store root holds nothing to read, and after it the fabric-primary's rows are there. A learned
+/// record is taken only once its Build is held locally. Each move is ordered by its Build's
+/// submission time, so a lagging copy never moves the pointer back.
 pub struct AcceptedStore {
     storage: Arc<dyn FabricStorage>,
+    /// The Fabric identity and pointer this admin learned last: runtime state, folded with the rows.
+    learned: Mutex<Option<(FabricIdentity, FabricPointer)>>,
     /// A learned record whose Build is not held yet.
     wanted: Mutex<Option<FabricRecord>>,
     node: String,
@@ -578,17 +583,28 @@ pub struct AcceptedStore {
 impl AcceptedStore {
     /// A store over `storage`, held by the admin named `node`.
     pub fn new(storage: Arc<dyn FabricStorage>, node: impl Into<String>) -> Self {
-        Self { storage, wanted: Mutex::new(None), node: node.into() }
+        Self { storage, learned: Mutex::new(None), wanted: Mutex::new(None), node: node.into() }
     }
 
-    /// The fabric record held, when one is.
+    /// The fabric record held, when one is: the identity row (or the learned identity while the
+    /// store holds none) and the newest of the pointer rows and the learned pointer.
     pub async fn record(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        self.storage.fabric().await
+        let (identity, pointer) = self.storage.fabric_rows().await?;
+        let learned = self.learned.lock().unwrap().clone();
+        let identity = identity.or_else(|| learned.as_ref().map(|(i, _)| i.clone()));
+        let pointer = pointer.into_iter().chain(learned.map(|(_, p)| p)).max_by(|a, b| a.order().cmp(&b.order()));
+        Ok(identity.map(|i| FabricRecord { fabric_id: i.fabric_id, name: i.name, build_id: pointer.map(|p| p.build_id) }))
     }
 
     /// The Build the pointer names, when it names one.
     pub async fn build_id(&self) -> Option<BuildId> {
-        self.storage.fabric().await.ok().flatten().and_then(|r| r.build_id)
+        self.record().await.ok().flatten().and_then(|r| r.build_id)
+    }
+
+    /// The pointer this admin learned (its entry answer, the Build topic), when it learned one: what
+    /// it writes as the fabric-primary when the seat comes to it (`crate::admin`'s fabric rows).
+    pub fn learned_pointer(&self) -> Option<FabricPointer> {
+        self.learned.lock().unwrap().as_ref().map(|(_, p)| p.clone())
     }
 
     /// The accepted Build: the one the pointer names, as `builds` holds it.
@@ -597,11 +613,12 @@ impl AcceptedStore {
         builds.read_build(&id).await.ok()
     }
 
-    /// Move the pointer to `build_id` (its Build is already durable in `builds.storage`;
-    /// `submitted_at_ms` is that Build's submission time, the order of pointer rows): a blind put of
-    /// the move's own row. Returns the record now held, the identity and the newest pointer folded.
+    /// The fabric-primary moves the pointer to `build_id` (its Build is already durable in
+    /// `builds.storage`; `submitted_at_ms` is that Build's submission time, the order of pointer
+    /// rows): a blind put of the move's own row. Returns the record now held, the identity and the
+    /// newest pointer folded.
     pub async fn point(&self, build_id: &BuildId, submitted_at_ms: u64, via: &str) -> Result<FabricRecord, FabricStorageError> {
-        let before = self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "no Fabric identity to point".into() })?;
+        let before = self.record().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "no Fabric identity to point".into() })?;
         // The span opens BEFORE the write: the pointer is readable (by the Ready guard, by a
         // reader) the moment the row is renamed into place, which is before `put_pointer`
         // returns, so a span opened after the write can start later than a read that already saw it.
@@ -619,26 +636,48 @@ impl AcceptedStore {
             Err(e) => span.in_scope(|| tracing::info!(error = %e, "Fabric.build_id could not be moved")),
         }
         put?;
-        self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the Fabric identity vanished after the pointer was put".into() })
+        self.record().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the Fabric identity vanished after the pointer was put".into() })
     }
 
-    /// A Fabric record heard on the Build topic (`from`). Taken when its Build is held; otherwise
-    /// remembered until the Build's facts arrive. A pointer row older than the one held is ordered
-    /// out by every reader's fold.
+    /// A Fabric record heard on the Build topic or in an entry answer (`from`). Taken when its Build
+    /// is held, as this admin's runtime state (nothing is written: the fabric-primary wrote it);
+    /// otherwise remembered until the Build's facts arrive. A record naming another Fabric, or a
+    /// pointer older than the one learned, is ordered out.
     pub async fn learn(&self, record: FabricRecord, builds: &dyn BuildStateAdapter, from: &str) {
         let Some(id) = record.build_id.clone() else { return };
-        match self.storage.fabric().await {
+        let before = match self.record().await {
             Ok(Some(mine)) if mine.fabric_id != record.fabric_id => return,
-            Ok(Some(mine)) if mine.build_id.as_ref() == Some(&id) => return,
+            Ok(mine) => mine,
             Err(_) => return,
-            _ => {}
+        };
+        if self.learned.lock().unwrap().as_ref().is_some_and(|(_, p)| p.build_id == id) {
+            return;
         }
         let Ok(named) = builds.read_build(&id).await else {
             *self.wanted.lock().unwrap() = Some(record);
             return;
         };
-        let _ = self.point(&id, named.submitted_at_ms, &format!("gossip:{from}")).await;
+        let pointer = FabricPointer { build_id: id.clone(), submitted_at_ms: named.submitted_at_ms };
+        {
+            let mut learned = self.learned.lock().unwrap();
+            if learned.as_ref().is_some_and(|(_, p)| p.order() >= pointer.order()) {
+                *self.wanted.lock().unwrap() = None;
+                return;
+            }
+            *learned = Some((FabricIdentity { fabric_id: record.fabric_id.clone(), name: record.name.clone() }, pointer));
+        }
         *self.wanted.lock().unwrap() = None;
+        let previous = before.as_ref().and_then(|r| r.build_id.clone());
+        tracing::info_span!(
+            "rdm.node_admin.fabric.update.via-pointer-learned",
+            node = %self.node,
+            fabric_id = %record.fabric_id,
+            build_id = %id,
+            previous_build_id = %previous.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
+            on_store_root = previous.as_ref() == Some(&id),
+            from = %from,
+        )
+        .in_scope(|| tracing::info!("this admin holds the Fabric.build_id it heard as its own runtime state; the fabric-primary writes fabric/"));
     }
 
     /// The Build a remembered Fabric record names: the pointer this admin heard and cannot take yet.

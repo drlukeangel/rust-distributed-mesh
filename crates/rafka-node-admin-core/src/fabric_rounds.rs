@@ -95,7 +95,8 @@ impl RoundActions for StorePublication {
             round = "commit-state",
             bound = true,
             rows = tracing::field::Empty,
-            kept = tracing::field::Empty,
+            dropped = tracing::field::Empty,
+            held = tracing::field::Empty,
             stores = tracing::field::Empty,
             error = tracing::field::Empty,
             "otel.kind" = "internal"
@@ -107,7 +108,8 @@ impl RoundActions for StorePublication {
         match published {
             Ok(p) => {
                 span.record("rows", p.written() as u64);
-                span.record("kept", p.kept() as u64);
+                span.record("dropped", p.dropped() as u64);
+                span.record("held", p.held() as u64);
                 span.record("stores", p.summary().as_str());
                 span.in_scope(|| tracing::info!("this node wrote what its scratchpad held to the store root, and writes there from now on"));
             }

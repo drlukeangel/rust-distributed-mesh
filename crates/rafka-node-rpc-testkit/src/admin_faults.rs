@@ -424,6 +424,9 @@ impl FabricStorage for FaultedFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
         self.inner.fabric().await
     }
+    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
+        self.inner.fabric_rows().await
+    }
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
         self.faults.hold(Probe::Pointer { build_id: None }).await;
         self.inner.put_identity(identity).await
