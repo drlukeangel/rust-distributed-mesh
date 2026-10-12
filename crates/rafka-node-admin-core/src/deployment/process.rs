@@ -29,6 +29,28 @@ struct Launched {
     exit: Option<Option<i32>>,
 }
 
+/// Where a test loses the launching executor in a spawn. Empty outside tests.
+#[derive(Clone, Default)]
+struct Failpoints {
+    /// The executor is lost the instant the child exists: the pid is stored here and the spawn
+    /// fails with nothing further done (no child registered, no watcher).
+    #[cfg(test)]
+    lost_after_spawn: Option<std::sync::Arc<Mutex<Option<u32>>>>,
+}
+
+impl Failpoints {
+    /// The spawn of child `pid` has returned: fail it here when a test lost the executor at this point.
+    fn after_spawn(&self, pid: u32) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(slot) = &self.lost_after_spawn {
+            *slot.lock().unwrap() = Some(pid);
+            return Err(format!("failpoint: the executor is lost after spawning pid {pid}"));
+        }
+        let _ = pid;
+        Ok(())
+    }
+}
+
 /// Realises runtimes as host processes.
 pub struct ProcessDeploymentProvider {
     /// Children this provider started. A watcher thread per child waits on
@@ -36,6 +58,7 @@ pub struct ProcessDeploymentProvider {
     children: std::sync::Arc<Mutex<HashMap<u32, Launched>>>,
     /// This host's boot and pid namespace.
     domain: String,
+    failpoints: Failpoints,
 }
 
 impl Default for ProcessDeploymentProvider {
@@ -47,7 +70,13 @@ impl Default for ProcessDeploymentProvider {
 impl ProcessDeploymentProvider {
     /// A provider with no children.
     pub fn new() -> Self {
-        Self { children: Default::default(), domain: process_control_domain().unwrap_or_else(|e| format!("process:unknown:{e}")) }
+        Self { children: Default::default(), domain: process_control_domain().unwrap_or_else(|e| format!("process:unknown:{e}")), failpoints: Failpoints::default() }
+    }
+
+    /// A provider whose executor is lost the instant a child exists ([`Failpoints::lost_after_spawn`]).
+    #[cfg(test)]
+    fn lost_after_spawn(slot: std::sync::Arc<Mutex<Option<u32>>>) -> Self {
+        Self { failpoints: Failpoints { lost_after_spawn: Some(slot) }, ..Self::new() }
     }
 
     fn handle(&self, deployment_id: crate::model::DeploymentId, pid: u32, start: Option<u64>) -> DeploymentHandle {
@@ -93,7 +122,7 @@ fn is_zombie(stat: &str) -> bool {
 }
 
 /// [`ProcessDeploymentProvider::spawn`] on the blocking pool: the launch's pid and start token.
-fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<HashMap<u32, Launched>>>) -> Result<(u32, Option<u64>), DeployError> {
+fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<HashMap<u32, Launched>>>, failpoints: &Failpoints) -> Result<(u32, Option<u64>), DeployError> {
     let err = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
     std::fs::create_dir_all(&spec.data_dir).map_err(|e| err(format!("data dir {}: {e}", spec.data_dir.display())))?;
     let log = |name: &str| {
@@ -131,6 +160,7 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
     }
     let child = cmd.spawn().map_err(|e| err(format!("{}: {e}", spec.executable.display())))?;
     let pid = child.id();
+    failpoints.after_spawn(pid).map_err(err)?;
     let start = process_start_token(pid);
     // Which deployment this pid realises, so a re-run can find it.
     let record = serde_json::json!({ "deployment_id": spec.deployment_id.0, "pid": pid, "start": start });
@@ -199,8 +229,8 @@ impl DeploymentProvider for ProcessDeploymentProvider {
 
     /// The data dir, logs, records and the fork run on the blocking pool (`record_store::blocking_io`).
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        let (owned, children) = (spec.clone(), self.children.clone());
-        let (pid, start) = crate::record_store::blocking_io(move || spawn_on_disk(&owned, &children)).await?;
+        let (owned, children, failpoints) = (spec.clone(), self.children.clone(), self.failpoints.clone());
+        let (pid, start) = crate::record_store::blocking_io(move || spawn_on_disk(&owned, &children, &failpoints)).await?;
         // The pipeline registers this exact handle and makes its runtime fact
         // available to the birth (`MakeRuntimeFactAvailableToBirth`).
         Ok(self.handle(spec.deployment_id.clone(), pid, start))
@@ -411,6 +441,32 @@ mod tests {
         p.terminate(&h, TerminationMode::Immediate).await.unwrap();
         assert_eq!(p.find(&spec).await.unwrap(), Found::Exited, "its process is gone");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (lifecycles/node-create.md step 1: "Record the exact deployment, prepare its
+    /// identity/data dir and launch its executable"): a live process always has its record. The
+    /// executor that launches a process is lost the instant the child exists, before anything else of
+    /// the spawn is done; a successor of the same control domain asks `find` for that exact launch and
+    /// is told the process runs, with its exact pid. Must NOT happen: `NeverLaunched` for a running
+    /// child, which makes the claimed-allocation decision continue the same birth over a live process
+    /// it never recorded.
+    #[tokio::test]
+    async fn a_process_whose_launching_executor_is_lost_the_instant_it_exists_is_found_running() {
+        let dir = crate::record_store::tempdir("process-lost-after-spawn");
+        let spec = launch(&dir);
+        let slot = std::sync::Arc::new(Mutex::new(None));
+        ProcessDeploymentProvider::lost_after_spawn(slot.clone()).spawn(&spec).await.expect_err("the executor is lost inside the spawn");
+        let pid = slot.lock().unwrap().expect("the child existed when the executor was lost");
+        let found = ProcessDeploymentProvider::new().find(&spec).await;
+        // The orphan list stays empty: the child is ours, killed by its exact pid and reaped.
+        assert!(signal(pid, libc::SIGKILL), "the child {pid} was alive to kill");
+        // SAFETY: waitpid(2) on the child this test spawned; the status is not read.
+        assert_eq!(unsafe { libc::waitpid(pid as i32, std::ptr::null_mut(), 0) }, pid as i32);
+        let _ = std::fs::remove_dir_all(&dir);
+        match found.expect("find answers") {
+            Found::Running(h) => assert_eq!(h.pid, Some(pid), "the runtime found is the child that was spawned"),
+            other => panic!("the child {pid} runs, and find answered {other:?}"),
+        }
     }
 
     /// CONTRACT: a deployment record that cannot be read or parsed is an error naming it, never
