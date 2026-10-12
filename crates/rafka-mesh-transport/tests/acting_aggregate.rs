@@ -197,14 +197,21 @@ async fn the_acting_aggregate_carries_the_held_digests_of_a_living_mesh_and_none
     assert!(dead.digests.is_empty(), "R-NS1: a dead mesh's acting aggregate has no digests: {dead:?}");
     assert_eq!(dead.in_flight.iter().map(|o| o.key()).collect::<Vec<_>>(), vec![stopped.key()], "its stopped last admin is in in_flight");
 
-    // A peer mesh primary holds mesh2 as the acting primary published it.
+    // A peer mesh primary holds mesh2 as the acting primary publishes it. The acting primary
+    // publishes on every round (gossip.md section 3.1, Members: "on its anti-entropy timer"), as the
+    // source did above: gossip orders nothing, and mesh2.admin.1's last publication of the loop above
+    // can reach the peer after the first acting round (seen: installed 90 ms after it, by the lazy
+    // push), so the peer is read after the round that puts the acting publication in place.
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let at_peer = loop {
         if peer_bb.held_source("mesh2").is_some_and(|(p, _)| p.node == "mesh1.admin.1") {
             break peer_m.held_topology(&peer_own).into_iter().find(|s| s.mesh == "mesh2").expect("the peer holds mesh2");
         }
         assert!(std::time::Instant::now() < deadline, "the peer never held mesh2 from its acting primary");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut round = fp_bb.publish_for_primaryless(&fp_m, |_| None).await;
+        round.sort();
+        assert_eq!(round, vec!["mesh2".to_string(), "mesh3".to_string()], "every round publishes both meshes");
     };
     assert_eq!(names(&at_peer), vec!["mesh2.rpc.1", "mesh2.rpc.2"], "the peer holds the living mesh's members from the acting aggregate: {at_peer:?}");
 
