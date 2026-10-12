@@ -256,8 +256,8 @@ pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRe
 }
 
 /// A birth's `node-drained` completion call at the admin `receiver` that commanded it (node-left
-/// is the reply of `stop-node`, never a call; a `NodeLeft` request is [`refuse_node_left`] before it
-/// reaches here): it resolves the open command it names. `subject` is the birth the request names
+/// is the reply of `stop-node`, never a call; a `NodeLeft` request is refused by [`refuse_node_left`]
+/// before it reaches here): it resolves the open command it names. `subject` is the birth the request names
 /// as the receiver holds it `(incarnation, path.name)`, `None` when the receiver holds no such
 /// node; `caller` names who called, for the span only. Nothing checks who is calling (node-rpc.md
 /// §14). A completion with no open command is refused naming the mismatch, never counted toward
