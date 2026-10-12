@@ -376,7 +376,7 @@ fn overflow_detail(me: &PathName, seat: &WireSeat, epoch: u64) -> String {
         WireSeat::MeshPrimary { mesh } => format!(" of {mesh}"),
         WireSeat::FabricPrimary => String::new(),
     };
-    format!("{me}: the {}{mesh} seat is at epoch {epoch}, the largest a seat epoch holds; it cannot advance, so no transfer commits", seat.name())
+    format!("{me}: the {} seat{mesh} is at epoch {epoch}, the largest a seat epoch holds; it cannot advance, so no transfer commits", seat.name())
 }
 
 fn births(b: &HandoverBirth) -> String {
