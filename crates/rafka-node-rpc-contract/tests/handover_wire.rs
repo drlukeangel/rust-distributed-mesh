@@ -71,7 +71,7 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_fifteen_variant_wire_schema() {
+fn replies_match_the_frozen_nineteen_variant_wire_schema() {
     use FabricPrimaryHandoverReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -91,13 +91,21 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         (SeatsCommitted { seats: vec![committed()] }, "0d 01 00  01 6e  0c 303132333435363738396364  01 6a  08"),
         // seat MeshPrimary=1 { mesh "m" } | expected | current
         (RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 3, current: 4 }, "0e 01 016d 03 04"),
+        // seat MeshPrimary=1 { mesh "m" } | epoch u64::MAX, the ten-byte varint ff×9 01
+        (RejectedEpochOverflow { seat: Seat::MeshPrimary { mesh: "m".into() }, epoch: u64::MAX }, "0f 01 016d ffffffffffffffffff01"),
+        // seat FabricPrimary=0 | current 7
+        (RejectedSeatOmitted { seat: Seat::FabricPrimary, current: 7 }, "10 00 07"),
+        // source "s" | op "o" | cause "c"
+        (RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, "11 0173 016f 0163"),
+        // record "r" | holder "h"
+        (RejectedRecordAbsent { record: "r".into(), holder: "h".into() }, "12 0172 0168"),
     ];
     for (r, hex) in fixtures {
         assert_eq!(FabricPrimaryHandover::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(FabricPrimaryHandover::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(FabricPrimaryHandover::REPLY_VARIANTS, 15);
-    assert_eq!(FabricPrimaryHandover::decode_reply(&[15]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(FabricPrimaryHandover::REPLY_VARIANTS, 19);
+    assert_eq!(FabricPrimaryHandover::decode_reply(&[19]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
@@ -108,7 +116,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
     assert_eq!(FabricPrimaryHandover::classify_reply(&Applied), ReplyKind::Success);
     assert_eq!(FabricPrimaryHandover::classify_reply(&AlreadyApplied), ReplyKind::Success);
     assert_eq!(FabricPrimaryHandover::classify_reply(&SeatsCommitted { seats: vec![committed()] }), ReplyKind::Success);
-    for r in [RejectedStaleEpoch { expected: 1, current: 2 }, RejectedWrongBirth { role: "i".into() }, RejectedNotAuthority, RejectedNotEligible { reason: "e".into() }, RejectedConflict { operation: "o".into() }, RejectedStaleSeat { seat: Seat::FabricPrimary, expected: 1, current: 2 }] {
+    for r in [RejectedStaleEpoch { expected: 1, current: 2 }, RejectedWrongBirth { role: "i".into() }, RejectedNotAuthority, RejectedNotEligible { reason: "e".into() }, RejectedConflict { operation: "o".into() }, RejectedStaleSeat { seat: Seat::FabricPrimary, expected: 1, current: 2 }, RejectedEpochOverflow { seat: Seat::FabricPrimary, epoch: u64::MAX }, RejectedSeatOmitted { seat: Seat::FabricPrimary, current: 7 }, RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, RejectedRecordAbsent { record: "r".into(), holder: "h".into() }] {
         assert_eq!(FabricPrimaryHandover::classify_reply(&r), ReplyKind::ProtocolRefusal, "{r:?}");
     }
 }
@@ -124,4 +132,15 @@ fn the_largest_request_fits_the_frame_ceiling() {
     assert!(FabricPrimaryHandover::encode_request(&q).unwrap().len() <= FabricPrimaryHandover::MAX_REQUEST_FRAME_BYTES);
     let r = FabricPrimaryHandoverReply::SeatsCommitted { seats: vec![CommittedSeat { seat: Seat::MeshPrimary { mesh: long.clone() }, holder: b(), epoch: u64::MAX }, CommittedSeat { seat: Seat::FabricPrimary, holder: b(), epoch: u64::MAX }] };
     assert!(FabricPrimaryHandover::encode_reply(&r).unwrap().len() <= FabricPrimaryHandover::MAX_REPLY_FRAME_BYTES);
+    // A source failure whose fields are each longer than the bound is cut to its budgets, never reset.
+    let huge = "x".repeat(4 * FabricPrimaryHandover::MAX_REPLY_FRAME_BYTES);
+    let r = FabricPrimaryHandoverReply::source_failed(&huge, &huge, &huge);
+    assert!(FabricPrimaryHandover::encode_reply(&r).unwrap().len() <= FabricPrimaryHandover::MAX_REPLY_FRAME_BYTES, "{r:?}");
+    // So is an absent record whose record and holder are each longer than the bound.
+    let r = FabricPrimaryHandoverReply::record_absent(&huge, &huge);
+    assert!(FabricPrimaryHandover::encode_reply(&r).unwrap().len() <= FabricPrimaryHandover::MAX_REPLY_FRAME_BYTES, "{r:?}");
+    let FabricPrimaryHandoverReply::RejectedRecordAbsent { record, holder } = &r else { unreachable!() };
+    assert!(record.ends_with('…') && holder.ends_with('…'), "a cut field says it was cut: {r:?}");
+    let short = FabricPrimaryHandoverReply::record_absent("the fabric-primary seat record of fabric1", "mesh2.admin.1");
+    assert_eq!(short, FabricPrimaryHandoverReply::RejectedRecordAbsent { record: "the fabric-primary seat record of fabric1".into(), holder: "mesh2.admin.1".into() }, "fields within their budgets are kept whole");
 }

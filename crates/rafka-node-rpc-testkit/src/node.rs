@@ -987,8 +987,9 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 /// Serve `Status` on an rpc node: the downward exact-node operations, answered once this node
 /// has joined (until then `NotReady`). An rpc node is never an authority: every upward
 /// declaration, every mesh or fabric operation and every view read (`node.get`, `mesh.get`,
-/// `fabric.get`, which a node-admin answers from its view) is refused by name. `node.connections.get`
-/// of this exact birth is answered with the connections it holds.
+/// `fabric.get`, which a node-admin answers from its view) is refused by name. A `NodeLeft`, never
+/// sent, is refused as every receiver refuses it ([`rafka_node_admin_core::node_commands::refuse_node_left`]).
+/// `node.connections.get` of this exact birth is answered with the connections it holds.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// hands its peers to its mesh channel again, publishes its digest, and answers its current
@@ -1032,6 +1033,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a round command naming this node was decided"));
                 return Ok(reply);
+            }
+            // node-left is never sent: refused by name as a node-admin refuses it, never sent on to one.
+            if let StatusRequest::NodeLeft { node_id, .. } = &req {
+                let name = me.membership.book.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
+                return Ok(rafka_node_admin_core::node_commands::refuse_node_left(&me.membership.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
             let (node_id, incarnation) = match &req {
                 StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } | StatusRequest::GetConnections { node_id, incarnation } => (node_id, incarnation),

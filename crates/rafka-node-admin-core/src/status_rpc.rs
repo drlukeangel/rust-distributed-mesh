@@ -449,8 +449,9 @@ impl StatusAuthority {
         }
         match req {
             StatusRequest::NodeDrained { .. } => return self.accept_completion(&view, sender.as_ref(), req),
-            StatusRequest::NodeLeft { .. } => {
-                return StatusReply::NotReady { reason: format!("{}: node-left is not a call: a stopped birth reports left on the reply of its stop-node call", self.me) };
+            StatusRequest::NodeLeft { node_id, .. } => {
+                let name = view.births().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_default();
+                return crate::node_commands::refuse_node_left(&self.me.to_string(), &name, &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req);
             }
             StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
             StatusRequest::DeleteConnections { node_id, .. } if *node_id == self.node_id => return self.serve_command(&view, sender.as_ref(), peer, req).await,
@@ -630,7 +631,7 @@ impl StatusAuthority {
     /// §14). A completion with no open command is refused naming the mismatch, never counted
     /// toward another operation.
     fn accept_completion(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
-        let (StatusRequest::NodeDrained { node_id, .. } | StatusRequest::NodeLeft { node_id, .. }) = req else { unreachable!("accept_completion is called for completions only") };
+        let StatusRequest::NodeDrained { node_id, .. } = req else { unreachable!("accept_completion is called for node-drained only") };
         let subject = view.births().find(|n| n.node_id == *node_id).map(|n| (n.incarnation_id.as_ref(), n.name.to_string()));
         let caller = sender.map(|n| n.name.to_string()).unwrap_or_default();
         crate::node_commands::accept_completion(&self.commands, &self.me.to_string(), subject.as_ref().map(|(i, n)| (*i, n.as_str())), &caller, req)

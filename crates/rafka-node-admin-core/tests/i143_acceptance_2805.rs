@@ -36,12 +36,16 @@ fn acceptance_dir(cell: &str) -> PathBuf {
 /// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
+/// When it drops, whether the cell passed or panicked, every span it holds goes to the cell's
+/// `spans.json`, so a red is read from its own trace and never from a rerun.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
     capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
     /// The resource's `service.name` this capture exports under.
     service: String,
+    /// The cell's artifact directory.
+    dir: PathBuf,
 }
 
 fn capture(cell: &str) -> Capture {
@@ -49,7 +53,17 @@ fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2805-{cell}");
     let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
-    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service, dir: acceptance_dir(cell) }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        let flushed = self.capture.flush(Duration::from_secs(10));
+        let spans = self.rows();
+        let path = self.dir.join("spans.json");
+        let written = std::fs::create_dir_all(&self.dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&spans).unwrap()));
+        eprintln!("i143_acceptance_2805: the cell's {} spans -> {} (flush: {flushed:?}, write: {written:?})", spans.len(), path.display());
+    }
 }
 
 impl Capture {
@@ -70,9 +84,16 @@ impl Capture {
     /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
     fn spans(&self) -> Vec<Value> {
         self.capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
-        let finished = self.exporter.get_finished_spans().unwrap();
-        crate::assert_own_story(finished.iter().map(|s| s.name.as_ref()));
-        finished
+        let spans = self.rows();
+        crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap_or("")));
+        spans
+    }
+
+    /// Every span the exporter holds, as [`Capture::spans`] gives them, read without a flush.
+    fn rows(&self) -> Vec<Value> {
+        self.exporter
+            .get_finished_spans()
+            .unwrap_or_default()
             .into_iter()
             .map(|s| {
                 let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
@@ -89,10 +110,21 @@ impl Capture {
     }
 }
 
-/// A birth in the fixture: its record and the key it speaks with.
+/// A birth in the fixture: its record, the key it speaks with, and its one endpoint of that key,
+/// bound on its first call and shared by every client it speaks through, so no two live endpoints
+/// of the cell ever hold the same key.
 struct Birth {
     node: Node,
     key: SecretKey,
+    endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
+    caller: tokio::sync::OnceCell<(NodeRpcClient, Arc<StaticResolver>)>,
+}
+
+impl Birth {
+    /// The birth's one endpoint.
+    async fn endpoint(&self) -> iroh::Endpoint {
+        self.endpoint.get_or_init(|| async { rafka_node_rpc::endpoint::bind(self.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap() }).await.clone()
+    }
 }
 
 fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_primary: bool) -> Birth {
@@ -108,7 +140,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
     node.is_primary = is_primary;
     node.is_fabric_primary = is_fabric_primary;
     node.transport_addr = Some("127.0.0.1:1".parse().unwrap());
-    Birth { node, key }
+    Birth { node, key, endpoint: tokio::sync::OnceCell::new(), caller: tokio::sync::OnceCell::new() }
 }
 
 /// One authority (`me`) serving Status (and core ping, so a non-status call can be refused while
@@ -172,7 +204,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         .with_ready_gate(ready.clone())
         .seal(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().0 })
         .unwrap();
-    let ep = rafka_node_rpc::endpoint::bind(me.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = me.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode {
@@ -185,12 +217,17 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     Rig { me, server, _router: router, resolved, authority, ready }
 }
 
-/// `b`'s client to the rig's authority.
-async fn client_of(rig: &Rig, b: &Birth) -> NodeRpcClient {
-    let resolver = Arc::new(StaticResolver::new());
+/// `b`'s one client, over its one endpoint, resolving the rig's authority.
+async fn client_of<'a>(rig: &Rig, b: &'a Birth) -> &'a NodeRpcClient {
+    let (client, resolver) = b
+        .caller
+        .get_or_init(|| async {
+            let resolver = Arc::new(StaticResolver::new());
+            (NodeRpcClient::new(b.endpoint().await, resolver.clone()).with_caller_system("rdm"), resolver)
+        })
+        .await;
     resolver.insert(rig.resolved.clone());
-    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    NodeRpcClient::new(ep, resolver).with_caller_system("rdm")
+    client
 }
 
 async fn call(rig: &Rig, b: &Birth, req: &StatusRequest, opts: &CallOptions) -> RpcOutcome<StatusReply> {
@@ -265,7 +302,6 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let spans = capture.spans();
     let decisions: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-declaration").collect();
     assert!(decisions.iter().any(|s| s["attributes"]["op"] == "apply-mesh-state" && s["attributes"]["outcome"] == "already-applied"), "the retry is spanned as already-applied");
-    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let result = json!({
         "cell": cell,
         "mesh_id": mesh2.to_string(),
@@ -349,7 +385,6 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let spans = capture.spans();
     let commands = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-command").count();
     assert!(commands >= 2, "every node command naming the admin is spanned: {commands}");
-    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let result = json!({
         "cell": cell,
         "subject": node_id.to_string(),
@@ -499,9 +534,14 @@ const DECLARATION: &str = "rdm.node_admin.status.update.via-declaration";
 
 fn finish(capture: &Capture, dir: &std::path::Path, result: Value) -> Vec<Value> {
     let spans = capture.spans();
-    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     spans
+}
+
+/// How many connections the cell's authorities accepted from `b`'s endpoint.
+fn accepts_from(spans: &[Value], b: &Birth) -> usize {
+    let peer = b.key.public().fmt_short().to_string();
+    spans.iter().filter(|s| s["name"] == "rdm.node_rpc.connection.create.via-accept" && s["attributes"]["peer"] == peer.as_str()).count()
 }
 
 fn cell_dir(cell: &str) -> PathBuf {
@@ -650,8 +690,9 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
 /// CONTRACT (#2805, adversary): every backward move through the door is refused by its name with
 /// the current state it ran into, for each of the four node states and each of the four Mesh
 /// states; the same state again is AlreadyApplied, three times over, the same typed reply; a skip
-/// forward applies. What must NOT happen: a backward move applied, or a repeat answered anything
-/// but AlreadyApplied.
+/// forward applies. Each sender speaks from its one endpoint, so its calls ride one connection.
+/// What must NOT happen: a backward move applied, a repeat answered anything but AlreadyApplied, or
+/// a call from a fresh endpoint of a key another live endpoint holds.
 #[test]
 fn status_authority_refuses_every_backward_move_by_name() {
     let cell = "status_authority_refuses_every_backward_move_by_name";
@@ -703,6 +744,12 @@ fn status_authority_refuses_every_backward_move_by_name() {
         let skip = MeshId::mint();
         let to_dead = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Dead };
         assert_eq!(reply(&call(&mesh_rig, &fp, &to_dead, &CallOptions::default()).await), StatusReply::Applied, "an unseen Mesh may be told Dead: a skip is forward");
+        // A birth speaks from its one endpoint: each sender's calls rode one connection, never a fresh
+        // endpoint of the same key per call.
+        let accepted = capture.spans();
+        for b in senders.iter().chain([&fp]) {
+            assert_eq!(accepts_from(&accepted, b), 1, "{}: every call of the birth rode the one connection of its one endpoint", b.node.name);
+        }
 
         let spans = finish(&capture, &dir, json!({"cell": cell, "refused_node_moves": refused_node, "refused_mesh_moves": refused_mesh, "repeats_already_applied": repeats}));
         assert_eq!(refused_node, 6, "0+1+2+3 backward pairs");
@@ -902,8 +949,7 @@ fn status_route_loss_never_synthesizes_dead() {
         assert_eq!(reply(&call(&rig, &subject, &decl, &CallOptions::default()).await), StatusReply::Applied);
         let served_before = spans_where(&capture.spans(), DECLARATION, &[]).len();
         // No route: a client whose resolver holds nothing for the target.
-        let ep = rafka_node_rpc::endpoint::bind(subject.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let routeless = NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm");
+        let routeless = NodeRpcClient::new(subject.endpoint().await, Arc::new(StaticResolver::new())).with_caller_system("rdm");
         let to = NodeTarget::ExactNode(rig.me.node.node_id.clone());
         let again = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving };
         let (out, _) = routeless.call::<Status>(&to, &again, &CallOptions::default()).await;
@@ -939,9 +985,9 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let handoff = |rig: &Rig, mesh_id: MeshId, target: Node| {
             let (topology, me, me_id) = (rig.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
-            let ep_key = fp.key.clone();
+            let fp = &fp;
             async move {
-                let ep = rafka_node_rpc::endpoint::bind(ep_key, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+                let ep = fp.endpoint().await;
                 let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
                 let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
                 rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rafka_node_rpc_contract::status::MeshState::Pending, &target).await
@@ -1035,9 +1081,8 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
         let (topology, me, me_id) = (r.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
-        let ep = rafka_node_rpc::endpoint::bind(fp.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
-        let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
+        let client = NodeRpcClient::new(fp.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let gate = r.ready.clone();
         let opener = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(1200)).await;
