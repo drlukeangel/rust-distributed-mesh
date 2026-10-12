@@ -521,9 +521,11 @@ fn node_of_key(key: &str) -> Option<PathName> {
 /// is the authority: a remote executor's receipt reaches this admin's log by the Build topic, and
 /// nothing waits for that copy. A lost executor's run reported nothing: what it left is planned from
 /// the view again, and the create pipeline's fence decides against the world.
-/// Whether an attempt ended incomplete: it was handed back to `me` having moved nothing.
-fn ended_incomplete(me: &PathName, _executor: &PathName, to: &PathName, before: &str, after: &str) -> bool {
-    to == me && before == after
+/// Whether an attempt ended incomplete: `me` ran it as its executor and it was handed back to `me`
+/// having moved nothing. A hand-off to `me` that another executor reported is that executor's end,
+/// and the drive attaching to the finished run of it replays the same terminal.
+fn ended_incomplete(me: &PathName, executor: &PathName, to: &PathName, before: &str, after: &str) -> bool {
+    executor == me && to == me && before == after
 }
 
 /// What the next claim of a Build decides on: the first operation left, the receipts the Build
