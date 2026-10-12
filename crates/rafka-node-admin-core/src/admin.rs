@@ -2858,6 +2858,7 @@ pub async fn reconcile_drift(
             action = action_name,
             exit_code = crashed.as_ref().map(|(_, _, b)| b).or(first_exited.map(|(_, b)| b)).and_then(|b| b.code).map(|c| c.to_string()).unwrap_or_default(),
             exit_proof = crashed.as_ref().map(|(_, _, b)| b).or(first_exited.map(|(_, b)| b)).map(|b| b.source).unwrap_or("none"),
+            fabric_status = tracing::field::Empty,
         ),
     };
     let opened = crate::build_state::AttemptOpened {
@@ -2868,6 +2869,8 @@ pub async fn reconcile_drift(
         opened_by: me.to_string(),
         opened_at_ms: time.now_ms(),
     };
+    // A report counts as the new mesh-primary's only if it arrives at or after this moment.
+    let degraded_from = std::time::Instant::now();
     // The attempt's context is this span, on this fabric-primary, before the attempt is open to be claimed.
     if let Err(e) = contexts.put(&current.build_id, attempt, &span.in_scope(crate::build_claim::current_context)).await {
         span.in_scope(|| tracing::info!(error = %e, "the attempt's context could not be recorded; the attempt is not opened"));
@@ -2875,9 +2878,22 @@ pub async fn reconcile_drift(
     }
     match builds.open_attempt(&opened).await {
         Ok(()) => {
+            // R-DG1 (mesh-investigation.md steps 5-7): the fabric-primary gives the fully crashed mesh a new
+            // node-admin and, at that same moment, authors the fabric `degraded` as it does for the
+            // carrier-edge-lost verdict: the one `peer_recovery` slot the status projection reads
+            // ([`project_with`]) and [`crate::investigate::restore_peer_recovery`] clears on the new
+            // mesh-primary's report ("Only on that report, the fabric-primary clears the degraded
+            // health observation"). It is set once the attempt is open, never for a create that did not open.
+            if let Some((mesh, _, _)) = &crashed {
+                let lost = t.cohort(mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
+                exits.set_peer_recovery(Some(PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: time.now_ms(), opened_at: degraded_from, lost }));
+                span.record("fabric_status", "degraded");
+            }
             span.in_scope(|| {
                 if verdict.is_some() {
                     tracing::info!("the investigation decided the mesh's rebirth: the next attempt of the same Build, node.create of its node-admin, is open")
+                } else if crashed.is_some() {
+                    tracing::info!("every node of the fully crashed mesh is proven exited: the next attempt of the same Build, node.create of its node-admin, is open and the fabric is degraded")
                 } else {
                     tracing::info!("a birth the accepted topology names is proven gone: the next attempt of the same Build is open")
                 }

@@ -1655,11 +1655,10 @@ mod fully_crashed_mesh {
             assert_eq!(pass_with(&e, &mut started, &mut held, &|_| BEFORE_THE_DECISION, &records).await, None, "no decision yet: nothing opens");
             assert_eq!(records.peer_recovery(), None, "nothing was given to the mesh: the fabric is not degraded");
             let before = e.accepted.current(&*e.builds).await.unwrap();
-            assert!(pass_with(&e, &mut started, &mut held, &decided, &records).await.is_some(), "the decision plus the proof opens the create of {}", admins[0]);
+            assert_eq!(pass_with(&e, &mut started, &mut held, &decided, &records).await, Some((before.build_id.clone(), before.attempt + 1)), "the decision plus the proof opens the create of {}", admins[0]);
             let recovery = records.peer_recovery().expect("the create of the mesh's node-admin opened: the fabric-primary authors degraded");
             assert_eq!(recovery.mesh, peer_mesh, "degraded names the mesh given a node-admin");
             assert_eq!(recovery.lost.iter().cloned().collect::<HashSet<_>>(), found, "it names every node-admin the proof found");
-            assert_eq!(e.accepted.current(&*e.builds).await.unwrap().attempt, before.attempt + 1);
             // The mesh's new primary: a birth the proof did not find, in the view the fabric-primary reads.
             let reborn = IncarnationId::mint();
             let mut view = e.view.read().await.clone();
