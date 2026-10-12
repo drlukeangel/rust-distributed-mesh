@@ -268,8 +268,8 @@ pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_
 pub const DRAIN_ARMS: [&str; 8] = ["Admitted", "AlreadyAdmitted", "Stopped", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
-pub const STATUS_REQUESTS: u32 = 22;
-pub const STATUS_REPLIES: u32 = 36;
+pub const STATUS_REQUESTS: u32 = 26;
+pub const STATUS_REPLIES: u32 = 42;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -619,8 +619,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 STATUS_WIRE,
                 &[
-                    "fn requests_match_the_frozen_twenty_two_variant_wire_schema",
-                    "fn replies_match_the_frozen_thirty_six_variant_wire_schema",
+                    "fn requests_match_the_frozen_twenty_six_variant_wire_schema",
+                    "fn replies_match_the_frozen_forty_two_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
                     "Status::REPLY_VARIANTS",
