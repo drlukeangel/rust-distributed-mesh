@@ -2335,9 +2335,10 @@ impl View {
                 continue;
             }
             let own = d.node.name.mesh == self.mesh;
-            // The primary authors its own mesh's statuses: a projection of its own mesh on its own
-            // channel adds nothing; an aggregate of it on the backbone is held as heard, as before.
-            if own && authors && side == Side::MeshChannel {
+            // The primary authors its own mesh's statuses: a projection of its own mesh, on its own
+            // channel or on the backbone (a predecessor's last aggregate after this node took the
+            // seat), moves none of them.
+            if own && authors && matches!(side, Side::MeshChannel | Side::Backbone) {
                 continue;
             }
             if !(own && authors) && self.book.is_stopped(&d) {
@@ -2350,7 +2351,6 @@ impl View {
             }
             let prior = self.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
-                (Side::Backbone, true) if authors => self.book.record(d.clone()),
                 // An own-mesh member's status from its primary's projection: nothing else of it.
                 (Side::Backbone, true) | (Side::MeshChannel, true) => {
                     self.book.take_projected_status(&d, fence);
@@ -5364,6 +5364,27 @@ mod tests {
         assert!(view.book.record(itself(MemberStatus::ReadyForTraffic, 2)));
         view.take_snapshot(&members(2, itself(MemberStatus::Leaving, 1)), &fabric, Side::MeshChannel);
         assert_eq!(view.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "after it, by its NodeId: its own status stands");
+    }
+
+    /// CONTRACT (gossip.md §3.1 `Members`; node-status-heartbeat-connections.md §A.3: "a delayed
+    /// predecessor publication cannot switch receivers back"): the mesh-primary authors its own
+    /// mesh's statuses. An aggregate of its own mesh from another publisher (a predecessor's last one,
+    /// arriving after this node took the seat), on the backbone or its own channel, moves none of
+    /// them. Must NOT happen: the primary's authored status overwritten by a projection copy.
+    #[test]
+    fn a_mesh_primary_takes_no_status_of_its_own_mesh_from_another_publishers_projection() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = View::new("mesh1", "mesh1.admin.2");
+        view.primary.store(true, Ordering::Relaxed);
+        let predecessor = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(view.book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 5)), "the primary takes its member's report");
+        for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.admin.1".to_string()))] {
+            let late = Frame::Members { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::Draining, 6)], in_flight: vec![], departed: vec![] };
+            view.take_snapshot(&late, &fabric, side);
+            assert_eq!(view.book.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::ReadyForTraffic, 5)), "{side:?}: the authored status stands");
+            assert_eq!(view.book.member_statuses.lock().unwrap().get(id.as_str()).map(|(_, s)| *s), Some(MemberStatus::ReadyForTraffic));
+        }
     }
 
     /// CONTRACT (gossip.md §3.1 `MembersDelta` carries "overlay and departed changes"; §3.3 a delta is
