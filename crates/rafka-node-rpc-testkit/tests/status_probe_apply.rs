@@ -2,7 +2,7 @@
 //! the exact birth and gets its current state; commands `drain-node` and gets `Applied` (a repeat
 //! `AlreadyApplied`), after which the birth calls `node-drained` back; `ApplyNodeState` is not a
 //! drain command and is refused with the held state; a stale incarnation is refused with the one held; an
-//! upward declaration sent downward is refused by direction.
+//! upward declaration sent downward is refused by direction; a node-left, never sent, is refused by name.
 
 use crate::common;
 
@@ -22,8 +22,10 @@ use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusRep
 /// digest, while one naming another incarnation is `RejectedStaleIncarnation`;
 /// `ApplyNodeState(Draining)` is refused `RejectedInvalidNodeTransition` with the held state and moves nothing; a probe
 /// naming another incarnation is `RejectedStaleIncarnation` with the held one; a
-/// `DeclareNodeState` sent downward is refused by direction. What must NOT happen: a probe moving
-/// the state, or `ApplyNodeState` standing in for the drain command.
+/// `DeclareNodeState` sent downward is refused by direction; a `NodeLeft` is refused by name
+/// `RejectedUnmatchedCompletion { field: "command" }` (node-rpc-envelope.md "Node stop command pair":
+/// "NodeLeft keeps its position and is never sent; a receiver refuses it by name"). What must NOT
+/// happen: a probe moving the state, or `ApplyNodeState` standing in for the drain command.
 #[test]
 fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
     let cap = crate::common::capture("a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family");
@@ -94,6 +96,17 @@ fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
         // An upward declaration sent downward: refused by direction.
         let downward_declare = StatusRequest::DeclareNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic };
         assert!(matches!(call(downward_declare).await, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } }));
+        // node-left is never sent: refused by name as no command, as a node-admin refuses it, never
+        // sent on to "a node-admin" that would refuse it too.
+        let left = StatusRequest::NodeLeft { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_probe".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        assert_eq!(
+            call(left).await,
+            StatusReply::RejectedUnmatchedCompletion {
+                field: "command".into(),
+                expected: "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call".into(),
+                reported: "node-left stop-node:mesh1.rpc.1 (build bld_probe, attempt 1)".into(),
+            }
+        );
         // ApplyNodeState is not a drain command: refused with the held state, nothing moves.
         let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
         assert_eq!(call(apply).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });

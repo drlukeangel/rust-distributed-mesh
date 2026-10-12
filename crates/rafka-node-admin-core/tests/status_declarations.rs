@@ -1109,3 +1109,49 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
     assert_eq!(outcomes.len(), 4, "{spans:?}");
     eprintln!("trace {}: rdm.node_admin.node.update.via-apply-node-name outcomes={outcomes:?}", spans[0].0);
 }
+
+/// What a node-left call is answered: no command, by name.
+const NODE_LEFT_EXPECTED: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
+
+/// CONTRACT (node-rpc-envelope.md, "Node stop command pair": "NodeLeft keeps its position and is never
+/// sent; a receiver refuses it by name"; R-NR1: NotReady is the readiness gate's answer only): a
+/// `NodeLeft` call reaching the node-admin, from the birth it names, is refused
+/// `RejectedUnmatchedCompletion { field: "command" }`, the receiver holding no command a node-left
+/// could complete, with what it holds instead (`expected`) and what the call reported (`reported`). The
+/// admin holds an open stop-node of that exact birth under the same key, and it stays open: the stop's
+/// `Stopped` reply is its completion, never a node-left call. The refusal is the admin's reject span
+/// `rdm.node_admin.status.reject.via-node-left` naming the field, expected, reported, the subject (its
+/// path.name as the view holds it) and the caller. What must NOT happen: NotReady (the door is serving), the open stop completed, or a
+/// completion accepted.
+#[test]
+fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
+    let cap = capture();
+    let (stop_open, reply) = cap.run(async {
+        let (rig, b) = rig().await;
+        let rpc1 = &b["rpc1"];
+        let incarnation = rpc1.node.incarnation_id.clone().unwrap();
+        let key = rafka_node_admin_core::node_commands::CommandKey { build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into(), node_id: rpc1.node.node_id.clone(), incarnation: incarnation.clone() };
+        let completed = rig.authority.commands.open(key);
+        let left = StatusRequest::NodeLeft { node_id: rpc1.node.node_id.clone(), incarnation, build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let reply = reply(&call(&rig, rpc1, &left).await);
+        let stop_open = !*completed.borrow();
+        (stop_open, reply)
+    });
+    assert_eq!(
+        reply,
+        StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_EXPECTED.into(), reported: "node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)".into() },
+        "a node-left call is refused by name"
+    );
+    assert!(stop_open, "the open stop-node of the birth is not completed by a node-left call");
+    let spans = cap.spans("rdm.node_admin.status.reject.via-node-left");
+    assert_eq!(spans.len(), 1, "one reject span: {spans:?}");
+    let (trace_id, attrs) = &spans[0];
+    let a = |k: &str| attrs.get(k).cloned().unwrap_or_default();
+    assert_eq!(
+        (a("node"), a("op"), a("field"), a("expected"), a("reported"), a("name"), a("caller"), a("operation"), a("build_id"), a("attempt")),
+        ("mesh1.admin.1".to_string(), "node-left".to_string(), "command".to_string(), NODE_LEFT_EXPECTED.to_string(), "node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)".to_string(), "mesh1.rpc.1".to_string(), "mesh1.rpc.1".to_string(), "stop-node:mesh1.rpc.1".to_string(), "bld_1".to_string(), "1".to_string()),
+        "{attrs:?}"
+    );
+    assert!(cap.spans("rdm.node_admin.status.update.via-completion-accepted").is_empty(), "no completion is accepted");
+    eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)");
+}

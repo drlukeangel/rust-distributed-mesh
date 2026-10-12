@@ -1370,6 +1370,13 @@ fn a_take_seats_that_leaves_out_a_held_seat_is_refused_by_name_and_nothing_commi
 /// [`fabric`], each over its own [`FailingStorage`] (returned incumbent's, successor's). With
 /// `successor_holds_fabric_seat` false the successor holds no fabric seat record.
 async fn failing_pair(successor_holds_fabric_seat: bool) -> (Pair, Arc<FailingStorage>, Arc<FailingStorage>) {
+    failing_pair_holding(true, successor_holds_fabric_seat).await
+}
+
+/// [`failing_pair`] where each admin holds the fabric seat record (the incumbent at 7) only when its
+/// flag says so: an admin whose flag is false holds no fabric seat record, none was ever written to
+/// its seat records.
+async fn failing_pair_holding(incumbent_holds_fabric_seat: bool, successor_holds_fabric_seat: bool) -> (Pair, Arc<FailingStorage>, Arc<FailingStorage>) {
     let fabric_id = FabricId::mint();
     let (incumbent_store, successor_store) = (Arc::new(FailingStorage::default()), Arc::new(FailingStorage::default()));
     let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, incumbent_store.clone()).await;
@@ -1380,7 +1387,8 @@ async fn failing_pair(successor_holds_fabric_seat: bool) -> (Pair, Arc<FailingSt
         for p in [&incumbent, &successor] {
             a.resolver.insert(p.resolved.clone());
         }
-        if successor_holds_fabric_seat || a.resolved.name.mesh == "mesh1" {
+        let holds = if a.resolved.name.mesh == "mesh1" { incumbent_holds_fabric_seat } else { successor_holds_fabric_seat };
+        if holds {
             a.door.membership.seats().take(Seat::FabricPrimary, &holder_of(&incumbent, 7));
         }
         a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&incumbent, 1));
@@ -1391,16 +1399,15 @@ async fn failing_pair(successor_holds_fabric_seat: bool) -> (Pair, Arc<FailingSt
 
 /// CONTRACT (CLAUDE.md error rule: "Name what failed and where ... 'Never written' and 'could not be
 /// read' are different errors"; node-rpc-envelope.md "Node RPC readiness gate": NotReady means "the
-/// door or the handler cannot serve this call yet"): a handover call whose decision or commit needs
-/// a record that is absent or a `fabric.storage` write that fails is refused `RejectedSourceFailed`
-/// naming what failed, the operation and the cause, never NotReady. Four calls, each on a fresh pair:
-/// a TakeFabricPrimary to a successor that holds no fabric seat record (never written there); one
+/// door or the handler cannot serve this call yet"): a handover call whose commit needs a
+/// `fabric.storage` write that fails is refused `RejectedSourceFailed` naming what failed, the
+/// operation and the cause, never NotReady. Three calls, each on a fresh pair: a TakeFabricPrimary
 /// whose successor's store refuses the handover row at Committed(8); one whose successor's store
 /// refuses the fabric seat row; and a FabricPrimaryTaken whose incumbent's store refuses the handover
 /// row at Confirmed(8). Each is the receiver's reject span with reason `source-failed` and the same
 /// three fields; the successor's fabric seat never moves for a commit it could not make durable.
 #[test]
-fn a_handover_call_whose_seat_record_is_absent_or_whose_store_refuses_a_row_is_refused_by_name() {
+fn a_handover_call_whose_store_refuses_a_row_is_refused_by_name() {
     let cap = crate::mesh_leave_resume::capture();
     let op = "fabric-primary-handover:source-failed";
     let (replies, trace_id) = cap.run(async {
@@ -1409,8 +1416,6 @@ fn a_handover_call_whose_seat_record_is_absent_or_whose_store_refuses_a_row_is_r
         let replies = tracing::Instrument::instrument(
             async {
                 let mut replies = Vec::new();
-                let (f, _, _) = failing_pair(false).await;
-                replies.push(("absent-seat-record", send(&f.incumbent, &f.successor, take(&f, 7, op)).await));
                 let (f, _, successor_store) = failing_pair(true).await;
                 successor_store.failing("put_handover");
                 replies.push(("handover-row", send(&f.incumbent, &f.successor, take(&f, 7, op)).await));
@@ -1432,8 +1437,6 @@ fn a_handover_call_whose_seat_record_is_absent_or_whose_store_refuses_a_row_is_r
     let spans = cap.spans();
     keep_cell("source_failed", &trace_id, &spans);
     let fields: BTreeMap<&str, (String, String, String)> = replies.iter().map(|(case, r)| (*case, source_failed(r))).collect();
-    let (source, op_, cause) = &fields["absent-seat-record"];
-    assert!(source.contains("seat records") && source.contains("mesh2.admin.1") && op_.contains("fabric seat") && cause.contains("no fabric seat record"), "an absent record is named as never written: {:?}", fields["absent-seat-record"]);
     let (source, op_, cause) = &fields["handover-row"];
     assert!(source.contains("fabric.storage") && source.contains("mesh2.admin.1") && source.contains("handover row") && op_.contains("put") && op_.contains("Committed") && cause.contains(PLANTED), "{:?}", fields["handover-row"]);
     let (source, op_, cause) = &fields["seat-row"];
@@ -1441,12 +1444,71 @@ fn a_handover_call_whose_seat_record_is_absent_or_whose_store_refuses_a_row_is_r
     let (source, op_, cause) = &fields["confirmed-row"];
     assert!(source.contains("fabric.storage") && source.contains("mesh1.admin.1") && source.contains("handover row") && op_.contains("put") && op_.contains("Confirmed") && cause.contains(PLANTED), "{:?}", fields["confirmed-row"]);
     let refused = in_trace(&spans, &trace_id, REJECTED);
-    for (case, call, side) in [("absent-seat-record", "take", "successor"), ("handover-row", "take", "successor"), ("seat-row", "take", "successor"), ("confirmed-row", "taken", "incumbent")] {
+    for (case, call, side) in [("handover-row", "take", "successor"), ("seat-row", "take", "successor"), ("confirmed-row", "taken", "incumbent")] {
         let (source, op_, cause) = fields[case].clone();
         let named = refused.iter().filter(|s| s["attributes"]["call"] == call && s["attributes"]["side"] == side).map(source_fields).collect::<Vec<_>>();
         assert!(named.contains(&("source-failed".to_string(), source, op_, cause)), "{case}: the {side}'s reject span names the reason source-failed and the three fields: {named:?}");
     }
     assert!(in_trace(&spans, &trace_id, COMMITTED).is_empty(), "no commit is announced for a row that was not made durable");
+}
+
+/// CONTRACT (CLAUDE.md error rule: "Distinct facts get distinct arms and distinct spans. 'Never
+/// written' and 'could not be read' are different errors, and neither is an empty answer"): a
+/// handover call to an admin that holds no fabric seat record, none ever written to its seat records,
+/// is refused `RejectedRecordAbsent` naming the record and the admin whose records hold no such
+/// record. Two calls, each on a fresh pair: a TakeFabricPrimary to a successor that holds no fabric
+/// seat record (it cannot compare the epoch the command names), and a FabricPrimaryTaken to an
+/// incumbent that recorded no handover and holds no fabric seat record (it cannot compare the seat
+/// it held with the completion). Each is the receiver's reject span with reason `record-absent` and
+/// the `record` and `holder` it names. Nothing moves and nothing is written: no seat, no handover
+/// row. What must NOT happen: `RejectedSourceFailed` (a read that failed: nothing failed here),
+/// `RejectedNotAuthority` (a seat record naming another holder: there is none), or NotReady.
+#[test]
+fn a_handover_call_to_an_admin_that_holds_no_fabric_seat_record_is_refused_as_never_written() {
+    let cap = crate::mesh_leave_resume::capture();
+    let op = "fabric-primary-handover:record-absent";
+    let (replies, trace_id) = cap.run(async {
+        let root = tracing::info_span!("rdm.test.fabric.reject.via-record-absent");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let replies = tracing::Instrument::instrument(
+            async {
+                let mut replies = Vec::new();
+                let (f, _, successor_store) = failing_pair_holding(true, false).await;
+                replies.push(("take", send(&f.incumbent, &f.successor, take(&f, 7, op)).await));
+                assert_eq!(f.successor.door.membership.seats().fabric(), None, "the successor took no fabric seat");
+                assert!(successor_store.handovers().await.unwrap().is_empty() && successor_store.seats().await.unwrap().is_empty(), "the successor wrote no handover row and no seat row");
+                let (f, incumbent_store, _) = failing_pair_holding(false, true).await;
+                replies.push(("taken", send(&f.successor, &f.incumbent, taken(&f, 7, 8, op)).await));
+                assert_eq!(f.incumbent.door.membership.seats().fabric(), None, "the incumbent moved no fabric seat");
+                assert!(incumbent_store.handovers().await.unwrap().is_empty(), "the incumbent wrote no handover row");
+                replies
+            },
+            root,
+        )
+        .await;
+        (replies, trace_id)
+    });
+    let spans = cap.spans();
+    keep_cell("record_absent", &trace_id, &spans);
+    assert_eq!(
+        replies,
+        vec![
+            ("take", Reply::RejectedRecordAbsent { record: "the fabric-primary seat record of fabric1".into(), holder: "mesh2.admin.1".into() }),
+            ("taken", Reply::RejectedRecordAbsent { record: "the fabric-primary seat record of fabric1".into(), holder: "mesh1.admin.1".into() }),
+        ],
+        "each call is refused naming the record never written and the admin whose records hold none"
+    );
+    let refused = in_trace(&spans, &trace_id, REJECTED);
+    for (call, side, holder) in [("take", "successor", "mesh2.admin.1"), ("taken", "incumbent", "mesh1.admin.1")] {
+        let r = refused.iter().find(|s| s["attributes"]["call"] == call && s["attributes"]["side"] == side).unwrap_or_else(|| panic!("no {call} reject span at the {side}: {refused:?}"));
+        let a = |k: &str| r["attributes"][k].as_str().unwrap_or_default().to_string();
+        assert_eq!((a("reason"), a("record"), a("holder")), ("record-absent".to_string(), "the fabric-primary seat record of fabric1".to_string(), holder.to_string()), "{r:?}");
+        assert!(a("detail").contains("never written") && a("detail").contains('7'), "the detail says the record was never written and names the epoch it could not be compared with: {r:?}");
+        assert_eq!((a("source"), a("op"), a("cause")), (String::new(), String::new(), String::new()), "an absent record names no failed source: {r:?}");
+    }
+    for name in [COMMITTED, CONFIRMED, ANNOUNCED] {
+        assert!(in_trace(&spans, &trace_id, name).is_empty(), "nothing commits: {name}");
+    }
 }
 
 /// The seats fabric with each admin over its own [`FailingStorage`]; P's is returned.
