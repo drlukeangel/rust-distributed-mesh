@@ -6641,6 +6641,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
                                         let elections = ElectionLog::new(name.clone());
                                         let me = name.clone();
+                                        let birth = (node_id.clone(), incarnation.clone());
                                         let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
                                         // Not spawned behind the gate: the rebuild takes the view's lock, which every handler of a
                                         // parked admin reads (its start among them). It is held at its own wait instead
@@ -6663,9 +6664,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 }
                                                 held = now;
                                                 // The router serves once the Status authority is filled and the view it decides
-                                                // from holds this admin.
-                                                if authority.get().is_some() && held.contains(&me) {
-                                                    rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                // from holds this admin's exact birth, under whatever name it holds now (its
+                                                // join answer hands it its row's name, R-JN1), never by the name it booted under.
+                                                if !rpc_ready.load(std::sync::atomic::Ordering::SeqCst) && authority.get().is_some() {
+                                                    if let Some(own) = t.births().find(|n| n.node_id == birth.0 && n.incarnation_id.as_ref() == Some(&birth.1)) {
+                                                        rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                        tracing::info_span!("rdm.node_admin.node.serve.via-view-holds-birth", node = %own.name, node_id = %birth.0, incarnation_id = %birth.1.0, held_name = %own.name, boot_name = %me)
+                                                            .in_scope(|| tracing::info!("the Status authority is filled and this admin's view holds its exact birth: the Node RPC router serves"));
+                                                    }
                                                 }
                                                 drop(turn);
                                                 turn = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
