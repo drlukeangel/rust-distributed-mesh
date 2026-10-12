@@ -512,23 +512,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
 
                             // A delta that does not follow what this node holds desynchronizes that source; the node tops
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
-                            {
-                                let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone());
-                                membership.spawn_top_up(Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
-                                    let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), me.clone(), me_id.clone());
-                                    Box::pin(async move {
-                                        let mut done = rafka_mesh_transport::membership::TopUpDone::default();
-                                        for mesh in meshes {
-                                            let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None)
-                                                .await
-                                                .map_err(|e| format!("{mesh}: {e}"))?;
-                                            read.adopt_rafka_time(&rafka_time, &membership, &me, &me.split('.').next().unwrap_or_default().to_string(), &me_id, &primary.node.name.to_string()).map_err(|e| format!("{mesh}: {e}"))?;
-                                            done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
-                                        }
-                                        Ok(done)
-                                    })
-                                }));
-                            }
+                            membership.spawn_top_up(rafka_node_admin_core::topology_read::top_up_fetch(client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone()));
                             // From here the node is on the mesh, Pending: it answers status, drain-node and stop-node, and
                             // says Pending on the membership cadence while its `hydrate_before_ready` hook runs. It is
                             // published ReadyForTraffic only once the hook has passed ("born full").

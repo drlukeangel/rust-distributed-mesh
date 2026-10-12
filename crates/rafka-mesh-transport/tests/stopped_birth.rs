@@ -211,8 +211,10 @@ fn read_chunks(topology: &[rafka_mesh_transport::snapshot::SourceSnapshot], mesh
 /// from the mesh-primary's projection: once the primary's projection moves, in order, from the
 /// version carrying the stop to the one listing the birth after `node.joined`. Its status is then the
 /// projection's `Pending` whatever the birth's next heartbeat says, and `ReadyForTraffic` only when
-/// the projection says so. Must NOT happen: a heartbeat, or a projection entry from before the stop,
-/// ending the stop or moving the status.
+/// the projection says so. Where the stop ends, the member holds the birth again from the latest
+/// heartbeat of it it refused, with the projection's status and that heartbeat's liveness, so the birth
+/// never vanishes from its view. Must NOT happen: a heartbeat, or a projection entry from before the
+/// stop, ending the stop or moving the status; the birth missing from the view once its stop ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_mesh_primarys_projection() {
     let cell = "an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_mesh_primarys_projection";
@@ -275,6 +277,8 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     // pending one (the shape of its rejoin). Each is refused by name; the stop stands.
     assert!(!m.book.record(b(MemberStatus::ReadyForTraffic, 2)), "a late ready heartbeat of the stopped birth is refused");
     assert!(!m.book.record(b(MemberStatus::Pending, 3)), "a pending heartbeat of the stopped birth is refused");
+    // When the member heard heartbeat 3: the birth's own liveness word, whatever ends the stop later.
+    let heard_3 = std::time::Instant::now();
     assert!(m.book.get(id.as_str()).is_none(), "no heartbeat brought the stopped birth back");
     assert!(m.book.in_flight().contains(&stop), "only the mesh-primary's projection ends the stop");
 
@@ -287,7 +291,13 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     until("the member to end the stop from the primary's projection", || !m.book.in_flight().contains(&stop)).await;
     let v3 = version_at_m().unwrap();
     assert!(v3 > v2, "the stop ended at a newer version than the one carrying it");
-    assert!(m.book.get(id.as_str()).is_none(), "the projection gives the status, not liveness: the birth is held once its own heartbeat is heard");
+    // The birth never vanishes from the member's view: it is held again from the latest heartbeat of
+    // it the member refused (3), with the projection's status, and with that heartbeat's liveness: the
+    // projection gives the status, never liveness.
+    let since_3 = heard_3.elapsed();
+    let (again, silent) = m.book.get(id.as_str()).expect("the member holds the birth again once its projection ends the stop");
+    assert_eq!((again.node.incarnation.clone(), again.digest_seq, again.status), (inc.clone(), 3, MemberStatus::Pending), "held from the latest refused heartbeat, with the projection's status");
+    assert!(silent >= since_3, "its liveness is heartbeat 3's, never refreshed by the projection: silent {silent:?}, heard {since_3:?} ago");
     assert!(m.book.record(b(MemberStatus::ReadyForTraffic, 4)), "the birth's heartbeat is taken once the stop is over");
     assert_eq!(m.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "its status is the projection's Pending, not the heartbeat's ReadyForTraffic");
 
