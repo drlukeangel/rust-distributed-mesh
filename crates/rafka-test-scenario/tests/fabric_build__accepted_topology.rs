@@ -106,7 +106,11 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let late = nodes.iter().find(|n| n["name"] == "mesh1.admin.3").cloned().unwrap();
     let late_path = late["name"].as_str().unwrap().parse().unwrap();
     assert_eq!(estate.fabric_view_at(&late_path).await.expect("the late admin answers fabric.get").build_id.as_deref(), Some(c.as_str()));
-    let held = build_at(&estate, "mesh1.admin.3", &c).await.unwrap_or_else(|| panic!("the late admin's log holds no fact of the current Build {c}"));
+    // The late admin held the Build's acceptance before Ready; the completion is a later fact the fabric-primary
+    // appended and broadcast once, which every admin absorbs (`fabric_builds.rs` module docs: progress waits on no
+    // gossip), so the read awaits that fact as step 1 does.
+    let held = build_log::build_fact(&estate.carrier_at(&late_path).await, &c, "complete", Duration::from_secs(60), |b| b.state == rafka_node_admin_core::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    let held = serde_json::to_value(held).expect("a Build view serializes");
     assert_eq!(held["state"], "complete", "{held}");
     assert_eq!(paths(&held, "mesh1").len(), 6, "the late admin holds the accepted Build's topology: {held}");
     assert!(build_at(&estate, "mesh1.admin.3", &a).await.is_none(), "no completed Build history reaches it");
