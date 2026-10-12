@@ -146,10 +146,16 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
             other => panic!("a fact the admin never reports ends Indeterminate, not {other:?}"),
         }
 
-        // build.get awaited: a Build the fabric-primary holds no fact of is never reported; the call ends
-        // Indeterminate, naming the fact, the Build, the admin and how its last read ended.
+        // build.get awaited: the Build the fabric's pointer names is the read that held it; a Build the
+        // fabric-primary holds no fact of is never reported, and the call ends Indeterminate, naming the
+        // fact, the Build, the admin and how its last read ended.
+        let builds = Builds::new(carrier.clone());
+        let day0 = BuildId(running.control.accepted.build_id().await.expect("the Day-0 fabric's pointer names its Build").0);
+        let held = running.control.builds.read_build(&rafka_node_admin_core::build::BuildId(day0.0.clone())).await.unwrap_or_else(|e| panic!("the admin's Day-0 Build: {e}"));
+        let awaited = builds.fact(&day0, "the Build is held", WRONG, |b| b.build_id == day0).await.unwrap_or_else(|e| panic!("build.get awaited: {e}"));
+        assert_eq!((awaited.attempt, awaited.steps.len()), (held.attempt, held.steps.len()), "the Build as the admin holds it: {awaited:#?}");
         let unheld = BuildId(NodeId::mint().to_string());
-        match Builds::new(carrier.clone()).fact(&unheld, "the Build is held", Duration::from_secs(1), |b| b.build_id == unheld).await {
+        match builds.fact(&unheld, "the Build is held", Duration::from_secs(1), |b| b.build_id == unheld).await {
             Err(CallEnd::Indeterminate { reason }) => assert!(
                 reason.contains("the Build is held") && reason.contains(&unheld.0) && reason.contains(&me.node.name.to_string()) && reason.contains("unknown-build"),
                 "the unreported fact is named with the Build, the admin and how its last read ended: {reason}"
