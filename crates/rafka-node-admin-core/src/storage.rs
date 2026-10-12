@@ -870,6 +870,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// CONTRACT (the id index names exactly the row each node holds; R13: one rename write path,
+    /// `node_rows::move_row`): a rename's move whose put of the new row ended between the row file and
+    /// its id index entry (two files) is retried, and the retry finds the node's row already at the new
+    /// name: it leaves that row as it is, names it in the index and lets go of the old key. What must
+    /// NOT happen: the node left holding its new row with no entry, so the view lists a stopped birth
+    /// at the name it published before the move.
+    #[tokio::test]
+    async fn a_move_retried_over_a_row_written_without_its_entry_leaves_the_row_named() {
+        let d = crate::record_store::tempdir("row-id-torn-move");
+        let root = crate::store_root::StoreRoot::at(&d.join("root"));
+        let file = FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
+        let from = row("mesh1.rpc.1");
+        assert_eq!(file.put_node_row(&from).await.unwrap(), Ok(()));
+        let to = NodeRow { name: from.name.renamed(), ..from.clone() };
+        // The first move's put wrote the row at `to` and ended before its entry.
+        std::fs::write(root.nodes("mesh1").join("rows").join(format!("{}.json", to.name)), serde_json::to_vec(&serde_json::json!({"format": ROW_FORMAT, "record": to})).unwrap()).unwrap();
+        let mut record = crate::model::Node::allocated(from.name.clone());
+        record.node_id = from.node_id.clone();
+        record.status = from.status;
+        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), &from.name, &to.name).await.unwrap();
+        assert_eq!(file.node_row_at(&from.name).await.unwrap(), None, "the old key is let go");
+        assert_eq!(file.node_row_at(&to.name).await.unwrap(), Some(to.clone()), "the row the node held there is left as it is");
+        assert_eq!(file.node_row_name("mesh1", &from.node_id).await.unwrap(), Some(to.name.clone()), "the row the node holds is named in the id index");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     fn keys(dir: &std::path::Path) -> Vec<String> {
         let mut k: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".json")).collect();
         k.sort();
