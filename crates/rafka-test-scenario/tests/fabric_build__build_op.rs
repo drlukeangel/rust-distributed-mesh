@@ -644,11 +644,12 @@ async fn a_successor_fabric_primary_re_running_create_mesh_claims_with_the_build
     let mut resumed = carrier.resubmit(&build_id, attempt).await.expect("the successor accepts the re-submit by build_id");
     assert_eq!(resumed.build_id(), &build_id, "never a second Build");
     until_complete(&mut resumed).await;
+    // The estate is read and stopped through the admin that holds the seat now.
+    estate.admin = base.clone();
     estate.settled_shape(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(90)).await;
     let mesh2 = after.admin.mesh("mesh2").await.expect("mesh2's view");
     assert_eq!(mesh2.id.map(|id| id.to_string()), Some(claimed.clone()), "mesh2 is the mesh the lost fabric-primary's claim wrote");
 
-    estate.admin = base.clone();
     estate.stop().await;
     let spans = estate.spans();
     let claims: Vec<&Value> = spans_named(&spans, "rdm.node_admin.mesh.create.via-mesh-row").into_iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && c["attributes"]["moment"] == "claim").collect();
