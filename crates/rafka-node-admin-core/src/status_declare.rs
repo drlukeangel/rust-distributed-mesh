@@ -713,6 +713,30 @@ mod tests {
         assert!(!d.due(&me_id, &v, &none).iter().any(|(p, _)| p.key == mesh_key()));
     }
 
+    /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets
+    /// its status"): a node-admin that is not its mesh's primary owes its own node.started
+    /// (DeclareNodeState(ReadyForTraffic)) to its own mesh's primary, not to the fabric-primary, and
+    /// once that primary answered, a move of the fabric seat owes it to nobody new. Must NOT happen:
+    /// the declaration sent to the fabric-primary of another mesh.
+    #[test]
+    fn a_node_admin_owes_its_own_node_started_to_its_own_mesh_primary() {
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let v = view("mesh1.admin.1", "mesh2.admin.1");
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let none = BTreeSet::new();
+        let d = Declarer::new();
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", true, false, None, &v, &ids);
+        let due: Vec<(Key, String)> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
+        assert_eq!(due, vec![(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string())], "owed to mesh1's primary");
+        let mesh1_primary = v.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").unwrap().clone();
+        d.pending.lock().unwrap().remove(&Key::OwnState("inc".into(), NodeState::ReadyForTraffic));
+        d.done.lock().unwrap().insert(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), ("applied".into(), mesh1_primary.node_id.clone(), mesh1_primary.incarnation_id.clone()));
+        let moved = view("mesh1.admin.1", "mesh1.admin.1");
+        let moved = Topology { nodes: moved.nodes.into_iter().map(|mut n| { if n.name == mesh1_primary.name { n.incarnation_id = mesh1_primary.incarnation_id.clone(); } n }).collect(), ..moved };
+        d.reowe_moved(&me, &moved);
+        assert!(d.pending.lock().unwrap().is_empty(), "the fabric seat moved, its own mesh's primary did not: nothing is owed again");
+    }
+
     /// CONTRACT: an obligation newly created by this admin's own readiness or the declare gate,
     /// with no topology change, is due at once (the wake that finds it is the declarer's input).
     #[test]

@@ -1225,6 +1225,40 @@ mod tests {
         }
     }
 
+    /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets
+    /// its status"; states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// mesh-primary" from "the node's node.started report"): a node-admin's declaration is applied by
+    /// its own mesh's primary like every other kind's. mesh2's primary applies mesh2.admin.2's
+    /// ReadyForTraffic; the fabric-primary, of mesh1, refuses it naming the seat it needs, the
+    /// mesh-primary of mesh2. Must NOT happen: a node-admin's status set by the fabric-primary.
+    #[test]
+    fn a_node_admins_declaration_is_applied_by_its_own_mesh_primary_never_the_fabric_primary() {
+        let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {
+            let mut n = node(name);
+            n.kind = NodeKind::NodeAdmin;
+            n.mesh = mesh.into();
+            n.status = crate::model::NodeStatus::ReadyForTraffic;
+            n.is_primary = primary;
+            n.is_fabric_primary = fabric_primary;
+            n
+        };
+        let fp = admin("mesh1.admin.1", "mesh1", true, true);
+        let m2p = admin("mesh2.admin.1", "mesh2", true, false);
+        let m2a = admin("mesh2.admin.2", "mesh2", false, false);
+        let view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![fp.clone(), m2p.clone(), m2a.clone()],
+        };
+        let declare = StatusRequest::DeclareNodeState { node_id: m2a.node_id.clone(), incarnation: m2a.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let (reply, effect) = decide(&authority_of(&m2p, view.clone()), &view, &Declared::default(), &declare);
+        assert_eq!(reply, R::Applied, "mesh2's primary applies its own mesh's admin's ReadyForTraffic");
+        assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::ReadyForTraffic)) if row.node_id == m2a.node_id), "{effect:?}");
+        let (reply, effect) = decide(&authority_of(&fp, view.clone()), &view, &Declared::default(), &declare);
+        assert_eq!(reply, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } }, "the fabric-primary of mesh1 is not mesh2.admin.2's authority");
+        assert!(effect.is_none());
+    }
+
     /// CONTRACT (fabric-node-lifecycle.md 4.3: "Once a node-admin is created in a mesh it is that
     /// mesh's primary ... and writes every status from then on"): the fabric-primary's
     /// ApplyMeshState is applied by the mesh's primary. A receiver whose view names ANOTHER admin
