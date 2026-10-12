@@ -1638,6 +1638,59 @@ mod tests {
         p
     }
 
+    /// CONTRACT (the Build log is read on async workers: the fabric-primary's climb reads its Build
+    /// through `AcceptedStore::current` -> `read_build` (accepted.rs `current`, fabric_rounds.rs
+    /// `step_*`); `LocalBuildLog::derive_on_every_fact`: what is derived from the facts never lags a
+    /// reader of them): while a push into the journal is held inside the installed derivation, a
+    /// reader of the log on another thread (`read_build`, `list_active`) answers at once, from the log
+    /// as it stood before the held fact: it never sees that fact before its derivation ran. Once the
+    /// derivation ends, the push returns and the reader sees the fact. Must NOT happen: a reader
+    /// waiting on a std lock behind a writer's whole-log derivation (a worker thread taken from the
+    /// runtime for as long as the fold and its book locks take).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reader_of_the_journal_never_waits_behind_a_push_held_mid_derivation() {
+        let dir = tmp();
+        let j = Arc::new(FileJournal::open(&dir).await.unwrap());
+        let b1 = BuildId("b1".into());
+        j.publish_accepted(&intent("b1")).await.unwrap();
+        j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+        let held_op = "restart-node:mesh1.rpc.9";
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (entered_tx, release_rx) = (Mutex::new(entered_tx), Mutex::new(release_rx));
+        j.derive_on_every_fact(Arc::new(move |facts: &[BuildFact]| {
+            if facts.iter().any(|f| matches!(f, BuildFact::Step(s) if s.operation == held_op)) {
+                let _ = entered_tx.lock().unwrap().send(());
+                let _ = release_rx.lock().unwrap().recv();
+            }
+        }));
+        let writer = tokio::spawn({
+            let j = j.clone();
+            async move { j.append_step_receipt(&step("b1", 1, held_op)).await }
+        });
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(std::time::Duration::from_secs(30)).expect("the push enters the derivation")).await.unwrap();
+        // The reader, on a thread of its own: a reader blocked on the log's lock cannot answer.
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let reader = {
+            let (j, b1) = (j.clone(), b1.clone());
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                let read = rt.block_on(async { (j.read_build(&b1).await, j.list_active().await) });
+                let _ = read_tx.send(read);
+            })
+        };
+        let answered = read_rx.recv_timeout(std::time::Duration::from_secs(2));
+        let (read, active) = answered.expect("the reader answered while the push was held mid-derivation");
+        let read = read.unwrap();
+        assert!(read.steps.iter().all(|s| s.operation != held_op), "the held fact is not seen before its derivation ran: {:?}", read.steps);
+        assert_eq!(active.unwrap().iter().map(|p| p.build_id.clone()).collect::<Vec<_>>(), vec![b1.clone()]);
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+        reader.join().unwrap();
+        assert!(j.read_build(&b1).await.unwrap().steps.iter().any(|s| s.operation == held_op), "once the derivation ran, the reader sees the fact");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn a_same_admin_restart_replays_the_journal_to_the_same_view() {
         let dir = tmp();
