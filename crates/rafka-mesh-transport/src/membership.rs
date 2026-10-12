@@ -7036,4 +7036,45 @@ mod tests {
         let refused = spans.named("rdm.mesh.membership.reject.via-stop-older-than-projection");
         assert_eq!(refused.iter().map(|f| (f["node"].clone(), f["topology_version"].clone(), f["held_version"].clone(), f["held_channel"].clone())).collect::<Vec<_>>(), vec![("mesh1.rpc.7".to_string(), "4".to_string(), "5".to_string(), "mesh-channel".to_string())], "{refused:#?}");
     }
+
+    /// Two receive paths of one node (its backbone and its mesh channel) applying a projection of
+    /// the stopped birth `d` at once, each having found the stop held and the projection past it.
+    fn both_paths_end_the_stop(book: &DigestBook, d: &MeshDigest, fence: &Fence) {
+        for _ in 0..2 {
+            book.stop_ended_in_projection(d, fence);
+        }
+    }
+
+    /// CONTRACT (gossip.md "Node-stopped lifecycle overlay": the stop stays "until the next lifecycle
+    /// op on that exact birth"; node_stop gate 4679736d, mesh1.admin.2: the stop of mesh1.rpc.1 ended
+    /// twice, trace 09b25fab91c3239df30466a89f81d507 on the mesh channel and
+    /// 4b4eac62071c2a5054e464c5f3a429af on the backbone, the second naming `stop_carried_at=-1`): a
+    /// node-admin applies its primary's projection on its backbone and on its mesh channel, each under
+    /// its own receiver. When both find the stop held and the projection past it, the stop ends once:
+    /// one span, carrying the version the stop was carried at, and the birth held again once, from
+    /// the latest heartbeat refused while the stop stood. Must NOT happen: a second end of a stop
+    /// already ended, naming no carried version.
+    #[test]
+    fn a_stop_two_receive_paths_find_moved_past_at_once_ends_once() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let view = View::new("mesh1", "mesh1.admin.2");
+        let primary = birth_at("mesh1.admin.1", 1);
+        view.book.seats.take(Seat::MeshPrimary, &seat_of(&primary, 1));
+        let rpc = birth_at("mesh1.rpc.1", 5);
+        let stop = op_at("mesh1.rpc.1", &rpc.node.node_id, &rpc.node.incarnation, "stop-node:mesh1.rpc.1");
+        assert!(view.book.record(rpc.clone()));
+        view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher_of(&primary), 11), &FabricId::parse("fab000000001").unwrap(), "mesh-channel");
+        let mut late = rpc.clone();
+        late.digest_seq = 6;
+        assert!(!view.book.record(late), "the stopped birth's heartbeat is refused and kept as the latest");
+        let mut listed = rpc.clone();
+        listed.status = MemberStatus::Pending;
+        let fence = Fence { publisher: publisher_of(&primary).to_string(), channel: "mesh-channel", held: Some((publisher_of(&primary).to_string(), 11)), version: 12, prior_stops: BTreeSet::new(), post_stops: BTreeSet::new() };
+        both_paths_end_the_stop(&view.book, &listed, &fence);
+        assert!(view.book.in_flight().is_empty(), "the stop is over");
+        let ended = spans.named("rdm.mesh.membership.update.via-stop-ended-in-projection");
+        assert_eq!(ended.iter().map(|f| (f["stop_carried_at"].clone(), f["held_again"].clone(), f["held_digest_seq"].clone())).collect::<Vec<_>>(), vec![("11".to_string(), "true".to_string(), "6".to_string())], "ended once: {ended:#?}");
+    }
 }
