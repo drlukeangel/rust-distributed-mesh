@@ -187,7 +187,7 @@ async fn put(
     span.record("tags_arrived", crate::node_rows::labels(&tags.difference(&was).cloned().collect()).as_str());
     span.record("tags_left", crate::node_rows::labels(&was.difference(tags).cloned().collect()).as_str());
     if to == held.name {
-        let row = NodeRow { name: held.name.clone(), node_id: node_id.clone(), status: held.status, config, tags: tags.clone() };
+        let row = NodeRow { name: held.name.clone(), node_id: node_id.clone(), status: held.status, config, tags: tags.clone(), allocated: None };
         match storage.put_node_row(&row).await {
             Ok(Ok(())) => door.written().hold(&row),
             Ok(Err(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
@@ -307,9 +307,9 @@ mod tests {
     async fn a_successor_taking_the_name_from_new_carries_the_old_rows_config() {
         let storage = MemoryNodesStorage::default();
         let successor = stopped("mesh1.rpc.1.new", tier("fresh"));
-        let predecessor = NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Leaving, config: tier("gold"), tags: labels(&["red"]) };
+        let predecessor = NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Leaving, config: tier("gold"), tags: labels(&["red"]), allocated: None };
         storage.put_node_row(&predecessor).await.unwrap().unwrap();
-        storage.put_node_row(&NodeRow { name: successor.name.clone(), node_id: successor.node_id.clone(), status: NodeStatus::Leaving, config: tier("fresh"), tags: Default::default() }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: successor.name.clone(), node_id: successor.node_id.clone(), status: NodeStatus::Leaving, config: tier("fresh"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
         let (me, me_id, view, moved) = fixture(&successor);
         let (door, rename) = (config_door().await, crate::status_rpc::Rename::default());
         let doors = UpdateDoors { configs: Some(&door), moved: &moved, rename: &rename };
@@ -323,7 +323,7 @@ mod tests {
         // The predecessor giving up the name keeps its own config and, renamed by a recipe step, its tags.
         let storage = MemoryNodesStorage::default();
         let held = stopped("mesh1.rpc.2", tier("silver"));
-        storage.put_node_row(&NodeRow { name: held.name.clone(), node_id: held.node_id.clone(), status: NodeStatus::Leaving, config: tier("silver"), tags: labels(&["blue", "red"]) }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: held.name.clone(), node_id: held.node_id.clone(), status: NodeStatus::Leaving, config: tier("silver"), tags: labels(&["blue", "red"]), allocated: None }).await.unwrap().unwrap();
         let (me, me_id, view, moved) = fixture(&held);
         let (door, rename) = (config_door().await, crate::status_rpc::Rename::default());
         let doors = UpdateDoors { configs: Some(&door), moved: &moved, rename: &rename };

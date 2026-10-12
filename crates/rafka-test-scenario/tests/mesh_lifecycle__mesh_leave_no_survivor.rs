@@ -4,7 +4,7 @@
 //! lost mid-tier, and the fabric-primary creates the one node-admin the leaving mesh may gain. The
 //! run and the shared assertions are `mesh_lifecycle__mesh_leave_resume`'s (form (a)).
 
-use crate::mesh_lifecycle__mesh_leave_resume::{assert_resumed, attr_u, primary_lost_mid_leave, s, start_ns};
+use crate::mesh_lifecycle__mesh_leave_resume::{assert_resumed, attr_u, primary_lost_mid_leave, s, start_ns, Rpc1};
 use rafka_test_scenario::estate::named;
 use serde_json::Value;
 
@@ -19,7 +19,7 @@ use serde_json::Value;
 /// under it and the lost primary's exit is the one receipt retained.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_fabric_primary_creates() {
-    let run = primary_lost_mid_leave("a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_fabric_primary_creates", 1, true).await;
+    let run = primary_lost_mid_leave("a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_fabric_primary_creates", 1, Rpc1::Stopped).await;
     let created: Vec<&Value> = named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").into_iter().filter(|sp| sp["attributes"]["outcome"] == "created").collect();
     assert_eq!(created.len(), 1, "the fabric-primary created one admin for mesh2: {created:?}");
     assert_eq!(s(&created[0]["attributes"]["node"]), "mesh2.admin.2", "{}", created[0]);

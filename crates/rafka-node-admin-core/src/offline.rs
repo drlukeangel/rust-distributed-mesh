@@ -35,7 +35,8 @@ pub(crate) struct SilentNode {
 /// book at `now` (`now_ms` on the local clock): the birth's last receipt plus the staleness floor
 /// `floor`, the instant its silence passed the floor (node-recovery.md "Detection and proof" step 1:
 /// "Each node's pruner marks a member `PendingReconnect` once it is unheard past the staleness
-/// floor"). A birth the book holds no receipt of, a receipt of another incarnation, or one heard
+/// floor"). A birth the book holds only from its mesh-primary's projection is unheard since the book
+/// first held it. A birth the book holds nothing of, a receipt of another incarnation, or one heard
 /// within the floor carries no mark.
 pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, book: &rafka_mesh_transport::membership::DigestBook, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
     watched
@@ -43,6 +44,7 @@ pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model:
         .map(|n| {
             let marked_at_ms = book
                 .get_at(n.node_id.as_str(), now)
+                .or_else(|| book.projected_at(n.node_id.as_str(), now))
                 .filter(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && *unheard >= floor)
                 .map(|(_, unheard)| now_ms.saturating_sub((unheard - floor).as_millis() as u64));
             SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string(), incarnation: n.incarnation_id.clone(), marked_at_ms }

@@ -131,8 +131,8 @@ impl DeploymentProvider for Provider {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
-        Ok(None)
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
+        Ok(rafka_node_admin_core::deployment::provider::Found::NeverLaunched)
     }
 }
 

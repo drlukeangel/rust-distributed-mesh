@@ -141,7 +141,7 @@ async fn period(cp: &ControlPlane, builds: &MemoryBuildStateAdapter, (path, node
         BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Step(BuildStepReceipt { build_id: b0.clone(), attempt, operation, step: "Complete".into(), outcome: StepOutcome::Complete, output: stop.then(|| serde_json::to_value(&op).unwrap()), executor: Some("mesh1.admin.1".into()) }),
         BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),
-    ]);
+    ]).await;
 }
 
 fn now(cp: &ControlPlane) -> u64 {
@@ -240,7 +240,7 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
         BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Recipe, action: Some(replace_recipe(&other)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
         BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
-    ]);
+    ]).await;
     let referenced = cp.collect_stopped(&candidates[1], TTL).await;
     assert!(matches!(&referenced, Err(Refusal::Reject(r)) if r.reason() == "referenced-by-open-build"), "{referenced:?}");
 
@@ -272,7 +272,7 @@ async fn a_stopped_birth_an_open_replace_recipe_references_is_skipped() {
         BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Recipe, action: Some(replace_recipe(&old)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
         BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
-    ]);
+    ]).await;
 
     let verdicts = cp.scan_stopped(TTL, now(&cp)).await;
     assert!(verdicts.contains(&Verdict::Referenced { node: old.0.clone(), build_id: b0.clone() }), "{verdicts:?}");
@@ -361,7 +361,7 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     }
     *first.topology.write().await = moved.clone();
     let held = Arc::new(MemoryBuildStateAdapter::new());
-    held.absorb(&builds.facts().await.unwrap());
+    held.absorb(&builds.facts().await.unwrap()).await;
     let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), desired(&moved), "mesh1.admin.2").await.unwrap();
     let successor = ControlPlane::new(held.clone(), accepted, "mesh1.admin.2".parse().unwrap(), moved, crate::adopted_time());
     let b = successor.accepted.build_id().await.unwrap();
@@ -417,7 +417,7 @@ async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_
         BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Step(BuildStepReceipt { build_id: b0.clone(), attempt, operation: format!("stop-node:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: Some(serde_json::json!("not a lifecycle op")), executor: Some("mesh1.admin.1".into()) }),
         BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),
-    ]);
+    ]).await;
 
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     assert_eq!(cp.accepted.build_id().await, Some(b0), "nothing was submitted");

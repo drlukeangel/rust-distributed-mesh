@@ -97,7 +97,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             .unwrap_or_else(|e| panic!("{} comes up: {e}", launch.name));
             (running, seams.get().cloned().expect("the node handed its seams"))
         };
-        let (_renamed_node, renamed_seams) = start(renamed.clone()).await;
+        let (renamed_node, renamed_seams) = start(renamed.clone()).await;
         let (peer_node, peer_seams) = start(peer.clone()).await;
 
         // Both births are held ready by the admin, and each by the other.
@@ -137,7 +137,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         };
         let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 1, operation: format!("stop-node:{born}") };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
-        admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default() });
+        admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None });
         let key = node::load_or_mint_key(&root.join(born.to_string())).unwrap();
         admin.deployed_as(&renamed, &key, taken.clone(), Some(born.clone()));
         let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 2, operation: format!("start-node:{taken}") };
@@ -159,6 +159,23 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         };
         if tokio::time::timeout(Duration::from_secs(10), took).await.is_err() {
             panic!("the peer's book holds {taken} for the birth, and its resolver still names it {:?}", resolver.resolve(&NodeTarget::ExactNode(renamed.node_id.clone())).map(|n| n.name));
+        }
+
+        // The renamed node names the peer too: an accepted connection is Direct Connected evidence only
+        // from a peer the accepting node's resolver names (connections.md §10; rafka-node-rpc
+        // server.rs `with_connection_observer`: a peer the resolver does not hold is reported to
+        // nothing), and a node takes a peer's birth into its resolver from that peer's own digest
+        // (gossip.md §3.1: an own-mesh birth's endpoints come from its Digest, its status from the
+        // projection). Its restart may come before the peer's next heartbeat reaches it.
+        let own_resolver = &renamed_node.node_rpc.resolver;
+        let mut own_moved = own_resolver.changes().expect("the live resolver ticks on every answer change");
+        let holds_peer = async {
+            while own_resolver.resolve(&NodeTarget::ExactNode(peer.node_id.clone())).is_err() {
+                own_moved.changed().await.unwrap();
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(10), holds_peer).await.is_err() {
+            panic!("the renamed node's resolver never named the peer {peer_name}: {:?}", own_resolver.resolve(&NodeTarget::ExactNode(peer.node_id.clone())));
         }
 
         // The peer dials the renamed node: one entry at each end.
@@ -303,7 +320,7 @@ fn a_node_renamed_while_stopped_records_its_join_connection_under_the_handed_nam
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         seams.connections.drain().await;
         let at_stop = kept_log(&store, &fabric, &born).len();
-        admin.put_row(NodeRow { name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default() });
+        admin.put_row(NodeRow { name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(born.clone()));
         let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_join_row".into(), attempt: 2, operation: format!("start-node:{taken}") };
         assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");

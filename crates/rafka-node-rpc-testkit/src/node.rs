@@ -1054,12 +1054,15 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(reply);
             }
             if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
-                // A member checks in with its mesh's primary: the node-admin holding this node's mesh
-                // seat (fabric-state-commit.md: "node → mesh-primary → fabric-primary").
+                // A member checks in with the primary that commanded it (fabric-state-commit.md, round
+                // sequence: "M->>N: commit-state", "N->>M: state-committed"): the caller, which a new
+                // primary is before this node hears it take the seat. Only a caller no projection this
+                // node holds names is checked in at the node-admin its seat book names.
                 let mesh = me.digest.node.name.mesh.clone();
-                let reply = match me.membership.seats().mesh(&mesh) {
-                    None => StatusReply::NotReady { reason: format!("{} has not yet heard who holds the primary seat of {mesh}", me.digest.node.name) },
-                    Some(held) => me.own.serve(Some(&held.node_id), None, &req).await.expect("a round op"),
+                let commander = sender.as_ref().map(|d| d.node.node_id.clone()).or_else(|| me.membership.seats().mesh(&mesh).map(|held| held.node_id));
+                let reply = match commander {
+                    None => StatusReply::NotReady { reason: format!("{} names no caller at endpoint {} and has not yet heard who holds the primary seat of {mesh}", me.digest.node.name, peer.endpoint_id) },
+                    Some(commander) => me.own.serve(Some(&commander), None, &req).await.expect("a round op"),
                 };
                 tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a round command naming this node was decided"));

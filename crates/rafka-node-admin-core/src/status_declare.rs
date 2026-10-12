@@ -18,7 +18,9 @@
 //! A key is owed again when the authority is another node or a new incarnation of the same node.
 //! A Mesh declaration is owed by the Mesh's primary and a fabric event by the fabric-primary.
 //! When this admin no longer holds the seat that owes a key, the key is withdrawn: the seat's
-//! new holder owes it from its own view.
+//! new holder owes it from its own view. A round completion is withdrawn too once the accepted
+//! Build has moved past its round (`FabricRounds::withdraw_superseded`, before each round of
+//! sends): the completion of a superseded round is never sent.
 //! RejectedStaleBirth               this birth is superseded in the authority's view: done, named
 //! RejectedInvalidTransition        the authority holds a later state: done, named
 //! NotSent | Indeterminate          failed delivery: sent again when the route is viable again
@@ -133,6 +135,13 @@ pub(crate) enum Key {
     Round(String),
 }
 
+impl Key {
+    /// The completion of `round`: one key per round, so a round's completion is owed once.
+    pub(crate) fn round(round: &crate::fabric_state::RoundKey) -> Self {
+        Self::Round(format!("{}/{}/{}/{}", round.kind.completion(), round.fabric_id, round.build_id, round.attempt))
+    }
+}
+
 /// Who receives a declaration: resolved from the view at each attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Authority {
@@ -207,6 +216,11 @@ impl Declarer {
     #[cfg(test)]
     pub fn owed(&self) -> usize {
         self.pending.lock().unwrap().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owed_keys(&self) -> Vec<Key> {
+        self.pending.lock().unwrap().keys().cloned().collect()
     }
 
     /// A key answered by an authority the view no longer names is owed to the current one: another
@@ -364,6 +378,28 @@ impl Declarer {
             tracing::info_span!("rdm.node_admin.status.remove.via-seat-moved", node = %me, key = ?key, held_by = %held_by)
                 .in_scope(|| tracing::info!("the seat that owes this declaration is another admin's: withdrawn"));
         }
+    }
+
+    /// Withdraw the round completion `key`, owed or answered, because the accepted Build moved past the
+    /// round it completes (`superseded_by` says how). A completion withdrawn is forgotten whole, so a
+    /// successor fabric-primary is not owed it either.
+    pub(crate) fn withdraw_round(&self, me: &PathName, key: &Key, superseded_by: &str) {
+        self.requests.lock().unwrap().remove(key);
+        self.done.lock().unwrap().remove(key);
+        self.pending.lock().unwrap().remove(key);
+        tracing::info_span!("rdm.node_admin.status.remove.via-round-superseded", node = %me, key = ?key, superseded_by = %superseded_by)
+            .in_scope(|| tracing::info!("the accepted Build moved past the round this completion belongs to: withdrawn"));
+    }
+
+    /// Every round completion this admin holds, owed or answered, with the round it completes.
+    pub(crate) fn round_completions(&self) -> Vec<(Key, crate::fabric_state::RoundKey)> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| matches!(k, Key::Round(_)))
+            .filter_map(|(k, (_, request, _))| crate::fabric_state::RoundOp::of(request).map(|op| (k.clone(), op.key())))
+            .collect()
     }
 
     /// The send of `key` to `target` ended without finishing it; `typed` says a typed reply came back.
@@ -544,6 +580,37 @@ mod tests {
         v.nodes.push({ let mut n = node("mesh2.admin.2", true, false); n.mesh = "mesh2".into(); n });
         d.withdraw_unowned(&me, &id_of(&me.to_string()), &v);
         assert_eq!(d.owed(), 0, "a former mesh primary withdraws the completion whole");
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to the accepted Build,
+    /// attempt and planned exact births"): a round completion the accepted Build moved past is withdrawn
+    /// whole, owed or answered, and a successor fabric-primary is not owed it again. Another round's
+    /// completion is untouched. Must NOT happen: the completion of a superseded round kept owed and sent
+    /// on every eligible event (gate red b24a4303, mesh_elections__sticky_seat: mesh2.admin.1 declared
+    /// the attempt-2 completion and was answered NotReady "round holds 3, reported 2").
+    #[test]
+    fn a_round_completion_the_accepted_build_moved_past_is_withdrawn_whole_owed_or_answered() {
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        let d = Declarer::new();
+        let fabric = FabricId::mint();
+        let round = |attempt: u32| crate::fabric_state::RoundKey { kind: crate::fabric_state::RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: "bld".into(), attempt };
+        let owe = |attempt: u32| {
+            let r = round(attempt);
+            d.owe_in(Key::round(&r), Authority::FabricPrimary, StatusRequest::StateCommitted { fabric_id: fabric.clone(), node_id: NodeId::mint(), incarnation: IncarnationId("inc".into()), build_id: "bld".into(), attempt, operation: "commit-state:f".into() }, None);
+            Key::round(&r)
+        };
+        let (owed_two, answered_three, current_four) = (owe(2), owe(3), owe(4));
+        let first = view("mesh1.admin.1", "mesh1.admin.1");
+        let holder = first.fabric_primary().unwrap().clone();
+        answered_by(&d, &answered_three, &holder);
+        assert_eq!(d.owed(), 2, "attempts 2 and 4 are owed; attempt 3 was answered");
+
+        d.withdraw_round(&me, &owed_two, "the accepted Build bld is at attempt 4, past this round's attempt 2");
+        d.withdraw_round(&me, &answered_three, "the accepted Build bld is at attempt 4, past this round's attempt 3");
+        assert_eq!(d.owed_keys(), vec![current_four.clone()], "the superseded completions are no longer owed; the current round's is");
+        assert_eq!(d.answered(&answered_three), None, "an answered completion of a superseded round is forgotten whole");
+        d.reowe_moved(&me, &view("mesh1.admin.2", "mesh1.admin.2"));
+        assert_eq!(d.owed_keys(), vec![current_four], "a successor fabric-primary is not owed a superseded round's completion");
     }
 
     #[test]
