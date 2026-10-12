@@ -7377,6 +7377,55 @@ mod tests {
         assert!(!book.executed_overlays_beyond("mesh2").contains_key("mesh1"), "a start hands publishing back");
     }
 
+    /// CONTRACT (#3068; gossip.md §3.1 receiver rules: "the fence is the NodeId"; fabric-authority.md
+    /// §7; R-ML2): the departed fence on a mesh status is per exact birth, never per name. The old
+    /// mesh primary X departed (its replace-node NodeDeleted is applied first); a node-admin joining
+    /// the live mesh at X's path.name is a new birth Y. Y takes its mesh's held status, replayed to it
+    /// before its own first heartbeat put it in its own book: the name is Y's own, X's departure is
+    /// its predecessor's, and as successor mesh primary Y adopts that status. A late status under X's
+    /// name at a node where no live birth holds the name is still refused by name, naming X's exact
+    /// departure; a node that holds Y's live birth under the name takes it. Must NOT happen: Y refuses
+    /// its mesh's status because its predecessor's name is held departed, then publishes a fresh one.
+    #[test]
+    fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_and_a_late_status_of_that_name_is_refused() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
+        let departure = op_at("mesh2.admin.1", &x, &x_inc, "replace-node:mesh2.admin.1");
+        let status = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: Some("mesh2.admin.2".into()), changed_at_rafka_ms: 5 };
+        let held = Some(MeshStatus { status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
+
+        // Y: the joining node-admin at X's path.name, not yet in its own book.
+        let joiner = View::new("mesh2", "mesh2.admin.1");
+        assert!(joiner.book.depart(departure.clone()));
+        assert!(joiner.book.all().is_empty(), "the joiner has not published: it is not in its own book");
+        joiner.take(&status, &fabric, "entry-answer");
+        assert_eq!(joiner.book.statuses.mesh("mesh2"), held, "the joiner takes its mesh's status: X's departure never refuses the name it now holds");
+        assert!(spans.named("rdm.mesh.membership.reject.via-departed-birth").is_empty(), "nothing refused at the joiner: {:?}", spans.named("rdm.mesh.membership.reject.via-departed-birth"));
+
+        // A node where no live birth holds the name: the late status of the departed name is refused.
+        let member = View::new("mesh2", "mesh2.rpc.1");
+        assert!(member.book.depart(departure.clone()));
+        member.take(&status, &fabric, "mesh-channel");
+        assert_eq!(member.book.statuses.mesh("mesh2"), None, "no live birth holds the name: refused by name");
+        let refused = spans.named("rdm.mesh.membership.reject.via-departed-birth");
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!((refused[0]["frame"].as_str(), refused[0]["holder"].as_str(), refused[0]["node_id"].as_str(), refused[0]["incarnation_id"].as_str()), ("mesh-status", "mesh2.rpc.1", x.as_str(), x_inc.0.as_str()));
+
+        // A node that holds Y's live birth under the name takes it.
+        let (y, y_inc) = (NodeId::mint(), IncarnationId::mint());
+        let mut y_birth = digest(&y, &y_inc, None, MemberStatus::Pending, 100);
+        y_birth.node.name = "mesh2.admin.1".parse().unwrap();
+        let peer = View::new("mesh2", "mesh2.rpc.2");
+        assert!(peer.book.depart(departure));
+        assert!(peer.book.record(y_birth));
+        peer.take(&status, &fabric, "mesh-channel");
+        assert_eq!(peer.book.statuses.mesh("mesh2"), held, "the name resolves to Y's live birth: taken");
+        assert_eq!(spans.named("rdm.mesh.membership.reject.via-departed-birth").len(), 1, "no second refusal");
+    }
+
     /// CONTRACT (R-NS1 change 3): a NodeStopped arriving after its birth's mesh left, and a
     /// NodeDeleted other than the departure held, are refused by the departed fence by name and
     /// resurrect nothing; a copy of the departure held (every aggregate carries it for the retention)
