@@ -4577,10 +4577,7 @@ impl DigestBook {
         let name = held.clone().or(restart.as_ref().map(|o| o.name.clone()));
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let Some(name) = name.filter(|n| !own_mesh.is_empty() && n.mesh == own_mesh) else { return false };
-        let prior = self.member_statuses.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), rafka_mesh_entity::MemberStatus::ReadyForTraffic)).filter(|(inc, _)| inc == incarnation).map(|(_, s)| s);
-        if let Some((d, _, _)) = self.inner.lock().unwrap().get_mut(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation) {
-            d.status = rafka_mesh_entity::MemberStatus::ReadyForTraffic;
-        }
+        let prior = self.author_status(node_id.as_str(), incarnation, rafka_mesh_entity::MemberStatus::ReadyForTraffic);
         let closed: Vec<LifecycleOp> = {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();
@@ -4593,8 +4590,6 @@ impl DigestBook {
         };
         if !closed.is_empty() {
             self.overlays_moved();
-        }
-        if prior != Some(rafka_mesh_entity::MemberStatus::ReadyForTraffic) || !closed.is_empty() {
             self.heard.send_modify(|v| *v += 1);
         }
         tracing::info_span!(
@@ -4716,31 +4711,45 @@ impl DigestBook {
         true
     }
 
-    /// The mesh-primary took `node.joined` of the stopped birth `op` names on its start (node-start.md
-    /// step 2: "node.start clears NodeStopped at node.joined"; states.md: node pending is set by the
-    /// node's mesh-primary from the node.joined report): the stop ends, and this book holds the birth
-    /// again as `Pending`, from the latest digest it heard of it, under `op`'s name (the row's, which
-    /// the join canonicalized). Its projection carries both on its next round. `false` when this book
-    /// holds no stop of that exact birth (a restart's stop publishes none).
+    /// The mesh-primary took `node.joined` of the birth `op` names on its start (node-start.md step 2:
+    /// "node.start clears NodeStopped at node.joined"; states.md: node pending is set by the node's
+    /// mesh-primary from the node.joined report): the birth is held `Pending`, and its projection says
+    /// so on its next round. A stop of that exact birth ends first, and the birth is held again from
+    /// the latest digest heard of it, under `op`'s name (the row's, which the join canonicalized). With
+    /// no stop held (a restart's start: its stop publishes no NodeStopped) the own-mesh birth this book
+    /// holds of exactly that incarnation is set `Pending` as it stands; its restart stays open until
+    /// node.started. `false` when this book holds no stop of that birth and no digest of it of its own
+    /// mesh.
     pub fn joined(&self, op: &LifecycleOp) -> bool {
-        let mark = self.stopped_marks.lock().unwrap().get(op.node_id.as_str()).cloned();
-        let Some(mark) = mark.filter(|m| m.incarnation == op.incarnation) else { return false };
-        let cleared: Vec<String> = self.in_flight().into_iter().filter(|o| o.is_stop() && o.node_id == op.node_id).map(|o| o.operation).collect();
-        // The overlay clears before the birth is held again: a projection built in between lists
-        // neither, never both.
-        self.end_stop(op.node_id.as_str());
-        let again = mark.latest.clone().map(|(d, _, _)| d).or(mark.held.clone()).map(|mut d| {
-            d.status = rafka_mesh_entity::MemberStatus::Pending;
-            d.node.name = op.name.clone();
-            d
-        });
-        if let Some(d) = &again {
-            self.inner.lock().unwrap().insert(op.node_id.to_string(), (d.clone(), Instant::now(), Heard::Direct));
-            self.member_statuses.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), rafka_mesh_entity::MemberStatus::Pending));
-            self.heard.send_modify(|v| *v += 1);
-            self.births.send_modify(|v| *v += 1);
-            self.digests.send_modify(|v| *v += 1);
-        }
+        let mark = self.stopped_marks.lock().unwrap().get(op.node_id.as_str()).cloned().filter(|m| m.incarnation == op.incarnation);
+        let cleared: Vec<String> = self.in_flight().into_iter().filter(|o| mark.is_some() && o.is_stop() && o.node_id == op.node_id).map(|o| o.operation).collect();
+        let (held_again, held_digest_seq) = match &mark {
+            Some(mark) => {
+                // The overlay clears before the birth is held again: a projection built in between
+                // lists neither, never both.
+                self.end_stop(op.node_id.as_str());
+                let again = mark.latest.clone().map(|(d, _, _)| d).or(mark.held.clone()).map(|mut d| {
+                    d.status = rafka_mesh_entity::MemberStatus::Pending;
+                    d.node.name = op.name.clone();
+                    d
+                });
+                if let Some(d) = &again {
+                    self.inner.lock().unwrap().insert(op.node_id.to_string(), (d.clone(), Instant::now(), Heard::Direct));
+                    self.author_status(op.node_id.as_str(), &op.incarnation, rafka_mesh_entity::MemberStatus::Pending);
+                    self.heard.send_modify(|v| *v += 1);
+                    self.births.send_modify(|v| *v += 1);
+                    self.digests.send_modify(|v| *v += 1);
+                }
+                (again.is_some(), again.as_ref().map(|d| d.digest_seq).unwrap_or(0))
+            }
+            None => {
+                let own_mesh = self.own_mesh.lock().unwrap().clone();
+                let held = self.inner.lock().unwrap().get(op.node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == op.incarnation && !own_mesh.is_empty() && d.node.name.mesh == own_mesh).map(|(d, _, _)| d.digest_seq);
+                let Some(seq) = held else { return false };
+                self.author_status(op.node_id.as_str(), &op.incarnation, rafka_mesh_entity::MemberStatus::Pending);
+                (true, seq)
+            }
+        };
         tracing::info_span!(
             "rdm.mesh.membership.update.via-node-joined",
             node = %self.holder.lock().unwrap(),
@@ -4752,11 +4761,26 @@ impl DigestBook {
             operation = %op.operation,
             stops_cleared = %cleared.join(","),
             status = "Pending",
-            held_again = again.is_some(),
-            held_digest_seq = again.as_ref().map(|d| d.digest_seq).unwrap_or(0),
+            held_again,
+            held_digest_seq,
         )
-        .in_scope(|| tracing::info!("the mesh-primary took node.joined: the stop is over and the birth is held Pending; its projection says so"));
+        .in_scope(|| tracing::info!("the mesh-primary took node.joined: the birth is held Pending, its stop, if one was held, is over; its projection says so"));
         true
+    }
+
+    /// Set `status` for the birth `incarnation` of `node_id`, as its mesh-primary sets it (states.md
+    /// "Who sets each state"): held for the birth, so its projection carries it, and given to the
+    /// digest held of that exact birth. A move ticks `heard`. Returns the status held for that birth
+    /// before (`None` when none was).
+    fn author_status(&self, node_id: &str, incarnation: &IncarnationId, status: rafka_mesh_entity::MemberStatus) -> Option<rafka_mesh_entity::MemberStatus> {
+        let prior = self.member_statuses.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), status)).filter(|(inc, _)| inc == incarnation).map(|(_, s)| s);
+        if let Some((d, _, _)) = self.inner.lock().unwrap().get_mut(node_id).filter(|(d, _, _)| d.node.incarnation == *incarnation) {
+            d.status = status;
+        }
+        if prior != Some(status) {
+            self.heard.send_modify(|v| *v += 1);
+        }
+        prior
     }
 
     /// Why the birth `incarnation` publishes nothing any more, as this book holds it: its stop
