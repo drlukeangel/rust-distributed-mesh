@@ -557,8 +557,11 @@ impl FabricStorage for FileFabricStorage {
         Ok((identity, newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT).await?)))
     }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
-        // The filesystem's own atomic link of the finished row to the key: it fails when the key is live.
-        if self.records.insert(IDENTITY_KEY, IDENTITY_FORMAT, identity).await? {
+        // The filesystem's own atomic link of the finished row to the key: it fails when the key is
+        // live. Held before the fabric's first state-commit, the claim is decided again at the
+        // publication against the row then standing at the key.
+        let claim = identity.clone();
+        if self.records.insert_claimed(IDENTITY_KEY, IDENTITY_FORMAT, identity, move |standing| claim_fabric_against(standing, &claim).map(|c| c == FabricClaim::Written).map_err(|held| held.to_string())).await? {
             return Ok(Ok(FabricClaim::Written));
         }
         let held: FabricIdentity = self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the identity row's insert met a live key that no read finds".into() })?;

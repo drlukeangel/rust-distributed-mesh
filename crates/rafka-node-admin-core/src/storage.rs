@@ -185,7 +185,10 @@ impl MeshStorage for FileMeshStorage {
         let _one = self.claims.lock().await;
         let claimed = claim_mesh_against(self.rows.read::<MeshRecord>(&record.name, MESH_FORMAT).await?.as_ref(), record);
         if let Ok(MeshClaim::Written { .. }) = claimed {
-            self.rows.write(&record.name, MESH_FORMAT, record).await?;
+            // Held before the fabric's first state-commit, the claim is decided again at the
+            // publication against the row then standing at the name's key.
+            let row = record.clone();
+            self.rows.write_claimed(&record.name, MESH_FORMAT, record, move |standing| claim_mesh_against(standing, &row).map(|c| matches!(c, MeshClaim::Written { .. })).map_err(|r| r.to_string())).await?;
         }
         Ok(claimed)
     }
@@ -568,7 +571,10 @@ impl NodesStorage for FileNodesStorage {
         let rows = self.mesh(&row.name.mesh).await?;
         let claimed = claim_against(rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.as_ref(), row);
         if claimed.is_ok() {
-            rows.rows.write(&key, ROW_FORMAT, row).await?;
+            // Held before the fabric's first state-commit, the claim is decided again at the
+            // publication against the row then standing at the key.
+            let claim = row.clone();
+            rows.rows.write_claimed(&key, ROW_FORMAT, row, move |standing| claim_against(standing, &claim).map(|()| true).map_err(|held| held.to_string())).await?;
         }
         Ok(claimed)
     }
