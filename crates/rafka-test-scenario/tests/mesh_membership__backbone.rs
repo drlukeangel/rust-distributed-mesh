@@ -296,22 +296,30 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     })
     .await;
 
-    // 8. Restart mesh2.rpc.1: its new birth is ready holding both meshes.
+    // 8. Restart mesh2.rpc.1: it rejoins as the same birth (node-restart.md: "Same node.id, incarnation, ...")
+    // and is ready again holding both meshes.
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = s(&estate.node("mesh2.rpc.1").await["incarnation_id"]);
+    let ready_before = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
     let (status, a) = estate.post("/api/nodes/mesh2.rpc.1/restart", &json!({})).await;
     assert_eq!(status, 202, "{a}");
     estate.await_attempt(a["build_id"].as_str().unwrap(), Estate::attempt_of(&a), Duration::from_secs(60)).await;
-    // The Build can complete on another admin: wait for the asked one's view.
-    let reborn = wait_for("the asked admin's view holds the new birth", Duration::from_secs(15), || async {
-        let now = s(&estate.node_opt("mesh2.rpc.1").await?["incarnation_id"]);
-        (!now.is_empty() && now != before).then_some(now)
+    // The Build can complete on another admin: wait for the asked one's view, and for the node's own
+    // second ready.
+    let reborn = wait_for("the asked admin's view holds the restarted birth ready", Duration::from_secs(15), || async {
+        let n = estate.node_opt("mesh2.rpc.1").await?;
+        let ready_now = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
+        (n["status"] == "ready-for-traffic" && s(&n["incarnation_id"]) == before && ready_now > ready_before).then_some(s(&n["incarnation_id"]))
     })
     .await;
+    assert_eq!(reborn, before, "a restart keeps the birth");
     let spans = estate.spans();
     let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
-        .find(|sp| attr(sp, "incarnation_id") == reborn)
-        .unwrap_or_else(|| panic!("the reborn mesh2.rpc.1 reports ready"))
+        .filter(|sp| attr(sp, "incarnation_id") == reborn)
+        .max_by_key(|sp| start(sp))
+        .unwrap_or_else(|| panic!("the restarted mesh2.rpc.1 reports ready"))
         .clone();
     assert_eq!(attr(&ready, "meshes"), "2", "ready holding both meshes: {ready}");
     let pulled = named(&spans, "rdm.mesh.entry.update.via-membership-pulled")

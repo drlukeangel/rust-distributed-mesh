@@ -85,8 +85,9 @@ pub(crate) enum Payload {
 /// Which exact leg a call used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallEvidence {
-    /// The node the call reached.
-    pub node_id: NodeId,
+    /// The node the call reached, as its resolver named it; `None` for a call to an endpoint the
+    /// caller holds no record of ([`NodeTarget::Endpoint`]).
+    pub node_id: Option<NodeId>,
     /// The address of the node's Iroh endpoint the call used.
     pub addr: SocketAddr,
     /// Whether the request reached the commit cut.
@@ -146,6 +147,21 @@ pub(crate) enum Phase<R> {
     Committed(Opened),
 }
 
+/// Whom one call reaches: the birth its resolver named, or the process at an endpoint it holds no
+/// record of ([`NodeTarget::Endpoint`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Reach {
+    /// The birth the resolver named; `None` for an endpoint target.
+    pub(crate) node: Option<ResolvedNode>,
+    /// The birth the call's connection facts are recorded under (connections.md §10): the resolved
+    /// birth, or for an endpoint target the birth the resolver names at that endpoint, if any.
+    pub(crate) observed: Option<ResolvedNode>,
+    /// The process's Iroh key.
+    pub(crate) peer: iroh::PublicKey,
+    /// The address the call dials.
+    pub(crate) addr: SocketAddr,
+}
+
 /// A committed invocation: the commit proof and the reply direction.
 pub(crate) struct Opened {
     pub(crate) committed: rafka_node_rpc_contract::outcome::Committed,
@@ -153,11 +169,9 @@ pub(crate) struct Opened {
     pub(crate) evidence: CallEvidence,
     pub(crate) key: PoolKey,
     pub(crate) conn: iroh::endpoint::Connection,
-    pub(crate) node: ResolvedNode,
+    pub(crate) node: Reach,
     /// `None` for a `Budget::Stream` call: nothing bounds the reply but the transport's liveness.
     pub(crate) reply_deadline: Option<Instant>,
-    /// The fence the request named.
-    pub(crate) target: Fence,
 }
 
 /// What came back after the commit cut, before protocol decoding.
@@ -279,35 +293,46 @@ impl NodeRpcClient {
             Budget::Split { send, .. } | Budget::Stream { send } => (start + send, None),
         };
         let pre = PreCommit::begin(op);
-        let node = match self.resolver.resolve(target) {
-            Ok(n) => n,
-            Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
+        let node = match target {
+            // The process at an endpoint the caller holds no record of: dialled as named, its fence
+            // naming no node.
+            NodeTarget::Endpoint { endpoint_id, addr } => {
+                tracing::info!(step = "endpoint", peer = %endpoint_id.fmt_short(), addr = %addr, "the target is the process at an endpoint, dialled as named");
+                Reach { node: None, observed: self.resolver.by_endpoint(endpoint_id), peer: *endpoint_id, addr: *addr }
+            }
+            _ => match self.resolver.resolve(target) {
+                Ok(n) => {
+                    tracing::info!(step = "resolved", node = %n.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.0, "the target resolved to one birth");
+                    // Whatever this node's record no longer names leaves the pool now.
+                    self.pool.purge_stale(&n);
+                    Reach { peer: n.endpoint_id, addr: n.transport_addr, observed: Some(n.clone()), node: Some(n) }
+                }
+                Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
+            },
         };
-        tracing::info!(step = "resolved", node = %node.name, node_id = %node.node_id, peer = %node.endpoint_id.fmt_short(), addr = %node.transport_addr, incarnation = %node.incarnation.0, "the target resolved to one birth");
-        // Whatever this node's record no longer names leaves the pool now.
-        self.pool.purge_stale(&node);
-        // The fence: the node the caller resolved and the op, never a dial target.
-        let request_target = Fence { target_node_id: node.node_id.to_string(), op: op };
+        // The fence: the node the caller resolved and the op, never a dial target. A call to an
+        // endpoint names no node; no receiver reads the node id to refuse the call (R-UC1a).
+        let request_target = Fence { target_node_id: node.node.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), op };
         let mut evidence = CallEvidence {
-            node_id: node.node_id.clone(),
-            addr: node.transport_addr,
+            node_id: node.node.as_ref().map(|n| n.node_id.clone()),
+            addr: node.addr,
             committed: false,
             connection: None,
             reused: false,
             dial_failure: None,
         };
-        let key = PoolKey { scope: opts.scope.clone(), peer: node.endpoint_id, incarnation: node.incarnation.clone() };
+        let key = PoolKey { scope: opts.scope.clone(), peer: node.peer, incarnation: node.node.as_ref().map(|n| n.incarnation.clone()) };
         let spec = DialSpec {
             endpoint: self.endpoint.clone(),
             resolver: self.resolver.clone(),
-            target: target.clone(),
-            addr: node.transport_addr,
+            target: node.node.as_ref().map(|_| target.clone()),
+            addr: node.addr,
             failpoint: opts.after_connect.clone(),
             // The dial that opens the connection reports it, once, whoever is waiting for it.
-            opened: self.observer.clone().map(|o| {
-                let node = node.clone();
-                Arc::new(move || o.direct_connected(&node)) as Arc<dyn Fn() + Send + Sync>
-            }),
+            opened: match (self.observer.clone(), node.observed.clone()) {
+                (Some(o), Some(n)) => Some(Arc::new(move || o.direct_connected(&n)) as Arc<dyn Fn() + Send + Sync>),
+                _ => None,
+            },
         };
         let dial_started = Instant::now();
         let conn = match self.pool.get_or_dial(&key, spec, send_deadline).await {
@@ -320,22 +345,22 @@ impl NodeRpcClient {
             Err(DialError::Superseded) => {
                 // The birth moved while this dial was in flight: the target is stale.
                 let now = self.resolver.resolve(target).ok().map(|n| n.incarnation.0).unwrap_or_default();
-                stale_span("caller", &request_target, &format!("incarnation {} superseded by {now}", node.incarnation.0));
+                stale_span(&request_target, &format!("incarnation {} superseded by {now}", key.birth()));
                 return Phase::Done(pre.stale_before_finish(&request_target), Some(evidence));
             }
             Err(DialError::Deadline) => {
                 tracing::info!(step = "dial-deadline", waited_ms = dial_started.elapsed().as_millis() as u64, "no connection to the target within the send budget");
                 evidence.dial_failure = Some("dial deadline".to_string());
-                if let Some(o) = &self.observer {
-                    o.direct_failed(&node, "dial deadline");
+                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
+                    o.direct_failed(n, "dial deadline");
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence));
             }
             Err(DialError::Failed(e)) => {
                 tracing::info!(step = "dial-failed", waited_ms = dial_started.elapsed().as_millis() as u64, error = %e, "the dial to the target failed");
                 evidence.dial_failure = Some(e.clone());
-                if let Some(o) = &self.observer {
-                    o.direct_failed(&node, &e);
+                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
+                    o.direct_failed(n, &e);
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(e)), Some(evidence));
             }
@@ -348,8 +373,8 @@ impl NodeRpcClient {
             }
             Ok(Err(e)) => {
                 self.pool.broken(&key, &conn);
-                if let Some(o) = &self.observer {
-                    o.direct_broken(&node, &e.to_string());
+                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
+                    o.direct_broken(n, &e.to_string());
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(e.to_string())), Some(evidence));
             }
@@ -396,11 +421,6 @@ impl NodeRpcClient {
             if stop.into_inner() == u64::from(ResetCode::UnservedOp.code()) {
                 return Phase::Done(pre.unserved_before_finish(), Some(evidence));
             }
-            if stop.into_inner() == u64::from(ResetCode::StaleTarget.code()) {
-                // The target refused the fence; the connection to the process stays pooled.
-                stale_span("target", &request_target, "");
-                return Phase::Done(pre.stale_before_finish(&request_target), Some(evidence));
-            }
             let bytes = timeout_at(send_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await;
             let early = pre.stopped_before_finish();
             let out = match bytes {
@@ -434,7 +454,7 @@ impl NodeRpcClient {
             (Budget::Stream { .. }, None) => None,
             (Budget::Overall(_), None) => unreachable!(),
         };
-        Phase::Committed(Opened { committed, recv, evidence, key, conn, node, reply_deadline, target: request_target })
+        Phase::Committed(Opened { committed, recv, evidence, key, conn, node, reply_deadline })
     }
 
     /// Invoke a raw op (any op, served or not) — the unknown-op cell uses it.
@@ -511,7 +531,7 @@ impl NodeRpcClient {
     {
         let decode = std::sync::Mutex::new(Some(decode));
         let take = || decode.lock().unwrap().take().expect("decode runs once");
-        let Opened { committed, mut recv, evidence, key, conn, node, reply_deadline, target: request_target } =
+        let Opened { committed, mut recv, evidence, key, conn, node, reply_deadline } =
             match self.open(target, op, payload, max_reply, opts, |early, bytes| take()(Decode::Early(early, bytes))).await {
                 Phase::Done(out, evidence) => return (out, evidence),
                 Phase::Committed(o) => o,
@@ -532,8 +552,8 @@ impl NodeRpcClient {
         // A reply deadline is no evidence about the connection: it stays pooled.
         if let Committed::Lost(IndeterminateReason::ReplyLost(why)) = &got {
             if self.pool.broken(&key, &conn) {
-                if let Some(o) = &self.observer {
-                    o.direct_broken(&node, why);
+                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
+                    o.direct_broken(n, why);
                 }
             }
         }
@@ -542,25 +562,20 @@ impl NodeRpcClient {
                 Ok(payload) => decode(Decode::Committed(committed, payload)),
                 Err(e) => committed.indeterminate(IndeterminateReason::ProtocolViolation(format!("reply frame: {e:?}"))),
             },
-            Committed::Reset(c) => {
-                if c == u64::from(ResetCode::StaleTarget.code()) {
-                    stale_span("target", &request_target, "");
-                }
-                committed.reset(c, &request_target)
-            }
+            Committed::Reset(c) => committed.reset(c),
             Committed::Lost(r) => committed.indeterminate(r),
         };
         (out, Some(evidence))
     }
 }
 
-/// One span family for every stale-target refusal, whoever decided it: the
-/// caller (its resolver no longer names the target) or the target (`425`).
-/// `current` is what the decider holds instead, in its own words.
-fn stale_span(decided_by: &'static str, asked: &Fence, current: &str) {
+/// The caller's stale-target refusal: its resolver no longer names the birth the call was dialled
+/// to. Only a caller decides it; no receiver refuses a call for the node id it names (R-UC1a).
+/// `current` is what the resolver holds instead, in its own words.
+fn stale_span(asked: &Fence, current: &str) {
     tracing::info_span!(
         "rdm.node_rpc.connection.reject.via-stale-target",
-        decided_by,
+        decided_by = "caller",
         node_id = %asked.target_node_id,
         op = asked.op,
         current,

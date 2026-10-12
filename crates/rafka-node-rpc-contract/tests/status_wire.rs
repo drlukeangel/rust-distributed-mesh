@@ -80,7 +80,7 @@ fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_forty_four_variant_wire_schema() {
+fn replies_match_the_frozen_forty_five_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -152,6 +152,8 @@ fn replies_match_the_frozen_forty_four_variant_wire_schema() {
         (RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, "2a0173016f0163"),
         // reason "r"
         (RejectedTags { reason: "r".into() }, "2b0172"),
+        // workflow "w" | status "s"
+        (RejectedFabricNotReady { workflow: "w".into(), status: "s".into() }, "2c01770173"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {

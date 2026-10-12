@@ -89,6 +89,21 @@ pub enum ScopeStatus {
     StateCommit,
 }
 
+impl ScopeStatus {
+    /// The name the control API and the spans carry.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::ReadyForTraffic => "ready-for-traffic",
+            Self::Leaving => "leaving",
+            Self::Dead => "dead",
+            Self::Degraded => "degraded",
+            Self::StateSync => "state-sync",
+            Self::StateCommit => "state-commit",
+        }
+    }
+}
+
 /// Deployment provider kind, fabric policy (PRD §1.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -909,6 +909,8 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     let run = Run { estate, root, doors: Default::default(), evidence: Default::default(), rows: Default::default(), holds: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: two admins first.
     run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
+    // The initial fabric refuses a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
     let node = "mesh1.rpc.1";

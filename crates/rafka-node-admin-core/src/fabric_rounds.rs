@@ -884,10 +884,10 @@ impl FabricRounds {
     }
 
     /// A round op addressed to this admin, decided from `view`. `own` answers it as a plain member.
-    pub async fn serve(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
+    pub async fn serve(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
         let Some(op) = RoundOp::of(req) else { return StatusReply::NotReady { reason: format!("{} is not a round op", req.op()) } };
         let me = self.env.me.to_string();
-        let reply = if op.is_down { self.serve_down(view, sender, req, &op, own).await } else { self.serve_up(view, req, &op) };
+        let reply = if op.is_down { self.serve_down(view, sender, peer, req, &op, own).await } else { self.serve_up(view, req, &op) };
         tracing::info_span!(
             "rdm.node_admin.status.update.via-round-op",
             node = %me,
@@ -908,13 +908,14 @@ impl FabricRounds {
     /// fabric-primary; any other admin takes it as a member and checks in with its mesh's primary
     /// (fabric-state-commit.md: "Each member checks in with its primary, node → mesh-primary →
     /// fabric-primary"). The fabric-primary carries rounds down and is not a receiver of one.
-    async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
+    #[allow(clippy::too_many_arguments)]
+    async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
         let Some(me) = view.own(&self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
-        if *op.node_id != me.node_id {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } };
-        }
+        // Answered by the admin the call reached (R-RX5: no receiver refuses a downward call for the
+        // node id it names); the exact birth it names is checked, so a call that reached another
+        // birth is refused naming the one held.
         if let Some(held) = me.incarnation_id.as_ref().filter(|h| *h != op.incarnation) {
             return StatusReply::RejectedStaleIncarnation { held: held.clone() };
         }
@@ -931,9 +932,7 @@ impl FabricRounds {
         if me.is_primary {
             // This admin is a mesh primary: it runs its mesh's round and reports to the fabric-primary.
             let key = op.key();
-            if let Some(from) = sender {
-                self.env.wake.addressed_by(&from.node_id);
-            }
+            self.env.wake.addressed_by(sender.map(|n| &n.node_id), peer);
             if self.mesh_book.open(&key) {
                 self.spawn_mesh_driver(key, true, tracing::Span::current());
                 StatusReply::Applied

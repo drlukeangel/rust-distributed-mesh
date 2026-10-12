@@ -9,7 +9,8 @@
 //! ended:
 //!
 //! 1. `rdm.mesh.node.update.via-join-admitted` (step 2): `JoinNode` to the authority (the admin that
-//!    launched the node, or the one that commanded its start), presenting the digest the node holds,
+//!    launched the node, or the one whose call commanded its start, reached back over that call's
+//!    endpoint and path with no record of it: [`JoinTo`]), presenting the digest the node holds,
 //!    Pending; the answer's rafka-time is adopted, so the hook runs with current rafka-time and the
 //!    member cert, and the name it hands (its row's) is the step's `installed`: the node holds it
 //!    from the channel step on, and every later step is named by it, so a node renamed while stopped
@@ -37,7 +38,7 @@
 //! rafka-time to a started node (`rafka_time.rs`, the seat-move pull reads it the same way).
 
 use crate::app_hydration::{AcceptingAuthority, Authority, Birth, End, Events, HookDriver, HydrateCtx, Hydration, HydrationHandle, NoAuthority, StartKind, Step};
-use crate::model::{IncarnationId, NodeId, PathName};
+use crate::model::{NodeId, PathName};
 use crate::node_self::StartFailed;
 use crate::topology_read::TopologyRead;
 use crate::wire::JoinAnswer;
@@ -84,43 +85,48 @@ pub enum Joining {
     None(NoAuthority),
 }
 
-/// The authority a start joins, resolved so the call reaches it.
-#[derive(Clone)]
+/// The authority a start joined: the admin that answered its join, and where every later call of
+/// the start goes.
+#[derive(Clone, Debug)]
 pub struct JoinThrough {
-    /// Its node id: the join, the topology read and the rafka-time refresh go to exactly this node.
-    pub node_id: NodeId,
-    /// Its `path.name`.
+    /// Where the join went and the topology read and the rafka-time refresh go: the launcher's birth
+    /// at a first start; after a stop, the endpoint and path of the call whose join was answered.
+    pub target: NodeTarget,
+    /// The admin's endpoint key.
+    pub endpoint: iroh::PublicKey,
+    /// Who answered: the launcher's `path.name` at a first start; after a stop, the name the join
+    /// answer's `served_by` hands (node-start.md step 2: the node "learns who answered from the join
+    /// answer").
     pub name: PathName,
-    /// Its incarnation: the hook's accepting authority.
-    pub incarnation: IncarnationId,
     /// The short endpoint id the join's attempts name.
     pub anchor: String,
 }
 
-/// The authority a start after a stop joins (node-start.md step 2, "Join the accepting authority"):
-/// the admin that commanded the start, reached back through its own call ([`reached_back`] of the
-/// call's endpoint key `commander`): the join and every later call of the start go to that key at
-/// the path the call came in on. A commander that cannot be reached back fails the start at its
-/// join, the reason named.
-pub async fn join_back(node: &str, membership: &Membership, client: &NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, commander: &iroh::PublicKey) -> Result<JoinThrough, StartFailed> {
-    reached_back(node, membership, client, resolver, commander).await.map_err(|reason| StartFailed { step: "node.join", reason })
+/// Whom a start's join goes to (node-start.md step 2), read before each attempt.
+pub enum JoinTo {
+    /// A first start: the admin that launched the birth, by its birth record (`target`).
+    Launcher {
+        /// Its birth, as this node's resolver holds it.
+        target: NodeTarget,
+        /// Its endpoint key.
+        endpoint: iroh::PublicKey,
+        /// Its `path.name`.
+        name: PathName,
+    },
+    /// A start after a stop: the admin whose call commands the start, reached back over that call's
+    /// endpoint and path. The node holds no record of it and never refuses for lacking one. A later
+    /// start of the same birth, while this one is under way, is the same start (its natural key is
+    /// `(node_id, incarnation, Pending)`, node-rpc-envelope.md "Status") and hands its own call's
+    /// endpoint here: each join attempt goes to the call that commanded the start last.
+    Commander(tokio::sync::watch::Receiver<iroh::PublicKey>),
 }
 
-/// The admin whose call commanded this node (`node`), reached back through that call. The commander
-/// reached this node, so the call's endpoint key `key` (what the transport proved for it, node-rpc.md
-/// §14) names it, and the path the call came in on is a path back. Which birth holds the key (its
-/// node id, its `path.name`, its incarnation) is the member record this node installed from its
-/// mesh-primary's projection ([`Membership::projected_member_at`]; gossip.md §3.1, the authoritative
-/// member record), never the heartbeat book, which holds a member only once its own digest reached
-/// this node. The birth is applied to `resolver` at that path, so a call to its node id goes back
-/// there. Refused by name, with the key: `commander-unrecorded` when no projection this node holds
-/// names it (a commander born after this node's last topology read), `commander-unreachable` when the
-/// call left no path this node's endpoint holds, `commander-refused` when the resolver refuses to hold
-/// the birth at that path (its refusal named).
-pub async fn reached_back(node: &str, membership: &Membership, client: &NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, key: &iroh::PublicKey) -> Result<JoinThrough, String> {
-    let Some(record) = membership.projected_member_at(&key.to_string()) else {
-        return Err(format!("{node}: commander-unrecorded: no member projection this node holds names the admin whose call commanded it (endpoint {key}): it was born after this node's last topology read"));
-    };
+/// The admin whose call reached this node from endpoint `key`, reached back over that call: the
+/// endpoint key the transport proved for the call (node-rpc.md §14) and the path the call came in
+/// on, which this node's endpoint holds while the call's connection is open. No record of the admin
+/// is read: the node needs none (node-start.md step 2). Refused by name, with the key, when the call
+/// left no active path this node's endpoint holds (`commander-unreachable`).
+pub async fn reached_back(node: &str, client: &NodeRpcClient, key: &iroh::PublicKey) -> Result<NodeTarget, String> {
     let path = match client.endpoint().remote_info(*key).await {
         Some(info) => info
             .addrs()
@@ -131,13 +137,50 @@ pub async fn reached_back(node: &str, membership: &Membership, client: &NodeRpcC
             }),
         None => None,
     };
-    let Some(addr) = path else {
-        return Err(format!("{node}: commander-unreachable: the call of {} (endpoint {key}) that commanded this node left no active path this node's endpoint holds", record.node.name));
-    };
-    if let rafka_node_rpc::Applied::Refused(refusal) = resolver.apply(rafka_node_rpc::ResolvedNode { node_id: record.node.node_id.clone(), name: record.node.name.clone(), endpoint_id: *key, transport_addr: addr, incarnation: record.node.incarnation.clone() }, None) {
-        return Err(format!("{node}: commander-refused: this node's resolver does not take {} ({} at {}, endpoint {key}) at the call's path {addr}: {refusal:?}", record.node.name, record.node.node_id, record.node.incarnation.0));
+    match path {
+        Some(addr) => Ok(NodeTarget::Endpoint { endpoint_id: *key, addr }),
+        None => Err(format!("{node}: commander-unreachable: the call from endpoint {key} that commanded this node left no active path this node's endpoint holds")),
     }
-    Ok(JoinThrough { node_id: record.node.node_id, name: record.node.name, incarnation: record.node.incarnation, anchor: key.fmt_short().to_string() })
+}
+
+/// `JoinNode` with `digest`, each of `attempts` made to whom `to` names then: the launcher, or the
+/// admin whose call commanded the start last, reached back over that call. The answer and who gave
+/// it: `served_by` names the admin (the launcher's record names it at a first start).
+async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDigest) -> Result<(JoinAnswer, JoinThrough), StartFailed> {
+    let next = || {
+        let to = match to {
+            JoinTo::Launcher { target, endpoint, .. } => Ok((target.clone(), endpoint.fmt_short().to_string())),
+            JoinTo::Commander(commander) => Err(*commander.borrow()),
+        };
+        async move {
+            match to {
+                Ok(t) => Ok(t),
+                Err(key) => reached_back(node, client, &key).await.map(|t| (t, key.fmt_short().to_string())),
+            }
+        }
+    };
+    let (answer, target) = match crate::join::call_join_to(client, next, digest, JOIN_ATTEMPTS).await {
+        Ok(joined) => joined,
+        Err(crate::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} was refused its join by {}: {why}", whom(to)) }),
+        Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} could not join through {}: unreached: {why}", whom(to)) }),
+    };
+    let (endpoint, name) = match (to, &target) {
+        (JoinTo::Launcher { endpoint, name, .. }, _) => (*endpoint, name.clone()),
+        (JoinTo::Commander(_), NodeTarget::Endpoint { endpoint_id, .. }) => match answer.served_by.parse::<PathName>() {
+            Ok(n) => (*endpoint_id, n),
+            Err(e) => return Err(StartFailed { step: "node.join", reason: format!("{node}: the join answer from endpoint {endpoint_id} names who answered as {:?}, which is no path.name: {e}", answer.served_by) }),
+        },
+        (JoinTo::Commander(_), other) => unreachable!("a commander is reached back over its call's endpoint, never {other:?}"),
+    };
+    Ok((answer, JoinThrough { target, endpoint, name, anchor: endpoint.fmt_short().to_string() }))
+}
+
+/// Whom a join goes to, in words.
+fn whom(to: &JoinTo) -> String {
+    match to {
+        JoinTo::Launcher { name, .. } => name.to_string(),
+        JoinTo::Commander(commander) => format!("the admin whose call commanded the start (endpoint {})", *commander.borrow()),
+    }
 }
 
 /// Starts the task a node-admin's first-start hook runs in, behind the admin's own task gate.
@@ -222,9 +265,9 @@ pub trait StartNode: Send {
     /// Whom this start joins.
     fn joining(&self) -> Joining;
 
-    /// The authority, resolved so the join reaches it; called inside the join step. A start after a
-    /// stop resolves it with [`join_back`], whatever the node kind.
-    async fn resolve_authority(&mut self) -> Result<JoinThrough, StartFailed>;
+    /// Whom the join goes to; called inside the join step. A start after a stop answers
+    /// [`JoinTo::Commander`], whatever the node kind.
+    async fn resolve_authority(&mut self) -> Result<JoinTo, StartFailed>;
 
     /// The digest the join presents; the start presents it Pending.
     fn join_digest(&self) -> MeshDigest;
@@ -255,15 +298,15 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     // 1. The join: the answer's rafka-time and cert are taken before the node says anything.
     let (through, joined) = match node.joining() {
         Joining::Authority { label } => {
-            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, installed = tracing::field::Empty);
-            let through = node.resolve_authority().await?;
+            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
+            let to = node.resolve_authority().await?;
             let mut digest = node.join_digest();
             digest.status = MemberStatus::Pending;
-            let answer = match crate::join::call_join(&client, &NodeTarget::ExactNode(through.node_id.clone()), &through.anchor, &digest, JOIN_ATTEMPTS).await {
-                Ok(a) => a,
-                Err(crate::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} was refused its join by {}: {why}", through.name) }.into()),
-                Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} could not join through {}: unreached: {why}", through.name) }.into()),
-            };
+            let (answer, through) = join(&name, &client, &to, &digest).await?;
+            // Who answered, as the join answer names it (node-start.md step 2), and the endpoint it
+            // answered on.
+            step.record("served_by", through.name.to_string().as_str());
+            step.record("endpoint", through.anchor.as_str());
             crate::rafka_time::adopt_join_answer(&step, &rafka_time, &name, &answer);
             // The name the answer hands (a join that hands none is refused, `crate::join::call_join`):
             // the node holds it from the channel step on, and every later step is named by it.
@@ -287,7 +330,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     let parts = node.joined(&membership, through.as_ref().ok().map(|(t, _)| t), joined.as_ref()).await?;
     // 3. The hook, with no topology read.
     let authority = match &through {
-        Ok((t, _)) => Authority::Accepted(AcceptingAuthority { name: t.name.clone(), node_id: t.node_id.clone(), incarnation: t.incarnation.clone() }),
+        Ok((t, _)) => Authority::Accepted(AcceptingAuthority { name: t.name.clone(), endpoint: t.endpoint, target: t.target.clone() }),
         Err(why) => Authority::None(*why),
     };
     let HookParts { birth, hydration, events, cancel, state, runs, after } = parts;
@@ -388,7 +431,7 @@ impl AfterTheHook {
         if let Some((t, label)) = &through {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node = %name, launcher = %label);
             after.before_topology_read(&t.name).instrument(step.clone()).await;
-            let read = match crate::topology_read::get_topology(&client, &NodeTarget::ExactNode(t.node_id.clone()), &t.name.mesh, &membership, None, None).instrument(step.clone()).await {
+            let read = match crate::topology_read::get_topology(&client, &t.target, &t.name.mesh, &membership, None, None).instrument(step.clone()).await {
                 Ok(read) => read,
                 Err(e) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {}: {e}", t.name) }, after)),
             };
@@ -411,7 +454,7 @@ impl AfterTheHook {
                     Some((mesh, since)) => (Some(mesh), Some(since)),
                     None => (None, None),
                 };
-                let read = match crate::topology_read::read_topology(&client, &NodeTarget::ExactNode(t.node_id.clone()), &name, mesh.as_deref(), since).instrument(step.clone()).await {
+                let read = match crate::topology_read::read_topology(&client, &t.target, &name, mesh.as_deref(), since).instrument(step.clone()).await {
                     Ok(read) => read,
                     Err(e) => return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not read rafka-time from {}: {e}", t.name) }, after)),
                 };
@@ -455,8 +498,8 @@ pub struct FirstStart<E> {
     pub starting: Option<Starting>,
     /// Whom it joins.
     pub joining: Option<Joining>,
-    /// Resolves the authority for the join.
-    pub resolve: Option<Box<dyn FnOnce() -> Result<JoinThrough, StartFailed> + Send>>,
+    /// Resolves whom the join goes to.
+    pub resolve: Option<Box<dyn FnOnce() -> Result<JoinTo, StartFailed> + Send>>,
     /// The digest the join presents.
     pub digest: Option<MeshDigest>,
     /// The channel step.
@@ -483,7 +526,7 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
         }
     }
 
-    async fn resolve_authority(&mut self) -> Result<JoinThrough, StartFailed> {
+    async fn resolve_authority(&mut self) -> Result<JoinTo, StartFailed> {
         (self.resolve.take().expect("the authority is resolved once"))()
     }
 

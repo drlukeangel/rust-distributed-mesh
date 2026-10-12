@@ -21,6 +21,7 @@
 use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, ScopeStatus};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 const VICTIM: &str = "mesh2.rpc.2";
 const WITNESS_NODE: &str = "mesh1.rpc.1";
@@ -72,6 +73,8 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let victim_dir = std::path::PathBuf::from(estate.data_dir(VICTIM).await);
     assert!(victim_dir.join("node-key").is_file(), "the victim's data dir holds its endpoint key before the delete: {victim_dir:?}");
 
+    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 1. The removal.
     let mut removal = estate.nodes_obj().await.delete(&VICTIM.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {VICTIM}: {e}"));
     // The pre-notice is read from each receiver's overlay span below, not from a poll: the window

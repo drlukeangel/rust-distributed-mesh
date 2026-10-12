@@ -1075,15 +1075,33 @@ pub fn refuse_source_failed(call: &'static str, key: &LeaveKey, source: &str, op
     StatusReply::source_failed(source, op, cause)
 }
 
-/// The admin a `leave-mesh`'s handoff goes back to, the owner of the workflow: the admin that sent
-/// the command (`sender`, the birth this admin holds for the calling endpoint), else the
-/// fabric-primary its view names (LeaveMesh is the fabric-primary's command, node-rpc-envelope.md
-/// "Mesh delete command pair"). Nothing checks who is calling (node-rpc.md §14). With neither, the
-/// leave has no owner to hand back to and is refused by name.
-pub fn leave_owner(sender: Option<&NodeId>, fabric_primary: Option<&NodeId>, me: &str, key: &LeaveKey) -> Result<NodeId, StatusReply> {
-    match sender.or(fabric_primary) {
-        Some(owner) => Ok(owner.clone()),
-        None => Err(refuse_source_failed("leave-mesh", key, &format!("the view of {me}"), &format!("resolve the owner of leave-mesh for {}", key.mesh_id), "the calling endpoint is no birth this admin holds, and its view names no fabric-primary to hand the leave back to")),
+/// The admin a leave hands back to, the owner of the workflow, and where a call to it goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaveOwner {
+    /// Where the handoff and the read of the owner's Build facts go: the endpoint and path of the
+    /// `leave-mesh` call, or the fabric-primary's birth.
+    pub target: rafka_node_rpc::NodeTarget,
+    /// What spans name the owner: its `path.name` where a record names it, else its endpoint.
+    pub name: String,
+}
+
+impl std::fmt::Display for LeaveOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+/// The admin a `leave-mesh`'s handoff goes back to, the owner of the workflow: the admin whose call
+/// sent the command, reached back over that call's endpoint and path (`call`; no record of it is
+/// read, as a stopped node joins back to the call that commanded its start, node-start.md step 2),
+/// else the fabric-primary its view names (`fabric_primary`; LeaveMesh is the fabric-primary's
+/// command, node-rpc-envelope.md "Mesh delete command pair"). Nothing checks who is calling
+/// (node-rpc.md §14). With neither (a command that came on no Node RPC call, and a view naming no
+/// fabric-primary), the leave has no owner to hand back to and is refused by name.
+pub fn leave_owner(call: Option<LeaveOwner>, fabric_primary: Option<LeaveOwner>, me: &str, key: &LeaveKey) -> Result<LeaveOwner, StatusReply> {
+    match call.or(fabric_primary) {
+        Some(owner) => Ok(owner),
+        None => Err(refuse_source_failed("leave-mesh", key, &format!("the view of {me}"), &format!("resolve the owner of leave-mesh for {}", key.mesh_id), "the command came on no call this admin can reach back over, and its view names no fabric-primary to hand the leave back to")),
     }
 }
 
@@ -1336,10 +1354,10 @@ where
 enum LeaveRun {
     /// The member workflows are running; `key` is the `leave-mesh` admitted last and `owner` its
     /// sender, whom the handoff goes to.
-    Running { key: LeaveKey, owner: NodeId },
+    Running { key: LeaveKey, owner: LeaveOwner },
     /// Every other member exited and the manifest is recorded under `key`: the handoff to `owner`
     /// is what is left.
-    Exited { key: LeaveKey, owner: NodeId, manifest: ExitManifest },
+    Exited { key: LeaveKey, owner: LeaveOwner, manifest: ExitManifest },
 }
 
 /// What a `leave-mesh` admission does for the leave of its mesh.
@@ -1362,7 +1380,7 @@ pub enum LeaveAdmission {
 /// What a run's manifest found the leave holding when it was recorded.
 enum RunExit {
     /// The leave is still held under the key the run recorded under: the handoff goes to `owner`.
-    Exited(NodeId),
+    Exited(LeaveOwner),
     /// A later `leave-mesh` was admitted while the run ran: its manifest is recorded under its own key.
     Moved,
     /// The leave is no longer held.
@@ -1378,7 +1396,7 @@ pub enum LeaveRunEnd {
         /// The `leave-mesh` admitted last, whose key the manifest is recorded under.
         key: LeaveKey,
         /// Its sender.
-        owner: NodeId,
+        owner: LeaveOwner,
         /// The manifest.
         manifest: ExitManifest,
     },
@@ -1388,7 +1406,7 @@ pub enum LeaveRunEnd {
         /// The `leave-mesh` admitted last.
         key: LeaveKey,
         /// Its sender.
-        owner: NodeId,
+        owner: LeaveOwner,
         /// Why.
         reason: String,
     },
@@ -1408,7 +1426,7 @@ impl LeaveRuns {
     /// `leave-mesh` for `key` from `sender`. The round held for the mesh decides it: the same round
     /// or a later attempt of it is the same leave; an earlier attempt or another Build or operation
     /// is refused by name against the round held ([`refuse_round`]) and changes nothing.
-    pub fn admit(&self, key: &LeaveKey, sender: &NodeId) -> LeaveAdmission {
+    pub fn admit(&self, key: &LeaveKey, sender: &LeaveOwner) -> LeaveAdmission {
         let mut runs = self.0.lock().unwrap();
         let held = runs.get(&key.mesh_id).cloned();
         if let Some(LeaveRun::Running { key: h, .. } | LeaveRun::Exited { key: h, .. }) = &held {
@@ -1440,7 +1458,7 @@ impl LeaveRuns {
     }
 
     /// The `leave-mesh` admitted last for `mesh_id` while its member workflows run, and its sender.
-    fn running(&self, mesh_id: &MeshId) -> Option<(LeaveKey, NodeId)> {
+    fn running(&self, mesh_id: &MeshId) -> Option<(LeaveKey, LeaveOwner)> {
         match self.0.lock().unwrap().get(mesh_id) {
             Some(LeaveRun::Running { key, owner }) => Some((key.clone(), owner.clone())),
             _ => None,
@@ -1462,7 +1480,7 @@ impl LeaveRuns {
 
     /// The run of `mesh_id` ended incomplete: it is forgotten (its receipts stand) and the
     /// `leave-mesh` admitted last, with its sender, is returned.
-    fn incomplete(&self, mesh_id: &MeshId) -> Option<(LeaveKey, NodeId)> {
+    fn incomplete(&self, mesh_id: &MeshId) -> Option<(LeaveKey, LeaveOwner)> {
         match self.0.lock().unwrap().remove(mesh_id) {
             Some(LeaveRun::Running { key, owner } | LeaveRun::Exited { key, owner, .. }) => Some((key, owner)),
             None => None,
@@ -1491,7 +1509,7 @@ pub struct LeaveMeshAdmission {
 /// handoff); it is decided on the round held alone ([`LeaveRuns::admit`]), so the round held resends
 /// a lost handoff, a later attempt resumes from the receipts and a stale or conflicting round is
 /// refused by name.
-pub async fn admit_leave_mesh(runs: &LeaveRuns, storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<crate::status_rpc::Declared>, key: &LeaveKey, sender: &NodeId) -> LeaveMeshAdmission {
+pub async fn admit_leave_mesh(runs: &LeaveRuns, storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<crate::status_rpc::Declared>, key: &LeaveKey, sender: &LeaveOwner) -> LeaveMeshAdmission {
     if runs.holds(&key.mesh_id) {
         return LeaveMeshAdmission { leaving_row: None, admission: runs.admit(key, sender) };
     }
@@ -1513,7 +1531,7 @@ pub async fn admit_leave_mesh(runs: &LeaveRuns, storage: &dyn crate::status_stor
 /// later attempt resumes from the recorded receipts, "Caller execution and certainty").
 pub async fn run_admitted<F, Fut>(runs: &LeaveRuns, mesh_id: &MeshId, run: F) -> LeaveRunEnd
 where
-    F: Fn(LeaveKey, NodeId) -> Fut,
+    F: Fn(LeaveKey, LeaveOwner) -> Fut,
     Fut: std::future::Future<Output = Result<ExitManifest, String>>,
 {
     let mut ran: Option<LeaveKey> = None;
@@ -1545,8 +1563,9 @@ where
 /// proof (mesh-left), while node.delete stays the ordinary workflow it is.
 #[async_trait::async_trait]
 pub trait MeshLeaver: Send + Sync {
-    /// `LeaveMesh` from `sender`: admit and run the member workflows.
-    async fn leave_mesh(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
+    /// `LeaveMesh` from `sender`, on a call from the endpoint `peer` (as the transport proved it):
+    /// admit and run the member workflows; the handoff goes back over that call.
+    async fn leave_mesh(&self, peer: Option<iroh::PublicKey>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
     /// `MeshLeave` from `sender`: validate the handoff.
     async fn mesh_leave(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
     /// This admin, as an executor, published `op`'s birth deleted (NodeDeleted, from the provider's
@@ -1560,6 +1579,12 @@ pub type LeaverSlot = Arc<OnceLock<Arc<dyn MeshLeaver>>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An owner of a leave, named by a fresh node id.
+    fn owner() -> LeaveOwner {
+        let id = NodeId::mint();
+        LeaveOwner { name: id.to_string(), target: rafka_node_rpc::NodeTarget::ExactNode(id) }
+    }
 
     fn birth(node: &str, inc: &str) -> RosterBirth {
         RosterBirth { node: node.into(), node_id: format!("id-{node}"), incarnation_id: inc.into() }
@@ -1582,18 +1607,18 @@ mod tests {
     fn a_leave_mesh_from_a_successor_owner_takes_over_the_running_leaves_handoff() {
         let runs = LeaveRuns::default();
         let key = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
-        let (first, successor) = (NodeId::mint(), NodeId::mint());
+        let (first, successor) = (owner(), owner());
         assert_eq!(runs.admit(&key, &first), LeaveAdmission::Start);
         assert_eq!(runs.admit(&key, &successor), LeaveAdmission::Running);
         let last = birth("mesh2.admin.1", "i3");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
         assert!(matches!(runs.exited(&key, &manifest), RunExit::Exited(o) if o == successor), "the handoff goes to the owner that sent leave-mesh last");
-        let third = NodeId::mint();
+        let third = owner();
         assert_eq!(runs.admit(&key, &third), LeaveAdmission::Resend(manifest));
         assert_eq!(runs.incomplete(&key.mesh_id), Some((key.clone(), third)), "a resend is owned by its sender");
         // A later attempt after the manifest is recorded runs again under its own key, from the receipts.
         let later = LeaveKey { attempt: 2, ..key.clone() };
-        let fourth = NodeId::mint();
+        let fourth = owner();
         assert_eq!(runs.admit(&later, &fourth), LeaveAdmission::Start);
     }
 
@@ -1608,7 +1633,7 @@ mod tests {
         let runs = LeaveRuns::default();
         let first = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let later = LeaveKey { attempt: 2, ..first.clone() };
-        let (owner1, owner2) = (NodeId::mint(), NodeId::mint());
+        let (owner1, owner2) = (owner(), owner());
         assert_eq!(runs.admit(&first, &owner1), LeaveAdmission::Start, "the first leave-mesh starts the member workflows");
         assert_eq!(runs.admit(&later, &owner2), LeaveAdmission::Running, "a later attempt's leave-mesh while the member workflows run is the same leave (mesh_id, Leaving)");
     }
@@ -1632,18 +1657,18 @@ mod tests {
         let runs = Arc::new(LeaveRuns::default());
         let first = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let later = LeaveKey { attempt: 2, ..first.clone() };
-        let (owner1, owner2) = (NodeId::mint(), NodeId::mint());
+        let (owner1, owner2) = (owner(), owner());
         let last = birth("mesh2.admin.1", "i3");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
         assert_eq!(runs.admit(&first, &owner1), LeaveAdmission::Start);
 
         // The run: the first call holds until the cell opens the gate.
-        let calls: Arc<Mutex<Vec<(u32, NodeId)>>> = Arc::default();
+        let calls: Arc<Mutex<Vec<(u32, LeaveOwner)>>> = Arc::default();
         let (live, most) = (Arc::new(std::sync::atomic::AtomicUsize::new(0)), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
         let (entered, gate) = (Arc::new(tokio::sync::Notify::new()), Arc::new(watch::Sender::new(false)));
         let run = {
             let (calls, live, most, entered, gate, manifest) = (calls.clone(), live.clone(), most.clone(), entered.clone(), gate.clone(), manifest.clone());
-            move |key: LeaveKey, owner: NodeId| {
+            move |key: LeaveKey, owner: LeaveOwner| {
                 let (calls, live, most, entered, gate, manifest) = (calls.clone(), live.clone(), most.clone(), entered.clone(), gate.clone(), manifest.clone());
                 async move {
                     let now = live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;

@@ -16,7 +16,8 @@ use rafka_mesh_entity::{MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProv
 use rafka_node_admin_core::build_facts_read::FetchFailure;
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::mesh_leave::{adopt_final_runtime, handoff_verdict_from_read, leave_owner, manifest_reference, operation, Admitted, LeaveKey, RosterBirth};
+use rafka_node_admin_core::mesh_leave::{adopt_final_runtime, handoff_verdict_from_read, leave_owner, manifest_reference, operation, Admitted, LeaveKey, LeaveOwner, RosterBirth};
+use rafka_node_rpc::NodeTarget;
 use rafka_node_admin_core::model::ProviderKind;
 use rafka_node_rpc_contract::status::StatusReply;
 use serde_json::Value;
@@ -96,29 +97,35 @@ fn a_mesh_leave_whose_manifest_cannot_be_read_is_refused_by_name_and_the_leave_s
 }
 
 /// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair": LeaveMesh is the fabric-primary's
-/// command and its handoff goes back to the workflow's owner): the leaving mesh-primary hands the
-/// leave back to the admin that sent it, else to the fabric-primary its view names. With neither (an
-/// endpoint it holds no birth for, and a view naming no fabric-primary) the `LeaveMesh` is refused
-/// `RejectedSourceFailed` naming its view, the resolution of the owner and why, under its reject span.
-/// What must NOT happen: `NotReady`, or a leave admitted with nobody to hand it back to.
+/// command and its handoff goes back to the workflow's owner; node-start.md step 2: a node "joins
+/// back over the endpoint and path of the call that commanded it; it holds no record of the
+/// commander", the way the leaving mesh-primary hands back too): the leaving mesh-primary hands the
+/// leave back over the call that sent it, the caller's endpoint at the call's path, whatever its
+/// view holds of the caller; with no call to reach back over, to the fabric-primary its view names.
+/// With neither, the `LeaveMesh` is refused `RejectedSourceFailed` naming its view, the resolution
+/// of the owner and why, under its reject span. What must NOT happen: the handoff aimed at a birth
+/// the view names when the call's endpoint is there, `NotReady`, or a leave admitted with nobody to
+/// hand it back to.
 #[test]
-fn a_leave_mesh_with_no_owner_to_hand_back_to_is_refused_by_name() {
+fn a_leave_mesh_hands_back_over_its_call_else_to_the_fabric_primary_else_is_refused_by_name() {
     let mesh_id = MeshId::mint();
     let k = key(&mesh_id);
-    let (sender, fp) = (NodeId::mint(), NodeId::mint());
+    let caller = LeaveOwner { target: NodeTarget::Endpoint { endpoint_id: iroh::SecretKey::generate().public(), addr: "127.0.0.1:4100".parse().unwrap() }, name: "the admin at its call's endpoint".into() };
+    let fp_id = NodeId::mint();
+    let fp = LeaveOwner { target: NodeTarget::ExactNode(fp_id), name: "mesh1.admin.1".into() };
     let cap = capture();
     let (none, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.reject.via-no-owner", mesh_id = %mesh_id);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
-        assert_eq!(leave_owner(Some(&sender), Some(&fp), "mesh2.admin.1", &k), Ok(sender.clone()), "the sender owns the workflow");
-        assert_eq!(leave_owner(None, Some(&fp), "mesh2.admin.1", &k), Ok(fp.clone()), "else the fabric-primary the view names");
+        assert_eq!(leave_owner(Some(caller.clone()), Some(fp.clone()), "mesh2.admin.1", &k), Ok(caller.clone()), "the handoff goes back over the call that sent leave-mesh");
+        assert_eq!(leave_owner(None, Some(fp.clone()), "mesh2.admin.1", &k), Ok(fp.clone()), "else to the fabric-primary the view names");
         (leave_owner(None, None, "mesh2.admin.1", &k), trace_id)
     });
     let spans = cap.spans();
     keep("no_owner", &trace_id, &spans);
     let (source, op, cause) = source_failed(&none);
-    assert!(source == "the view of mesh2.admin.1" && op.contains("owner") && op.contains(&mesh_id.to_string()) && cause.contains("no birth") && cause.contains("no fabric-primary"), "{source} | {op} | {cause}");
+    assert!(source == "the view of mesh2.admin.1" && op.contains("owner") && op.contains(&mesh_id.to_string()) && cause.contains("no call") && cause.contains("no fabric-primary"), "{source} | {op} | {cause}");
     assert_eq!(refusals(&spans, &trace_id), vec![("leave-mesh".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
 }
 

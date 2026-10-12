@@ -240,7 +240,7 @@ async fn three_reply_deadlines_leave_the_pooled_connection_in_place_and_reused()
     }
     assert!(next_out.reply().is_some(), "{next_out:?}");
     assert!(next.reused && next.connection == first.connection, "the next call is answered on the same pooled connection: {next:?}");
-    assert_eq!(next.node_id, r.node_id);
+    assert_eq!(next.node_id, Some(r.node_id.clone()));
     assert_eq!(r.client.pooled().len(), 1, "the one connection is still pooled");
     assert_eq!(calls.len(), 4, "three late calls and the answered one: {rows:?}");
 }
@@ -279,7 +279,7 @@ async fn a_new_incarnation_evicts_its_predecessors_connection_without_a_failed_c
     let (out, after) = r.ping().await;
     assert!(out.reply().is_some(), "{out:?}");
     assert!(!after.reused && after.connection != before.connection, "it rode a connection of the new birth");
-    assert!(r.client.pooled().iter().all(|k| k.incarnation == r.record.incarnation));
+    assert!(r.client.pooled().iter().all(|k| k.incarnation.as_ref() == Some(&r.record.incarnation)));
 }
 
 /// CONTRACT: a dial is shared by every caller of a birth, and each caller's own budget bounds its
@@ -415,7 +415,7 @@ async fn a_connection_closed_under_a_committed_call_is_evicted_and_reported_brok
         while ServerStats::get(&stats.dispatched) == before {
             tokio::task::yield_now().await;
         }
-        n._server.close_connections_except(None, "test.cut")
+        n._server.close_connections_except(&[], "test.cut")
     };
     let ((out, _), closed) = tokio::join!(held, cut);
     assert_eq!(closed, 1, "the peer closed the one connection");

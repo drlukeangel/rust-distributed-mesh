@@ -85,6 +85,8 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let (status, v) = estate.delete_raw(&format!("/api/builds?id={a}")).await;
     assert_eq!(status, 409, "the accepted Build is never history: {v}");
 
+    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Births until one draws a lower NodeId than the incumbent's.
     let mut late = None;
     for _ in 0..30 {

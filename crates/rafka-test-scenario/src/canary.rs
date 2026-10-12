@@ -61,6 +61,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let process_before = runtime_of(&estate, NODE).await;
     let transport_before = before["transport_addr"].clone();
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 4. Restart through the route; it answers with a Build id and does no bespoke work.
     let (status, restart) = estate.post(&format!("/api/nodes/{NODE}/restart"), &json!({})).await;
     assert_eq!(status, 202, "restart route: {restart}");

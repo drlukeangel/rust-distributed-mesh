@@ -7,23 +7,21 @@
 //! ```
 //!
 //! The receiver reads the [`Fence`] first and alone: the op (which names the
-//! protocol and therefore the request ceiling) and the node the caller resolved,
-//! each checked against what this process is and serves before the context, the
-//! length or the body exist to it. Then the
+//! protocol and therefore the request ceiling) is checked against what this
+//! process serves before the context, the length or the body exist to it; the
+//! node id the caller resolved is never a reason to refuse (R-UC1a). Then the
 //! [`CallContext`] that correlates the call, then the declared length; an
 //! oversize request is refused before its body is allocated or read.
 
 use crate::context::CallContext;
 use serde::{Deserialize, Serialize};
 
-/// The fence: what the receiver checks a request against before anything else.
-/// It is core, the same two checks for every protocol: is the addressed node me
-/// (`target_node_id`, the minted id; a mismatch is `425 STALE_TARGET`, the
-/// caller reached a replacement or misrouted), is the op served (`op`, the
-/// protocol's ledger code; unserved is `421`). One process has one endpoint, so
-/// the socket a request arrives on names nothing: the fence does. It says
-/// nothing about the process birth: which birth a caller is talking to is the
-/// resolver's and the pool's knowledge, never the wire's.
+/// The fence: what the receiver reads first, alone. It is core, the same for every protocol: the
+/// op is checked against what this process serves (`op`, the protocol's ledger code; unserved is
+/// `421`), and `target_node_id` names the node the caller resolved (empty for a call to an endpoint
+/// the caller holds no record of). No receiver refuses a call for the node id it names (R-UC1a):
+/// the node id is the caller's record of whom it called. It says nothing about the process birth:
+/// which birth a caller is talking to is the resolver's and the pool's knowledge, never the wire's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fence {
     /// The node id the request is for.
@@ -157,14 +155,6 @@ pub enum RequestHead {
         /// The op.
         op: u8,
     },
-    /// The fence names a node this process is not: reset `425 STALE_TARGET`, no dispatch.
-    /// Decided on the fence alone, before the context or the length is read.
-    Stale {
-        /// The op.
-        op: u8,
-        /// The fence that names another node.
-        fence: Fence,
-    },
     /// The fence or the context is over its bound or does not decode: `424 PROTOCOL_VIOLATION`.
     /// `op` is `None` when the fence itself could not be read.
     BadTarget {
@@ -194,7 +184,7 @@ pub enum RequestHead {
 /// Read the request head. `ceiling(op)` is the protocol's
 /// `MAX_REQUEST_FRAME_BYTES`, or `None` when the op is not served.
 pub(crate) fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> RequestHead {
-    match parse_request_target(buf, ceiling, |_| true) {
+    match parse_request_target(buf, ceiling) {
         Ok(t) => parse_request_length(buf, t),
         Err(head) => head,
     }
@@ -211,11 +201,10 @@ pub(crate) struct TargetRead {
     pub max: usize,
 }
 
-/// Stage one of the head: the fence, then the context. `Err` is `NeedMore`,
-/// `Unserved`, `Stale` or `BadTarget`. The fence is decoded, its op looked up and its
-/// target checked against `current` before a byte of the context is read: a `425` owes
-/// nothing to section 1, so it can carry nothing from it.
-pub(crate) fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>, current: impl Fn(&Fence) -> bool) -> Result<TargetRead, RequestHead> {
+/// Stage one of the head: the fence, then the context. `Err` is `NeedMore`, `Unserved` or
+/// `BadTarget`. The fence is decoded and its op looked up before a byte of the context is read: a
+/// `421` owes nothing to section 1, so it can carry nothing from it.
+pub(crate) fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> Result<TargetRead, RequestHead> {
     let (fence, at): (Fence, usize) = match decode_section(buf, 0, MAX_FENCE_BYTES) {
         Section::NeedMore => return Err(RequestHead::NeedMore),
         Section::Bad => return Err(RequestHead::BadTarget { op: None }),
@@ -226,9 +215,6 @@ pub(crate) fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<us
     };
     let op = fence.op;
     let Some(max) = ceiling(op) else { return Err(RequestHead::Unserved { op }) };
-    if !current(&fence) {
-        return Err(RequestHead::Stale { op, fence });
-    }
     match decode_section(buf, at, MAX_CONTEXT_BYTES) {
         Section::NeedMore => Err(RequestHead::NeedMore),
         Section::Bad => Err(RequestHead::BadTarget { op: Some(op) }),

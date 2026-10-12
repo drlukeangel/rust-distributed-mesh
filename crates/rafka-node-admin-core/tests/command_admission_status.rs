@@ -147,6 +147,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         row_moved: Default::default(),
         loads: None,
         book: Some(membership.book.clone()),
+        first_ready: Default::default(),
         builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
     };
     let status = || membership.book.get(member.node.node_id.as_str()).map(|(h, _)| h.status);

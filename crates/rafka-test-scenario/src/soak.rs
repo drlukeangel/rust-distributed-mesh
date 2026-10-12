@@ -838,6 +838,8 @@ impl Driver {
 
     /// Run until the deadline or the first violation.
     pub async fn run(mut self) -> (Report, Estate) {
+        // The initial fabric refuses a node delete, restart and replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+        self.estate.until_fabric_ready(Duration::from_secs(120)).await;
         let tr = tokio::spawn(traffic(self.shared.clone(), self.estate.probe_handle(), self.cfg.seed));
         self.sched.record("start", &format!("seed={} secs={}", self.cfg.seed, self.cfg.secs));
         let deadline = Instant::now() + Duration::from_secs(self.cfg.secs);

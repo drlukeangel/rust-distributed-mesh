@@ -2,8 +2,9 @@
 //! node-rpc.md §16, §26, §40).
 //!
 //! [`RequestAssembly`] is the server's request-direction state machine. A
-//! request reaches its protocol handler only after the fence was read and
-//! checked against what this process is and serves (its node id, its ops),
+//! request reaches its protocol handler only after the fence was read and its
+//! op checked against what this process serves (no receiver refuses a call for
+//! the node id it names, R-UC1a),
 //! the length decoded, the complete payload read within the protocol ceiling, the
 //! request direction finished cleanly and the payload decoded. An unfinished
 //! or reset request never dispatches. The client's side of the same table is
@@ -12,7 +13,7 @@
 
 use crate::catalog::SealedCatalog;
 use crate::codes::ResetCode;
-use crate::framing::{parse_request_length, parse_request_target, Fence, RequestHead, RequestHeader};
+use crate::framing::{parse_request_length, parse_request_target, RequestHead, RequestHeader};
 use crate::outcome::{MalformedKind, RpcOutcome};
 
 /// What the server does with a request direction.
@@ -24,14 +25,6 @@ pub enum ServerAction {
     ResetUnserved {
         /// The op that is not served.
         op: u8,
-    },
-    /// Reset the stream with `425 STALE_TARGET`: the fence names another node;
-    /// no protocol dispatch.
-    ResetStale {
-        /// The op.
-        op: u8,
-        /// The fence that names another node.
-        fence: Fence,
     },
     /// Reply the protocol's typed `Malformed(kind)` on the send half, then
     /// stop the receive half with `422 REQUEST_STOP`. The handler never runs.
@@ -68,7 +61,6 @@ pub enum ServerAction {
 /// The request direction, fed by the transport.
 pub struct RequestAssembly<'c> {
     catalog: &'c SealedCatalog,
-    current: &'c (dyn Fn(&Fence) -> bool + Send + Sync),
     buf: Vec<u8>,
     header: Option<RequestHeader>,
     head: Option<(u8, usize, usize)>,
@@ -82,28 +74,27 @@ impl std::fmt::Debug for RequestAssembly<'_> {
 }
 
 impl<'c> RequestAssembly<'c> {
-    /// `current(fence)` answers whether this server is the fenced node.
-    pub fn new(catalog: &'c SealedCatalog, current: &'c (dyn Fn(&Fence) -> bool + Send + Sync)) -> Self {
-        Self { catalog, current, buf: Vec::new(), header: None, head: None, done: false }
+    /// The request direction of a server serving what `catalog` seals.
+    pub fn new(catalog: &'c SealedCatalog) -> Self {
+        Self { catalog, buf: Vec::new(), header: None, head: None, done: false }
     }
 
-    /// The op, once the head has been read, the op is served and the target is current.
+    /// The op, once the head has been read and the op is served.
     pub fn head_op(&self) -> Option<u8> {
         self.head.map(|(t, _, _)| t)
     }
 
-    /// Bytes arrived. Head decisions (unserved op, stale target, oversize
-    /// declaration) are made as soon as the head is readable — before the body.
+    /// Bytes arrived. Head decisions (unserved op, oversize declaration) are made as soon as the
+    /// head is readable — before the body.
     pub fn push(&mut self, bytes: &[u8]) -> ServerAction {
         if self.done {
             return ServerAction::Continue;
         }
         self.buf.extend_from_slice(bytes);
         if self.head.is_none() {
-            let read = match parse_request_target(&self.buf, |t| self.catalog.request_ceiling(t), |f| (self.current)(f)) {
+            let read = match parse_request_target(&self.buf, |t| self.catalog.request_ceiling(t)) {
                 Ok(read) => read,
                 Err(RequestHead::Unserved { op }) => return self.end(ServerAction::ResetUnserved { op }),
-                Err(RequestHead::Stale { op, fence }) => return self.end(ServerAction::ResetStale { op, fence }),
                 Err(RequestHead::BadTarget { op }) => return self.end(ServerAction::ResetViolation { op, reason: "bad request fence" }),
                 Err(_) => return ServerAction::Continue,
             };
@@ -119,7 +110,7 @@ impl<'c> RequestAssembly<'c> {
                     return self.end(ServerAction::ResetViolation { op: Some(op), reason: "bad length prefix" })
                 }
                 RequestHead::Ready { op, payload_len, head_len, .. } => self.head = Some((op, payload_len, head_len)),
-                RequestHead::Unserved { .. } | RequestHead::Stale { .. } | RequestHead::BadTarget { .. } => unreachable!("decided in stage one"),
+                RequestHead::Unserved { .. } | RequestHead::BadTarget { .. } => unreachable!("decided in stage one"),
             }
         }
         let (op, len, head) = self.head.expect("set above");
@@ -195,7 +186,7 @@ mod tests {
     use super::*;
     use crate::catalog::{CatalogBuilder, CatalogEntry, Shape, OpOwner};
     use crate::ping::{Ping, PingReply, PingRequest};
-    use crate::framing::{encode_request, encode_varint};
+    use crate::framing::{encode_request, encode_varint, Fence};
     use crate::outcome::{IndeterminateReason, NotSentReason, PreCommit, ReplyKind, RequestFinished};
     use crate::protocol::{DecodeFailure, NodeProtocol};
 
@@ -207,12 +198,8 @@ mod tests {
         RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x01 })
     }
 
-    fn current(f: &Fence) -> bool {
-        f.target_node_id == "n1"
-    }
-
     fn assembly(c: &SealedCatalog) -> RequestAssembly<'_> {
-        RequestAssembly::new(c, &current)
+        RequestAssembly::new(c)
     }
 
     fn echo_frame(payload: &[u8]) -> Vec<u8> {
@@ -274,28 +261,32 @@ mod tests {
         assert_eq!(a.push(&head), ServerAction::RefuseMalformed { op: 0x01, kind: MalformedKind::TooLarge });
     }
 
+    /// CONTRACT (R-UC1a, Luke 2026-10-12: "no receiver refuses a Node RPC call for the node id it
+    /// names"): a request whose fence names another node, or no node (a call to the endpoint of a
+    /// call that reached the caller), is read, length-checked and dispatched to its served op like
+    /// any other, the fence carried as it came. Must NOT happen: a `425` reset, or any decision on the
+    /// fence's node id.
     #[test]
-    fn a_stale_or_unknown_target_is_425_before_the_length_or_body() {
+    fn a_fence_naming_another_node_or_none_is_dispatched_never_refused() {
         let c = catalog();
-        for stale in [RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x01 }), RequestHeader::fence(Fence { target_node_id: "".into(), op: 0x01 })] {
+        let req = Ping::encode_request(&PingRequest::Ping { payload: b"x".to_vec() }).unwrap();
+        for named in [Fence { target_node_id: "n2".into(), op: 0x01 }, Fence { target_node_id: "".into(), op: 0x01 }] {
             let mut a = assembly(&c);
-            let mut f = encode_request(&stale, b"");
-            f.pop();
-            // Only the op and target: decided before any length is read, and before the
-            // context: the fence alone, cut right after it, is already a 425.
-            let fence_end = 1 + f[0] as usize;
-            assert_eq!(a.push(&f[..fence_end]), ServerAction::ResetStale { op: 0x01, fence: stale.fence.clone() });
-            let mut a = assembly(&c);
-            assert_eq!(a.push(&f), ServerAction::ResetStale { op: 0x01, fence: stale.fence.clone() });
-            assert_eq!(a.finish(), ServerAction::Continue, "nothing after the decision");
+            assert_eq!(a.push(&encode_request(&RequestHeader::fence(named.clone()), &req)), ServerAction::Continue, "{named:?}");
+            match a.finish() {
+                ServerAction::Dispatch { op, header, .. } => {
+                    assert_eq!(op, 0x01);
+                    assert_eq!(header.fence, named, "the dispatched request carries the fence as it came");
+                }
+                other => panic!("a fence naming {:?} is dispatched, never refused: {other:?}", named.target_node_id),
+            }
         }
-        // An oversize declaration behind a stale target is still 425: the target is checked first.
+        // An oversize declaration is refused on its size alone, whatever node the fence names.
         let mut a = assembly(&c);
-        let stale = RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x01 });
-        let mut f = encode_request(&stale, b"");
+        let mut f = encode_request(&RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x01 }), b"");
         f.pop();
         encode_varint(Ping::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut f);
-        assert_eq!(a.push(&f), ServerAction::ResetStale { op: 0x01, fence: stale.fence });
+        assert_eq!(a.push(&f), ServerAction::RefuseMalformed { op: 0x01, kind: MalformedKind::TooLarge });
     }
 
     #[test]
@@ -347,17 +338,20 @@ mod tests {
 
     #[test]
     fn complete_request_and_unserved_proof_is_unserved() {
-        assert_eq!(committed().reset::<PingReply>(421, &target().fence).name(), "Unserved");
+        assert_eq!(committed().reset::<PingReply>(421).name(), "Unserved");
     }
 
+    /// CONTRACT (R-UC1a): `RejectedStale` is the caller's own verdict, its resolver no longer naming
+    /// the birth it dialled, before the request went: never dispatched, safe to retry. A `425` after
+    /// commit proves nothing (no receiver sends it) and is `Indeterminate`.
     #[test]
-    fn complete_request_and_stale_proof_is_rejected_stale_never_not_sent() {
-        let out = committed().reset::<PingReply>(425, &target().fence);
-        assert!(matches!(&out, RpcOutcome::RejectedStale(s) if s.target_node_id() == "n1"), "{out:?}");
-        assert!(out.proves_not_dispatched());
-        assert_eq!(replay_verdict(&out, true), ReplayVerdict::SafeToRetry);
+    fn a_stale_target_is_the_callers_verdict_before_the_request_and_a_425_after_commit_proves_nothing() {
         let early: RpcOutcome<PingReply> = PreCommit::begin(0x01).stale_before_finish(&target().fence);
-        assert_eq!(early.name(), "RejectedStale");
+        assert!(matches!(&early, RpcOutcome::RejectedStale(s) if s.target_node_id() == "n1"), "{early:?}");
+        assert!(early.proves_not_dispatched());
+        assert_eq!(replay_verdict(&early, true), ReplayVerdict::SafeToRetry);
+        let late = committed().reset::<PingReply>(425);
+        assert!(matches!(&late, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(425)), "{late:?}");
     }
 
     #[test]
@@ -379,7 +373,7 @@ mod tests {
         assert_eq!(replay_verdict(&ind, false), ReplayVerdict::ReadMayRepeat);
         let ns: RpcOutcome<PingReply> = PreCommit::begin(0x01).not_sent(NotSentReason::Deadline);
         assert_eq!(replay_verdict(&ns, true), ReplayVerdict::SafeToRetry);
-        assert_eq!(replay_verdict(&committed().reset::<PingReply>(421, &target().fence), true), ReplayVerdict::SafeToRetry);
+        assert_eq!(replay_verdict(&committed().reset::<PingReply>(421), true), ReplayVerdict::SafeToRetry);
         let bytes = Ping::encode_reply(&Ping::busy("x".into())).unwrap();
         assert_eq!(replay_verdict(&committed().reply::<Ping>(&bytes), true), ReplayVerdict::Answered);
     }

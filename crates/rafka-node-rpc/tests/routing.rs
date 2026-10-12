@@ -23,7 +23,7 @@ async fn an_exact_target_is_preserved_over_direct() {
     let (out, ev, leg) = routed(&r, target, RouteChoice::Direct, b"direct").await;
     assert_eq!(served_by(&out), Some(("mesh1.rpc.1".into(), r.origin.endpoint().id().to_string())), "B executed, called by the origin itself: {out:?}");
     assert_eq!(leg, RouteLeg::Direct);
-    assert_eq!(ev.unwrap().node_id, target.resolved.node_id, "the leg's evidence names the selected target");
+    assert_eq!(ev.unwrap().node_id, Some(target.resolved.node_id.clone()), "the leg's evidence names the selected target");
     assert_eq!((r.b.handled.load(Ordering::SeqCst), r.c.handled.load(Ordering::SeqCst), r.p.handled.load(Ordering::SeqCst)), (1, 0, 0), "no other node was attempted");
 }
 
@@ -35,7 +35,7 @@ async fn an_exact_target_is_preserved_over_via_peer_and_the_carrier_cannot_subst
     let (out, ev, leg) = routed(&r, target, route, b"carried").await;
     assert_eq!(served_by(&out), Some(("mesh1.rpc.1".into(), r.p.key.public().to_string())), "B executed exactly once, called by P: {out:?}");
     assert_eq!(leg, RouteLeg::ViaPeer { carrier: "mesh1.rpc.3".into() });
-    assert_eq!(ev.unwrap().node_id, r.p.resolved.node_id, "the one leg the origin ran went to the carrier");
+    assert_eq!(ev.unwrap().node_id, Some(r.p.resolved.node_id.clone()), "the one leg the origin ran went to the carrier");
     assert_eq!((r.b.handled.load(Ordering::SeqCst), r.c.handled.load(Ordering::SeqCst)), (1, 0), "P carried to B, never to C");
     // The carrier is handed the exact final target; a Forward op is itself never forwardable, so
     // P cannot be asked to carry a carry (recursion is refused by type at the origin).

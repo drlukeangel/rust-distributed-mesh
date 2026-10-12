@@ -40,6 +40,7 @@ mod control_routes;
 mod current_build;
 mod drift_convergence;
 mod fabric_handover;
+mod fabric_not_ready;
 mod i143_acceptance_2805;
 mod i143_acceptance_2892;
 mod i143_acceptance_2938;

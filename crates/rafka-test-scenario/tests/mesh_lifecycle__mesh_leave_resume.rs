@@ -18,7 +18,7 @@
 //! rpc.1 at its NodeDeleted receipt, so the Build holds rpc.1's exact Exited (TerminateRuntime) and
 //! no NodeDeleted.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -95,10 +95,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     // fabric's state-commit published them (states.md, Rounds: "Before state-commit, RDM holds its
     // rows in the scratchpad"; R14 item 9): the fabric is ready-for-traffic before mesh2 goes, so the
     // admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
-    wait_for("the fabric is ready-for-traffic: its state-commit published every node's rows", Duration::from_secs(90), || async {
-        (estate.get("/api/fabric").await.1["status"] == "ready-for-traffic").then_some(())
-    })
-    .await;
+    estate.until_fabric_ready(Duration::from_secs(90)).await;
     let (_, m2) = estate.get("/api/meshes/mesh2").await;
     let mesh2_id = s(&m2["id"]);
     let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));

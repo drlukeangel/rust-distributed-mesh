@@ -20,6 +20,12 @@ use serde_json::Value;
 const STALE: &str = "rdm.node_admin.mesh.reject.via-stale-round";
 const CONFLICTING: &str = "rdm.node_admin.mesh.reject.via-conflicting-round";
 
+/// An owner of a leave, named by a fresh node id.
+fn owner_named() -> rafka_node_admin_core::mesh_leave::LeaveOwner {
+    let id = NodeId::mint();
+    rafka_node_admin_core::mesh_leave::LeaveOwner { name: id.to_string(), target: rafka_node_rpc::NodeTarget::ExactNode(id) }
+}
+
 fn key(mesh_id: &MeshId, build_id: &str, attempt: u32) -> LeaveKey {
     LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.into(), attempt, operation: operation(mesh_id) }
 }
@@ -70,7 +76,7 @@ fn a_leave_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_th
     let cap = capture();
     let mesh_id = MeshId::mint();
     let (held, stale, other) = (key(&mesh_id, "bld_a", 2), key(&mesh_id, "bld_a", 1), key(&mesh_id, "bld_b", 1));
-    let (owner, late) = (NodeId::mint(), NodeId::mint());
+    let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
     let runs = LeaveRuns::default();
@@ -192,7 +198,7 @@ fn a_leave_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leavi
     let cap = capture();
     let mesh_id = MeshId::mint();
     let (held, stale, next) = (key(&mesh_id, "bld_a", 2), key(&mesh_id, "bld_a", 1), key(&mesh_id, "bld_a", 3));
-    let (owner, late) = (NodeId::mint(), NodeId::mint());
+    let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
     let (runs, storage, declared) = (LeaveRuns::default(), MemoryStatusStorage::default(), std::sync::Mutex::new(Declared::default()));

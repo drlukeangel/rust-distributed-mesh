@@ -30,8 +30,8 @@ pub struct LeaveDoor {
 
 #[async_trait::async_trait]
 impl MeshLeaver for LeaveDoor {
-    async fn leave_mesh(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
-        self.runner.clone().admit_leave(sender, req).await
+    async fn leave_mesh(&self, peer: Option<iroh::PublicKey>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
+        self.runner.clone().admit_leave(peer, sender, req).await
     }
     async fn mesh_leave(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
         self.runner.validate_handoff(sender, req).await
@@ -497,7 +497,7 @@ impl AdminRunner {
     }
 
     /// `LeaveMesh` at the leaving mesh's primary: admit it and run the member workflows.
-    pub(super) async fn admit_leave(self: Arc<Self>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
+    pub(super) async fn admit_leave(self: Arc<Self>, peer: Option<iroh::PublicKey>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
         let StatusRequest::LeaveMesh { mesh_id, build_id, attempt, operation } = req else { unreachable!("admit_leave serves leave-mesh") };
         let view = self.topology.read().await.clone();
         let Some(me) = view.own(&self.node_id).cloned() else {
@@ -512,12 +512,18 @@ impl AdminRunner {
         if !me.is_primary {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", me.mesh) } };
         }
-        // The handoff goes back to whoever owns the workflow: the admin that sent this command, else
-        // the fabric-primary this admin's view names (LeaveMesh is the fabric-primary's command,
+        // The handoff goes back to whoever owns the workflow: the admin whose call sent this command,
+        // reached back over that call's endpoint and path with no record of it read, else the
+        // fabric-primary this admin's view names (LeaveMesh is the fabric-primary's command,
         // node-rpc-envelope.md "Mesh delete command pair"). Nothing checks who is calling
         // (node-rpc.md §14).
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
-        let owner = match crate::mesh_leave::leave_owner(sender.map(|n| &n.node_id), view.fabric_primary().map(|n| &n.node_id), &self.me.to_string(), &key) {
+        let call = match peer {
+            Some(key) => crate::workflows::node_start::reached_back(&self.me.to_string(), &self.node_rpc.client, &key).await.ok().map(|target| crate::mesh_leave::LeaveOwner { target, name: sender.map(|n| n.name.to_string()).unwrap_or_else(|| format!("the admin at endpoint {}", key.fmt_short())) }),
+            None => None,
+        };
+        let fabric_primary = view.fabric_primary().map(|n| crate::mesh_leave::LeaveOwner { target: rafka_node_rpc::NodeTarget::ExactNode(n.node_id.clone()), name: n.name.to_string() });
+        let owner = match crate::mesh_leave::leave_owner(call, fabric_primary, &self.me.to_string(), &key) {
             Ok(owner) => owner,
             Err(refused) => return refused,
         };
@@ -525,7 +531,7 @@ impl AdminRunner {
         // owner's): [`crate::mesh_leave::admit_leave_mesh`].
         let crate::mesh_leave::LeaveMeshAdmission { leaving_row, admission } = crate::mesh_leave::admit_leave_mesh(&self.leave_runs, &*self.status_storage, &self.records.declared, &key, &owner).await;
         if let Some(committed) = &leaving_row {
-            tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
+            tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %owner, outcome = committed.name())
                 .in_scope(|| tracing::info!("leave-mesh at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
             if matches!(committed, StatusReply::Applied | StatusReply::AlreadyApplied) {
                 // The committed Leaving is owed upward now: the declarer reports it to the
@@ -602,7 +608,7 @@ impl AdminRunner {
     /// Both tiers over the accepted roster, then the one manifest receipt
     /// ([`crate::mesh_leave::members_exited`]). `owner` is the fabric-primary that sent `LeaveMesh`:
     /// the Build facts it holds are read when this admin's own do not yet admit it.
-    async fn leave_members(&self, key: &LeaveKey, owner: &NodeId) -> Result<ExitManifest, String> {
+    async fn leave_members(&self, key: &LeaveKey, owner: &crate::mesh_leave::LeaveOwner) -> Result<ExitManifest, String> {
         let view = self.topology.read().await.clone();
         let me = view.own(&self.node_id).cloned().ok_or_else(|| format!("{} holds no view of itself", self.me))?;
         let my_fact = self.held_runtime(&me).ok_or_else(|| format!("{} publishes no runtime fact: its own exact runtime cannot be named", me.name))?;
@@ -613,7 +619,7 @@ impl AdminRunner {
         // owner's Build facts when this admin has not yet heard them ([`crate::mesh_leave::leaving_roster`]).
         let build_id = crate::build::BuildId(key.build_id.clone());
         let fetch_owner = || async {
-            crate::build_facts_read::fetch_build_facts(&self.node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(owner.clone()), &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}", self.me))
+            crate::build_facts_read::fetch_build_facts(&self.node_rpc.client, &owner.target, &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}", self.me))
         };
         let capture = || {
             let mut roster = view.members().filter(|n| n.mesh == me.mesh && n.status.is_live() && n.node_id != me.node_id).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
@@ -650,7 +656,7 @@ impl AdminRunner {
     }
 
     /// The `MeshLeave` handoff: the mesh-leave gossip hook, then the call up to the owner.
-    async fn hand_off(&self, key: &LeaveKey, owner: &NodeId, manifest: &ExitManifest) {
+    async fn hand_off(&self, key: &LeaveKey, owner: &crate::mesh_leave::LeaveOwner, manifest: &ExitManifest) {
         let reference = manifest_reference(&key.build_id, key.attempt, &key.operation, false);
         let view = self.topology.read().await.clone();
         let Some(me) = view.own(&self.node_id).cloned() else {
@@ -692,15 +698,16 @@ impl AdminRunner {
         self.call_mesh_leave(key, owner, "complete", manifest.receipts.len()).await;
     }
 
-    /// The `MeshLeave` call up to the owner: this primary's exact birth and runtime, and the
-    /// reference of its exit manifest receipt. `manifest` says whether that receipt is recorded
-    /// (`complete`) or the member workflows ended without one (`incomplete`).
-    async fn call_mesh_leave(&self, key: &LeaveKey, owner: &NodeId, manifest: &'static str, manifest_receipts: usize) {
+    /// The `MeshLeave` call up to the owner, over the call that sent `leave-mesh` (or to the
+    /// fabric-primary its view named): this primary's exact birth and runtime, and the reference of
+    /// its exit manifest receipt. `manifest` says whether that receipt is recorded (`complete`) or
+    /// the member workflows ended without one (`incomplete`).
+    async fn call_mesh_leave(&self, key: &LeaveKey, owner: &crate::mesh_leave::LeaveOwner, manifest: &'static str, manifest_receipts: usize) {
         let reference = manifest_reference(&key.build_id, key.attempt, &key.operation, false);
         let view = self.topology.read().await.clone();
         let node_rpc = &self.node_rpc;
-        let (Some(me), Some(owner_node)) = (view.own(&self.node_id).cloned(), view.nodes.iter().find(|n| &n.node_id == owner).cloned()) else {
-            tracing::info!(operation = %key.operation, owner = %owner, "the owner of this workflow is not held in this view: the handoff waits for a repeated leave-mesh");
+        let Some(me) = view.own(&self.node_id).cloned() else {
+            tracing::info!(operation = %key.operation, owner = %owner, "this admin holds no view of itself: the handoff waits for a repeated leave-mesh");
             return;
         };
         let Some(final_runtime) = self.held_runtime(&me) else {
@@ -709,12 +716,12 @@ impl AdminRunner {
         };
         let (Some(final_incarnation), final_node_id) = (me.incarnation_id.clone(), me.node_id.clone()) else { return };
         let req = StatusRequest::MeshLeave { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), final_node_id, final_incarnation, final_runtime, receipt_manifest: reference };
-        let (out, _) = node_rpc.client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(owner_node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
+        let (out, _) = node_rpc.client.call::<Status>(&owner.target, &req, &rafka_node_rpc::CallOptions::default()).await;
         let outcome = match &out {
             rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => format!("{} {:?}", r.value().name(), r.value()),
             other => format!("{} {other:?}", other.name()),
         };
-        tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-sent", mesh_id = %key.mesh_id, operation = %key.operation, owner = %owner_node.name, manifest, manifest_receipts, outcome = %outcome)
+        tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-sent", mesh_id = %key.mesh_id, operation = %key.operation, owner = %owner, manifest, manifest_receipts, outcome = %outcome)
             .in_scope(|| tracing::info!("the mesh-leave handoff was called"));
     }
 

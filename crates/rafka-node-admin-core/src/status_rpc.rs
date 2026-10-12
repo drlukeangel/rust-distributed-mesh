@@ -352,6 +352,9 @@ pub struct StatusAuthority {
     /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
     /// otherwise). `None` only where no admin owns a digest book.
     pub book: Option<rafka_mesh_transport::membership::DigestBook>,
+    /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
+    /// `UpdateNode` is refused `RejectedFabricNotReady` and nothing is written.
+    pub first_ready: crate::fabric_state::FirstReady,
     /// This admin's builds store: `fabric.get` answers the current Build from it, read last in, first
     /// out (build.md §4; R-BI3: "Each accepted Build is its own entity in the builds store, written
     /// once"; "The Fabric row carries no pointer to the newest Build").
@@ -418,10 +421,10 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             }
             apply_mesh(declared, mesh_id, *state)
         }
-        // Downward exact-node operations reach the subject itself (`self_subject`); an authority
-        // that is not the subject is not the receiver they name.
+        // Downward exact-node operations are answered by the birth they reach (`self_subject`), which
+        // this admin answers as once its view holds it.
         StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } | StatusRequest::ApplyNodeName { .. } => {
-            (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, None)
+            (StatusReply::NotReady { reason: format!("{} holds no view of itself yet: {} is answered by the birth it reaches once its view holds it", auth.me, req.op()) }, None)
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`).
         StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateNode { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
@@ -461,7 +464,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
     }
 }
 
-fn event_key(e: &FabricEvent) -> String {
+pub(crate) fn event_key(e: &FabricEvent) -> String {
     match e {
         FabricEvent::ReadyForTraffic => "ready-for-traffic".into(),
         FabricEvent::ShutdownInitiated { initiated_by } => format!("shutdown-initiated:{initiated_by}"),
@@ -538,14 +541,14 @@ impl StatusAuthority {
                 let Some(leaver) = self.leaver.get().cloned() else {
                     return StatusReply::NotReady { reason: format!("{} is still starting: it cannot serve {} yet", self.me, req.op()) };
                 };
-                let reply = if matches!(req, StatusRequest::LeaveMesh { .. }) { leaver.leave_mesh(sender.as_ref(), req).await } else { leaver.mesh_leave(sender.as_ref(), req).await };
+                let reply = if matches!(req, StatusRequest::LeaveMesh { .. }) { leaver.leave_mesh(peer, sender.as_ref(), req).await } else { leaver.mesh_leave(sender.as_ref(), req).await };
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %self.me, op = req.op(), sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a mesh-leave call naming this admin was decided"));
                 return reply;
             }
             StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
                 return match self.rounds.get() {
-                    Some(rounds) => rounds.serve(&view, sender.as_ref(), req, self.own.get()).await,
+                    Some(rounds) => rounds.serve(&view, sender.as_ref(), peer, req, self.own.get()).await,
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
                 };
             }
@@ -553,7 +556,7 @@ impl StatusAuthority {
                 // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
                 let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
                 let doors = crate::node_update::UpdateDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
-                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), req).await;
+                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), &self.first_ready, req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {
@@ -584,13 +587,13 @@ impl StatusAuthority {
                 }
                 return crate::views::view_answer(&me, &view, req).unwrap_or_else(|| StatusReply::NotReady { reason: format!("{me} answers no {} from its view", req.op()) });
             }
-            StatusRequest::GetConnections { node_id, incarnation } => return self.read_connections(&view, node_id, incarnation).await,
+            StatusRequest::GetConnections { incarnation, .. } => return self.read_connections(&view, incarnation).await,
             _ => {}
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.own(&self.node_id) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.configure, &self.rename, &self.hydration, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.hydration, &self.wake).await {
                 return reply;
             }
         }
@@ -632,15 +635,12 @@ impl StatusAuthority {
 
 impl StatusAuthority {
     /// `node.connections.get` of this admin's exact birth: the connections it holds, under the name
-    /// it holds. A request naming another node is not this receiver's; another incarnation of this
-    /// node is refused naming the one held.
-    async fn read_connections(&self, view: &Topology, node_id: &NodeId, incarnation: &IncarnationId) -> StatusReply {
+    /// it holds. The birth the call reached answers it (R-RX5: no receiver refuses a call for the
+    /// node id it names); another incarnation is refused naming the one held.
+    async fn read_connections(&self, view: &Topology, incarnation: &IncarnationId) -> StatusReply {
         let Some(me) = view.own(&self.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
-        if *node_id != self.node_id {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } };
-        }
         match me.incarnation_id.as_ref() {
             None => return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown },
             Some(held) if held != incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
@@ -798,12 +798,13 @@ impl StatusAuthority {
     /// §14): the commander is the caller as the view holds it, where its completion goes; the
     /// connection spared is the call's own (`peer`).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest) -> StatusReply {
-        let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. } | StatusRequest::StartNode { node_id, incarnation, .. } | StatusRequest::DeleteConnections { node_id, incarnation, .. }) = req else {
+        let (StatusRequest::DrainNode { incarnation, .. } | StatusRequest::StopNode { incarnation, .. } | StatusRequest::StartNode { incarnation, .. } | StatusRequest::DeleteConnections { incarnation, .. }) = req else {
             unreachable!("serve_command is called for commands only")
         };
+        // The birth the call reached obeys it (R-RX5: no receiver refuses a downward call for the
+        // node id it names); the exact birth it names is checked.
         let me = view.own(&self.node_id);
         let reply = match (me, self.own.get()) {
-            (Some(me), _) if me.node_id != *node_id => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } },
             (Some(me), _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().expect("checked") },
             (_, Some(own)) => own.serve(sender.map(|n| &n.node_id), peer, req).await.expect("a command"),
             (_, None) => StatusReply::NotReady { reason: format!("{} has not yet joined its mesh; {} is refused", self.me, req.op()) },
@@ -855,6 +856,13 @@ impl StatusAuthority {
                 }
             }
         };
+        // The row of the ready-for-traffic event is the durable fact that the fabric first reached
+        // ready-for-traffic: the admin that put it knows it from that moment (`FirstReady`).
+        if let (StatusReply::Applied | StatusReply::AlreadyApplied, Effect::Fabric(_, event)) = (&reply, &effect) {
+            if *event == event_key(&FabricEvent::ReadyForTraffic) {
+                self.first_ready.reach("ready-for-traffic-row-put");
+            }
+        }
         if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
             // The node's report, applied, sets its status (node-status.md "Status report": "A node
             // reports to its mesh's primary, which sets its status"), carried by this primary's member
@@ -938,23 +946,22 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 }
 
 
-/// The downward exact-node operations, answered by the subject itself, whoever sends them
-/// (node-rpc.md §14). `Some(reply)` when `req` names this node; `None` for every other request.
+/// The downward exact-node operations, answered by the birth they reach, whoever sends them
+/// (node-rpc.md §14) and whatever node id they name (R-RX5). `Some(reply)` for those requests;
+/// `None` for every other request.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition. While its
 /// `hydrate_before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
 /// re-publishes nothing. `ApplyNodeState` is not served: a drain is `drain-node` and a stop is `stop-node`.
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, hydration: &Hydrating, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
-    let (node_id, incarnation) = match req {
-        StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } => (node_id, incarnation),
+#[allow(clippy::too_many_arguments)]
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, hydration: &Hydrating, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+    let incarnation = match req {
+        StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
         _ => return None,
     };
-    // The subject answers whoever reaches it: nothing inside the mesh checks who is calling, and the
-    // fence is the target node id and the op (node-rpc.md §14).
-    if me.node_id != *node_id {
-        return None;
-    }
+    // The exact birth the call names is checked, so a call that reached another birth is refused
+    // naming the one held.
     let Some(held) = me.incarnation_id.as_ref() else {
         return Some(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
     };
@@ -967,11 +974,10 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             // The hook's blocker as it stood when the probe arrived, before the probe addresses
             // this admin (a hook blocked on its authority's word runs again on it).
             let blocker = hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
-            // The authority addressed this admin (R-S3's down op): every declaration owed to it is
-            // sent again, whatever its last outcome.
-            if let Some(from) = sender {
-                wake.addressed_by(&from.node_id);
-            }
+            // The authority addressed this admin (R-S3's down op): its endpoint is counted for a hook
+            // blocked on its word, whether or not a record names it, and every declaration owed to it
+            // is sent again, whatever its last outcome.
+            wake.addressed_by(sender.map(|n| &n.node_id), peer);
             // A parked admin presents nothing: it says it is parked.
             if crate::node_self::parking().is_parked() {
                 tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "parked", "otel.kind" = "internal")
@@ -1152,6 +1158,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
@@ -1269,6 +1276,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
@@ -1296,11 +1304,11 @@ mod tests {
         let republish = Republish::default();
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         for sender in [Some(&carrier), Some(&admin), None] {
-            let answered = self_subject(&admin, sender, &probe, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
+            let answered = self_subject(&admin, sender, None, &probe, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
             assert!(matches!(answered, Some(R::Current { .. })), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
         }
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::Draining };
-        let answered = self_subject(&admin, Some(&carrier), &apply, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
 
@@ -1329,6 +1337,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
     }
@@ -1621,6 +1630,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         for n in [&restarted, &deleted, &standing] {
@@ -1712,6 +1722,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };

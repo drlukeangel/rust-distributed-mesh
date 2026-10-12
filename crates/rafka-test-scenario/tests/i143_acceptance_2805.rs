@@ -228,6 +228,8 @@ async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
     let target = sole_admin_off_the_seat(&settled);
     let before = estate.node_view(&target).await;
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The restart, through the rectifier: an attempt of the accepted Build.
     let mut restart = estate.nodes_obj().await.restart(&target.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
     let restart_build = Estate::complete(&mut restart).await.build_id.0;
