@@ -9,8 +9,11 @@
 //!
 //! 1. `rdm.mesh.node.update.via-join-admitted`: `JoinNode` to the authority (the admin that launched
 //!    the node, or the one that commanded its start), presenting the digest the node holds, Pending;
-//!    the answer's rafka-time is adopted. A start with no authority (the Day-0 root, a fabric-primary
-//!    reborn from its durable map, a recovery start) makes no join.
+//!    the answer's rafka-time is adopted, and the name it hands (its row's) is the step's `installed`:
+//!    the node holds it from the channel step on, and every later step is named by it, so a node
+//!    renamed while stopped is never named by the name it held before its join (R-JN1, R12). A start
+//!    with no authority (the Day-0 root, a fabric-primary reborn from its durable map, a recovery
+//!    start) makes no join.
 //! 2. `rdm.mesh.node.update.via-membership-joined`: the node enters its mesh channel holding the name
 //!    the join handed, before it publishes anything (R-JN1).
 //! 3. `rdm.mesh.node.update.via-topology-taken`: `GetTopology` from the same authority, installed per
@@ -166,11 +169,11 @@ pub trait StartNode: Send {
 /// `node.start`: the join, the mesh channel, the topology, the hook and the report, in that order,
 /// for `node` as it plugs into each step.
 pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(), N::Error> {
-    let Starting { root, name, path, node_id, client, rafka_time } = node.starting();
+    let Starting { root, mut name, path, node_id, client, rafka_time } = node.starting();
     // 1. The join: the answer's rafka-time and cert are taken before the node says anything.
     let (through, joined) = match node.joining() {
         Joining::Authority { label } => {
-            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label);
+            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, installed = tracing::field::Empty);
             let through = node.resolve_authority()?;
             let mut digest = node.join_digest();
             digest.status = MemberStatus::Pending;
@@ -180,6 +183,12 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
                 Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{name} could not join through {}: unreached: {why}", through.name) }.into()),
             };
             crate::rafka_time::adopt_join_answer(&step, &rafka_time, &name, &answer);
+            // The name the answer hands (a join that hands none is refused, `crate::join::call_join`):
+            // the node holds it from the channel step on, and every later step is named by it.
+            if let Some(handed) = &answer.control.name {
+                name = handed.to_string();
+            }
+            step.record("installed", name.as_str());
             drop(step);
             (Ok((through, label)), Some(answer))
         }

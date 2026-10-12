@@ -800,12 +800,14 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
         _: Option<rafka_node_admin_core::wire::JoinAnswer>,
     ) -> Result<rafka_node_admin_core::workflows::node_start::HookParts, rafka_node_admin_core::node_self::StartFailed> {
         let s = self.session;
+        // From here on it is named by the name it installed from its join answer (`enter_channel`).
+        let me = s.membership.held_name(&s.name);
         if let Some((step, read)) = read {
             let mesh_peers: Vec<EndpointAddr> = read
                 .installed
                 .iter()
                 .flat_map(|m| m.members.iter())
-                .filter(|d| d.fabric_id == s.fabric_id && d.node.name != s.name && d.node.name.mesh == s.name.mesh)
+                .filter(|d| d.fabric_id == s.fabric_id && d.node.node_id != s.node_id && d.node.name.mesh == me.mesh)
                 .filter_map(rafka_mesh_transport::membership::gossip_addr)
                 .collect();
             let _ = membership.join_peers(mesh_peers).await;
@@ -820,7 +822,7 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
         *s.publisher.lock().unwrap() = Some(spawn_publisher(membership, &s.digest, &s.status, &s.server));
         let becoming = Becoming {
             boot: self.root.clone(),
-            name: self.name.clone(),
+            name: me.to_string(),
             kind: s.name.kind.name(),
             incarnation_id: s.incarnation.0.clone(),
             node_id: s.node_id.clone(),
@@ -834,7 +836,7 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
             client: s.client.clone(),
         };
         Ok(rafka_node_admin_core::workflows::node_start::HookParts {
-            birth: rafka_node_admin_core::app_hydration::Birth { name: s.name.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
+            birth: rafka_node_admin_core::app_hydration::Birth { name: me, node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
             hydration: s.hydration.clone(),
             events: rafka_node_admin_core::app_hydration::Events::new(membership.book.clone(), s.addressed.clone()),
             cancel: self.retire.take().expect("the hook's token is handed once"),
