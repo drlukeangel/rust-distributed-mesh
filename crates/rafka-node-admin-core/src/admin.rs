@@ -1225,52 +1225,6 @@ impl MeshRowsWriter {
         Self { me: me.to_string(), fabric_id, mesh: mesh.to_string(), mesh_id, nodes, meshes, written: None, claim: None }
     }
 
-    /// mesh.create's claim of the mesh's name at its key, by the mesh store's insert-and-fail
-    /// ([`crate::storage::MeshStorage::claim_mesh`]): the Mesh row written, or this mesh's own row
-    /// found standing, or refused by name. One `rdm.node_admin.mesh.create.via-mesh-row` span,
-    /// `moment` `claim`. `None`: the store did not answer, and nothing is decided.
-    async fn claim_name(&self) -> Option<Result<(), crate::storage::MeshClaimRefused>> {
-        let span = tracing::info_span!(
-            "rdm.node_admin.mesh.create.via-mesh-row",
-            node = %self.me,
-            mesh = %self.mesh,
-            mesh_id = %self.mesh_id,
-            moment = "claim",
-            outcome = tracing::field::Empty,
-            holder = tracing::field::Empty,
-            over = tracing::field::Empty,
-            detail = tracing::field::Empty,
-            "otel.kind" = "internal",
-        );
-        let record = crate::storage::MeshRecord { mesh_id: self.mesh_id.clone(), name: self.mesh.clone(), dead: false };
-        let decided = match self.meshes.claim_mesh(&record).await {
-            Ok(Ok(crate::storage::MeshClaim::Written { over })) => {
-                span.record("outcome", "row-written");
-                if let Some(over) = over {
-                    span.record("over", tracing::field::display(&over));
-                }
-                Some(Ok(()))
-            }
-            Ok(Ok(crate::storage::MeshClaim::Held)) => {
-                span.record("outcome", "row-held-by-mesh");
-                Some(Ok(()))
-            }
-            Ok(Err(refused)) => {
-                span.record("outcome", refused.outcome()).record("detail", refused.to_string().as_str());
-                if let crate::storage::MeshClaimRefused::NameHeld { by, .. } = &refused {
-                    span.record("holder", tracing::field::display(by));
-                }
-                Some(Err(refused))
-            }
-            Err(e) => {
-                span.record("outcome", "row-refused").record("detail", format!("{}: mesh.storage did not answer the claim of {} for mesh {}: {e}", self.me, self.mesh, self.mesh_id).as_str());
-                None
-            }
-        };
-        span.in_scope(|| tracing::info!("mesh.create: the mesh's name is claimed by insert-and-fail at its key; nothing else of the mesh is written until the claim wins"));
-        decided
-    }
-
     /// One round over the births `held` (every birth of the fabric this admin holds, itself
     /// included), `seated` when this admin holds its mesh's primary seat now, `departed` whether the
     /// book holds a node departed.
@@ -1281,7 +1235,8 @@ impl MeshRowsWriter {
             return;
         }
         if self.claim.is_none() {
-            self.claim = self.claim_name().await;
+            // A store that did not answer decides nothing: the next round asks again.
+            self.claim = claim_mesh_name(&*self.meshes, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
         }
         if !matches!(self.claim, Some(Ok(()))) {
             return;
@@ -1320,6 +1275,72 @@ impl MeshRowsWriter {
                 written.remove(&r.node_id);
             }
         }
+    }
+}
+
+/// mesh.create's claim of the mesh's name at its key (node-identity-and-state.md §2.7), by the mesh
+/// store's insert-and-fail ([`crate::storage::MeshStorage::claim_mesh`]), made by `me`: the
+/// fabric-primary at CreateMesh, as the writer of a mesh with no primary (R13), the mesh's first
+/// durable write; and the mesh's primary when its seat tenure starts, which finds the mesh's own row
+/// (the same MeshId re-claiming, idempotent). The Mesh row written, or this mesh's own row found
+/// standing, or refused by name. One `rdm.node_admin.mesh.create.via-mesh-row` span, `moment`
+/// `claim`. `Err`: the store did not answer, and nothing is decided.
+pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, String> {
+    let span = tracing::info_span!(
+        "rdm.node_admin.mesh.create.via-mesh-row",
+        node = %me,
+        mesh = %mesh,
+        mesh_id = %mesh_id,
+        moment = "claim",
+        outcome = tracing::field::Empty,
+        holder = tracing::field::Empty,
+        over = tracing::field::Empty,
+        detail = tracing::field::Empty,
+        "otel.kind" = "internal",
+    );
+    let record = crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: mesh.to_string(), dead: false };
+    let claimed = meshes.claim_mesh(&record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"));
+    match &claimed {
+        Ok(Ok(crate::storage::MeshClaim::Written { over })) => {
+            span.record("outcome", "row-written");
+            if let Some(over) = over {
+                span.record("over", tracing::field::display(over));
+            }
+        }
+        Ok(Ok(crate::storage::MeshClaim::Held)) => {
+            span.record("outcome", "row-held-by-mesh");
+        }
+        Ok(Err(refused)) => {
+            span.record("outcome", refused.outcome()).record("detail", refused.to_string().as_str());
+            if let crate::storage::MeshClaimRefused::NameHeld { by, .. } = refused {
+                span.record("holder", tracing::field::display(by));
+            }
+        }
+        Err(e) => {
+            span.record("outcome", "row-refused").record("detail", e.as_str());
+        }
+    }
+    span.in_scope(|| tracing::info!("mesh.create: the mesh's name is claimed by insert-and-fail at its key; nothing else of the mesh is written until the claim wins"));
+    claimed
+}
+
+/// `create-mesh:<mesh>` at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent ... Until
+/// the mesh has a primary, the fabric-primary writes its rows"; R13; CLAUDE.md: the claim is the first
+/// durable write of a create): the mesh's id, the one `records` already holds for it (an earlier
+/// attempt of this create) or a new one, is claimed at the mesh's name before anything else of the
+/// mesh is written, and held in `records` (what every launch of the mesh carries) only once the claim
+/// won. A refused claim fails the operation by name, holding nothing of the mesh: the Build runs no
+/// create of its nodes, so no node row of the mesh is claimed.
+pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str) -> Result<MeshId, String> {
+    let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned().unwrap_or_else(MeshId::mint);
+    match claim_mesh_name(meshes, me, mesh, &mesh_id).await {
+        Ok(Ok(_)) => {
+            records.meshes.lock().unwrap().entry(mesh.to_string()).or_insert_with(|| mesh_id.clone());
+            records.wake.poke();
+            Ok(mesh_id)
+        }
+        Ok(Err(refused)) => Err(format!("{me}: create-mesh:{mesh}: the claim of the mesh's name for mesh {mesh_id} was refused, and nothing of the mesh is written: {refused}")),
+        Err(e) => Err(format!("{e}; nothing of the mesh is written")),
     }
 }
 
@@ -4059,14 +4080,7 @@ impl AdminRunner {
     async fn run_op(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         use tracing::Instrument;
         match op {
-            BuildOperation::CreateMesh { mesh } => {
-                {
-                    let mut meshes = self.records.meshes.lock().unwrap();
-                    meshes.entry(mesh.clone()).or_insert_with(MeshId::mint);
-                }
-                self.records.wake.poke();
-                Ok(())
-            }
+            BuildOperation::CreateMesh { mesh } => create_mesh(&self.records, &*self.mesh_storage, &self.me.to_string(), mesh).await.map(|_| ()),
             BuildOperation::CreateNode { node, over: Some(from) } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.0);
@@ -6914,6 +6928,45 @@ mod tests {
             "one claim per seat tenure, the refusal naming the holder: {spans:?}"
         );
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
+    }
+
+    /// CONTRACT (R13: the fabric-primary writes as the acting primary of a mesh with no primary;
+    /// lifecycles/node-create.md "Mesh absent ... Until the mesh has a primary, the fabric-primary writes
+    /// its rows"; CLAUDE.md: the claim is the first durable write of a create, nothing is written for the
+    /// entity until it wins; node-identity-and-state.md §2.7: `NameHeld` names the holder, the same MeshId
+    /// re-claiming is idempotent): `create-mesh:mesh2` at the fabric-primary claims mesh2's name first.
+    /// On a free key it writes the Mesh row under the id it mints and holds that id for the mesh's
+    /// launches; a re-run of the operation claims the same id and finds its own row. Where another mesh's
+    /// live row holds mesh3, the operation fails naming the holder: mesh3's row stands and no id is held
+    /// for mesh3, so no launch can carry one and the Build runs no create of mesh3's nodes. One
+    /// `rdm.node_admin.mesh.create.via-mesh-row` span per claim, naming the fabric-primary. Must NOT
+    /// happen: a mesh id held, or anything of the mesh written, beside a refused claim.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn create_mesh_claims_the_mesh_name_first_and_a_refused_claim_holds_nothing_of_the_mesh() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let records = Records::default();
+        let holder = MeshId::mint();
+        let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false };
+        assert_eq!(crate::storage::MeshStorage::claim_mesh(&meshes, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written { over: None })));
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-claim");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let minted = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2").await.expect("a free name is claimed");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false }), "the claim wrote mesh2's row under the minted id");
+        assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the won claim's id is what the mesh's launches carry");
+        assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2").await, Ok(minted.clone()), "a re-run claims the same id");
+        let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3").await.expect_err("mesh3's name is held by another mesh's live row");
+        assert!(refused.contains("create-mesh:mesh3") && refused.contains(&holder.to_string()), "the refusal names the operation and the holder: {refused}");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused claim wrote nothing: mesh3's row is the holder's");
+        assert_eq!(records.meshes.lock().unwrap().get("mesh3"), None, "no id is held for a mesh whose claim was refused: no launch of it can carry one");
+        let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
+        let said: Vec<(String, String, String, String)> = spans
+            .iter()
+            .map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("mesh").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("holder").cloned().unwrap_or_default()))
+            .collect();
+        let row = |mesh: &str, outcome: &str, holder: &str| ("mesh1.admin.1".to_string(), mesh.to_string(), outcome.to_string(), holder.to_string());
+        assert_eq!(said, vec![row("mesh2", "row-written", ""), row("mesh2", "row-held-by-mesh", ""), row("mesh3", "name-held", &holder.to_string())], "{spans:?}");
+        eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[2].trace_id, spans[2].attributes);
     }
 
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
