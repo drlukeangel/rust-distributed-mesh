@@ -371,18 +371,21 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // An owed Proxy retirement whose write was refused is attempted again while owed
     // (connections.md §10); the task ends with the process.
     let _retirements = connections.spawn_retirement_reconciler(rafka_node_admin_core::connections_writer::RETIREMENT_RETRY);
-    let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
+    // The control plane: Node RPC is no connection (connections.md "Two planes, two words"), so its
+    // dials and accepts write nothing to the connections log.
+    let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm"));
+    // The data plane of RDM standalone: the originate door's own client, whose dials are the
+    // connections this node originates for traffic, each a Direct entry of its log.
+    let data_plane = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
     // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
-    // Every connection this node accepts from a live peer is Direct Connected from this node
-    // to that peer (connections.md §10), reported to the same writer as its own dials.
-    let seams = crate::originate::Seams { resolver: resolver.clone(), client: client.clone(), connections: connections.clone(), fault };
+    let seams = crate::originate::Seams { resolver: resolver.clone(), client: data_plane, connections: connections.clone(), fault };
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
-    let server = serve_kick(register(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), seams), subject.clone())
+    let server = serve_kick(register(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new(), client.clone(), Some(connections.clone())), topology_slot.clone()), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .with_ready_gate(ready.clone())

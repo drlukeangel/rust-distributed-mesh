@@ -4810,7 +4810,8 @@ pub fn rpc_server(
     claim: crate::build_claim::ClaimSlot,
     join: crate::join::JoinSlot,
 ) -> rafka_node_rpc::ServerBuilder {
-    let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(resolver, connections.clone()).serve_core(client, Some(connections));
+    let _ = resolver;
+    let core = rafka_node_rpc::ServerBuilder::new().serve_core(client, Some(connections));
     // Status is forwardable: a peer may carry an authority's status call through this admin.
     crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join).carry::<rafka_node_rpc_contract::status::Status>()
 }
@@ -5095,7 +5096,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let handover_slot: crate::fabric_handover::HandoverSlot = Arc::new(std::sync::OnceLock::new());
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
-    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone(), Some(connections.clone()));
+    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone(), None);
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
