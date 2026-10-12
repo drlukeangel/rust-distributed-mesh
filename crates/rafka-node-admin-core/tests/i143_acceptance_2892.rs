@@ -216,8 +216,13 @@ impl DeploymentProvider for Fleet {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
-        Ok(self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id && self.running(s.pid)).map(|s| s.handle.clone()))
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
+        use rafka_node_admin_core::deployment::provider::Found;
+        Ok(match self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id) {
+            Some(s) if self.running(s.pid) => Found::Running(s.handle.clone()),
+            Some(_) => Found::Exited,
+            None => Found::NeverLaunched,
+        })
     }
 }
 

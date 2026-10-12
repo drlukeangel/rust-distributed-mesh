@@ -40,8 +40,8 @@ impl DeploymentProvider for Running {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
-        Ok(None)
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
+        Ok(rafka_node_admin_core::deployment::provider::Found::NeverLaunched)
     }
 }
 
@@ -83,8 +83,8 @@ impl rafka_node_admin_core::build_state::LocalBuildLog for Refuses {
     async fn absorb_facts(&self, facts: &[BuildFact]) {
         self.inner.absorb_facts(facts).await
     }
-    fn derive_on_every_fact(&self, derive: rafka_node_admin_core::build_state::FactDerivation) {
-        self.inner.derive_on_every_fact(derive)
+    async fn derive_on_every_fact(&self, derive: rafka_node_admin_core::build_state::FactDerivation) {
+        self.inner.derive_on_every_fact(derive).await
     }
 }
 

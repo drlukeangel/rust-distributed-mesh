@@ -893,14 +893,17 @@ fn describe_open(o: &AttemptOpened) -> String {
     format!("{} ({action}, opened by {})", o.reason.as_str(), o.opened_by)
 }
 
-/// The shared append-and-fold core of both RDM adapters.
-#[derive(Debug)]
+/// The shared core of both RDM adapters: what readers see of the log, and its indexes, behind one
+/// std lock taken only for an `Arc` clone, an index point read or a publication's swap. Readers fold
+/// the snapshot outside it; a writer decides on a snapshot under its own turn (each adapter's async
+/// `writer`) and publishes with one swap ([`publish`]). No whole-log fold and no derivation runs
+/// while it is held, so no reader on an async worker waits on a writer's work.
+#[derive(Debug, Default)]
 struct FactLog {
-    facts: Vec<BuildFact>,
-    /// What is derived from the facts (the lifecycle overlays a book holds), run inside
-    /// [`FactLog::push`] under the adapter's lock as each fact enters the log: no reader of the log
-    /// sees a fact before what is derived from it reflects it.
-    derived: Derived,
+    /// The facts readers see, one immutable snapshot: a reader takes it with one `Arc` clone and
+    /// folds it outside this lock; a writer replaces it whole once the derivation ran over the facts
+    /// it adds ([`publish`]).
+    facts: Arc<Vec<BuildFact>>,
     /// The recovery index, in three parts the facts fill in whatever order they arrive (gossip and
     /// catch-up deliver in any order; once all three are held the answer is the same in every
     /// order, while a log that holds a recovery's deletion and its `Complete` but not yet its
@@ -915,14 +918,14 @@ struct FactLog {
     /// A birth is answered once its `NodeDeleted` and a `Complete` at that attempt or later are both
     /// held: of the recovery's `update-node:<path>` when a recovery of the birth was opened in that
     /// Build at or before the deletion's attempt (its `retire-node` is the recovery's node.delete),
-    /// else of the deleting operation itself. Filled by [`FactLog::push`], the one place a fact
+    /// else of the deleting operation itself. Filled by [`FactLog::index`], the one place a fact
     /// enters the log (own appends, absorbed facts and a journal's replay alike); forgetting a Build
     /// leaves all three, as it leaves the receipts.
     recoveries_opened: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(BuildId, u32)>>,
     /// The mesh.delete completion index: every `MeshDeleted` receipt by the final primary its
     /// manifest names, to its Build, attempt and operation ([`BuildStateAdapter::mesh_deleted_of`]).
     mesh_deleted: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(BuildId, u32, String)>>,
-    /// The index of [`BuildStateAdapter::exits_owed`], per Build, filled by [`FactLog::push`] in
+    /// The index of [`BuildStateAdapter::exits_owed`], per Build, filled by [`FactLog::index`] in
     /// whatever order the facts arrive: the exited birth each attempt opened with
     /// `AttemptAction::Recover` names, by attempt (the first open of an attempt)...
     exit_opens: std::collections::HashMap<BuildId, BTreeMap<u32, (crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)>>,
@@ -933,35 +936,19 @@ struct FactLog {
     verdicts: std::collections::HashMap<BuildId, BTreeMap<u32, Option<AttemptOutcome>>>,
     /// The acceptance-order index (R-BI3): every Build accepted, by its own acceptance stamp
     /// `(submitted_at_ms, build_id)`, entered once by its `Accepted` fact and never rewritten, in
-    /// whatever order the facts arrive. Read newest first by [`FactLog::current_build`].
+    /// whatever order the facts arrive. Read newest first by [`current_build`].
     accepted_order: std::collections::BTreeSet<(u64, BuildId)>,
     /// Each Build's own facts, by their position in `facts`: a Build is read by folding its facts
-    /// alone ([`FactLog::read`]).
+    /// alone ([`read_own`]).
     by_build: std::collections::HashMap<BuildId, Vec<usize>>,
 }
 
-impl Default for FactLog {
-    fn default() -> Self {
-        Self {
-            facts: Vec::new(),
-            derived: Derived(None),
-            recovery_deletes: Default::default(),
-            recovery_completes: Default::default(),
-            recoveries_opened: Default::default(),
-            exit_opens: Default::default(),
-            opens: Default::default(),
-            verdicts: Default::default(),
-            mesh_deleted: Default::default(),
-            accepted_order: Default::default(),
-            by_build: Default::default(),
-        }
-    }
-}
-
-/// A derivation over the whole fact log, run as each fact enters it ([`LocalBuildLog::derive_on_every_fact`]).
+/// A derivation over the whole fact log, run before any reader sees the facts a writer adds
+/// ([`LocalBuildLog::derive_on_every_fact`]).
 pub type FactDerivation = Arc<dyn Fn(&[BuildFact]) + Send + Sync>;
 
-/// The derivation a log runs on every fact, when one is installed.
+/// The derivation a log runs on every publication, when one is installed: held with the writer's turn.
+#[derive(Default)]
 struct Derived(Option<FactDerivation>);
 
 impl std::fmt::Debug for Derived {
@@ -971,9 +958,10 @@ impl std::fmt::Debug for Derived {
 }
 
 impl FactLog {
-    /// Append `fact` to the log, fold it into the indexes and run [`FactLog::derived`] over the log.
-    fn push(&mut self, fact: BuildFact) {
-        if let BuildFact::Step(s) = &fact {
+    /// Fold `fact`, which sits at position `at` of the facts, into the indexes (own appends, absorbed
+    /// facts and a journal's replay alike).
+    fn index(&mut self, fact: &BuildFact, at: usize) {
+        if let BuildFact::Step(s) = fact {
             if let Some((path, node_id, incarnation)) = recovery_deleted(s) {
                 let held = self.recovery_deletes.entry((node_id, incarnation)).or_default();
                 if !held.iter().any(|(p, o, b, a)| *p == path && *o == s.operation && *b == s.build_id && *a == s.attempt) {
@@ -988,14 +976,14 @@ impl FactLog {
                 }
             }
         }
-        if let BuildFact::Opened(AttemptOpened { build_id, attempt, action: Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }), .. }) = &fact {
+        if let BuildFact::Opened(AttemptOpened { build_id, attempt, action: Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }), .. }) = fact {
             let opened = self.recoveries_opened.entry((node_id.clone(), from_incarnation.clone())).or_default();
             if !opened.contains(&(build_id.clone(), *attempt)) {
                 opened.push((build_id.clone(), *attempt));
             }
             self.exit_opens.entry(build_id.clone()).or_default().entry(*attempt).or_insert_with(|| (path.clone(), node_id.clone(), from_incarnation.clone()));
         }
-        match &fact {
+        match fact {
             BuildFact::Opened(o) => {
                 self.opens.entry(o.build_id.clone()).or_default().insert(o.attempt);
             }
@@ -1013,19 +1001,9 @@ impl FactLog {
             }
             _ => {}
         }
-        self.by_build.entry(fact.build_id().clone()).or_default().push(self.facts.len());
-        self.facts.push(fact);
-        if let Some(derive) = &self.derived.0 {
-            derive(&self.facts);
-        }
+        self.by_build.entry(fact.build_id().clone()).or_default().push(at);
     }
 
-    /// Install `derive` and run it once over the facts already held, in one step: no fact enters
-    /// between the first run and the installation.
-    fn derive_on_every_fact(&mut self, derive: FactDerivation) {
-        derive(&self.facts);
-        self.derived = Derived(Some(derive));
-    }
 
     /// The point read of [`BuildStateAdapter::recovery_of`]: the birth's `NodeDeleted` receipts at
     /// `path`, each answered by the first `Complete` at its attempt or later of the operation that
@@ -1082,98 +1060,146 @@ impl FactLog {
         owed
     }
 
-    fn accepted_conflict(&self, accepted: &BuildAccepted) -> Result<bool, BuildStateError> {
-        for f in &self.facts {
-            if let BuildFact::Accepted(i) = f {
-                if i.build_id == accepted.build_id {
-                    return if i == accepted { Ok(true) } else { Err(BuildStateError::ConflictingIntent(accepted.build_id.clone())) };
-                }
+}
+
+/// What readers see of `log` now: one `Arc` clone under its lock.
+fn snapshot(log: &Mutex<FactLog>) -> Arc<Vec<BuildFact>> {
+    log.lock().unwrap().facts.clone()
+}
+
+/// Publish `new` (facts the log does not hold yet) to readers. The derivation runs first, over the
+/// log with them, while readers keep reading the log as it stood: no reader sees a fact before what
+/// is derived from it reflects it, and no reader waits on the derivation. Then the indexes take the
+/// facts and the snapshot is swapped, under one brief hold of the readers' lock. The caller holds the
+/// writer's turn, so nothing else publishes between the read and the swap.
+fn publish(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, new: Vec<BuildFact>) {
+    if new.is_empty() {
+        return;
+    }
+    let held = snapshot(log);
+    let mut next = Vec::with_capacity(held.len() + new.len());
+    next.extend(held.iter().cloned());
+    next.extend(new.iter().cloned());
+    drop(held);
+    let next = Arc::new(next);
+    if let Some(derive) = derive {
+        derive(&next);
+    }
+    let mut log = log.lock().unwrap();
+    let base = log.facts.len();
+    for (i, f) in new.iter().enumerate() {
+        log.index(f, base + i);
+    }
+    log.facts = next;
+}
+
+/// Whether `accepted` is held already (`Ok(true)`), free (`Ok(false)`), or held with another intent.
+fn accepted_conflict(facts: &[BuildFact], accepted: &BuildAccepted) -> Result<bool, BuildStateError> {
+    for f in facts {
+        if let BuildFact::Accepted(i) = f {
+            if i.build_id == accepted.build_id {
+                return if i == accepted { Ok(true) } else { Err(BuildStateError::ConflictingIntent(accepted.build_id.clone())) };
             }
         }
-        Ok(false)
     }
+    Ok(false)
+}
 
-    /// A claim that is not the Build's next attempt, or is on a complete Build: refused by name,
-    /// never recorded (the fold would ignore it, but the attempt number stays free).
-    fn not_open(&self, claim: &BuildAttemptClaim) -> Option<ClaimOutcome> {
-        let p = self.read(&claim.build_id).ok()?;
-        if matches!(p.state, BuildState::Complete) || claim.attempt != p.attempt + 1 {
-            return Some(ClaimOutcome::NotOpen { next: (!matches!(p.state, BuildState::Complete)).then_some(p.attempt + 1) });
-        }
-        None
+/// A claim that is not the Build's next attempt, or is on a complete Build: refused by name,
+/// never recorded (the fold would ignore it, but the attempt number stays free).
+fn not_open(facts: &[BuildFact], claim: &BuildAttemptClaim) -> Option<ClaimOutcome> {
+    let p = fold(facts).remove(&claim.build_id)?;
+    if matches!(p.state, BuildState::Complete) || claim.attempt != p.attempt + 1 {
+        return Some(ClaimOutcome::NotOpen { next: (!matches!(p.state, BuildState::Complete)).then_some(p.attempt + 1) });
     }
+    None
+}
 
-    /// Whether `f` adds anything to this log: acceptances, opens and claims are insert-and-fail on
-    /// their key, everything else deduplicates.
-    fn is_new(&self, f: &BuildFact) -> bool {
-        match f {
-            BuildFact::Accepted(i) => !self.known(&i.build_id),
-            BuildFact::Opened(o) => self.opened(&o.build_id, o.attempt).is_none(),
-            BuildFact::Claim(c) => self.claim_holder(&c.build_id, c.attempt).is_none(),
-            _ => !self.facts.contains(f),
-        }
+/// Whether `f` adds anything to `facts`: acceptances, opens and claims are insert-and-fail on
+/// their key, everything else deduplicates.
+fn is_new(facts: &[BuildFact], f: &BuildFact) -> bool {
+    match f {
+        BuildFact::Accepted(i) => !known(facts, &i.build_id),
+        BuildFact::Opened(o) => opened(facts, &o.build_id, o.attempt).is_none(),
+        BuildFact::Claim(c) => claim_holder(facts, &c.build_id, c.attempt).is_none(),
+        _ => !facts.contains(f),
     }
+}
 
-    fn opened(&self, build_id: &BuildId, attempt: u32) -> Option<&AttemptOpened> {
-        self.facts.iter().find_map(|f| match f {
-            BuildFact::Opened(o) if &o.build_id == build_id && o.attempt == attempt => Some(o),
-            _ => None,
-        })
-    }
+fn opened<'a>(facts: &'a [BuildFact], build_id: &BuildId, attempt: u32) -> Option<&'a AttemptOpened> {
+    facts.iter().find_map(|f| match f {
+        BuildFact::Opened(o) if &o.build_id == build_id && o.attempt == attempt => Some(o),
+        _ => None,
+    })
+}
 
-    /// Whether `wanted` may be recorded: `Ok(true)` the number is free, `Ok(false)` it is held for the
-    /// same action (nothing to record), `Err(AttemptTaken)` it is held for another.
-    fn admit_open(&self, wanted: &AttemptOpened) -> Result<bool, BuildStateError> {
-        match self.opened(&wanted.build_id, wanted.attempt) {
-            None => Ok(true),
-            Some(held) if held.action == wanted.action => Ok(false),
-            Some(held) => Err(BuildStateError::AttemptTaken {
-                build_id: wanted.build_id.clone(),
-                attempt: wanted.attempt,
-                held: describe_open(held),
-                wanted: describe_open(wanted),
-            }),
-        }
+/// Whether `wanted` may be recorded: `Ok(true)` the number is free, `Ok(false)` it is held for the
+/// same action (nothing to record), `Err(AttemptTaken)` it is held for another.
+fn admit_open(facts: &[BuildFact], wanted: &AttemptOpened) -> Result<bool, BuildStateError> {
+    match opened(facts, &wanted.build_id, wanted.attempt) {
+        None => Ok(true),
+        Some(held) if held.action == wanted.action => Ok(false),
+        Some(held) => Err(BuildStateError::AttemptTaken {
+            build_id: wanted.build_id.clone(),
+            attempt: wanted.attempt,
+            held: describe_open(held),
+            wanted: describe_open(wanted),
+        }),
     }
+}
 
-    fn claim_holder(&self, build_id: &BuildId, attempt: u32) -> Option<String> {
-        self.facts.iter().find_map(|f| match f {
-            BuildFact::Claim(c) if &c.build_id == build_id && c.attempt == attempt => Some(c.executor.clone()),
-            _ => None,
-        })
-    }
+fn claim_holder(facts: &[BuildFact], build_id: &BuildId, attempt: u32) -> Option<String> {
+    facts.iter().find_map(|f| match f {
+        BuildFact::Claim(c) if &c.build_id == build_id && c.attempt == attempt => Some(c.executor.clone()),
+        _ => None,
+    })
+}
 
-    fn known(&self, build_id: &BuildId) -> bool {
-        self.facts.iter().any(|f| matches!(f, BuildFact::Accepted(i) if &i.build_id == build_id))
-    }
+fn known(facts: &[BuildFact], build_id: &BuildId) -> bool {
+    facts.iter().any(|f| matches!(f, BuildFact::Accepted(i) if &i.build_id == build_id))
+}
 
-    /// The folded view of `build_id`, from its own facts alone.
-    fn read(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        let own: Vec<BuildFact> = self.by_build.get(build_id).map(|at| at.iter().map(|i| self.facts[*i].clone()).collect()).unwrap_or_default();
-        fold(&own).remove(build_id).ok_or_else(|| BuildStateError::UnknownBuild(build_id.clone()))
-    }
+fn read(facts: &[BuildFact], build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+    fold(facts).remove(build_id).ok_or_else(|| BuildStateError::UnknownBuild(build_id.clone()))
+}
 
-    /// The point read of [`BuildStateAdapter::current_build`]: the acceptance-order index newest
-    /// first, each Build read from its own facts, until the first in progress or completed. A Build
-    /// forgotten has left the views and is passed over, as a failed one is.
-    fn current_build(&self) -> CurrentBuild {
-        self.accepted_order.iter().rev().find_map(|(_, id)| self.read(id).ok().as_ref().and_then(current_of)).unwrap_or(CurrentBuild::None)
-    }
+/// The folded view of `build_id`, from its own facts alone: its positions and the snapshot are taken
+/// together under the readers' lock (one `Arc` clone and one small point read), and the Build's facts
+/// are folded outside it.
+fn read_own(log: &Mutex<FactLog>, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+    let (facts, at) = {
+        let log = log.lock().unwrap();
+        (log.facts.clone(), log.by_build.get(build_id).cloned().unwrap_or_default())
+    };
+    let own: Vec<BuildFact> = at.iter().map(|i| facts[*i].clone()).collect();
+    read(&own, build_id)
+}
 
-    /// The point read of [`BuildStateAdapter::newest_accepted_at_ms`]: the index's head.
-    fn newest_accepted_at_ms(&self) -> Option<u64> {
-        self.accepted_order.last().map(|(at, _)| *at)
-    }
+/// The point read of [`BuildStateAdapter::current_build`]: the acceptance-order index newest first,
+/// each Build read from its own facts, until the first in progress or completed. A Build forgotten
+/// has left the views and is passed over, as a failed one is.
+fn current_build(log: &Mutex<FactLog>) -> CurrentBuild {
+    let newest_first: Vec<BuildId> = log.lock().unwrap().accepted_order.iter().rev().map(|(_, id)| id.clone()).collect();
+    newest_first.iter().find_map(|id| read_own(log, id).ok().as_ref().and_then(current_of)).unwrap_or(CurrentBuild::None)
+}
 
-    fn active(&self) -> Vec<BuildProjection> {
-        fold(&self.facts).into_values().filter(|p| matches!(p.state, BuildState::Pending | BuildState::Running)).collect()
-    }
+/// The point read of [`BuildStateAdapter::newest_accepted_at_ms`]: the index's head.
+fn newest_accepted_at_ms(log: &Mutex<FactLog>) -> Option<u64> {
+    log.lock().unwrap().accepted_order.last().map(|(at, _)| *at)
+}
+
+fn active(facts: &[BuildFact]) -> Vec<BuildProjection> {
+    fold(facts).into_values().filter(|p| matches!(p.state, BuildState::Pending | BuildState::Running)).collect()
 }
 
 /// In-memory fact log.
 #[derive(Debug, Default)]
 pub struct MemoryBuildStateAdapter {
     log: Mutex<FactLog>,
+    /// The writer's turn: one writer at a time decides on the log and publishes to it, holding the
+    /// derivation each publication runs. An async lock: a writer waiting on another's derivation
+    /// yields its worker. Readers never take it.
+    writer: tokio::sync::Mutex<Derived>,
 }
 
 impl MemoryBuildStateAdapter {
@@ -1185,13 +1211,22 @@ impl MemoryBuildStateAdapter {
     /// Merge facts received from the fabric projection (append the unseen
     /// ones, keeping the receiver's own order deterministic: intents and
     /// claims are insert-and-fail, receipts are deduplicated).
-    pub fn absorb(&self, facts: &[BuildFact]) {
-        let mut log = self.log.lock().unwrap();
+    pub async fn absorb(&self, facts: &[BuildFact]) {
+        let w = self.writer.lock().await;
+        let held = snapshot(&self.log);
+        let mut new: Vec<BuildFact> = Vec::new();
         for f in facts {
-            if log.is_new(f) {
-                log.push(f.clone());
+            if is_new(&held, f) && is_new(&new, f) {
+                new.push(f.clone());
             }
         }
+        drop(held);
+        publish(&self.log, w.0.as_ref(), new);
+    }
+
+    /// Publish `fact` under the writer's turn `w`.
+    fn put(&self, w: &Derived, fact: BuildFact) {
+        publish(&self.log, w.0.as_ref(), vec![fact]);
     }
 }
 
@@ -1202,35 +1237,39 @@ pub trait LocalBuildLog: BuildStateAdapter {
     /// Merge facts heard from the fabric (append the unseen ones; intents, opens and claims are
     /// insert-and-fail, receipts deduplicate).
     async fn absorb_facts(&self, facts: &[BuildFact]);
-    /// Run `derive` over the facts held now, then over the whole log each time a fact enters it,
-    /// whoever put it there (an own append or an absorbed fact), inside the append and before it
-    /// returns: what is derived from the facts never lags a reader of them.
-    fn derive_on_every_fact(&self, derive: FactDerivation);
+    /// Run `derive` over the facts held now, then over the whole log each time facts enter it,
+    /// whoever put them there (an own append or an absorbed fact), before any reader sees them and
+    /// before the append returns: what is derived from the facts never lags a reader of them. It runs
+    /// under the writer's turn, never under the lock readers take.
+    async fn derive_on_every_fact(&self, derive: FactDerivation);
 }
 
 #[async_trait]
 impl LocalBuildLog for MemoryBuildStateAdapter {
     async fn absorb_facts(&self, facts: &[BuildFact]) {
-        self.absorb(facts)
+        self.absorb(facts).await
     }
 
-    fn derive_on_every_fact(&self, derive: FactDerivation) {
-        self.log.lock().unwrap().derive_on_every_fact(derive)
+    async fn derive_on_every_fact(&self, derive: FactDerivation) {
+        let mut w = self.writer.lock().await;
+        derive(&snapshot(&self.log));
+        w.0 = Some(derive);
     }
 }
 
 #[async_trait]
 impl LocalBuildLog for FileJournal {
-    fn derive_on_every_fact(&self, derive: FactDerivation) {
-        self.log.lock().unwrap().derive_on_every_fact(derive)
+    async fn derive_on_every_fact(&self, derive: FactDerivation) {
+        let mut w = self.writer.lock().await;
+        derive(&snapshot(&self.log));
+        w.0 = Some(derive);
     }
 
     async fn absorb_facts(&self, facts: &[BuildFact]) {
-        let _w = self.writer.lock().await;
+        let w = self.writer.lock().await;
         for f in facts {
-            let new = self.log.lock().unwrap().is_new(f);
-            if new {
-                if let Err(e) = self.append(f.clone()).await {
+            if is_new(&snapshot(&self.log), f) {
+                if let Err(e) = self.append(&w, f.clone()).await {
                     tracing::info_span!("rdm.node_admin.build.reject.via-journal-unwritten", path = %self.path.display(), error = %e)
                         .in_scope(|| tracing::info!("a Build fact heard from the fabric could not be journaled"));
                 }
@@ -1242,72 +1281,77 @@ impl LocalBuildLog for FileJournal {
 #[async_trait]
 impl BuildStateAdapter for MemoryBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        if !log.accepted_conflict(accepted)? {
-            log.push(BuildFact::Accepted(accepted.clone()));
+        let w = self.writer.lock().await;
+        if !accepted_conflict(&snapshot(&self.log), accepted)? {
+            self.put(&w, BuildFact::Accepted(accepted.clone()));
         }
         Ok(())
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        if !log.known(&opened.build_id) {
+        let w = self.writer.lock().await;
+        let held = snapshot(&self.log);
+        if !known(&held, &opened.build_id) {
             return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
         }
-        if log.admit_open(opened)? {
-            log.push(BuildFact::Opened(opened.clone()));
+        if admit_open(&held, opened)? {
+            self.put(&w, BuildFact::Opened(opened.clone()));
         }
         Ok(())
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        self.log.lock().unwrap().read(build_id)
+        read_own(&self.log, build_id)
     }
 
     async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
-        Ok(self.log.lock().unwrap().current_build())
+        Ok(current_build(&self.log))
     }
 
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
-        Ok(self.log.lock().unwrap().newest_accepted_at_ms())
+        Ok(newest_accepted_at_ms(&self.log))
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        Ok(self.log.lock().unwrap().active())
+        Ok(active(&snapshot(&self.log)))
     }
 
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        if !log.known(&claim.build_id) {
+        let w = self.writer.lock().await;
+        let held = snapshot(&self.log);
+        if !known(&held, &claim.build_id) {
             return Err(BuildStateError::UnknownBuild(claim.build_id.clone()));
         }
-        if let Some(holder) = log.claim_holder(&claim.build_id, claim.attempt) {
+        if let Some(holder) = claim_holder(&held, &claim.build_id, claim.attempt) {
             return Ok(if holder == claim.executor { ClaimOutcome::Won } else { ClaimOutcome::Lost { holder } });
         }
-        if let Some(not_open) = log.not_open(&claim) {
+        if let Some(not_open) = not_open(&held, claim) {
             return Ok(not_open);
         }
-        log.push(BuildFact::Claim(claim.clone()));
+        drop(held);
+        self.put(&w, BuildFact::Claim(claim.clone()));
         Ok(ClaimOutcome::Won)
     }
 
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.absorb(&[BuildFact::Claim(claim.clone())]);
+        self.absorb(&[BuildFact::Claim(claim.clone())]).await;
         Ok(())
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        self.log.lock().unwrap().push(BuildFact::Step(receipt.clone()));
+        let w = self.writer.lock().await;
+        self.put(&w, BuildFact::Step(receipt.clone()));
         Ok(())
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.log.lock().unwrap().push(BuildFact::Attempt(receipt.clone()));
+        let w = self.writer.lock().await;
+        self.put(&w, BuildFact::Attempt(receipt.clone()));
         Ok(())
     }
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        Ok(self.log.lock().unwrap().facts.clone())
+        Ok(snapshot(&self.log).as_ref().clone())
     }
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
@@ -1323,7 +1367,8 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        self.log.lock().unwrap().push(BuildFact::Forget { build_id: build_id.clone() });
+        let w = self.writer.lock().await;
+        self.put(&w, BuildFact::Forget { build_id: build_id.clone() });
         Ok(())
     }
 }
@@ -1337,11 +1382,13 @@ pub(crate) const JOURNAL_FILE: &str = "build-journal.jsonl";
 #[derive(Debug)]
 pub(crate) struct FileJournal {
     path: PathBuf,
-    /// The replayed facts. Held only for in-memory reads and pushes, never across the disk.
+    /// The replayed facts and their indexes. Held only for a snapshot, a point read or a
+    /// publication's swap, never across the disk, a fold or the derivation.
     log: Mutex<FactLog>,
-    /// Serializes writers: decide on the log, append + fsync on the blocking pool, then push. An
-    /// async lock, so a writer waiting on another's fsync yields its worker and readers never wait.
-    writer: tokio::sync::Mutex<()>,
+    /// The writer's turn: decide on a snapshot, append + fsync on the blocking pool, then publish,
+    /// holding the derivation each publication runs. An async lock, so a writer waiting on another's
+    /// fsync or derivation yields its worker; readers never take it.
+    writer: tokio::sync::Mutex<Derived>,
 }
 
 impl FileJournal {
@@ -1359,6 +1406,7 @@ impl FileJournal {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(log),
                 Err(e) => return Err(BuildStateError::Io(format!("{}: {e}", file.display()))),
             };
+            let mut facts = Vec::new();
             for (i, line) in std::io::BufReader::new(f).lines().enumerate() {
                 let line = line.map_err(|e| BuildStateError::Io(format!("{}: {e}", file.display())))?;
                 if line.trim().is_empty() {
@@ -1366,16 +1414,19 @@ impl FileJournal {
                 }
                 let fact: BuildFact = serde_json::from_str(&line)
                     .map_err(|e| BuildStateError::CorruptJournal { line: i + 1, reason: e.to_string() })?;
-                log.push(fact);
+                log.index(&fact, facts.len());
+                facts.push(fact);
             }
+            log.facts = Arc::new(facts);
             Ok(log)
         })
         .await?;
-        Ok(Self { path, log: Mutex::new(log), writer: tokio::sync::Mutex::new(()) })
+        Ok(Self { path, log: Mutex::new(log), writer: tokio::sync::Mutex::new(Derived::default()) })
     }
 
-    /// Append `fact` as one fsynced line, then count it. The caller holds `writer`.
-    async fn append(&self, fact: BuildFact) -> Result<(), BuildStateError> {
+    /// Append `fact` as one fsynced line, then publish it ([`publish`]). The caller holds the
+    /// writer's turn `w`.
+    async fn append(&self, w: &Derived, fact: BuildFact) -> Result<(), BuildStateError> {
         use std::io::Write as _;
         let line = serde_json::to_string(&fact).map_err(|e| BuildStateError::Io(e.to_string()))?;
         let path = self.path.clone();
@@ -1384,7 +1435,7 @@ impl FileJournal {
             writeln!(f, "{line}").and_then(|_| f.sync_data()).map_err(|e| BuildStateError::Io(e.to_string()))
         })
         .await?;
-        self.log.lock().unwrap().push(fact);
+        publish(&self.log, w.0.as_ref(), vec![fact]);
         Ok(())
     }
 }
@@ -1392,84 +1443,82 @@ impl FileJournal {
 #[async_trait]
 impl BuildStateAdapter for FileJournal {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        let _w = self.writer.lock().await;
-        let conflict = self.log.lock().unwrap().accepted_conflict(accepted)?;
-        if !conflict {
-            self.append(BuildFact::Accepted(accepted.clone())).await?;
+        let w = self.writer.lock().await;
+        if !accepted_conflict(&snapshot(&self.log), accepted)? {
+            self.append(&w, BuildFact::Accepted(accepted.clone())).await?;
         }
         Ok(())
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let _w = self.writer.lock().await;
+        let w = self.writer.lock().await;
         let free = {
-            let log = self.log.lock().unwrap();
-            if !log.known(&opened.build_id) {
+            let held = snapshot(&self.log);
+            if !known(&held, &opened.build_id) {
                 return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
             }
-            log.admit_open(opened)?
+            admit_open(&held, opened)?
         };
         if free {
-            self.append(BuildFact::Opened(opened.clone())).await?;
+            self.append(&w, BuildFact::Opened(opened.clone())).await?;
         }
         Ok(())
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        self.log.lock().unwrap().read(build_id)
+        read_own(&self.log, build_id)
     }
 
     async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
-        Ok(self.log.lock().unwrap().current_build())
+        Ok(current_build(&self.log))
     }
 
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
-        Ok(self.log.lock().unwrap().newest_accepted_at_ms())
+        Ok(newest_accepted_at_ms(&self.log))
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        Ok(self.log.lock().unwrap().active())
+        Ok(active(&snapshot(&self.log)))
     }
 
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let _w = self.writer.lock().await;
+        let w = self.writer.lock().await;
         {
-            let log = self.log.lock().unwrap();
-            if !log.known(&claim.build_id) {
+            let held = snapshot(&self.log);
+            if !known(&held, &claim.build_id) {
                 return Err(BuildStateError::UnknownBuild(claim.build_id.clone()));
             }
-            if let Some(holder) = log.claim_holder(&claim.build_id, claim.attempt) {
+            if let Some(holder) = claim_holder(&held, &claim.build_id, claim.attempt) {
                 return Ok(if holder == claim.executor { ClaimOutcome::Won } else { ClaimOutcome::Lost { holder } });
             }
-            if let Some(not_open) = log.not_open(claim) {
+            if let Some(not_open) = not_open(&held, claim) {
                 return Ok(not_open);
             }
         }
-        self.append(BuildFact::Claim(claim.clone())).await?;
+        self.append(&w, BuildFact::Claim(claim.clone())).await?;
         Ok(ClaimOutcome::Won)
     }
 
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        let _w = self.writer.lock().await;
-        let new = self.log.lock().unwrap().is_new(&BuildFact::Claim(claim.clone()));
-        if new {
-            self.append(BuildFact::Claim(claim.clone())).await?;
+        let w = self.writer.lock().await;
+        if is_new(&snapshot(&self.log), &BuildFact::Claim(claim.clone())) {
+            self.append(&w, BuildFact::Claim(claim.clone())).await?;
         }
         Ok(())
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        let _w = self.writer.lock().await;
-        self.append(BuildFact::Step(receipt.clone())).await
+        let w = self.writer.lock().await;
+        self.append(&w, BuildFact::Step(receipt.clone())).await
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        let _w = self.writer.lock().await;
-        self.append(BuildFact::Attempt(receipt.clone())).await
+        let w = self.writer.lock().await;
+        self.append(&w, BuildFact::Attempt(receipt.clone())).await
     }
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        Ok(self.log.lock().unwrap().facts.clone())
+        Ok(snapshot(&self.log).as_ref().clone())
     }
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
@@ -1485,8 +1534,8 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        let _w = self.writer.lock().await;
-        self.append(BuildFact::Forget { build_id: build_id.clone() }).await
+        let w = self.writer.lock().await;
+        self.append(&w, BuildFact::Forget { build_id: build_id.clone() }).await
     }
 }
 
@@ -1787,8 +1836,8 @@ mod tests {
     #[tokio::test]
     async fn absorbing_projection_facts_is_idempotent() {
         let a = MemoryBuildStateAdapter::new();
-        a.absorb(&log());
-        a.absorb(&log());
+        a.absorb(&log()).await;
+        a.absorb(&log()).await;
         assert_eq!(fold(&a.facts().await.unwrap()), fold(&log()));
     }
 
@@ -1798,6 +1847,60 @@ mod tests {
         let p = std::env::temp_dir().join(format!("journal-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&p);
         p
+    }
+
+    /// CONTRACT (the Build log is read on async workers: the fabric-primary's climb reads its Build
+    /// through `AcceptedStore::current` -> `read_build` (accepted.rs `current`, fabric_rounds.rs
+    /// `step_*`); `LocalBuildLog::derive_on_every_fact`: what is derived from the facts never lags a
+    /// reader of them): while a push into the journal is held inside the installed derivation, a
+    /// reader of the log on another thread (`read_build`, `list_active`) answers at once, from the log
+    /// as it stood before the held fact: it never sees that fact before its derivation ran. Once the
+    /// derivation ends, the push returns and the reader sees the fact. Must NOT happen: a reader
+    /// waiting on a std lock behind a writer's whole-log derivation (a worker thread taken from the
+    /// runtime for as long as the fold and its book locks take).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reader_of_the_journal_never_waits_behind_a_push_held_mid_derivation() {
+        let dir = tmp();
+        let j = Arc::new(FileJournal::open(&dir).await.unwrap());
+        let b1 = BuildId("b1".into());
+        j.publish_accepted(&intent("b1")).await.unwrap();
+        j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+        let held_op = "restart-node:mesh1.rpc.9";
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (entered_tx, release_rx) = (Mutex::new(entered_tx), Mutex::new(release_rx));
+        j.derive_on_every_fact(Arc::new(move |facts: &[BuildFact]| {
+            if facts.iter().any(|f| matches!(f, BuildFact::Step(s) if s.operation == held_op)) {
+                let _ = entered_tx.lock().unwrap().send(());
+                let _ = release_rx.lock().unwrap().recv();
+            }
+        }))
+        .await;
+        let writer = tokio::spawn({
+            let j = j.clone();
+            async move { j.append_step_receipt(&step("b1", 1, held_op)).await }
+        });
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(std::time::Duration::from_secs(30)).expect("the push enters the derivation")).await.unwrap();
+        // The reader, on a thread of its own: a reader blocked on the log's lock cannot answer.
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let reader = {
+            let (j, b1) = (j.clone(), b1.clone());
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                let read = rt.block_on(async { (j.read_build(&b1).await, j.list_active().await) });
+                let _ = read_tx.send(read);
+            })
+        };
+        let answered = read_rx.recv_timeout(std::time::Duration::from_secs(2));
+        let (read, active) = answered.expect("the reader answered while the push was held mid-derivation");
+        let read = read.unwrap();
+        assert!(read.steps.iter().all(|s| s.operation != held_op), "the held fact is not seen before its derivation ran: {:?}", read.steps);
+        assert_eq!(active.unwrap().iter().map(|p| p.build_id.clone()).collect::<Vec<_>>(), vec![b1.clone()]);
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+        reader.join().unwrap();
+        assert!(j.read_build(&b1).await.unwrap().steps.iter().any(|s| s.operation == held_op), "once the derivation ran, the reader sees the fact");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1886,10 +1989,10 @@ mod tests {
         let newer = [BuildFact::Accepted(accepted_at("bnew", 20)), BuildFact::Claim(claim("bnew", 1, "a")), BuildFact::Attempt(attempt("bnew", 1, AttemptOutcome::Converged))];
         let older = [BuildFact::Accepted(accepted_at("bold", 10)), BuildFact::Claim(claim("bold", 1, "a")), BuildFact::Attempt(attempt("bold", 1, AttemptOutcome::Converged))];
         let (a, b) = (MemoryBuildStateAdapter::new(), MemoryBuildStateAdapter::new());
-        a.absorb(&newer);
-        a.absorb(&older);
-        b.absorb(&older);
-        b.absorb(&newer);
+        a.absorb(&newer).await;
+        a.absorb(&older).await;
+        b.absorb(&older).await;
+        b.absorb(&newer).await;
         for s in [&a, &b] {
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(BuildId("bnew".into())));
         }
@@ -1973,9 +2076,9 @@ mod tests {
         assert_eq!(j.recovery_of(&"mesh1.rpc.2".parse().unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
         // Gossip delivers in any order: the update's Complete heard first, the attempt's opening last.
-        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "update-node", "Complete"))]);
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "update-node", "Complete"))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
-        m.absorb(&[BuildFact::Step(receipt("b1", 2, "retire-node", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "retire-node", "Complete")), BuildFact::Step(receipt("b1", 2, "create-node", "Complete")), BuildFact::Opened(opened("b1", 2))]);
+        m.absorb(&[BuildFact::Step(receipt("b1", 2, "retire-node", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "retire-node", "Complete")), BuildFact::Step(receipt("b1", 2, "create-node", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId("b1".into()), 2, deleted.clone())), "absorbed, in any order");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2076,7 +2179,7 @@ mod tests {
         assert_eq!(j.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "the other mesh's run is untouched");
         let m = MemoryBuildStateAdapter::new();
         facts.reverse();
-        m.absorb(&facts);
+        m.absorb(&facts).await;
         assert_eq!(m.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "absorbed in reverse order: done");
         assert_eq!(m.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "absorbed in reverse order: the other mesh's owed exit");
         let _ = std::fs::remove_dir_all(&dir);
@@ -2120,9 +2223,9 @@ mod tests {
         assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("replace-node:{path}"))), "journal replay");
         assert_eq!(j.recovery_of(&"mesh2.rpc.1".parse().unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
-        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("replace-node", 2, "Complete", &replaced.0, &replaced.1))]);
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("replace-node", 2, "Complete", &replaced.0, &replaced.1))]).await;
         assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "a Complete alone names no birth");
-        m.absorb(&[BuildFact::Step(receipt("replace-node", 2, "NodeDeleted", &replaced.0, &replaced.1))]);
+        m.absorb(&[BuildFact::Step(receipt("replace-node", 2, "NodeDeleted", &replaced.0, &replaced.1))]).await;
         assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("replace-node:{path}"))), "absorbed, in either order");
         let _ = std::fs::remove_dir_all(&dir);
     }

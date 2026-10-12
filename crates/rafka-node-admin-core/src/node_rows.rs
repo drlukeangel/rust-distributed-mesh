@@ -38,7 +38,7 @@
 //! and writes nothing from them.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
-use crate::storage::{NameHeld, NodeRow, NodesStorage};
+use crate::storage::{Allocation, NameHeld, NodeRow, NodesStorage};
 use crate::topology::Topology;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -255,8 +255,10 @@ impl NodeRows {
     /// `Pending`, its config seeded from the previous row at the `path.name` (a `Deleted` row) or the
     /// `<name>.old` row. The store adapter's insert-and-fail
     /// refuses a name another node's live row holds, `NameHeld { by }`, and nothing is written. A row
-    /// the node holds already is left as it is. One `via-node-row` span, `moment` `claim`.
-    pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str) -> Result<Claimed, RowRefused> {
+    /// the node holds already is left as it is. `allocated`: what the create allocated for the birth,
+    /// written into the claim row with it ([`NodeRow::allocated`]), so the identity the claim is made
+    /// with is durable wherever the claim is. One `via-node-row` span, `moment` `claim`.
+    pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>) -> Result<Claimed, RowRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
             node = %self.me,
@@ -273,7 +275,7 @@ impl NodeRows {
         let r = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, name).await?;
-                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), &span).await
+                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, &span).await
             },
             span.clone(),
         )
@@ -298,6 +300,16 @@ impl NodeRows {
             }
             None => Ok(false),
         }
+    }
+
+    /// The birth an earlier run of `operation` of the Build `build_id` claimed `name` for, with what
+    /// that run allocated ([`NodeRow::allocated`]): a point read of the row at `name` through its
+    /// `path.name` key. `Some` only when the row there holds the name (it is not `Deleted`) and its
+    /// claim was made by that same operation of that same Build; any other row, or none, answers
+    /// `None`. Nothing is written. A read that fails is named.
+    pub async fn allocation_at(&self, name: &PathName, build_id: &crate::build::BuildId, operation: &str) -> Result<Option<(NodeId, Allocation)>, String> {
+        let row = self.storage.node_row_at(name).await.map_err(|e| format!("{}: the row at {name} could not be read for the allocation of {operation} (Build {build_id}): {e}", self.me))?;
+        Ok(row.filter(|r| r.status != NodeStatus::Deleted).and_then(|r| r.allocated.filter(|a| &a.build_id == build_id && a.operation == operation).map(|a| (r.node_id, a))))
     }
 
     /// A create that claimed `name` for `node_id` and did not complete lets go of its claim, so the
@@ -438,7 +450,7 @@ impl NodeRows {
                 let Some((config, tags, _)) = known? else {
                     return Err(RowRefused::Unwritten(format!("{}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know", self.me)));
                 };
-                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags };
+                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None };
                 match self.storage.put_node_row(&row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
@@ -462,7 +474,7 @@ impl NodeRows {
     /// The row of `node_id` at `name`, `status`, its config seeded from the previous row at the
     /// `path.name` (another node's row there: the store adapter refuses it unless it is `Deleted`),
     /// else the `<name>.old` row, else `own`. A row the same node holds already is left as it is.
-    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, span: &tracing::Span) -> Result<Claimed, RowRefused> {
+    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, span: &tracing::Span) -> Result<Claimed, RowRefused> {
         let me = &self.me;
         let previous = self.storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
         if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id) {
@@ -480,7 +492,7 @@ impl NodeRows {
         span.record("keys", config.len() as u64);
         // A new node carries no tags: they are its caller's meta, set through node.update (a
         // recovery's copy of the caller-owned meta is its own step).
-        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags: Default::default() };
+        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags: Default::default(), allocated: allocated.cloned() };
         match self.storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);
@@ -586,7 +598,7 @@ impl NodeRows {
                 detail = tracing::field::Empty,
                 "otel.kind" = "internal",
             );
-            let r = tracing::Instrument::instrument(self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, &span), span.clone()).await;
+            let r = tracing::Instrument::instrument(self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, &span), span.clone()).await;
             record_claim(&span, &r);
             span.in_scope(|| tracing::info!("node.create: the birth's row decided"));
             match r {
@@ -660,7 +672,7 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
     let held_there = storage.hold_node_row(to, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read or named for the rename of {} from {from}: {e}", record.node_id)))?;
     let mut written = None;
     if !held_there {
-        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags };
+        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None };
         storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
         written = Some(row);
     }

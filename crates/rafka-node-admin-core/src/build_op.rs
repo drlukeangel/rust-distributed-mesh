@@ -52,10 +52,50 @@ pub struct BuildDoor {
     pub seats: SeatBook,
     /// This admin's exact birth (with `env.door.node_id`): what the seat book is read against.
     pub incarnation: IncarnationId,
+    /// Where a re-submitted Build this admin's own log holds no fact of is read: the incumbent the
+    /// committed transfer of its fabric seat names.
+    pub incumbent: Arc<dyn IncumbentFacts>,
 }
 
 /// The door a running admin fills once it holds a view.
 pub type BuildSlot = Arc<OnceLock<Arc<BuildDoor>>>;
+
+/// The facts of a Build this admin's own log holds no fact of, read from the incumbent the committed
+/// transfer of its fabric seat names (node-rpc-envelope.md, "TakeSeats": "the caller resubmits the
+/// same `build_id` to N, and N resumes the same attempt as the new fabric-primary"; build.md §5.2:
+/// "the fabric-primary's claim log reaches every admin through the Build topic and FetchBuildFacts
+/// (`0x1F`)"). The incumbent keeps serving after the seat row, so one read reaches the admin that
+/// accepted the Build; no other admin is asked and nothing is read again.
+#[async_trait::async_trait]
+pub trait IncumbentFacts: Send + Sync {
+    /// One `FetchBuildFacts` of `build_id` to the incumbent.
+    async fn read(&self, build_id: &BuildId) -> IncumbentRead;
+}
+
+/// What [`IncumbentFacts::read`] found.
+#[derive(Debug)]
+pub enum IncumbentRead {
+    /// No committed transfer seated this birth in the fabric seat it holds (it holds no fabric seat,
+    /// or took it by election or at Day 0): its own log is the only one its Build door answers from.
+    NoTransfer,
+    /// The incumbent `incumbent` (its `path.name` and node id) was read: its facts, or why none came.
+    Read {
+        /// The incumbent, named.
+        incumbent: String,
+        /// The facts, or the read's own failure.
+        read: Result<crate::build_facts_read::Fetched, crate::build_facts_read::FetchFailure>,
+    },
+}
+
+/// A Build door that took no fabric seat by a transfer (an admin built without a seat transfer door).
+pub struct NoIncumbent;
+
+#[async_trait::async_trait]
+impl IncumbentFacts for NoIncumbent {
+    async fn read(&self, _: &BuildId) -> IncumbentRead {
+        IncumbentRead::NoTransfer
+    }
+}
 
 fn counts(m: &MeshCounts) -> MeshDesired {
     MeshDesired { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
@@ -206,7 +246,10 @@ impl BuildDoor {
     async fn resubmit(&self, id: BuildId, from_attempt: u32, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
-            Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.0 }),
+            Err(BuildStateError::UnknownBuild(_)) => match self.from_incumbent(&id).await {
+                Ok(p) => p,
+                Err(refusal) => return Ok(refusal),
+            },
             Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: Build {id} could not be read: {e}", self.me) }),
         };
         // The drive's own record answers a Build that ended: the frames it took off the calls it
@@ -221,7 +264,7 @@ impl BuildDoor {
         }
         match crate::build_state::drivable(&*self.control.builds, &p).await {
             Ok(true) => {}
-            Ok(false) => return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", p.state) }),
+            Ok(false) => return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("{}: Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", self.me, p.state) }),
             Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: the current Build could not be read to admit Build {id}: {e}", self.me) }),
         }
         let disposition = if p.state == BuildState::Failed { Disposition::NextAttempt } else { Disposition::Attached };
@@ -230,6 +273,76 @@ impl BuildDoor {
         let drive = self.drives.ensure(&self.env, &id, p.attempt_to_drive());
         let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition }).await?;
         stream_frames(sink, drive.reader(from_attempt)).await
+    }
+
+    /// A re-submitted Build this admin's own log holds no fact of: the new seat has not heard it yet
+    /// (the Build topic carries the facts apart, and the re-submit outran it). Its facts are read once
+    /// from the incumbent the committed transfer of this admin's fabric seat names, which accepted it
+    /// and keeps serving after the seat row (node-rpc-envelope.md, "TakeSeats"), and are absorbed into
+    /// this admin's own log as the Build topic's are (node-rpc-envelope.md, "Build facts": "Facts are
+    /// absorbed through the existing Build log"). No Build gossip is authored and nothing is read again.
+    ///
+    /// Only a Build no admin holds stays `UnknownBuild`: this admin took no seat by a transfer (its own
+    /// log is the one it answers from), or the incumbent holds no fact of it either. A read that failed,
+    /// or holdings the incumbent says are not whole, is `NotReady` naming the incumbent and the cause.
+    async fn from_incumbent(&self, id: &BuildId) -> Result<crate::build_state::BuildProjection, BuildReply> {
+        let span = tracing::info_span!(
+            "rdm.node_admin.build.update.via-incumbent-facts",
+            node = %self.me,
+            build_id = %id,
+            incumbent = tracing::field::Empty,
+            facts = tracing::field::Empty,
+            chunks = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        );
+        let me = &self.me;
+        async {
+            let span = tracing::Span::current();
+            let (incumbent, read) = match self.incumbent.read(id).await {
+                IncumbentRead::NoTransfer => {
+                    span.record("outcome", "no-transfer");
+                    span.in_scope(|| tracing::info!("this admin took its fabric seat by no transfer: its own log is the one it answers from"));
+                    return Err(BuildReply::UnknownBuild { build_id: id.0.clone() });
+                }
+                IncumbentRead::Read { incumbent, read } => (incumbent, read),
+            };
+            span.record("incumbent", incumbent.as_str());
+            let fetched = match read {
+                Ok(f) if f.complete => f,
+                Ok(f) => {
+                    span.record("facts", f.facts.len() as u64);
+                    span.record("outcome", "incomplete");
+                    span.in_scope(|| tracing::info!("the incumbent says its holdings of the Build are not whole: nothing is absorbed"));
+                    return Err(BuildReply::NotReady { reason: format!("{me}: Build {id} is not in this admin's log, and {incumbent}, whose fabric seat this admin took, holds {} facts of it that it says are not whole: nothing is absorbed", f.facts.len()) });
+                }
+                Err(crate::build_facts_read::FetchFailure::UnknownBuild(_)) => {
+                    span.record("outcome", "unknown-build");
+                    span.in_scope(|| tracing::info!("the incumbent holds no fact of the Build either"));
+                    return Err(BuildReply::UnknownBuild { build_id: id.0.clone() });
+                }
+                Err(e) => {
+                    span.record("outcome", e.reason());
+                    span.in_scope(|| tracing::info!(detail = %e, "the incumbent's facts of the Build could not be read"));
+                    return Err(BuildReply::NotReady { reason: format!("{me}: Build {id} is not in this admin's log, and its facts could not be read from {incumbent}, whose fabric seat this admin took: {e}") });
+                }
+            };
+            span.record("facts", fetched.facts.len() as u64);
+            span.record("chunks", fetched.chunks);
+            self.run.local.absorb_facts(&fetched.facts).await;
+            match self.control.builds.read_build(id).await {
+                Ok(p) => {
+                    span.record("outcome", "absorbed");
+                    span.in_scope(|| tracing::info!("the incumbent's facts of the re-submitted Build are absorbed into this admin's own log"));
+                    Ok(p)
+                }
+                Err(e) => {
+                    span.record("outcome", "unreadable-after-absorb");
+                    Err(BuildReply::NotReady { reason: format!("{me}: the {} facts of Build {id} read from {incumbent} were absorbed, and this admin's own log still cannot read it: {e}", fetched.facts.len()) })
+                }
+            }
+        }
+        .instrument(span)
+        .await
     }
 
     async fn get(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
