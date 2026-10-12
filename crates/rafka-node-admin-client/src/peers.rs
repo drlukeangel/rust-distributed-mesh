@@ -44,10 +44,18 @@ impl Peers {
     /// becomes reachable here, and everything after goes over Node RPC.
     pub async fn nodes(&self, admin: crate::NodeAdminClient) -> Result<crate::Nodes, crate::CallEnd> {
         let fp = admin.fabric().await.map_err(crate::CallEnd::from)?.fabric_primary.ok_or_else(|| crate::CallEnd::Indeterminate { reason: "the admin's fabric names no fabric-primary".into() })?;
+        Ok(crate::Nodes::new(self.carrier_at(&admin, &fp).await?))
+    }
+
+    /// The Build carrier whose calls start at the fabric-primary `fabric_primary`, when the caller
+    /// is told where the seat is: a stream that ended `SeatMoved` names the admin that holds it now
+    /// (node-rpc-envelope.md TakeSeats: "the caller resubmits the same `build_id` to N"). Its birth
+    /// is read from `admin`'s node list and made reachable here; a list that holds none is named.
+    pub async fn carrier_at(&self, admin: &crate::NodeAdminClient, fabric_primary: &rafka_mesh_entity::PathName) -> Result<crate::BuildCarrier, crate::CallEnd> {
         let held = admin.nodes().await.map_err(crate::CallEnd::from)?;
-        let birth = held.iter().find(|n| n.name == fp).ok_or_else(|| crate::CallEnd::Indeterminate { reason: format!("the admin's fabric names {fp} its fabric-primary and its node list holds no {fp}") })?;
+        let birth = held.iter().find(|n| n.name == *fabric_primary).ok_or_else(|| crate::CallEnd::Indeterminate { reason: format!("the node list of {} holds no {fabric_primary}, the fabric-primary the caller was sent to", admin.base()) })?;
         self.learn(std::slice::from_ref(birth));
-        Ok(crate::Nodes::new(crate::BuildCarrier::new(self.rpc.clone(), fp)))
+        Ok(crate::BuildCarrier::new(self.rpc.clone(), fabric_primary.clone()))
     }
 
     /// Await the typed fact `fact` of `peer`'s held view of `mesh`; a peer that never reports it is named
