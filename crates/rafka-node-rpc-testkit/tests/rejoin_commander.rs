@@ -8,8 +8,7 @@
 //! refuses a call for the node id it names). No projection, heartbeat book or resolver record of
 //! the commander is read.
 //!
-//! The drain's `node-drained` call goes back the same way, to the admin whose call commanded the
-//! drain, over that call; the stop and start spans name the commander by the node id the node's
+//! The stop and start spans name the commander by the node id the node's
 //! member projection gives its endpoint, when one does.
 //!
 //! Each cell runs in its own process: the cells hold process-wide state (the parking flag).
@@ -19,7 +18,7 @@ use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{DrainReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -157,7 +156,7 @@ fn a_stopped_node_whose_heartbeat_book_lacks_its_commander_starts_and_joins_it_t
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
         let left = call(&commander, &target, &stop).await;
-        assert!(matches!(left, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "the commander's stop is answered Stopped: {left:?}");
+        assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "the commander's stop is answered Stopped: {left:?}");
         assert!(running.membership.book.get(commander_id.as_str()).is_none(), "the node's heartbeat book came to hold the commander before its start: the cell proves nothing");
 
         // The commander deployed this birth and awaits its join, as the admin that commands its start.
@@ -302,47 +301,6 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             );
         };
         let (_lost_answer, ()) = tokio::join!(first, rest);
-        let _ = std::fs::remove_dir_all(&dir);
-    })
-}
-
-/// CONTRACT (node-drain.md: the drain's completion is the node's `node-drained` call at the admin
-/// that commanded it; node-rpc.md §14: the call's endpoint key names that admin; gossip.md §3.1, R-HB1:
-/// which birth holds the key is the member projection the node installed, never the heartbeat book):
-/// the rpc node is drained by an admin of its mesh that its heartbeat book holds no digest of and its
-/// installed projection carries. The drain is answered `Applied`, and its `node-drained` call reaches
-/// that admin back through the drain's call and resolves the drain command it holds open (`Applied`).
-/// The node's command span names the admin as sender, and its drain and completion spans name it as
-/// commander. Must NOT happen: no completion call because the heartbeat book does not hold the
-/// commander (`commander-unresolved`), or a span with an empty commander.
-#[test]
-fn a_node_drained_by_a_commander_its_heartbeat_book_lacks_calls_its_completion_back_through_the_call() {
-    let cell = "a_node_drained_by_a_commander_its_heartbeat_book_lacks_calls_its_completion_back_through_the_call";
-    let cap = crate::common::capture(cell);
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), cell) {
-            return;
-        }
-        let Rig { primary: _primary, commander, _carried, running, dir, target, node_id, incarnation, commander_id, .. } = rig("drain-commander").await;
-        let operation = "drain-node:mesh1.rpc.1";
-        let mut completed = commander.observer.commands.open(rafka_node_admin_core::node_commands::CommandKey { build_id: "bld_drain".into(), attempt: 1, operation: operation.into(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        let drain = StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_drain".into(), attempt: 1, operation: operation.into() };
-        assert_eq!(call(&commander, &target, &drain).await, StatusReply::Applied, "the commander's drain is admitted");
-        tokio::time::timeout(NEVER, completed.wait_for(|done| *done)).await.expect("the node's node-drained call never resolved the drain the commander holds open").expect("the command book is held");
-        assert!(running.membership.book.get(commander_id.as_str()).is_none(), "the node's heartbeat book came to hold the commander: the cell proves nothing");
-
-        let commander_id = commander_id.to_string();
-        let sent = spans_of(&spans, "rdm.node_admin.status.update.via-command", "mesh1.rpc.1");
-        assert!(sent.iter().any(|f| f.get("op").map(String::as_str) == Some("drain-node") && f.get("sender").map(String::as_str) == Some("mesh1.admin.2")), "the drain's command span names the commander as sender: {sent:?}");
-        let drained = spans_of(&spans, "rdm.node_admin.status.update.via-drain-node", "mesh1.rpc.1");
-        assert!(!drained.is_empty() && drained.iter().all(|f| f.get("commander") == Some(&commander_id)), "the drain names its commander: {drained:?}");
-        // The node opens its completion span once the commander's reply is back, after the commander
-        // resolved its command: it is awaited, never read before it can exist.
-        let applied = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.rpc.1") && f.get("commander") == Some(&commander_id) && f.get("answer").map(String::as_str) == Some("applied");
-        if tokio::time::timeout(NEVER, spans.recorded("rdm.node_admin.status.update.via-completion-call", applied)).await.is_err() {
-            panic!("the completion call went to the commander and was applied: {:?}", spans_of(&spans, "rdm.node_admin.status.update.via-completion-call", "mesh1.rpc.1"));
-        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

@@ -144,12 +144,12 @@ pub enum BuildOperation {
         /// The birth the replacement is fenced to.
         from_incarnation: IncarnationId,
     },
-    /// Drain the exact birth `from_incarnation` of `node` and keep it running (node-drain.md): the
-    /// operation is `drain-node` and the birth's `node-drained`, nothing else.
-    DrainNode {
-        /// The node to drain.
+    /// `node.connections.delete { All }` of the exact birth `from_incarnation` of `node`; it keeps
+    /// running (node-connections-delete.md).
+    DeleteConnections {
+        /// The node.
         node: PathName,
-        /// The birth drained.
+        /// The birth whose connections are deleted.
         from_incarnation: IncarnationId,
     },
     /// Stop the exact birth `from_incarnation` of `node` (node-stop.md): `stop-node`, its node-left
@@ -210,7 +210,7 @@ impl BuildOperation {
     /// The node the operation acts on; `None` for a mesh operation.
     pub fn node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DrainNode { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } => None,
         }
     }
@@ -222,7 +222,7 @@ impl BuildOperation {
             Self::CreateNode { node, .. } => format!("create-node:{node}"),
             Self::ReplaceNode { node, .. } => format!("replace-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),
-            Self::DrainNode { node, .. } => format!("drain-node:{node}"),
+            Self::DeleteConnections { node, .. } => format!("node.connections.delete:{node}"),
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::StartNode { node, .. } => format!("start-node:{node}"),
             Self::UpdateNode { node, .. } => format!("update-node:{node}"),

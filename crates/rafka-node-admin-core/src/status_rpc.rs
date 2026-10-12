@@ -529,12 +529,12 @@ impl StatusAuthority {
             rounds.heard_from(&from.node_id);
         }
         match req {
-            StatusRequest::NodeDrained { .. } => return self.accept_completion(&view, sender.as_ref(), req),
+            StatusRequest::DrainNode { .. } | StatusRequest::NodeDrained { .. } => return crate::node_commands::refuse_reserved(&self.me.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
             StatusRequest::NodeLeft { node_id, .. } => {
                 let name = view.births().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_default();
                 return crate::node_commands::refuse_node_left(&self.me.to_string(), &name, &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req);
             }
-            StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
+            StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
             StatusRequest::DeleteConnections { node_id, .. } if *node_id == self.node_id => return self.serve_command(&view, sender.as_ref(), peer, req).await,
             StatusRequest::DeleteConnections { .. } => return self.carry_delete_connections(&view, sender.as_ref(), req).await,
             StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } => {
@@ -719,20 +719,6 @@ impl StatusAuthority {
         }
     }
 
-    /// A birth's `node-drained` completion call at the admin that commanded it (node-left is the
-    /// reply of `stop-node`, never a call): it resolves the open command it names, by `(build_id, attempt, operation, node_id,
-    /// incarnation)`, for the subject as this admin's view holds it, whoever calls (node-rpc.md
-    /// §14). A completion with no open command is refused naming the mismatch, never counted
-    /// toward another operation.
-    fn accept_completion(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
-        let StatusRequest::NodeDrained { node_id, .. } = req else { unreachable!("accept_completion is called for node-drained only") };
-        let subject = view.births().find(|n| n.node_id == *node_id).map(|n| (n.incarnation_id.as_ref(), n.name.to_string()));
-        let caller = sender.map(|n| n.name.to_string()).unwrap_or_default();
-        crate::node_commands::accept_completion(&self.commands, &self.me.to_string(), subject.as_ref().map(|(i, n)| (*i, n.as_str())), &caller, req)
-    }
-
-    /// `drain-node` / `stop-node` naming this admin: served by the subject itself, from another
-    /// node-admin (its owning mesh-admin).
     /// `node.connections.delete` naming a birth of this admin's mesh (R-CR2, R-CR3): this
     /// mesh-primary validates the scope, commands the exact birth with the same request, and holds
     /// the birth's `node.connections.deleted` as its receipt for that birth's rename; the caller is
@@ -771,8 +757,17 @@ impl StatusAuthority {
             let Some(configs) = self.configs.get() else {
                 return StatusReply::NotReady { reason: format!("{} has no node-RPC client yet to carry node.connections.delete to {}; nothing is cut", self.me, subject.name) };
             };
+            let all = matches!(scope, rafka_node_rpc_contract::status::ConnectionScope::All);
+            // `All` is admitted: this mesh-primary sets the birth connections-deleting (states.md
+            // "Who sets each state"), and its projection carries it from its next round.
+            if all {
+                if let Some(book) = &self.book {
+                    book.reported(node_id, incarnation, rafka_mesh_entity::MemberStatus::Draining);
+                }
+            }
             let target = rafka_node_rpc::NodeTarget::ExactNode(node_id.clone());
-            let reply = match configs.client().call::<rafka_node_rpc_contract::status::Status>(&target, req, &rafka_node_rpc::CallOptions::default()).await.0 {
+            let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Split { send: std::time::Duration::from_secs(5), reply: crate::node_self::connections_delete_deadline_from_env() + std::time::Duration::from_secs(10) }, ..Default::default() };
+            let reply = match configs.client().call::<rafka_node_rpc_contract::status::Status>(&target, req, &opts).await.0 {
                 rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.into_value(),
                 other => {
                     let detail = format!("{} carried node.connections.delete to {} and the call ended {}: {other:?}; no node.connections.deleted is held", self.me, subject.name, other.name());
@@ -782,7 +777,7 @@ impl StatusAuthority {
             };
             if let StatusReply::ConnectionsDeleted { closed, held, .. } = &reply {
                 tracing::Span::current().record("closed", closed.len()).record("held", held.len());
-                let receipt = ConnectionsDeletedReceipt { all: matches!(scope, rafka_node_rpc_contract::status::ConnectionScope::All), held: held.clone(), status_at_cut: subject.status };
+                let receipt = ConnectionsDeletedReceipt { all, held: held.clone(), status_at_cut: if all { crate::model::NodeStatus::Draining } else { subject.status } };
                 self.declared.lock().unwrap().connections_deleted.insert((node_id.clone(), incarnation.clone()), receipt);
             }
             reply
@@ -798,7 +793,7 @@ impl StatusAuthority {
     /// §14): the commander is the caller as the view holds it, where its completion goes; the
     /// connection spared is the call's own (`peer`).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest) -> StatusReply {
-        let (StatusRequest::DrainNode { incarnation, .. } | StatusRequest::StopNode { incarnation, .. } | StatusRequest::StartNode { incarnation, .. } | StatusRequest::DeleteConnections { incarnation, .. }) = req else {
+        let (StatusRequest::StopNode { incarnation, .. } | StatusRequest::StartNode { incarnation, .. } | StatusRequest::DeleteConnections { incarnation, .. }) = req else {
             unreachable!("serve_command is called for commands only")
         };
         // The birth the call reached obeys it (R-RX5: no receiver refuses a downward call for the

@@ -525,7 +525,7 @@ impl Estate {
     }
 
     /// Every frame of a workflow stream, to its end.
-    pub async fn drain(stream: &mut WorkflowStream) -> Vec<Frame> {
+    pub async fn frames_of(stream: &mut WorkflowStream) -> Vec<Frame> {
         let mut frames = Vec::new();
         while let Some(f) = stream.next().await {
             frames.push(f.unwrap_or_else(|e| panic!("the workflow stream broke: {e}")));
@@ -537,7 +537,7 @@ impl Estate {
     /// the call opened.
     pub async fn complete(stream: &mut WorkflowStream) -> Accepted {
         let accepted = stream.accepted().clone();
-        let frames = Self::drain(stream).await;
+        let frames = Self::frames_of(stream).await;
         match frames.last() {
             Some(Frame::Complete) => accepted,
             other => panic!("Build {} attempt {}: the workflow did not complete: {other:?} of {frames:?}", accepted.build_id, accepted.attempt),

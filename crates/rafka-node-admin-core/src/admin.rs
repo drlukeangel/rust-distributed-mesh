@@ -2634,7 +2634,7 @@ pub async fn reconcile_drift(
         authority = %authority.name,
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
-        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete" }).unwrap_or("none"),
+        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::DeleteConnections { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete" }).unwrap_or("none"),
         exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
         exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
     );
@@ -2880,6 +2880,19 @@ impl NodeObserver for MembershipObserver {
             if let (Some(authority), Some(birth)) = (self.authority.get(), node.incarnation_id.as_ref()) {
                 authority.begin_cycle(node, birth).await;
             }
+        }
+        // node.connections.delete { All } goes through this admin's own status authority, the birth's
+        // mesh-primary: it commands the birth and holds its node.connections.deleted for a rename.
+        if cmd == crate::node_commands::NodeCommand::DeleteConnections {
+            let (Some(authority), Some(incarnation)) = (self.authority.get(), node.incarnation_id.clone()) else {
+                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connections.delete to {}", node.name) };
+            };
+            let req = rafka_node_rpc_contract::status::StatusRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation, scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+            let reply = authority.apply(None, &req).await;
+            return match reply {
+                rafka_node_rpc_contract::status::StatusReply::ConnectionsDeleted { receipt: Some(receipt), .. } => crate::deployment::pipeline::CommandAdmission::ConnectionsDeleted { receipt },
+                other => crate::deployment::pipeline::CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
+            };
         }
         let Some(client) = self.client.as_ref() else {
             return crate::deployment::pipeline::CommandAdmission::NotSent { reason: "this admin holds no Node RPC client".into() };
@@ -3490,20 +3503,15 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         // round carries both in this mesh's projection (gossip.md §3.1 `Members`): no frame here.
         self.membership.book.joined(op);
     }
-    async fn draining(&self, op: &rafka_mesh_entity::LifecycleOp) {
-        let f = rafka_mesh_transport::membership::Frame::NodeDraining { op: op.clone(), forwarded_by: None };
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-draining", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
-        async {
-            // connections-deleting is this mesh-primary's to set at the drain's admission (states.md
-            // "Who sets each state"); its projection carries it.
+    async fn connections_deleting(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+        // connections-deleting is this mesh-primary's to set at the admission of
+        // node.connections.delete { All } (states.md "Who sets each state"); its projection carries
+        // it. No frame is published for it (gossip.md §3.1: NodeDraining is a reserved position).
+        span.in_scope(|| {
             self.membership.book.admitted(op, MemberStatus::Draining);
-            if let Err(e) = self.backbone.publish_command_hook(&f).await {
-                tracing::info!(error = %e, "node-draining not sent on every channel");
-            }
-            tracing::info!("the drain command was accepted: node-draining published on the mesh channel and the backbone");
-        }
-        .instrument(span)
-        .await
+            tracing::info!("node.connections.delete {{ All }} was admitted: the birth is connections-deleting in this mesh-primary's projection");
+        });
     }
     async fn leaving(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeLeaving { op: op.clone(), forwarded_by: None };
@@ -4039,7 +4047,7 @@ impl AdminRunner {
             // The process is parked, not exited: nothing is retired about its paths or its birth.
             self.pipeline(&template).stop(&req).await.map_err(|e| e.to_string())?;
         } else {
-            self.pipeline(&template).drain(&req).await.map_err(|e| e.to_string())?;
+            self.pipeline(&template).delete_connections(&req).await.map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -4419,7 +4427,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 self.replace(build_id, attempt, node, from_incarnation).instrument(span).await
             }
-            BuildOperation::DrainNode { node, from_incarnation } => {
+            BuildOperation::DeleteConnections { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 self.standalone(build_id, attempt, node, from_incarnation, false).instrument(span).await
             }

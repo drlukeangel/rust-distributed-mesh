@@ -19,7 +19,7 @@ use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{DrainReceipt, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionsReceipt, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,7 +86,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
 
         // The admin the node knows stops it: the node parks, and hears no digest from now on.
         let parked = call(&admin.observer.client, &target, &stop(1, &incarnation)).await;
-        assert!(matches!(parked, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{parked:?}");
+        assert!(matches!(parked, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{parked:?}");
 
         // An admin the parked node never heard of: a fresh endpoint key, in no digest the node holds.
         let stranger_key = iroh::SecretKey::generate();

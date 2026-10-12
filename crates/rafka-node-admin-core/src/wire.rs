@@ -140,7 +140,7 @@ enum WireChange {
 enum WireAction {
     Restart { path: PathName, from_incarnation: IncarnationId },
     Replace { path: PathName, from_incarnation: IncarnationId },
-    Drain { path: PathName, from_incarnation: IncarnationId },
+    DeleteConnections { path: PathName, from_incarnation: IncarnationId },
     Stop { path: PathName, from_incarnation: IncarnationId },
     Start { path: PathName, from_incarnation: IncarnationId },
     Recover { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
@@ -196,7 +196,7 @@ impl From<&AttemptAction> for WireAction {
         match a {
             AttemptAction::Restart { path, from_incarnation } => Self::Restart { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Replace { path, from_incarnation } => Self::Replace { path: path.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Drain { path, from_incarnation } => Self::Drain { path: path.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Recover { path, node_id, from_incarnation } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
@@ -209,7 +209,7 @@ impl From<WireAction> for AttemptAction {
         match a {
             WireAction::Restart { path, from_incarnation } => Self::Restart { path, from_incarnation },
             WireAction::Replace { path, from_incarnation } => Self::Replace { path, from_incarnation },
-            WireAction::Drain { path, from_incarnation } => Self::Drain { path, from_incarnation },
+            WireAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path, from_incarnation },
             WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
             WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
             WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation },
@@ -349,8 +349,9 @@ pub(crate) enum WireCommandAdmission {
     NotSent { reason: String },
     Indeterminate { reason: String },
     Refused { reply: String },
-    Stopped { receipt: rafka_node_rpc_contract::status::DrainReceipt },
+    Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt },
     Started,
+    ConnectionsDeleted { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt },
     StartFailed { step: String, reason: String },
 }
 
@@ -377,7 +378,8 @@ impl From<&CommandAdmission> for WireCommandAdmission {
             CommandAdmission::NotSent { reason } => Self::NotSent { reason: reason.clone() },
             CommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason: reason.clone() },
             CommandAdmission::Refused { reply } => Self::Refused { reply: reply.clone() },
-            CommandAdmission::Stopped { receipt } => Self::Stopped { receipt: *receipt },
+            CommandAdmission::Stopped { receipt } => Self::Stopped { receipt: receipt.clone() },
+            CommandAdmission::ConnectionsDeleted { receipt } => Self::ConnectionsDeleted { receipt: receipt.clone() },
             CommandAdmission::Started => Self::Started,
             CommandAdmission::StartFailed { step, reason } => Self::StartFailed { step: step.clone(), reason: reason.clone() },
         }
@@ -392,6 +394,7 @@ impl From<WireCommandAdmission> for CommandAdmission {
             WireCommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason },
             WireCommandAdmission::Refused { reply } => Self::Refused { reply },
             WireCommandAdmission::Stopped { receipt } => Self::Stopped { receipt },
+            WireCommandAdmission::ConnectionsDeleted { receipt } => Self::ConnectionsDeleted { receipt },
             WireCommandAdmission::Started => Self::Started,
             WireCommandAdmission::StartFailed { step, reason } => Self::StartFailed { step, reason },
         }
@@ -488,9 +491,9 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::MeshPending
     } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) || step == crate::deployment::pipeline::ReplaceStep::RenamePredecessor.name() {
         Produces::LifecycleOp
-    } else if ret(RetireStep::DrainNode) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
+    } else if ret(RetireStep::DeleteConnections) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
         Produces::CommandAdmission
-    } else if ret(RetireStep::AwaitNodeDrained) || ret(RetireStep::AwaitNodeLeft) {
+    } else if ret(RetireStep::AwaitNodeLeft) {
         Produces::Completion
     } else if step == RELEASE_STORAGE_STEP {
         Produces::Storage

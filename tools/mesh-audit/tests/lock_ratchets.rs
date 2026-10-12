@@ -137,15 +137,15 @@ fn no_transport_tag_vocabulary_fails_a_tag_owner_in_an_active_source() {
 }
 
 #[test]
-fn retire_attempts_rpc_drain_first_fails_when_termination_precedes_the_drain() {
+fn retire_attempts_rpc_stop_first_fails_when_termination_precedes_the_stop() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
-        "        Self::DrainNode,\n        Self::AwaitNodeDrained,",
-        "        Self::AwaitNodeDrained,",
+        "        Self::NodeDeleting,\n        Self::StopNode,",
+        "        Self::NodeDeleting,",
     );
-    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::DrainNode,");
-    only(check(t.root()), Ratchet::RetireAttemptsRpcDrainFirst);
+    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::StopNode,");
+    only(check(t.root()), Ratchet::RetireAttemptsRpcStopFirst);
 }
 
 #[test]
@@ -168,21 +168,21 @@ fn drift_silence_is_not_retire_authority_fails_without_its_proof() {
 }
 
 #[test]
-fn retire_receipt_names_drain_arm_fails_an_untagged_outcome() {
+fn retire_receipt_names_command_arm_fails_an_untagged_outcome() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
         "#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum CommandAdmission",
         "#[serde(rename_all = \"kebab-case\")]\npub enum CommandAdmission",
     );
-    only(check(t.root()), Ratchet::RetireReceiptNamesDrainArm);
+    only(check(t.root()), Ratchet::RetireReceiptNamesCommandArm);
 }
 
 #[test]
-fn drain_success_is_not_refusal_fails_when_the_applied_reply_is_gone() {
+fn connections_deleted_is_not_refusal_fails_when_the_receipt_is_gone() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "NodeDrainingApplied {\n        /// The work still in flight.\n        in_flight: u64,\n    }", "NodeDrainingApplied");
-    only(check(t.root()), Ratchet::DrainSuccessIsNotRefusal);
+    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "        receipt: Option<ConnectionsReceipt>,\n", "        receipt: Option<u64>,\n");
+    only(check(t.root()), Ratchet::ConnectionsDeletedIsNotRefusal);
 }
 
 #[test]

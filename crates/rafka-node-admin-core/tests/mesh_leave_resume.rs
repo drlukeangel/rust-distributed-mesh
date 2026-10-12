@@ -1587,7 +1587,7 @@ impl LifecycleEvents for Departures {
     async fn restarting(&self, _: &LifecycleOp) {}
     async fn stopped(&self, _: &LifecycleOp) {}
     async fn joined(&self, _: &LifecycleOp) {}
-    async fn draining(&self, _: &LifecycleOp) {}
+    async fn connections_deleting(&self, _: &LifecycleOp) {}
     async fn leaving(&self, _: &LifecycleOp) {}
     async fn mesh_leaving(&self, _: &MeshLeaveEvent) {}
     async fn mesh_leave(&self, _: &MeshLeaveEvent) {}

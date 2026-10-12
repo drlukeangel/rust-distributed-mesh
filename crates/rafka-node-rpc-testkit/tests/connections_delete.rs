@@ -161,7 +161,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         // The admin route as the node holds it once the call is answered (the call's own accept is
         // an entry of that route).
         let to_admin = open("mesh1.admin.1");
-        assert_eq!(deleted, StatusReply::ConnectionsDeleted { closed: vec![to_peer.id.clone()], not_open: vec![never.clone()], held: vec![to_admin.id.clone()] }, "the peer route is cut, the unknown id named, the admin route still held");
+        assert_eq!(deleted, StatusReply::ConnectionsDeleted { closed: vec![to_peer.id.clone()], not_open: vec![never.clone()], held: vec![to_admin.id.clone()], receipt: None }, "the peer route is cut, the unknown id named, the admin route still held");
 
         // Every way the cut can be wrong is named together.
         let mut wrong: Vec<String> = Vec::new();

@@ -68,8 +68,8 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     let projected = |d: &MeshDigest| backbone.own_members(&membership).into_iter().find(|m| m.node.node_id == d.node.node_id).map(|m| m.status);
     assert_eq!(status(&rpc), Some(MemberStatus::ReadyForTraffic));
 
-    lifecycle.draining(&op(&rpc, "drain-node:mesh1.rpc.1")).await;
-    assert_eq!(status(&rpc), Some(MemberStatus::Draining), "the drain's admission sets the member connections-deleting");
+    lifecycle.connections_deleting(&op(&rpc, "node.connections.delete:mesh1.rpc.1")).await;
+    assert_eq!(status(&rpc), Some(MemberStatus::Draining), "the admission of node.connections.delete {{ All }} sets the member connections-deleting");
     assert_eq!(projected(&rpc), Some(MemberStatus::Draining), "the member projection carries it");
 
     lifecycle.leaving(&op(&rpc, "stop-node:mesh1.rpc.1")).await;
@@ -77,7 +77,7 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     assert_eq!(projected(&rpc), Some(MemberStatus::Leaving), "the member projection carries it");
 
     let peer = member(&fabric, "mesh2.rpc.1", 10);
-    lifecycle.draining(&op(&peer, "drain-node:mesh2.rpc.1")).await;
+    lifecycle.connections_deleting(&op(&peer, "node.connections.delete:mesh2.rpc.1")).await;
     assert_eq!(status(&peer), None, "a member of another mesh is not this primary's to set");
 }
 

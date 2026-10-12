@@ -71,7 +71,7 @@ impl LifecycleEvents for Recorder {
     // and restart events it asserts, and states the rest as not recorded.
     async fn stopped(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
-    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     async fn mesh_leaving(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
     async fn mesh_leave(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}

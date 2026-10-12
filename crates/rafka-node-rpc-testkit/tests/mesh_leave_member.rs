@@ -40,7 +40,7 @@ impl LifecycleEvents for Recorder {
     async fn joined(&self, op: &LifecycleOp) {
         self.1.lock().unwrap().push(format!("node.joined:{}", op.operation));
     }
-    async fn draining(&self, op: &LifecycleOp) {
+    async fn connections_deleting(&self, op: &LifecycleOp) {
         self.1.lock().unwrap().push(format!("NodeDraining:{}", op.operation));
     }
     async fn leaving(&self, op: &LifecycleOp) {

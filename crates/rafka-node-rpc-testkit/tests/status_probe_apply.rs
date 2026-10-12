@@ -1,7 +1,7 @@
 //! The downward exact-node operations at a live rpc node (the 0x1B reseal): a node-admin probes
-//! the exact birth and gets its current state; commands `drain-node` and gets `Applied` (a repeat
-//! `AlreadyApplied`), after which the birth calls `node-drained` back; `ApplyNodeState` is not a
-//! drain command and is refused with the held state; a stale incarnation is refused with the one held; an
+//! the exact birth and gets its current state; `node.connections.delete { All }` answers
+//! `node.connections.deleted` with its receipt, and the reserved `DrainNode` is refused by name;
+//! `ApplyNodeState` is refused with the held state; a stale incarnation is refused with the one held; an
 //! upward declaration sent downward is refused by direction; a node-left, never sent, is refused by name.
 
 use crate::common;
@@ -16,8 +16,8 @@ use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 
 /// CONTRACT: at a live rpc node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
-/// with the node's state and changes nothing; `DrainNode` answers `Applied`, a repeat of the same
-/// operation `AlreadyApplied`, and the birth then calls `NodeDrained` at the commanding side;
+/// with the node's state and changes nothing; `DeleteConnections { All }` answers `ConnectionsDeleted`
+/// with an `Established` receipt; the reserved `DrainNode` is refused by name and starts nothing;
 /// `ApplyNodeConfig` answers `Applied` and the node's own topology answer carries the config on its
 /// digest, while one naming another incarnation is `RejectedStaleIncarnation`;
 /// `ApplyNodeState(Draining)` is refused `RejectedInvalidNodeTransition` with the held state and moves nothing; a probe
@@ -25,10 +25,10 @@ use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusRep
 /// `DeclareNodeState` sent downward is refused by direction; a `NodeLeft` is refused by name
 /// `RejectedUnmatchedCompletion { field: "command" }` (node-rpc-envelope.md "Node stop command pair":
 /// "NodeLeft keeps its position and is never sent; a receiver refuses it by name"). What must NOT
-/// happen: a probe moving the state, or `ApplyNodeState` standing in for the drain command.
+/// happen: a probe moving the state, or `ApplyNodeState` standing in for node.connections.delete.
 #[test]
-fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
-    let cap = crate::common::capture("a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family");
+fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_status_family() {
+    let cap = crate::common::capture("a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_status_family");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric_id = FabricId::mint();
         let fabric = format!("fab-{fabric_id}");
@@ -105,7 +105,7 @@ fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
                 reported: "node-left stop-node:mesh1.rpc.1 (build bld_probe, attempt 1)".into(),
             }
         );
-        // ApplyNodeState is not a drain command: refused with the held state, nothing moves.
+        // ApplyNodeState sets no state: refused with the held state, nothing moves.
         let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
         assert_eq!(call(apply).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
         assert!(matches!(call(probe.clone()).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }), "the refused apply moved nothing");
@@ -119,16 +119,12 @@ fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
         assert_eq!(own.config, config, "the birth's own digest carries the config it was told");
         let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };
         assert_eq!(call(stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
-        // drain-node: admitted, then the birth calls node-drained back at the commanding side.
-        let (operation, build_id) = ("drain-node:mesh1.rpc.1".to_string(), "bld_probe".to_string());
-        let key = rafka_node_admin_core::node_commands::CommandKey { build_id: build_id.clone(), attempt: 1, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-        let mut completed = observer.commands.open(key);
-        let drain = StatusRequest::DrainNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id, attempt: 1, operation };
-        assert_eq!(call(drain.clone()).await, StatusReply::Applied);
-        tokio::time::timeout(std::time::Duration::from_secs(10), completed.wait_for(|done| *done)).await.expect("the birth called node-drained at the commanding side").unwrap();
-        assert_eq!(call(drain).await, StatusReply::AlreadyApplied, "a repeat of the same operation is one logical command");
-        // The probe after the drain reports it.
-        assert_eq!(call(probe).await, StatusReply::Current { node_id: node.node_id.clone(), incarnation, state: NodeState::Draining });
+        // The reserved DrainNode is refused by name; node.connections.delete { All } is answered with its receipt.
+        let retired = StatusRequest::DrainNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_probe".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() };
+        assert!(matches!(call(retired).await, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name");
+        let all = StatusRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+        let deleted = call(all).await;
+        assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { receipt: Some(rafka_node_rpc_contract::status::ConnectionsReceipt::Established { .. }), held, .. } if held.is_empty()), "{deleted:?}");
 
         let _ = provider.terminate(&created.handle, TerminationMode::Graceful { grace: std::time::Duration::from_secs(2) }).await;
     })

@@ -165,7 +165,7 @@ impl BuildDoor {
             BuildChange::Replace { node, incarnation } => {
                 cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Replace, node.clone(), ActionKind::Replace, incarnation.clone()).await
             }
-            BuildChange::Drain { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Drain, node.clone(), ActionKind::Drain, None).await,
+            BuildChange::DeleteConnections { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::DeleteConnections, node.clone(), ActionKind::DeleteConnections, None).await,
             BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop, None).await,
             BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start, None).await,
             BuildChange::Recover { node, node_id, incarnation } => {

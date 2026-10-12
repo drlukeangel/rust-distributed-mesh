@@ -55,8 +55,8 @@ pub enum AttemptReason {
     Replace,
     /// The previous attempt's executor is gone; another admin continues the Build.
     AuthorityMoved,
-    /// A standalone drain of an exact birth was requested (`drain-node:<path>`).
-    Drain,
+    /// `POST /api/nodes/{name}/connections/delete`: node.connections.delete { All }.
+    DeleteConnections,
     /// A standalone stop of an exact birth was requested (`stop-node:<path>`).
     Stop,
     /// A standalone start of a parked birth was requested (`start-node:<path>`).
@@ -77,7 +77,7 @@ impl AttemptReason {
             Self::Restart => "restart",
             Self::Replace => "replace",
             Self::AuthorityMoved => "authority-moved",
-            Self::Drain => "drain",
+            Self::DeleteConnections => "node.connections.delete",
             Self::Stop => "stop",
             Self::Start => "start",
             Self::Recovery => "recovery",
@@ -882,7 +882,7 @@ fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
         Some(crate::accepted::AttemptAction::Restart { path, from_incarnation }) => format!("restart of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Replace { path, from_incarnation }) => format!("replace of {path} from {from_incarnation}"),
-        Some(crate::accepted::AttemptAction::Drain { path, from_incarnation }) => format!("drain of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::DeleteConnections { path, from_incarnation }) => format!("node.connections.delete of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
@@ -1644,7 +1644,7 @@ mod tests {
             with(&a.operation, "NodeDeleting", &a),
             with(&a.operation, "NodeDeleted", &a),
             with(&b.operation, "NodeDeleting", &b),
-            with(&b.operation, "DrainNode", &b),
+            with(&b.operation, "DeleteConnections", &b),
         ];
         let open = in_flight_ops(&facts, &fold(&facts)).ops;
         assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");

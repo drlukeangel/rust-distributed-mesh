@@ -96,10 +96,10 @@ async fn stop_then_start(test: &str, node: &str) {
     let pid = estate.pid_of(node).await;
     assert!(alive(pid));
 
-    // The stop: the reply stream carries the drain, the cut and left.
+    // The stop: the reply stream carries its node.connections.deleted and stopped.
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert!(matches!(stopped.first(), Some(Frame::Started { .. })), "{stopped:?}");
-    assert_eq!(events(&stopped), vec![NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
+    assert_eq!(events(&stopped), vec![NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     // Every other node reports that it dropped the parked birth and holds the stop overlay.
     for peer in &others {

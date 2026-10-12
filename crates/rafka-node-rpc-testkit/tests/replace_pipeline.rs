@@ -115,7 +115,7 @@ impl LifecycleEvents for Recorder<'_> {
     }
     // The replace's order is asserted from its steps; the drain and leaving hooks and the mesh-leave
     // events are not part of what this recorder hears.
-    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     async fn mesh_leaving(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
     async fn mesh_leave(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}

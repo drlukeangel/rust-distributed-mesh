@@ -7,9 +7,9 @@
 //!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
 //!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
 //!   -> WaitForNodeReady -> Complete
-//! retire: DrainNode (drain-node to the exact birth; its receipt carries the CommandAdmission)
-//!   -> AwaitNodeDrained (bounded; a deadline is an arm, never a failure)
-//!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (its `Stopped` reply, bounded, likewise)
+//! retire: StopNode (stop-node to the exact birth: its node.connections.delete { All }, then its
+//!   transport cut; the `Stopped` reply carries the All's ConnectionsReceipt)
+//!   -> AwaitNodeLeft (its `Stopped` reply, bounded; a deadline is an arm, never a failure)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
 //!   -> RemoveTopologyMembership -> Complete
 //! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exit proof, nothing sent)
@@ -215,10 +215,9 @@ pub enum RetireStep {
     /// The pre-notice (a removal only): the executor holds the operation; the node is
     /// found and not routable.
     NodeDeleting,
-    /// `drain-node` to the exact birth: refuse new work, finish eligible work, keep running.
-    DrainNode,
-    /// Wait, bounded, for the birth's `node-drained` completion call.
-    AwaitNodeDrained,
+    /// `node.connections.delete { All }` to the exact birth through its mesh-primary: graceful
+    /// closure of every open connection; the process keeps running.
+    DeleteConnections,
     /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit drain.
     StopNode,
     /// Wait, bounded, for node-left: the `Stopped` reply of the birth's `stop-node` call (R-ON1;
@@ -244,10 +243,8 @@ pub enum RetireStep {
 
 impl RetireStep {
     /// Every retire step in order.
-    pub const ORDER: [RetireStep; 9] = [
+    pub const ORDER: [RetireStep; 7] = [
         Self::NodeDeleting,
-        Self::DrainNode,
-        Self::AwaitNodeDrained,
         Self::StopNode,
         Self::AwaitNodeLeft,
         Self::TerminateRuntime,
@@ -263,8 +260,7 @@ impl RetireStep {
             Self::NodeDeleted => "NodeDeleted",
             Self::NodeRestarting => "NodeRestarting",
             Self::SeatTransfer => "SeatTransfer",
-            Self::DrainNode => "DrainNode",
-            Self::AwaitNodeDrained => "AwaitNodeDrained",
+            Self::DeleteConnections => "DeleteConnections",
             Self::StopNode => "StopNode",
             Self::AwaitNodeLeft => "AwaitNodeLeft",
             Self::TerminateRuntime => "TerminateRuntime",
@@ -592,8 +588,8 @@ pub enum StorageDisposition {
     PreservedNoMeta,
 }
 
-/// What one directed command (`drain-node`, `stop-node`) established at the exact birth: the
-/// DrainNode / StopNode step's receipt. Admission is not completion.
+/// What one directed command (`node.connections.delete`, `stop-node`, `start-node`) established at
+/// the exact birth: its step's receipt. Admission is not completion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "arm", rename_all = "kebab-case")]
 pub enum CommandAdmission {
@@ -601,11 +597,16 @@ pub enum CommandAdmission {
     Admitted,
     /// The birth answered `AlreadyApplied`: the same operation was admitted before.
     AlreadyAdmitted,
-    /// The birth answered `stop-node` with `Stopped`: it drained, cut its mesh connections and is
-    /// parked, and this is what its drain established.
+    /// The birth answered `stop-node` with `Stopped`: its `node.connections.delete { All }`
+    /// completed, it cut its transport and is stopped, and this is what that `All` established.
     Stopped {
-        /// The drain's receipt.
-        receipt: rafka_node_rpc_contract::status::DrainReceipt,
+        /// The `All`'s receipt.
+        receipt: rafka_node_rpc_contract::status::ConnectionsReceipt,
+    },
+    /// The birth answered `node.connections.delete { All }` with `node.connections.deleted`.
+    ConnectionsDeleted {
+        /// What the closure established.
+        receipt: rafka_node_rpc_contract::status::ConnectionsReceipt,
     },
     /// The birth answered `start-node` with `Started`: it rejoined as itself.
     Started,
@@ -637,7 +638,7 @@ pub enum CommandAdmission {
 impl CommandAdmission {
     /// Whether the birth holds the command.
     pub fn admitted(&self) -> bool {
-        matches!(self, Self::Admitted | Self::AlreadyAdmitted | Self::Stopped { .. } | Self::Started)
+        matches!(self, Self::Admitted | Self::AlreadyAdmitted | Self::Stopped { .. } | Self::ConnectionsDeleted { .. } | Self::Started)
     }
     /// The arm's name.
     pub fn name(&self) -> &'static str {
@@ -645,6 +646,7 @@ impl CommandAdmission {
             Self::Admitted => "admitted",
             Self::AlreadyAdmitted => "already-admitted",
             Self::Stopped { .. } => "stopped",
+            Self::ConnectionsDeleted { .. } => "connections-deleted",
             Self::Started => "started",
             Self::StartFailed { .. } => "start-failed",
             Self::NotSent { .. } => "not-sent",
@@ -663,7 +665,8 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
         RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => CommandAdmission::Admitted,
             StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted,
-            StatusReply::Stopped { receipt } => CommandAdmission::Stopped { receipt: *receipt },
+            StatusReply::Stopped { receipt } => CommandAdmission::Stopped { receipt: receipt.clone() },
+            StatusReply::ConnectionsDeleted { receipt: Some(receipt), .. } => CommandAdmission::ConnectionsDeleted { receipt: receipt.clone() },
             StatusReply::Started => CommandAdmission::Started,
             StatusReply::StartFailed { step, reason } => CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone() },
             other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
@@ -791,7 +794,7 @@ pub trait LifecycleEvents: Send + Sync {
     async fn joined(&self, op: &LifecycleOp);
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
     /// channel and the backbone.
-    async fn draining(&self, op: &LifecycleOp);
+    async fn connections_deleting(&self, op: &LifecycleOp);
     /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
     /// and the backbone.
     async fn leaving(&self, op: &LifecycleOp);
@@ -819,7 +822,7 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn restarting(&self, _op: &LifecycleOp) {}
     async fn stopped(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
-    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
     async fn mesh_leave(&self, _event: &MeshLeaveEvent) {}
@@ -1763,18 +1766,30 @@ impl DeploymentPipeline<'_> {
         Ok(Created { node, handle })
     }
 
-    /// A standalone drain (node-drain.md): `drain-node:<path>` is the drain-node command, the wait for
-    /// the exact birth's `node-drained` and `Complete`, whose receipt names the birth. The process keeps
-    /// running; nothing stops it and nothing is deleted.
-    pub async fn drain(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    /// A standalone `node.connections.delete { All }` (node-connections-delete.md):
+    /// `node.connections.delete:<path>`. A node-admin target's seats move to this executor first
+    /// (step 0); then the exact birth's mesh-primary sets connections-deleting at admission and holds
+    /// the birth's `node.connections.deleted` with its receipt. The process keeps running; nothing
+    /// stops it and nothing is deleted.
+    pub async fn delete_connections(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("drain", &req.build_id, &req.node.name, req.attempt);
+        let span = self.pipeline_span("node.connections.delete", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("drain-node:{name}")).await?;
-            let mut node = req.node.clone();
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.connections.delete:{name}")).await?;
+            let node = req.node.clone();
             self.seat_transfer_step(&mut run, &node).await?;
-            self.drain_steps_with(&mut run, &mut node, &req.handle, true).await?;
+            let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
+            let _: CommandAdmission = self
+                .step(&mut run, RetireStep::DeleteConnections.name(), async {
+                    let op = self.command_op(&ctx, &node)?;
+                    self.lifecycle.connections_deleting(&op).await;
+                    match self.observer.send_command(&node, crate::node_commands::NodeCommand::DeleteConnections, &ctx).await {
+                        a @ CommandAdmission::ConnectionsDeleted { .. } => Ok(a),
+                        other => Err(format!("{}: node.connections.delete {{ All }} ended {other:?}; no node.connections.deleted is held", node.name)),
+                    }
+                })
+                .await?;
             self.complete(&mut run).await
         }
         .instrument(span)
@@ -1853,7 +1868,6 @@ impl DeploymentPipeline<'_> {
             // The stop of the live process: it parks and stays, and its `stopped` is the stop's
             // completion. `NodeRestarting` holds it, so no `NodeStopped` is published for it.
             self.seat_transfer_step(&mut run, &node).await?;
-            self.drain_steps(&mut run, &mut node, &req.handle).await?;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: false }).await?;
             // The start of the same process.
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
@@ -2061,7 +2075,6 @@ impl DeploymentPipeline<'_> {
             // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
             // terminal proof. A caller that puts other work between them (a replace) calls the halves.
             self.seat_transfer_step(&mut run, &node).await?;
-            self.drain_steps(&mut run, &mut node, handle).await?;
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
@@ -2108,9 +2121,8 @@ impl DeploymentPipeline<'_> {
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
     /// operation (`drain-node:<path>` / `stop-node:<path>`).
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
-        // A drain's operation key has one source: the `node.drain` object derives it, and the receipt, the wire request and the completion all carry that key.
         let operation = match cmd {
-            crate::node_commands::NodeCommand::Drain => rafka_node_admin_client::DrainContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::DeleteConnections => format!("node.connections.delete:{}", node.name),
             crate::node_commands::NodeCommand::Stop => rafka_node_admin_client::StopContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
             crate::node_commands::NodeCommand::Start => rafka_node_admin_client::StartContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
         };
@@ -2160,52 +2172,6 @@ impl DeploymentPipeline<'_> {
         }
         let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
         let _: crate::fabric_handover::SeatTransferOutcome = self.step(run, RetireStep::SeatTransfer.name(), self.observer.transfer_seats(node, &ctx)).await?;
-        Ok(())
-    }
-
-    /// The drain half of a shutdown (node-drain.md): `drain-node` to the exact birth, then the
-    /// wait for its `node-drained` completion call. The birth stays running. The completion wait
-    /// ends at the lifecycle drain deadline (an arm, recorded) or at this runtime's exit.
-    pub(crate) async fn drain_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<(), PipelineError> {
-        self.drain_steps_with(run, node, handle, false).await
-    }
-
-    /// [`Self::drain_steps`]; `strict` (a standalone drain) fails the wait step by name unless the
-    /// matching `node-drained` call was accepted: a command not admitted, an admission
-    /// acknowledgement, a deadline and an exit are each not drain completion (node-drain.md).
-    async fn drain_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool) -> Result<(), PipelineError> {
-        use crate::node_commands::NodeCommand;
-        let ctx = self.command_context(run, NodeCommand::Drain, node);
-        node.status = NodeStatus::Draining;
-        let admission: CommandAdmission = self
-            .step(run, RetireStep::DrainNode.name(), async {
-                self.sink.publish(node.clone());
-                // The accepted command's hook, then the command.
-                let op = self.command_op(&ctx, node)?;
-                self.lifecycle.draining(&op).await;
-                Ok(self.observer.send_command(node, NodeCommand::Drain, &ctx).await)
-            })
-            .await?;
-        let _: Completion = self
-            .step(run, RetireStep::AwaitNodeDrained.name(), async {
-                if !admission.admitted() {
-                    // Admission is not drain completion, and a command the birth never held has
-                    // none to follow (node-drain.md): a standalone drain is not complete.
-                    if strict {
-                        return Err(format!("{}: drain-node was not admitted ({admission:?}); no node-drained can follow, the drain is not complete", node.name));
-                    }
-                    return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
-                }
-                let c = tokio::select! {
-                    c = self.observer.await_completion(node, NodeCommand::Drain, &ctx, self.timeouts.drain) => c,
-                    () = self.until_exited(handle) => Completion::RuntimeExited,
-                };
-                match (strict, &c) {
-                    (true, c) if *c != Completion::Received => Err(format!("{}: drain-node was admitted but no matching node-drained call was accepted ({c:?}); the drain is not complete", node.name)),
-                    _ => Ok(c),
-                }
-            })
-            .await?;
         Ok(())
     }
 
@@ -2419,7 +2385,6 @@ impl DeploymentPipeline<'_> {
             // parked, and the stop's departure (`NodeStopped`) drops it from every book, before it
             // gives up its name and before anything of the successor exists.
             self.seat_transfer_step(&mut run, &old).await?;
-            self.drain_steps(&mut run, &mut old, &req.handle).await?;
             // The complete stop (node-stop.md): stop-node admitted and `stopped` received, or the
             // step fails by name; a predecessor that is not stopped keeps its path.name, and a birth
             // that does not answer goes to node recovery (node-recovery.md).

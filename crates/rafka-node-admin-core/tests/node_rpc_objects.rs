@@ -5,7 +5,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
-use rafka_node_admin_client::{BuildId, CallEnd, DrainContext, ExactBirth, NodeRpc};
+use rafka_node_admin_client::{CallEnd, ExactBirth, NodeRpc};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
@@ -102,10 +102,9 @@ async fn serve(reply: StatusReply, delay: Duration) -> Served {
     Served { birth: ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id, incarnation }, seen, topology_seen, client, _router: router }
 }
 
-/// CONTRACT: `node.drain` and `node.get` each put today's Status
-/// request on the wire for the exact birth, the birth's typed reply comes back, and each call
-/// leaves one `rdm.node_admin.node.<verb>.via-call` span carrying the reply's name. The drain
-/// request names the Build, the attempt and the operation key the context derives.
+/// CONTRACT: `node.get` puts today's Status request on the wire for the exact birth, the birth's
+/// typed reply comes back, and the call leaves one `rdm.node_admin.node.<verb>.via-call` span
+/// carrying the reply's name.
 #[test]
 fn each_status_object_sends_todays_request_and_returns_the_typed_reply() {
     let cap = capture();
@@ -113,11 +112,7 @@ fn each_status_object_sends_todays_request_and_returns_the_typed_reply() {
         let served = serve(StatusReply::Applied, Duration::ZERO).await;
         let rpc = NodeRpc::new(&served.client);
         let opts = CallOptions::default();
-        let ctx = DrainContext::new(BuildId("bld-7".into()), 3, "mesh1.rpc.1".parse().unwrap());
-        let replies = vec![
-            rpc.drain(&served.birth, &ctx, &opts).await.unwrap(),
-            rpc.get(&served.birth, &opts).await.unwrap(),
-        ];
+        let replies = vec![rpc.get(&served.birth, &opts).await.unwrap()];
         let seen = served.seen.lock().unwrap().clone();
         (seen, served.birth.clone(), replies)
     });
@@ -125,12 +120,11 @@ fn each_status_object_sends_todays_request_and_returns_the_typed_reply() {
     assert_eq!(
         seen,
         vec![
-            StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld-7".into(), attempt: 3, operation: "drain-node:mesh1.rpc.1".into() },
             StatusRequest::ProbeNodeState { node_id, incarnation },
         ]
     );
     assert!(replies.iter().all(|r| *r == StatusReply::Applied));
-    for verb in ["drain", "get"] {
+    for verb in ["get"] {
         let spans = cap.spans(&format!("rdm.node_admin.node.{verb}.via-call"));
         assert_eq!(spans.len(), 1, "node.{verb} left one span");
         assert_eq!(spans[0]["attributes"]["outcome"], "applied");

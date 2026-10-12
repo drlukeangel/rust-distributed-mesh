@@ -16,7 +16,7 @@ use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{DrainReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
 
@@ -84,7 +84,7 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
 
         // The stop is answered Stopped on its own call, with the drain's receipt.
         let left = call(&admin, &target, &stop).await;
-        assert!(matches!(left, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{left:?}");
+        assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{left:?}");
         assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentParked { .. }), "a parked node answers CurrentParked");
         assert_eq!(running.membership.neighbours(), 0, "the node left its gossip topic");
         // Stopping a parked node is done: the same receipt again.

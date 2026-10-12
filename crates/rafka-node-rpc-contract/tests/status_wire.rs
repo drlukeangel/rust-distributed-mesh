@@ -10,7 +10,7 @@
 use rafka_mesh_entity::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{ConnectionScope, DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter};
+use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter};
 use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -100,7 +100,7 @@ fn replies_match_the_frozen_forty_five_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "0e02"),
         (Unauthorized { reason: "u".into() }, "0f0175"),
         (RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, "1007617474656d707401310132"),
-        (Stopped { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
+        (Stopped { receipt: ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } }, "11000000"),
         (Started, "12"),
         (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
         (CurrentParked { node_id: node(), incarnation: birth() }, "140c303132333435363738396162056269727468"),
@@ -114,7 +114,8 @@ fn replies_match_the_frozen_forty_five_variant_wire_schema() {
         (NameHeld { name: "n".into(), by: node() }, "1c016e0c303132333435363738396162"),
         (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
         (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
-        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![] }, "1f010c3331323334353637383961620000"),
+        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: None }, "1f010c333132333435363738396162000000"),
+        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: Some(ConnectionsReceipt::Established { in_flight: 0, closed: vec![connection()] }) }, "1f010c3331323334353637383961620000010000010c333132333435363738396162"),
         (RejectedConnectionScope { reason: "r".into() }, "200172"),
         (
             Nodes { nodes: vec![node_view()] },
@@ -163,15 +164,16 @@ fn replies_match_the_frozen_forty_five_variant_wire_schema() {
     }
 }
 
-/// CONTRACT: the drain receipt a `Stopped` carries is frozen: `Established` is variant 0, `Deadline` variant 1,
-/// each with its count as a varint.
+/// CONTRACT: the `ConnectionsReceipt` a `Stopped` carries is frozen: `Established` is variant 0 with
+/// its count as a varint and the ids closed, `Deadline` variant 1 with the last count, the ids closed
+/// and the ids still held.
 #[test]
-fn a_left_reply_carries_its_drain_receipt_in_frozen_bytes() {
+fn a_stopped_reply_carries_its_connections_receipt_in_frozen_bytes() {
     use StatusReply::Stopped;
     for (reply, hex) in [
-        (Stopped { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
-        (Stopped { receipt: DrainReceipt::Established { in_flight: 3 } }, "110003"),
-        (Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 300 } }, "1101ac02"),
+        (Stopped { receipt: ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } }, "11000000"),
+        (Stopped { receipt: ConnectionsReceipt::Established { in_flight: 3, closed: vec![connection()] } }, "110003010c333132333435363738396162"),
+        (Stopped { receipt: ConnectionsReceipt::Deadline { last_in_flight: 300, closed: vec![], held: vec![connection()] } }, "1101ac0200010c333132333435363738396162"),
     ] {
         let expected = bytes(hex);
         assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");

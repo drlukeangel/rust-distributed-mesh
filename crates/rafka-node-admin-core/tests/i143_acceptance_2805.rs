@@ -512,16 +512,16 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
     let _ = pipeline.retire(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
-    // command (DrainNode), its completion wait (AwaitNodeDrained: the deadline arm); and never
+    // command (StopNode), its completion wait (AwaitNodeLeft: the deadline arm); and never
     // NodeDeleted, because the provider never proves the runtime dead.
     let view = builds.read_build(&build_id).await.unwrap();
     let order: Vec<&str> = view.steps.iter().map(|s| s.step.as_str()).collect();
     let pos = |name: &str| order.iter().position(|s| *s == name);
-    let (deleting, marked, waited) = (pos(RetireStep::NodeDeleting.name()), pos(RetireStep::DrainNode.name()), pos(RetireStep::AwaitNodeDrained.name()));
-    assert!(deleting.is_some() && deleting < marked && marked < waited, "NodeDeleting, then the drain, then its result: {order:?}");
+    let (deleting, marked, waited) = (pos(RetireStep::NodeDeleting.name()), pos(RetireStep::StopNode.name()), pos(RetireStep::AwaitNodeLeft.name()));
+    assert!(deleting.is_some() && deleting < marked && marked < waited, "NodeDeleting, then the stop, then its result: {order:?}");
     assert!(pos(RetireStep::NodeDeleted.name()).is_none(), "no NodeDeleted without the provider's proof of death: {order:?}");
     let step = &view.steps[waited.unwrap()];
-    serde_json::from_value(step.output.clone().expect("AwaitNodeDrained records its arm")).unwrap()
+    serde_json::from_value(step.output.clone().expect("AwaitNodeLeft records its arm")).unwrap()
 }
 
 // ---------------------------------------------------------------------------------------------

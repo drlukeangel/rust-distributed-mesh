@@ -1,5 +1,5 @@
 //! i143.e2.s5 functional: the retire pipeline runs its steps in order —
-//! DrainNode, AwaitNodeDrained, StopNode, AwaitNodeLeft,
+//! NodeDeleting, StopNode, AwaitNodeLeft,
 //! TerminateRuntime, NodeDeleted, RemoveTopologyMembership (exactly the deleted birth), Complete —
 //! each with a receipt and a step span, and a retire then create on the same node
 //! succeeds. A node.delete releases identity, never storage (node-delete.md
@@ -67,23 +67,22 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let want: Vec<(&str, &StepOutcome, &str)> =
             RetireStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "retire-node:mesh1.rpc.1")).collect();
         assert_eq!(got, want);
-        // DrainNode and StopNode are the directed commands: each receipt carries what the call
-        // admitted; AwaitNodeDrained and AwaitNodeLeft carry the completion call the birth made back.
+        // StopNode is the directed command: its receipt carries what the call established;
+        // AwaitNodeLeft carries the completion, the stop's own reply.
         use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion};
         let output = |step: RetireStep| view.steps.iter().find(|r| r.step == step.name()).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{} receipted with an output", step.name()));
-        let drained: CommandAdmission = serde_json::from_value(output(RetireStep::DrainNode)).expect("a CommandAdmission");
-        assert_eq!(drained, CommandAdmission::Admitted, "DrainNode");
-        // The stop is answered `Stopped` on its own call: the receipt names what its drain established.
+        // The stop is answered `Stopped` on its own call: the receipt names what its
+        // node.connections.delete { All } established.
         let stopped: CommandAdmission = serde_json::from_value(output(RetireStep::StopNode)).expect("a CommandAdmission");
-        assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::DrainReceipt::Established { .. } }), "StopNode: {stopped:?}");
-        for step in [RetireStep::AwaitNodeDrained, RetireStep::AwaitNodeLeft] {
+        assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt::Established { .. } }), "StopNode: {stopped:?}");
+        for step in [RetireStep::AwaitNodeLeft] {
             let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
             assert_eq!(completion, Completion::Received, "{}", step.name());
         }
 
         // What each step did, from outside.
         let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
-        assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic, NodeStatus::Draining, NodeStatus::Leaving]);
+        assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic, NodeStatus::Leaving]);
         let (digest, _) = admin.observer.membership.book.get(first.node.node_id.as_str()).expect("the node's digest");
         assert_eq!(digest.status, MemberStatus::Leaving, "the admin side holds the status it set from the node's last report, its stop's Leaving (node-status.md \"Status report\"); the node's heartbeats carry none (gossip.md §3.1 `Digest`)");
         assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
@@ -117,7 +116,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             && f.get("pipeline").map(String::as_str) == Some("retire")));
         // Each command was sent under its own operation, and the birth's completion call for that
         // operation reached the commanding side (the server handler's own spans run on its tasks).
-        for (command, completion, operation, admission) in [("drain-node", "node-drained", "drain-node:mesh1.rpc.1", "admitted"), ("stop-node", "node-left", "stop-node:mesh1.rpc.1", "stopped")] {
+        for (command, completion, operation, admission) in [("stop-node", "node-left", "stop-node:mesh1.rpc.1", "stopped")] {
             assert!(
                 all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some(admission) && f.get("command").map(String::as_str) == Some(command)),
                 "no {admission} {command} span"

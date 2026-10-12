@@ -1,7 +1,7 @@
 //! The single calls of the `node` family that travel over node-RPC today, and the one way any
 //! object call ends.
 //!
-//! Each object builds today's request (`node.drain` → `StatusRequest::DrainNode`, `node.declare`
+//! Each object builds today's request (`node.stop` → `StatusRequest::StopNode`, `node.declare`
 //! → `DeclareNodeState`, `node.apply` → `ApplyNodeState`, `node.get` of one exact birth →
 //! `ProbeNodeState`, `node.topology.get` → `GetTopology` on op `0x1E`), sends it with the
 //! node-RPC client and returns the typed reply. A caller never builds the request.
@@ -168,27 +168,6 @@ pub struct ExactBirth {
     pub incarnation: IncarnationId,
 }
 
-/// The Build, attempt and node a `node.drain` belongs to. The operation key
-/// (`drain-node:<path.name>`) is derived here and never written by a caller.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DrainContext {
-    build_id: BuildId,
-    attempt: u32,
-    node: PathName,
-}
-
-impl DrainContext {
-    /// The drain of `node` that attempt `attempt` of Build `build_id` holds.
-    pub fn new(build_id: BuildId, attempt: u32, node: PathName) -> Self {
-        Self { build_id, attempt, node }
-    }
-
-    /// The operation key the Build records the drain under.
-    pub fn operation(&self) -> String {
-        format!("drain-node:{}", self.node)
-    }
-}
-
 /// The membership one node holds of a mesh, read through `node.topology.get`: the births it holds
 /// and the open overlays and retained departures it knows. What a peer reports of another node.
 #[derive(Debug, Clone, Default)]
@@ -280,22 +259,8 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
-    /// `node.drain`: tell the exact birth to refuse new work and finish what it holds, and keep
-    /// running. `Applied` and `AlreadyApplied` admit the command; completion arrives later as
-    /// the birth's `node-drained` call.
-    pub async fn drain(&self, birth: &ExactBirth, ctx: &DrainContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::DrainNode {
-            node_id: birth.node_id.clone(),
-            incarnation: birth.incarnation.clone(),
-            build_id: ctx.build_id.0.clone(),
-            attempt: ctx.attempt,
-            operation: ctx.operation(),
-        };
-        self.status(NodeOp::Drain, birth, req, opts).await
-    }
-
-    /// `node.stop`: tell the exact birth to drain, cut its mesh connections and park. The call is
-    /// held until the birth is parked; the reply is `Stopped` with the drain's receipt, on the stop
+    /// `node.stop`: tell the exact birth to delete its connections, cut its transport and stop. The
+    /// call is held until the birth is stopped; the reply is `Stopped` with its `All`'s receipt, on the stop
     /// call's own stream. A birth already parked answers the same.
     pub async fn stop(&self, birth: &ExactBirth, ctx: &StopContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::StopNode {

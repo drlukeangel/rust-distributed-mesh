@@ -167,7 +167,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         .filter(|s| s.name == "rdm.node_admin.deployment.update.via-step")
         .filter_map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == "step").map(|kv| kv.value.to_string()))
         .collect();
-    assert!(!steps.iter().any(|s| s == RetireStep::DrainNode.name() || s == RetireStep::StopNode.name()), "no drain or stop step span: {steps:?}");
+    assert!(!steps.iter().any(|s| s == RetireStep::StopNode.name()), "no stop step span: {steps:?}");
     assert!(steps.iter().any(|s| s == RetireStep::TerminateRuntime.name()), "{steps:?}");
     assert!(!steps.iter().any(|s| s == "ReleaseStorage"), "no step span releases storage: {steps:?}");
 }

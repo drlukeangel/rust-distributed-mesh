@@ -269,7 +269,7 @@ fn facts() -> Vec<BuildFact> {
     for s in [RetireStep::NodeDeleting, RetireStep::NodeRestarting, RetireStep::NodeDeleted] {
         out.push(step(s.name(), Some(to_json(&op("retire-node:mesh2.rpc.1")))));
     }
-    for (command, completion) in [(RetireStep::DrainNode, RetireStep::AwaitNodeDrained), (RetireStep::StopNode, RetireStep::AwaitNodeLeft)] {
+    for (command, completion) in [(RetireStep::StopNode, RetireStep::AwaitNodeLeft)] {
         for d in [
             CommandAdmission::Admitted,
             CommandAdmission::AlreadyAdmitted,

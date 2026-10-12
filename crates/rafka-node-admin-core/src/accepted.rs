@@ -227,11 +227,12 @@ pub enum AttemptAction {
         /// The birth replaced.
         from_incarnation: IncarnationId,
     },
-    /// Drain the exact birth at a path and keep it running (node-drain.md).
-    Drain {
+    /// `node.connections.delete { All }` of the exact birth at a path; it keeps running
+    /// (node-connections-delete.md).
+    DeleteConnections {
         /// The node.
         path: PathName,
-        /// The birth drained.
+        /// The birth whose connections are deleted.
         from_incarnation: IncarnationId,
     },
     /// Stop the exact birth at a path: it drains, cuts its mesh connections and parks, its process
@@ -438,9 +439,9 @@ impl ReplaceProgress {
         // attempt that carried this exact action (its `Opened` fact fenced the attempt to the birth)
         // are this birth's. Its first step's receipt says the operation began; its `Complete`, that
         // it completed for the birth.
-        if let Some(action @ (AttemptAction::Drain { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. } | AttemptAction::Delete { path, .. })) = &build.action {
+        if let Some(action @ (AttemptAction::DeleteConnections { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. } | AttemptAction::Delete { path, .. })) = &build.action {
             let (operation, first) = match action {
-                AttemptAction::Drain { .. } => (format!("drain-node:{path}"), "DrainNode"),
+                AttemptAction::DeleteConnections { .. } => (format!("node.connections.delete:{path}"), "DeleteConnections"),
                 AttemptAction::Start { .. } => (format!("start-node:{path}"), "StartNode"),
                 AttemptAction::Delete { .. } if path.old => (format!("delete-node:{path}"), "NodeDeleting"),
                 // The last admin of a deleted mesh: the ordinary node.delete (`plan_with`).
@@ -467,7 +468,7 @@ impl ReplaceProgress {
                 .map(|s| s.attempt)
                 .min()
         };
-        let began = [done("DrainNode", false), done("NodeDeleting", true), done("RenamePredecessor", true)].into_iter().flatten().min();
+        let began = [done("NodeDeleting", true), done("RenamePredecessor", true)].into_iter().flatten().min();
         let finished = began.is_some_and(|began| build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= began));
         Self { started: began.is_some(), finished, ..Self::default() }
     }
@@ -546,7 +547,7 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     // the view holds the exact birth, or while its receipts say it began (a stop's view drops the
     // Leaving birth), and not once its `Complete` receipt names the birth.
     if let Some(
-        AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation } | AttemptAction::Delete { path, from_incarnation },
+        AttemptAction::DeleteConnections { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation } | AttemptAction::Delete { path, from_incarnation },
     ) = action
     {
         // A delete of a parked `<path>.old` is admitted from the record the fabric-primary holds of
@@ -559,7 +560,7 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         if !replace_progress.finished && (held || replace_progress.started) {
             let (node, from_incarnation) = (path.clone(), from_incarnation.clone());
             ops.push(match action {
-                Some(AttemptAction::Drain { .. }) => BuildOperation::DrainNode { node, from_incarnation },
+                Some(AttemptAction::DeleteConnections { .. }) => BuildOperation::DeleteConnections { node, from_incarnation },
                 Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, from_incarnation },
                 Some(AttemptAction::Delete { .. }) if parked_old => BuildOperation::DeleteNode { node, from_incarnation },
                 Some(AttemptAction::Delete { .. }) => BuildOperation::RetireNode { node, exited: None },
@@ -1096,11 +1097,11 @@ mod tests {
         let mut o = mn();
         let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
         o.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.3");
-        let drain = AttemptAction::Drain { path: path.clone(), from_incarnation: from.clone() };
+        let drain = AttemptAction::DeleteConnections { path: path.clone(), from_incarnation: from.clone() };
         let stop = AttemptAction::Stop { path: path.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan(&cur, &o, Some(&drain)).operations, vec![BuildOperation::DrainNode { node: path.clone(), from_incarnation: from.clone() }]);
+        assert_eq!(plan(&cur, &o, Some(&drain)).operations, vec![BuildOperation::DeleteConnections { node: path.clone(), from_incarnation: from.clone() }]);
         assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }]);
-        assert_eq!(BuildOperation::DrainNode { node: path.clone(), from_incarnation: from.clone() }.key(), "drain-node:mesh1.rpc.2");
+        assert_eq!(BuildOperation::DeleteConnections { node: path.clone(), from_incarnation: from.clone() }.key(), "drain-node:mesh1.rpc.2");
         assert_eq!(BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }.key(), "stop-node:mesh1.rpc.2");
         // A Draining or Leaving birth of the path is still the birth the operation acts on.
         for status in [NodeStatus::Draining, NodeStatus::Leaving] {

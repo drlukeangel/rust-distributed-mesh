@@ -160,7 +160,7 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
         // node.connections.delete { All }: every route closed, each drop under the name it holds.
         let open_ids: Vec<_> = renamed_seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
         let deleted = call(StatusRequest::DeleteConnections { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), scope: ConnectionScope::All }).await;
-        let StatusReply::ConnectionsDeleted { closed, not_open, held } = &deleted else { panic!("the cut ends node.connections.deleted: {deleted:?}") };
+        let StatusReply::ConnectionsDeleted { closed, not_open, held, .. } = &deleted else { panic!("the cut ends node.connections.deleted: {deleted:?}") };
         assert!(open_ids.iter().all(|id| closed.contains(id)) && not_open.is_empty() && held.is_empty(), "every open entry is closed and none held: open {open_ids:?}, {deleted:?}");
 
         // The same apply now takes the name.

@@ -17,7 +17,7 @@
 //! a stopped one nothing (its join answer hands it the name); `NodeUpdated` answers only after the
 //! apply answered.
 
-use crate::model::{Node, NodeStatus, PathName};
+use crate::model::{Node, PathName};
 use crate::node_rows::RenameRefused;
 use crate::storage::{NodeRow, NodesStorage};
 use crate::topology::Topology;
@@ -94,7 +94,6 @@ fn traffic_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDelete
     match deleted {
         None => ((format!("{:?}", held.status), "none-deleted"), Err(format!("is {:?} and its mesh-primary holds no node.connections.deleted for this birth", held.status))),
         Some(r) if !r.all => ((format!("{:?}", r.status_at_cut), "partial"), Err(format!("is {:?}, and its last node.connections.delete named exact connections, not All: it holds no node.connections.deleted of every connection", r.status_at_cut))),
-        Some(r) if r.status_at_cut == NodeStatus::ReadyForTraffic => (("ReadyForTraffic".into(), "deleted"), Err("had its connections deleted while ReadyForTraffic: it was not drained first".into())),
         Some(r) if !r.held.is_empty() => (
             (format!("{:?}", r.status_at_cut), "held"),
             Err(format!("is {:?} and still held {} connection(s) after its node.connections.delete: {}", r.status_at_cut, r.held.len(), r.held.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", "))),
@@ -162,7 +161,7 @@ async fn put(
     span.record("traffic", traffic.0.as_str()).record("connections", traffic.1);
     if to != held.name {
         if let Err(why) = quiet {
-            return StatusReply::Busy { reason: format!("{me}: {} {why}; a name moves only when the node is stopped, or drained with node.connections.deleted (R-CR1a): the rename to {to} is refused and nothing is claimed or written", held.name) };
+            return StatusReply::Busy { reason: format!("{me}: {} {why}; a name moves only when the node is stopped, or its node.connections.delete {{ All }} has completed (node-update.md \"Rename precondition\"): the rename to {to} is refused and nothing is claimed or written", held.name) };
         }
     }
     let Some(door) = doors.configs else {

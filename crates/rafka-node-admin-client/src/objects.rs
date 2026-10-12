@@ -223,7 +223,7 @@ impl NodeMeta {
     /// `node.update`'s validation from the held record, in the documented order
     /// (node-rpc-envelope.md "Meta and config"; R13 step 2 and the first half of step 3): every
     /// RDM-owned field equals the held value, else `MetaFieldIsRdmOwned { field }`; a changed name
-    /// requires the node quiet, that is stopped, or drained with `node.connections.deleted` (R-CR1a);
+    /// requires the node quiet, that is stopped, or its `node.connections.delete { All }` completed;
     /// a node that can carry traffic keeps its name whatever its name. The only renames are a node to or
     /// from its `.old` form and to or from its `.new` form (node-replace.md); `.old` to `.new` and a
     /// new ordinal are refused naming the name.
@@ -281,7 +281,7 @@ impl NodeMeta {
 pub enum Traffic {
     /// The held status is stopped.
     Stopped,
-    /// The node was drained and its mesh-primary holds its `node.connections.deleted` of every
+    /// The node's `node.connections.delete { All }` completed and its mesh-primary holds its `node.connections.deleted` of every
     /// connection.
     ConnectionsDeleted,
     /// Anything else: the node can carry traffic.
@@ -477,10 +477,11 @@ impl Nodes {
         self.workflow(WorkflowKind::Restart(node.clone()), BuildChange::Restart { node: node.clone() }).await
     }
 
-    /// `node.drain` of `node`: refuse new work and finish in-flight work. The stream is `Started`, then
-    /// `node.draining` and `node.drained`, ending `Complete`; the process keeps running.
-    pub async fn drain(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
-        self.workflow(WorkflowKind::Drain(node.clone()), BuildChange::Drain { node: node.clone() }).await
+    /// `node.connections.delete { All }` of `node` as a Build (node-connections-delete.md step 0: a
+    /// seat holder's seats move first). The stream is `Started`, then `node.connections.deleted`,
+    /// ending `Complete`; the process keeps running.
+    pub async fn delete_connections(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
+        self.workflow(WorkflowKind::DeleteConnections(node.clone()), BuildChange::DeleteConnections { node: node.clone() }).await
     }
 
     /// `node.delete` of `node`.
@@ -673,7 +674,7 @@ mod tests {
     }
 
     /// CONTRACT (R13 step 3, R-CR1a; node-replace.md rollback 1): a node takes another name only
-    /// when quiet, stopped or drained with `node.connections.deleted`, and then only between the bare
+    /// when quiet, stopped or its `node.connections.delete { All }` completed, and then only between the bare
     /// name and one suffix; a node that can carry traffic keeps its name, `.new` included; `.old` and
     /// `.new` never swap.
     #[test]
@@ -683,7 +684,7 @@ mod tests {
         let old = NodeMeta { name: base.name.renamed(), ..base.clone() };
         let name = |r| r == Err(MetaFieldIsRdmOwned { field: MetaField::Name });
         assert_eq!(base.check_update(&new, Traffic::Stopped), Ok(()), "the stopped successor takes the name");
-        assert_eq!(base.check_update(&new, Traffic::ConnectionsDeleted), Ok(()), "the drained successor whose connections were deleted takes the name");
+        assert_eq!(base.check_update(&new, Traffic::ConnectionsDeleted), Ok(()), "the successor whose connections were deleted takes the name");
         assert!(name(base.check_update(&new, Traffic::Routed)), "a successor that can carry traffic keeps .new");
         assert_eq!(new.check_update(&base, Traffic::Stopped), Ok(()), "rollback: the stopped successor gives the name back");
         assert!(name(old.check_update(&base, Traffic::Routed)), "the predecessor gives up its name only when quiet");
@@ -709,10 +710,10 @@ mod tests {
     fn one_name_per_op_renders_the_same_in_the_name_and_the_span() {
         use crate::names::NodeEvent;
         let (_g, spans) = capture_spans();
-        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Drain, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
             drop(op.span());
         }
-        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
+        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
             drop(e.span());
         }
         for b in [BuildOp::Create, BuildOp::Get, BuildOp::Delete] {
@@ -721,12 +722,12 @@ mod tests {
         drop(MeshOp::Get.span());
         drop(FabricOp::Get.span());
         let names = spans.lock().unwrap().clone();
-        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Drain, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
             let via = if op.is_workflow() { "via-workflow" } else { "via-call" };
             let want = format!("rdm.node_admin.{}.{via}", op.name());
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
-        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
+        for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
             let want = format!("rdm.node_admin.{}.via-reply-frame", e.name());
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }

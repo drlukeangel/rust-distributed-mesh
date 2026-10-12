@@ -168,7 +168,7 @@ fn acts_on(action: &AttemptAction) -> &IncarnationId {
     match action {
         AttemptAction::Restart { from_incarnation, .. }
         | AttemptAction::Replace { from_incarnation, .. }
-        | AttemptAction::Drain { from_incarnation, .. }
+        | AttemptAction::DeleteConnections { from_incarnation, .. }
         | AttemptAction::Stop { from_incarnation, .. }
         | AttemptAction::Start { from_incarnation, .. }
         | AttemptAction::Recover { from_incarnation, .. }

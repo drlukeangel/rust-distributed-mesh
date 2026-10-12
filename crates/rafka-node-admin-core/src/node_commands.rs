@@ -1,10 +1,9 @@
-//! The open node commands (`drain-node`, `stop-node`) the owning mesh-admin has sent and awaits a
-//! completion for (node-drain.md, node-stop.md; node-rpc-envelope.md, "Node drain and stop
-//! command pairs").
+//! The open node commands (`stop-node`, `start-node`) the owning mesh-admin has sent and awaits a
+//! completion for (node-stop.md, node-start.md; node-rpc-envelope.md, "Node stop command pair").
 //!
-//! A command is sent to one exact birth. `drain-node` is answered `Applied` on admission and the
-//! birth later calls `NodeDrained` back; `stop-node` is answered `Stopped` once the birth is parked,
-//! and that reply is node-left: no upward node-left call exists (R-ON1). A completion is matched to
+//! A command is sent to one exact birth. `stop-node` is answered `Stopped` once the birth is
+//! stopped, and that reply is node-left: no upward node-left call exists (R-ON1). `DrainNode` and
+//! `NodeDrained` are reserved positions (R-CR4), refused by name ([`refuse_reserved`]). A completion is matched to
 //! the open command by `(build_id, attempt, operation, node_id, incarnation)`. A completion with no open command is
 //! refused by name; a repeat of an accepted completion is `AlreadyApplied`. This is the RPC
 //! completion inbox of the executing admin: it reads no gossip and writes nothing durable (the
@@ -13,7 +12,7 @@
 use crate::deployment::pipeline::{CommandAdmission, CommandContext, Completion};
 use crate::model::{IncarnationId, Node, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
-use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -22,8 +21,8 @@ use tokio::sync::watch;
 /// Which of the two commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeCommand {
-    /// `drain-node`; completes with `node-drained`.
-    Drain,
+    /// `node.connections.delete { All }`; its reply is `node.connections.deleted`.
+    DeleteConnections,
     /// `stop-node`; completes with `node-left`, which is the reply of the call.
     Stop,
     /// `start-node`; completes with `node-started`, which is the reply of the call.
@@ -34,7 +33,7 @@ impl NodeCommand {
     /// The operation prefix of the command's operation id.
     pub fn operation_prefix(self) -> &'static str {
         match self {
-            Self::Drain => "drain-node",
+            Self::DeleteConnections => "node.connections.delete",
             Self::Stop => "stop-node",
             Self::Start => "start-node",
         }
@@ -42,7 +41,7 @@ impl NodeCommand {
     /// The completion's name.
     pub fn completion(self) -> &'static str {
         match self {
-            Self::Drain => "node-drained",
+            Self::DeleteConnections => "node.connections.deleted",
             Self::Stop => "node-left",
             Self::Start => "node-started",
         }
@@ -56,7 +55,7 @@ pub struct CommandKey {
     pub build_id: String,
     /// The Build attempt that holds it.
     pub attempt: u32,
-    /// `drain-node:<path>` or `stop-node:<path>`.
+    /// `stop-node:<path>` or `start-node:<path>`.
     pub operation: String,
     /// The exact birth commanded.
     pub node_id: NodeId,
@@ -113,7 +112,7 @@ impl CommandBook {
                 let mut held: Vec<&CommandKey> = open.keys().filter(|k| k.node_id == key.node_id && k.incarnation == key.incarnation).collect();
                 held.sort_by_key(|k| (k.operation != key.operation, k.operation.clone(), k.build_id.clone(), k.attempt));
                 match held.first() {
-                    None => Accepted::NoOpenCommand { field: "command".into(), expected: "an open drain-node or stop-node for this birth".into(), reported: format!("{} (build {}, attempt {})", key.operation, key.build_id, key.attempt) },
+                    None => Accepted::NoOpenCommand { field: "command".into(), expected: "an open stop-node or start-node for this birth".into(), reported: format!("{} (build {}, attempt {})", key.operation, key.build_id, key.attempt) },
                     Some(k) if k.build_id != key.build_id => Accepted::NoOpenCommand { field: "build_id".into(), expected: k.build_id.clone(), reported: key.build_id.clone() },
                     Some(k) if k.attempt != key.attempt => Accepted::NoOpenCommand { field: "attempt".into(), expected: k.attempt.to_string(), reported: key.attempt.to_string() },
                     Some(k) => Accepted::NoOpenCommand { field: "operation".into(), expected: k.operation.clone(), reported: key.operation.clone() },
@@ -148,18 +147,17 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
     let _ = commands.open(CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() });
     let (node_id, build_id, attempt) = (node.node_id.clone(), ctx.build_id.clone(), ctx.attempt);
     let admission = match cmd {
-        // `node.drain` is the typed object: it builds `DrainNode` and ends the call as the transport did.
-        NodeCommand::Drain => {
-            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let drain = rafka_node_admin_client::DrainContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
-            admission_of(rafka_node_admin_client::NodeRpc::new(client).drain(&birth, &drain, &CallOptions::default()).await)
+        // The executor's own status authority carries it (status_rpc.rs `carry_delete_connections`):
+        // see `AdminObserver::send_command`; a client alone has no mesh-primary to set the status.
+        NodeCommand::DeleteConnections => {
+            let req = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: crate::node_self::connections_delete_deadline_from_env() + Duration::from_secs(10) }, ..Default::default() };
+            crate::deployment::pipeline::command_admission(&client.call::<rafka_node_rpc_contract::status::Status>(target, &req, &opts).await.0)
         }
-        // `node.stop` and `node.start` are held until the birth has parked or rejoined, and answer
-        // `Stopped` or `Started` on that call's own reply: the reply is the completion.
         NodeCommand::Stop => {
             let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
             let stop = rafka_node_admin_client::StopContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
-            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: crate::node_self::drain_deadline_from_env() + Duration::from_secs(10) }, ..Default::default() };
+            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: crate::node_self::connections_delete_deadline_from_env() + Duration::from_secs(10) }, ..Default::default() };
             admission_of(rafka_node_admin_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await)
         }
         NodeCommand::Start => {
@@ -188,7 +186,7 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
     admission
 }
 
-/// The arm a `node.drain`, `node.stop` or `node.start` object call ended as: only `Applied` and `AlreadyApplied` admit it; every
+/// The arm a `node.stop` or `node.start` object call ended as: only `Applied` and `AlreadyApplied` admit it; every
 /// other reply is `Refused` by its name, an unsent call `NotSent`, an unanswered one `Indeterminate`.
 fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> CommandAdmission {
     use rafka_node_admin_client::CallEnd;
@@ -207,7 +205,7 @@ fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> Com
     }
 }
 
-/// Wait up to `within` for the completion of the command `ctx` names for `node`: its `node-drained`
+/// Wait up to `within` for the completion of the command `ctx` names for `node`: its
 /// call, or the `Stopped` reply of its `stop-node` call (node-left).
 pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeCommand, ctx: &CommandContext, within: Duration) -> Completion {
     let Some(incarnation) = node.incarnation_id.clone() else {
@@ -228,6 +226,25 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
 /// What a receiver of a `NodeLeft` call holds instead of a command it could complete: nothing, by
 /// design (node-rpc-envelope.md, "Node stop command pair").
 pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
+
+/// What a reserved `DrainNode` or `NodeDrained` is refused with: neither is ever a call (R-CR4).
+pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: DrainNode and NodeDrained are reserved positions, never sent; a node's connections are deleted by node.connections.delete";
+
+/// A reserved `DrainNode` or `NodeDrained` at `receiver` (node-rpc-envelope.md "Node stop command
+/// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
+pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
+    let (StatusRequest::DrainNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::NodeDrained { node_id, incarnation, build_id, attempt, operation }) = req else {
+        unreachable!("refuse_reserved is called for the reserved pair only")
+    };
+    let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
+    tracing::info_span!(
+        "rdm.node_admin.status.reject.via-reserved-position",
+        node = %receiver, op = req.op(), operation = %operation, build_id = %build_id, attempt = *attempt, subject = %node_id, incarnation_id = %incarnation.0,
+        caller = %caller, field = "command", expected = RETIRED_PAIR_IS_RESERVED, reported = %reported, "otel.kind" = "internal"
+    )
+    .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
+    StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: RETIRED_PAIR_IS_RESERVED.into(), reported }
+}
 
 /// The refusal of a `NodeLeft` call at any receiver, a node-admin or an rpc node (node-rpc-envelope.md,
 /// "Node stop command pair": "NodeLeft keeps its position and is never sent; a receiver refuses it by
@@ -261,48 +278,6 @@ pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRe
     StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_IS_NEVER_A_CALL.into(), reported }
 }
 
-/// A birth's `node-drained` completion call at the admin `receiver` that commanded it (node-left
-/// is the reply of `stop-node`, never a call; a `NodeLeft` request is refused by [`refuse_node_left`]
-/// before it reaches here): it resolves the open command it names. `subject` is the birth the request names
-/// as the receiver holds it `(incarnation, path.name)`, `None` when the receiver holds no such
-/// node; `caller` names who called, for the span only. Nothing checks who is calling (node-rpc.md
-/// §14). A completion with no open command is refused naming the mismatch, never counted toward
-/// another operation.
-pub fn accept_completion(commands: &CommandBook, receiver: &str, subject: Option<(Option<&IncarnationId>, &str)>, caller: &str, req: &StatusRequest) -> StatusReply {
-    let (node_id, incarnation, build_id, attempt, operation) = match req {
-        StatusRequest::NodeDrained { node_id, incarnation, build_id, attempt, operation } => (node_id, incarnation, build_id, attempt, operation),
-        _ => unreachable!("accept_completion is called for node-drained only"),
-    };
-    let reply = match subject.and_then(|(held, _)| held) {
-        Some(held) if held != incarnation => StatusReply::RejectedStaleIncarnation { held: held.clone() },
-        Some(_) => {
-            let key = CommandKey { build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() };
-            match commands.complete(&key) {
-                Accepted::First => StatusReply::Applied,
-                Accepted::Again => StatusReply::AlreadyApplied,
-                Accepted::NoOpenCommand { field, expected, reported } => StatusReply::RejectedUnmatchedCompletion { field, expected, reported },
-            }
-        }
-        None => StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown },
-    };
-    tracing::info_span!(
-        "rdm.node_admin.status.update.via-completion-accepted",
-        node = %receiver,
-        op = req.op(),
-        operation = %operation,
-        build_id = %build_id,
-        attempt = *attempt,
-        subject = %node_id,
-        incarnation_id = %incarnation.0,
-        name = %subject.map(|(_, n)| n).unwrap_or_default(),
-        caller = %caller,
-        outcome = reply.name(),
-        "otel.kind" = "internal"
-    )
-    .in_scope(|| tracing::info!("a completion call was decided by the commanding admin"));
-    reply
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,44 +291,17 @@ mod tests {
     #[tokio::test]
     async fn a_completion_resolves_only_its_open_command() {
         let book = CommandBook::default();
-        let k = key("drain-node:mesh1.rpc.1");
+        let k = key("start-node:mesh1.rpc.1");
         let mut rx = book.open(k.clone());
         assert!(!*rx.borrow());
         assert_eq!(book.complete(&k), Accepted::First);
         rx.wait_for(|v| *v).await.unwrap();
         assert_eq!(book.complete(&k), Accepted::Again);
         let other = CommandKey { operation: "stop-node:mesh1.rpc.1".into(), ..k.clone() };
-        assert_eq!(book.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: "drain-node:mesh1.rpc.1".into(), reported: "stop-node:mesh1.rpc.1".into() });
+        assert_eq!(book.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: "start-node:mesh1.rpc.1".into(), reported: "stop-node:mesh1.rpc.1".into() });
         let attempt = CommandKey { attempt: 2, ..k.clone() };
         assert_eq!(book.complete(&attempt), Accepted::NoOpenCommand { field: "attempt".into(), expected: "1".into(), reported: "2".into() });
         let stranger = CommandKey { node_id: NodeId::mint(), ..k.clone() };
         assert!(matches!(book.complete(&stranger), Accepted::NoOpenCommand { field, .. } if field == "command"));
-    }
-
-    /// CONTRACT: a completion is answered by the one fact that is wrong, about the subject it names
-    /// as the receiver holds it (node-rpc.md §14: nothing checks who is calling). The subject's
-    /// completion for its open command is `Applied` (a repeat `AlreadyApplied`), whoever calls; one
-    /// reporting an incarnation other than the one held is `RejectedStaleIncarnation` with the held
-    /// one; one naming no open command is `RejectedUnmatchedCompletion` naming the differing field; one
-    /// for a subject the receiver does not hold is `SubjectUnknown`. NotReady stands for none of them.
-    #[test]
-    fn a_completion_is_answered_by_the_fact_that_is_wrong() {
-        let book = CommandBook::default();
-        let k = key("drain-node:mesh1.rpc.1");
-        let _ = book.open(k.clone());
-        let req = |attempt: u32, incarnation: &IncarnationId| StatusRequest::NodeDrained { node_id: k.node_id.clone(), incarnation: incarnation.clone(), build_id: k.build_id.clone(), attempt, operation: k.operation.clone() };
-        fn subject_of(inc: &IncarnationId) -> Option<(Option<&IncarnationId>, &'static str)> {
-            Some((Some(inc), "mesh1.rpc.1"))
-        }
-
-        assert_eq!(accept_completion(&book, "mesh1.admin.1", subject_of(&k.incarnation), "", &req(1, &k.incarnation)), StatusReply::Applied, "a caller the receiver holds no birth for");
-        assert_eq!(accept_completion(&book, "mesh1.admin.1", subject_of(&k.incarnation), "mesh1.rpc.1", &req(1, &k.incarnation)), StatusReply::AlreadyApplied);
-        let newer = IncarnationId("newer".into());
-        assert_eq!(accept_completion(&book, "mesh1.admin.1", subject_of(&newer), "mesh1.rpc.1", &req(1, &k.incarnation)), StatusReply::RejectedStaleIncarnation { held: newer.clone() });
-        assert_eq!(
-            accept_completion(&book, "mesh1.admin.1", subject_of(&k.incarnation), "mesh1.rpc.1", &req(2, &k.incarnation)),
-            StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }
-        );
-        assert_eq!(accept_completion(&book, "mesh1.admin.1", None, "mesh1.rpc.2", &req(1, &k.incarnation)), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
     }
 }

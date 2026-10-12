@@ -139,9 +139,8 @@ pub enum StatusRequest {
         /// The event applied.
         event: FabricEvent,
     },
-    /// Downward: the owning mesh-admin tells the exact birth to refuse new work and finish the
-    /// eligible in-flight work, and to keep running (`drain-node`; node-drain.md). The reply
-    /// (`Applied` / `AlreadyApplied`) admits the command; completion is [`Self::NodeDrained`].
+    /// Reserved position (R-CR4): never sent. A node's connections are deleted by
+    /// [`Self::DeleteConnections`]; a receiver refuses this by name.
     DrainNode {
         /// The birth commanded.
         node_id: NodeId,
@@ -154,8 +153,7 @@ pub enum StatusRequest {
         /// The operation: `drain-node:<path>`.
         operation: String,
     },
-    /// Upward: the exact birth tells its owning mesh-admin that no eligible work remains in
-    /// flight (`node-drained`). The subject is the sender; the fence names the admin.
+    /// Reserved position (R-CR4): never sent; a receiver refuses this by name.
     NodeDrained {
         /// The birth that drained.
         node_id: NodeId,
@@ -626,24 +624,30 @@ impl NotAuthority {
     }
 }
 
-/// What a drain established (node-drain.md): the count it measured, and whether the work finished
-/// inside the drain bound. `Deadline` records the last observed count and never claims zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DrainReceipt {
-    /// The eligible in-flight work finished: `in_flight` is the count at the moment it was
-    /// established.
+/// What a `node.connections.delete { All }` established (node-connections-delete.md, "Receipt"): the
+/// in-flight count it measured and the connections it closed. `Deadline` records the last observed
+/// count and the connections still open; it never claims zero.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectionsReceipt {
+    /// The eligible in-flight work reached zero and every open connection was closed.
     Established {
-        /// The in-flight count when the drain was established.
+        /// The in-flight count when the closure was admitted.
         in_flight: u64,
+        /// The open entries closed.
+        closed: Vec<ConnectionId>,
     },
-    /// The drain bound passed with work still in flight: `last_in_flight` is the last count seen.
+    /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` passed with work still in flight.
     Deadline {
         /// The last in-flight count observed before the bound.
         last_in_flight: u64,
+        /// The open entries closed.
+        closed: Vec<ConnectionId>,
+        /// The open entries still held.
+        held: Vec<ConnectionId>,
     },
 }
 
-impl DrainReceipt {
+impl ConnectionsReceipt {
     /// The receipt's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -768,12 +772,12 @@ pub enum StatusReply {
         /// What the completion reported.
         reported: String,
     },
-    /// The reply of a `StopNode` call, sent when the stop is done (`stopped`): the birth drained, cut
-    /// its mesh connections and is `Leaving`, parked with its process alive. The receipt is what
-    /// its drain established.
+    /// The reply of a `StopNode` call, sent when the stop is done (`node.stopped`): the birth's
+    /// `node.connections.delete { All }` completed, it cut its transport and is stopped, its process
+    /// alive. The receipt is what that `All` established.
     Stopped {
-        /// What the drain established.
-        receipt: DrainReceipt,
+        /// What the stop's `node.connections.delete { All }` established.
+        receipt: ConnectionsReceipt,
     },
     /// The reply of a `StartNode` call: the parked birth rejoined as itself.
     Started,
@@ -888,6 +892,8 @@ pub enum StatusReply {
         not_open: Vec<ConnectionId>,
         /// The open entries the birth still holds.
         held: Vec<ConnectionId>,
+        /// For `All`, what the closure established; `None` for `Connections`.
+        receipt: Option<ConnectionsReceipt>,
     },
     /// The `DeleteConnections` scope names nothing the birth can cut (an empty list, or more ids
     /// than one request carries); nothing is cut.
@@ -1345,7 +1351,7 @@ mod tests {
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
             (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 2 } }, ReplyKind::Success),
+            (StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { last_in_flight: 2, closed: vec![ConnectionId::mint()], held: vec![ConnectionId::mint()] } }, ReplyKind::Success),
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
@@ -1359,7 +1365,7 @@ mod tests {
             (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: NodeId::mint() }, ReplyKind::ProtocolRefusal),
             (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![] }, ReplyKind::Success),
+            (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![], receipt: None }, ReplyKind::Success),
             (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
             (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
@@ -1533,7 +1539,7 @@ mod tests {
         let q = StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(ids(MAX_CONNECTION_IDS)) };
         let len = Status::encode_request(&q).unwrap().len();
         assert!(len <= MAX_DECLARATION_REQUEST_BYTES, "{MAX_CONNECTION_IDS} ids encode to {len}, over {MAX_DECLARATION_REQUEST_BYTES}");
-        let r = StatusReply::ConnectionsDeleted { closed: ids(MAX_REPORTED_CONNECTIONS - 2), not_open: ids(1), held: ids(1) };
+        let r = StatusReply::ConnectionsDeleted { closed: ids(MAX_REPORTED_CONNECTIONS - 2), not_open: ids(1), held: ids(1), receipt: None };
         let len = Status::encode_reply(&r).unwrap().len();
         assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "{MAX_REPORTED_CONNECTIONS} ids encode to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
         assert!(ConnectionScope::Connections(vec![]).refusal().is_some_and(|r| r.contains("at least one")));

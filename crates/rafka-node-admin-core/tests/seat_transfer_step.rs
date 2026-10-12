@@ -33,7 +33,7 @@ impl DeploymentProvider for Running {
         DOMAIN.into()
     }
     async fn spawn(&self, launch: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        // A drain or a stop launches nothing; a replace whose predecessor is not stopped must not
+        // A node.connections.delete or a stop launches nothing; a replace whose predecessor is not stopped must not
         // reach its successor's launch either: refused here so the cell's assertion names it.
         Err(DeployError::Spawn { node: format!("{launch:?}").chars().take(80).collect(), reason: "this cell launches nothing".into() })
     }
@@ -44,7 +44,7 @@ impl DeploymentProvider for Running {
         DeploymentStatus::Running
     }
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
-        unreachable!("a drain stops nothing")
+        unreachable!("a node.connections.delete stops nothing")
     }
     async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
         Ok(rafka_node_admin_core::deployment::provider::Found::NeverLaunched)
@@ -100,11 +100,11 @@ fn holder() -> Node {
 
 /// Drain the seat-holding admin with `transfer` as its SeatTransfer answer: the pipeline's result,
 /// the commands the observer was asked to send, the Build's step receipts, and the cell's trace id.
-fn drain_with(transfer: Result<SeatTransferOutcome, String>) -> (Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
-    run_with(transfer, NodeCommand::Drain)
+fn connections_delete_with(transfer: Result<SeatTransferOutcome, String>) -> (Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
+    run_with(transfer, NodeCommand::DeleteConnections)
 }
 
-/// [`drain_with`] for the standalone workflow `workflow` (a drain or a stop).
+/// [`connections_delete_with`] for the standalone workflow `workflow` (a drain or a stop).
 fn run_with(transfer: Result<SeatTransferOutcome, String>, workflow: NodeCommand) -> (Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
     let (r, sent, steps, trace_id, _) = run_workflow(transfer, Some(workflow));
     (r, sent, steps, trace_id)
@@ -144,7 +144,7 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
             let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle, exit: None };
             match workflow {
                 Some(NodeCommand::Stop) => pipeline.stop(&req).instrument(root).await,
-                Some(_) => pipeline.drain(&req).instrument(root).await,
+                Some(_) => pipeline.delete_connections(&req).instrument(root).await,
                 None => {
                     let req = ReplaceRequest { build_id: req.build_id, attempt: req.attempt, predecessor: req.node, handle: req.handle, spec: &rafka_node_admin_core::deployment::endpoint::RPC_NODE, held_runtimes: Vec::new() };
                     pipeline.replace(&req, None, |_| async { Ok(()) }).instrument(root).await.map(|_| ())
@@ -174,7 +174,7 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
 /// mesh asks for is refused so by `take_seats`). A target that holds no seat, or holds only its own
 /// mesh's seat with no other admin in that mesh (`OtherMesh`), transfers nothing and the drain goes on.
 #[test]
-fn a_refused_seat_transfer_fails_the_step_by_name_and_drains_nothing() {
+fn a_refused_seat_transfer_fails_the_step_by_name_and_deletes_no_connection() {
     let seat_transfer = RetireStep::SeatTransfer.name();
     let failed = |steps: &[(String, StepOutcome)]| steps.iter().find(|(s, _)| s == seat_transfer).and_then(|(_, o)| match o {
         StepOutcome::Failed { reason } => Some(reason.clone()),
@@ -182,17 +182,17 @@ fn a_refused_seat_transfer_fails_the_step_by_name_and_drains_nothing() {
     });
 
     let refusal = "mesh2.admin.1 cannot take the fabric seat of mesh1.admin.1: TakeSeats moves seats inside the holder's mesh (mesh1) only";
-    let (r, sent, steps, _) = drain_with(Err(refusal.into()));
-    let e = r.expect_err("a refused TakeSeats ends the drain");
+    let (r, sent, steps, _) = connections_delete_with(Err(refusal.into()));
+    let e = r.expect_err("a refused TakeSeats ends the node.connections.delete");
     assert_eq!((e.step, e.reason.as_str()), (seat_transfer, refusal), "{e}");
     assert_eq!(failed(&steps).as_deref(), Some(refusal), "the SeatTransfer receipt is Failed with the same reason: {steps:?}");
-    assert!(sent.is_empty(), "no drain-node is sent: {sent:?}");
-    assert!(!steps.iter().any(|(s, _)| s == RetireStep::DrainNode.name()), "no DrainNode step: {steps:?}");
+    assert!(sent.is_empty(), "no node.connections.delete is sent: {sent:?}");
+    assert!(!steps.iter().any(|(s, _)| s == RetireStep::DeleteConnections.name()), "no DeleteConnections step: {steps:?}");
 
     for outcome in [SeatTransferOutcome::NotAHolder, SeatTransferOutcome::OtherMesh { holder_mesh: "mesh1".into() }] {
-        let (_, sent, steps, _) = drain_with(Ok(outcome.clone()));
+        let (_, sent, steps, _) = connections_delete_with(Ok(outcome.clone()));
         assert!(steps.iter().any(|(s, o)| s == seat_transfer && *o == StepOutcome::Complete), "{outcome:?}: {steps:?}");
-        assert_eq!(sent, vec![NodeCommand::Drain], "{outcome:?}: the drain goes on");
+        assert_eq!(sent, vec![NodeCommand::DeleteConnections], "{outcome:?}: the node.connections.delete goes on");
     }
 }
 
@@ -200,8 +200,8 @@ fn a_refused_seat_transfer_fails_the_step_by_name_and_drains_nothing() {
 /// standalone drain or stop whose command never reached the birth (`NotSent`) established nothing:
 /// its wait step fails by name with the admission it got, and no `Complete` receipt names the birth.
 #[test]
-fn a_standalone_drain_or_stop_whose_command_was_never_admitted_fails_by_name_and_completes_nothing() {
-    for (workflow, command, wait) in [(NodeCommand::Drain, "drain-node", RetireStep::AwaitNodeDrained.name()), (NodeCommand::Stop, "stop-node", RetireStep::AwaitNodeLeft.name())] {
+fn a_standalone_connections_delete_or_stop_whose_command_was_never_admitted_fails_by_name_and_completes_nothing() {
+    for (workflow, command, wait) in [(NodeCommand::DeleteConnections, "node.connections.delete", RetireStep::DeleteConnections.name()), (NodeCommand::Stop, "stop-node", RetireStep::AwaitNodeLeft.name())] {
         let (r, sent, steps, _) = run_with(Ok(SeatTransferOutcome::NotAHolder), workflow);
         assert_eq!(sent, vec![workflow], "the {command} was asked for");
         let e = r.expect_err("a command that never reached the birth established nothing");
@@ -220,7 +220,7 @@ fn a_standalone_drain_or_stop_whose_command_was_never_admitted_fails_by_name_and
 #[test]
 fn a_replace_whose_predecessor_never_admitted_stop_node_fails_by_name_and_renames_nothing() {
     let (r, sent, steps, trace_id, renamed) = run_workflow(Ok(SeatTransferOutcome::NotAHolder), None);
-    assert_eq!(sent, vec![NodeCommand::Drain, NodeCommand::Stop], "the drain and the stop were asked for");
+    assert_eq!(sent, vec![NodeCommand::Stop], "the stop was asked for");
     let e = r.expect_err("a predecessor that never admitted stop-node is not stopped");
     assert_eq!(e.step, RetireStep::AwaitNodeLeft.name(), "{e}");
     assert!(e.reason.contains(HOLDER) && e.reason.contains("stop-node") && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");

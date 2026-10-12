@@ -108,8 +108,8 @@ pub enum BuildChange {
         /// The exact birth to retire, for a node the view does not hold.
         incarnation: Option<IncarnationId>,
     },
-    /// Drain the live birth at `node` and keep it running.
-    Drain {
+    /// `node.connections.delete { All }` of the live birth at `node`; it keeps running.
+    DeleteConnections {
         /// The node.
         node: PathName,
     },

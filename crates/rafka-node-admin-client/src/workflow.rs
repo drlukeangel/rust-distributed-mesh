@@ -84,8 +84,9 @@ pub enum WorkflowKind {
     Restart(PathName),
     /// `node.delete` of this node: `retire-node:<path.name>`.
     Delete(PathName),
-    /// `node.drain` of this node: `drain-node:<path.name>`. The process keeps running.
-    Drain(PathName),
+    /// `node.connections.delete { All }` of this node: `node.connections.delete:<path.name>`. The
+    /// process keeps running.
+    DeleteConnections(PathName),
 }
 
 /// One row of the mapping from a Build receipt to the canonical names.
@@ -145,14 +146,13 @@ macro_rules! start_rows {
     };
 }
 
-/// The shutdown leg of `target` under `operation`, from its drain to its `stopped` (the stop half of
+/// The shutdown leg of `target` under `operation`: its stop call, whose one reply carries its
+/// `node.connections.delete { All }` receipt, to its `stopped` (the stop half of
 /// a delete under `retire-node`, the stop of a restart under `restart-node`); its SeatTransfer row
 /// exists for a node-admin target alone.
 fn shutdown_rows(operation: &'static str, target: &PathName) -> Vec<Row> {
-    let mut rows: Vec<Row> = seat_transfer_row(operation, NodeStep::Drain, target).into_iter().collect();
+    let mut rows: Vec<Row> = seat_transfer_row(operation, NodeStep::Stop, target).into_iter().collect();
     rows.extend([
-        row(operation, "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
-        row(operation, "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
         row(operation, "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
         row(operation, "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
     ]);
@@ -168,7 +168,7 @@ impl WorkflowKind {
             Self::Start(_) => NodeOp::Start,
             Self::Restart(_) => NodeOp::Restart,
             Self::Delete(_) => NodeOp::Delete,
-            Self::Drain(_) => NodeOp::Drain,
+            Self::DeleteConnections(_) => NodeOp::ConnectionsDelete,
         }
     }
 
@@ -176,12 +176,12 @@ impl WorkflowKind {
     fn rows(&self) -> Vec<Row> {
         match self {
             Self::Create => create_rows!("create-node", &[NodeEvent::Created]).into(),
-            // The stop's one call drains, cuts the mesh connections and answers `stopped`: its receipts
-            // announce all four events, and no runtime exits.
+            // The stop's one call deletes the node's connections, cuts its transport and answers
+            // `stopped`: its receipts announce both events, and no runtime exits.
             Self::Stop(n) => {
                 let mut rows: Vec<Row> = seat_transfer_row("stop-node", NodeStep::Stop, n).into_iter().collect();
                 rows.extend([
-                    row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
+                    row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
                     row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
                     row("stop-node", "Complete", NodeStep::Stop, &[], true),
                 ]);
@@ -196,14 +196,13 @@ impl WorkflowKind {
                 rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
-            // A standalone drain: the drain command to the exact birth, the wait for its `node-drained`, and its
-            // `Complete`. Nothing stops the process and nothing is deleted.
-            Self::Drain(n) => {
-                let mut rows: Vec<Row> = seat_transfer_row("drain-node", NodeStep::Drain, n).into_iter().collect();
+            // A standalone node.connections.delete { All }: one call to the exact birth through its
+            // mesh-primary, and its `Complete`. Nothing stops the process and nothing is deleted.
+            Self::DeleteConnections(n) => {
+                let mut rows: Vec<Row> = seat_transfer_row("node.connections.delete", NodeStep::ConnectionsDelete, n).into_iter().collect();
                 rows.extend([
-                    row("drain-node", "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
-                    row("drain-node", "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
-                    row("drain-node", "Complete", NodeStep::Drain, &[], true),
+                    row("node.connections.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
+                    row("node.connections.delete", "Complete", NodeStep::ConnectionsDelete, &[], true),
                 ]);
                 rows
             }
@@ -225,7 +224,7 @@ impl WorkflowKind {
     fn operation_matches(&self, prefix: &str, key: &str) -> bool {
         match self {
             Self::Create => prefix == "create-node" && key.starts_with("create-node:"),
-            Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) | Self::Drain(n) => key == format!("{prefix}:{n}"),
+            Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) | Self::DeleteConnections(n) => key == format!("{prefix}:{n}"),
         }
     }
 }
@@ -463,7 +462,7 @@ impl WorkflowStream {
                             WorkflowKind::Start(_) => NodeStep::Start,
                             WorkflowKind::Restart(_) => NodeStep::Restart,
                             WorkflowKind::Delete(_) => NodeStep::Delete,
-                            WorkflowKind::Drain(_) => NodeStep::Drain,
+                            WorkflowKind::DeleteConnections(_) => NodeStep::ConnectionsDelete,
                         });
                     self.span.record("outcome", "failed");
                     self.span.record("failed_step", node_step.name());

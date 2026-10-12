@@ -587,7 +587,7 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     let refusals: Vec<(&str, CallEnd)> = vec![
         ("node.restart mesh1.admin.1", refused("restart", nodes.restart(&path("mesh1.admin.1")).await)),
         ("node.stop mesh1.admin.1", refused("stop", nodes.stop(&path("mesh1.admin.1")).await)),
-        ("node.drain mesh1.admin.1 (a seat holder)", refused("drain", carrier.create(Change::Drain { node: path("mesh1.admin.1") }).await)),
+        ("node.connections.delete mesh1.admin.1 (a seat holder)", refused("node.connections.delete", carrier.create(Change::DeleteConnections { node: path("mesh1.admin.1") }).await)),
         ("node.replace mesh2.admin.1", refused("replace", carrier.create(Change::Replace { node: path("mesh2.admin.1"), incarnation: None }).await)),
         ("node.stop mesh2.rpc.1", refused("stop", nodes.stop(&path("mesh2.rpc.1")).await)),
         ("node.delete mesh2.rpc.1", refused("delete", nodes.delete(&path("mesh2.rpc.1")).await)),

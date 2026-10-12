@@ -343,9 +343,9 @@ async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     let ack = door.arm(&id, spec.clone()).await;
     let mut stream = run.delete(node).await;
     let build_id = Run::id_of(&stream);
-    // Before DrainNode asked the birth to drain it must be alive; once TerminateRuntime's work is
-    // done it is dead. Between, the birth may have exited by its own drain: not asserted.
-    let (mark, terminate) = (index_of(order, RetireStep::DrainNode.name()), index_of(order, RetireStep::TerminateRuntime.name()));
+    // Before StopNode asked the birth to stop it must be alive; once TerminateRuntime's work is
+    // done it is dead. Between, the birth may have exited by its own stop: not asserted.
+    let (mark, terminate) = (index_of(order, RetireStep::StopNode.name()), index_of(order, RetireStep::TerminateRuntime.name()));
     let runtimes = if i < mark { Some((node, 1)) } else if i >= terminate { Some((node, 0)) } else { None };
     let h = run.hold(&door, &id, ack, &build_id, &op, Some(order[..i].to_vec()), runtimes).await;
     let rel = door.release(&id).await;
@@ -659,12 +659,12 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
 }
 
 /// A restart's steps, in order, all of its one operation `restart-node:<path>` (node-restart.md):
-/// the pre-event, the drain and the stop, so the birth parks with its process alive (no runtime is
+/// the pre-event and the stop, so the birth stops with its process alive (no runtime is
 /// terminated and no membership is removed), then `start-node` to the parked birth, its ready, and
 /// one `Complete`.
 fn restart_order(retire_order: &[String]) -> Vec<String> {
     let mut o: Vec<String> = vec![RetireStep::NodeRestarting.name().to_string()];
-    let parked = [RetireStep::DrainNode, RetireStep::AwaitNodeDrained, RetireStep::StopNode, RetireStep::AwaitNodeLeft].map(RetireStep::name);
+    let parked = [RetireStep::StopNode, RetireStep::AwaitNodeLeft].map(RetireStep::name);
     o.extend(retire_order.iter().filter(|s| parked.contains(&s.as_str())).cloned());
     o.extend([StartStep::StartNode.name(), CreateStep::WaitForNodeReady.name(), CreateStep::Complete.name()].map(String::from));
     o

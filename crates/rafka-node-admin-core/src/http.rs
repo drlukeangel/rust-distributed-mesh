@@ -239,7 +239,7 @@ impl ControlPlane {
                     crate::build::BuildOperation::RetireNode { node, .. } => (node, "retire"),
                     crate::build::BuildOperation::RestartNode { node } => (node, "restart"),
                     crate::build::BuildOperation::ReplaceNode { node, .. } => (node, "replace"),
-                    crate::build::BuildOperation::DrainNode { node, .. } => (node, "drain"),
+                    crate::build::BuildOperation::DeleteConnections { node, .. } => (node, "node.connections.delete"),
                     crate::build::BuildOperation::StopNode { node, .. } => (node, "stop"),
                     _ => return None,
                 };
@@ -334,15 +334,15 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.authority(route).await?;
-            // A caller's node workflow writes a row, and a drain of a seat holder moves its seats: both
+            // A caller's node workflow writes a row, and a node.connections.delete of a seat holder moves its seats: both
             // wait for the initial fabric to first reach ready-for-traffic (R-PB1, R-PC1).
             let holds_a_seat = || async {
                 let t = self.topology.read().await;
                 t.node(&path).is_some_and(|n| t.holds_fabric_seat(&n.node_id) || t.holds_mesh_seat(&n.mesh, &n.node_id))
             };
             let workflow = match kind {
-                ActionKind::Drain if holds_a_seat().await => Some(format!("node.drain {path} (a seat holder)")),
-                ActionKind::Drain => None,
+                ActionKind::DeleteConnections if holds_a_seat().await => Some(format!("node.connections.delete {path} (a seat holder)")),
+                ActionKind::DeleteConnections => None,
                 _ => Some(format!("node.{} {path}", kind.name())),
             };
             if let Some(workflow) = workflow {
@@ -412,7 +412,7 @@ impl ControlPlane {
                     let reason = match kind {
                         ActionKind::Replace => "the node's status is neither live nor an unheard birth a replacement may retire",
                         ActionKind::Restart => "a restart needs a live node",
-                        ActionKind::Drain => "a drain needs a live node",
+                        ActionKind::DeleteConnections => "node.connections.delete needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
                         ActionKind::Start => "a start needs a parked node",
                         ActionKind::Delete => "a delete of a .old path needs the parked predecessor or one whose exit is proven; any other delete through this route is of a deleted mesh's birth",
@@ -445,7 +445,7 @@ impl ControlPlane {
             let action = match kind {
                 ActionKind::Restart => AttemptAction::Restart { path, from_incarnation },
                 ActionKind::Replace => AttemptAction::Replace { path, from_incarnation },
-                ActionKind::Drain => AttemptAction::Drain { path, from_incarnation },
+                ActionKind::DeleteConnections => AttemptAction::DeleteConnections { path, from_incarnation },
                 ActionKind::Stop => AttemptAction::Stop { path, from_incarnation },
                 ActionKind::Start => AttemptAction::Start { path, from_incarnation },
                 ActionKind::Delete => AttemptAction::Delete { path, from_incarnation },
@@ -556,8 +556,8 @@ pub enum ActionKind {
     Restart,
     /// `replace-node:<path>`.
     Replace,
-    /// `drain-node:<path>`.
-    Drain,
+    /// `node.connections.delete:<path>`.
+    DeleteConnections,
     /// `stop-node:<path>`.
     Stop,
     /// `start-node:<path>`.
@@ -572,7 +572,7 @@ impl ActionKind {
         match self {
             Self::Restart => "restart",
             Self::Replace => "replace",
-            Self::Drain => "drain",
+            Self::DeleteConnections => "node.connections.delete",
             Self::Stop => "stop",
             Self::Start => "start",
             Self::Delete => "delete",
@@ -779,9 +779,9 @@ async fn restart_node(State(cp): State<Shared>, Path(name): Path<String>) -> Res
     Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, ActionKind::Restart, None).await?))
 }
 
-async fn drain_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
+async fn delete_connections_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/drain", AttemptReason::Drain, node, ActionKind::Drain, None).await?))
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/connections/delete", AttemptReason::DeleteConnections, node, ActionKind::DeleteConnections, None).await?))
 }
 
 async fn stop_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
@@ -921,7 +921,7 @@ pub fn router(cp: Arc<ControlPlane>, runtime_routes: Router) -> Router {
         .route("/api/nodes/{name}", delete(delete_node))
         .route("/api/nodes/{name}/restart", post(restart_node))
         .route("/api/nodes/{name}/replace", post(replace_node))
-        .route("/api/nodes/{name}/drain", post(drain_node))
+        .route("/api/nodes/{name}/connections/delete", post(delete_connections_node))
         .route("/api/nodes/{name}/stop", post(stop_node))
         .route("/api/meshes", post(create_mesh))
         .route("/api/meshes/{id}", get(get_mesh).delete(delete_mesh))

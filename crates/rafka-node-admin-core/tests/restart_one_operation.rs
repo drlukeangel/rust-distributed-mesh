@@ -115,7 +115,7 @@ impl LifecycleEvents for Events {
     async fn joined(&self, op: &LifecycleOp) {
         self.note("joined", op);
     }
-    async fn draining(&self, op: &LifecycleOp) {
+    async fn connections_deleting(&self, op: &LifecycleOp) {
         self.note("draining", op);
     }
     async fn leaving(&self, op: &LifecycleOp) {

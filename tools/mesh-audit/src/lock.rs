@@ -4,8 +4,8 @@
 //! arms, a cell by name, a wire count). Every violation is named with its file and line, and a
 //! ratchet whose subject is missing says so by name rather than passing vacuously.
 //!
-//! Behavioral rules (a drain attempted before termination, a carried call keeping its
-//! context, drain success distinct from refusal, silence never retiring) are proven by their
+//! Behavioral rules (a stop attempted before termination, a carried call keeping its
+//! context, node.connections.deleted distinct from refusal, silence never retiring) are proven by their
 //! cells; the ratchet for such a rule holds the cell in the tree by name and the structural
 //! facts the cell relies on, so deleting or renaming the proof is itself a violation.
 
@@ -21,11 +21,11 @@ pub enum Ratchet {
     LegacyDefaultsAreIngressOnly,
     ProviderInterpretsNeitherMetaNorTags,
     NoTransportTagVocabulary,
-    RetireAttemptsRpcDrainFirst,
+    RetireAttemptsRpcStopFirst,
     RetireHasBoundedFailureArms,
     DriftSilenceIsNotRetireAuthority,
-    RetireReceiptNamesDrainArm,
-    DrainSuccessIsNotRefusal,
+    RetireReceiptNamesCommandArm,
+    ConnectionsDeletedIsNotRefusal,
     ForwardPreservesContext,
     PostcardSectionBounds,
     TypedProtocolIdentity,
@@ -47,11 +47,11 @@ impl Ratchet {
         Self::LegacyDefaultsAreIngressOnly,
         Self::ProviderInterpretsNeitherMetaNorTags,
         Self::NoTransportTagVocabulary,
-        Self::RetireAttemptsRpcDrainFirst,
+        Self::RetireAttemptsRpcStopFirst,
         Self::RetireHasBoundedFailureArms,
         Self::DriftSilenceIsNotRetireAuthority,
-        Self::RetireReceiptNamesDrainArm,
-        Self::DrainSuccessIsNotRefusal,
+        Self::RetireReceiptNamesCommandArm,
+        Self::ConnectionsDeletedIsNotRefusal,
         Self::ForwardPreservesContext,
         Self::PostcardSectionBounds,
         Self::TypedProtocolIdentity,
@@ -74,11 +74,11 @@ impl Ratchet {
             Self::LegacyDefaultsAreIngressOnly => "legacy_defaults_are_ingress_only",
             Self::ProviderInterpretsNeitherMetaNorTags => "provider_interprets_neither_meta_nor_tags",
             Self::NoTransportTagVocabulary => "no_transport_tag_vocabulary",
-            Self::RetireAttemptsRpcDrainFirst => "retire_attempts_rpc_drain_first",
+            Self::RetireAttemptsRpcStopFirst => "retire_attempts_rpc_stop_first",
             Self::RetireHasBoundedFailureArms => "retire_has_bounded_failure_arms",
             Self::DriftSilenceIsNotRetireAuthority => "drift_silence_is_not_retire_authority",
-            Self::RetireReceiptNamesDrainArm => "retire_receipt_names_drain_arm",
-            Self::DrainSuccessIsNotRefusal => "drain_success_is_not_refusal",
+            Self::RetireReceiptNamesCommandArm => "retire_receipt_names_command_arm",
+            Self::ConnectionsDeletedIsNotRefusal => "connections_deleted_is_not_refusal",
             Self::ForwardPreservesContext => "forward_preserves_context",
             Self::PostcardSectionBounds => "postcard_section_bounds",
             Self::TypedProtocolIdentity => "typed_protocol_identity",
@@ -263,9 +263,9 @@ pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/retire_pipel
 pub const DRIFT_CELLS: &str = "crates/rafka-node-admin-core/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_probe_apply.rs";
 
-/// The five typed arms of the landed `CommandAdmission` (what a directed `drain-node` / `stop-node`
-/// call established at the exact birth).
-pub const DRAIN_ARMS: [&str; 8] = ["Admitted", "AlreadyAdmitted", "Stopped", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
+/// The typed arms of the landed `CommandAdmission` (what a directed `node.connections.delete`,
+/// `stop-node` or `start-node` call established at the exact birth).
+pub const COMMAND_ARMS: [&str; 9] = ["Admitted", "AlreadyAdmitted", "Stopped", "ConnectionsDeleted", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
 pub const STATUS_REQUESTS: u32 = 26;
@@ -524,32 +524,32 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         Ratchet::NoTransportTagVocabulary => {
             scan_tokens(root, &files_in(root, ACTIVE_TRANSPORT_SOURCES), TRANSPORT_TAG_TOKENS, ratchet, &mut out);
         }
-        Ratchet::RetireAttemptsRpcDrainFirst => {
-            require(root, RETIRE_CELLS, &["fn retire_runs_every_step_in_order", "RetireStep::DrainNode"], ratchet, &mut out);
+        Ratchet::RetireAttemptsRpcStopFirst => {
+            require(root, RETIRE_CELLS, &["fn retire_runs_every_step_in_order", "RetireStep::StopNode"], ratchet, &mut out);
             if let Some(text) = read(root, PIPELINE) {
-                match (text.find("Self::DrainNode,"), text.find("Self::TerminateRuntime,")) {
+                match (text.find("Self::StopNode,"), text.find("Self::TerminateRuntime,")) {
                     (Some(a), Some(b)) if a < b => {}
-                    _ => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "DrainNode ordered before TerminateRuntime in the retire steps".into() }),
+                    _ => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "StopNode ordered before TerminateRuntime in the retire steps".into() }),
                 }
             } else {
                 out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "the file itself".into() });
             }
         }
         Ratchet::RetireHasBoundedFailureArms => match read(root, PIPELINE).as_deref().and_then(|t| enum_arms(t, "CommandAdmission")) {
-            Some(found) if found == DRAIN_ARMS => {}
-            Some(found) => out.push(Violation::Arms { ratchet, file: PIPELINE.into(), expected: DRAIN_ARMS.iter().map(|s| s.to_string()).collect(), found }),
+            Some(found) if found == COMMAND_ARMS => {}
+            Some(found) => out.push(Violation::Arms { ratchet, file: PIPELINE.into(), expected: COMMAND_ARMS.iter().map(|s| s.to_string()).collect(), found }),
             None => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "`pub enum CommandAdmission`".into() }),
         },
         Ratchet::DriftSilenceIsNotRetireAuthority => {
             require(root, DRIFT_CELLS, &["fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced"], ratchet, &mut out);
         }
-        Ratchet::RetireReceiptNamesDrainArm => {
+        Ratchet::RetireReceiptNamesCommandArm => {
             require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum CommandAdmission"], ratchet, &mut out);
-            require(root, RETIRE_CELLS, &["DrainNode"], ratchet, &mut out);
+            require(root, RETIRE_CELLS, &["StopNode"], ratchet, &mut out);
         }
-        Ratchet::DrainSuccessIsNotRefusal => {
-            require(root, STATUS, &["NodeDrainingApplied { in_flight: u64 }", "Draining { reason: String }", "DrainNode {"], ratchet, &mut out);
-            require(root, PROBE_APPLY_CELLS, &["fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family"], ratchet, &mut out);
+        Ratchet::ConnectionsDeletedIsNotRefusal => {
+            require(root, STATUS, &["Draining { reason: String }", "ConnectionsDeleted {", "receipt: Option<ConnectionsReceipt>"], ratchet, &mut out);
+            require(root, PROBE_APPLY_CELLS, &["fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_status_family"], ratchet, &mut out);
         }
         Ratchet::ForwardPreservesContext => {
             require(root, CONTEXT_CELLS, &["fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_hop"], ratchet, &mut out);

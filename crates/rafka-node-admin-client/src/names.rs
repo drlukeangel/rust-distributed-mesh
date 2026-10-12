@@ -21,8 +21,6 @@ pub enum NodeOp {
     ConfigGet,
     /// `node.config.update`.
     ConfigUpdate,
-    /// `node.drain`: refuse new work, finish in-flight work.
-    Drain,
     /// `node.create(spec)`.
     Create,
     /// `node.stop`.
@@ -46,7 +44,6 @@ impl NodeOp {
             Self::ConnectionsDelete => "node.connections.delete",
             Self::ConfigGet => "node.config.get",
             Self::ConfigUpdate => "node.config.update",
-            Self::Drain => "node.drain",
             Self::Create => "node.create",
             Self::Stop => "node.stop",
             Self::Start => "node.start",
@@ -71,7 +68,6 @@ impl NodeOp {
             Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.node.connections.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),
             Self::ConfigGet => tracing::info_span!("rdm.node_admin.node.config.get.via-call", op = "node.config.get", outcome = tracing::field::Empty),
             Self::ConfigUpdate => tracing::info_span!("rdm.node_admin.node.config.update.via-call", op = "node.config.update", outcome = tracing::field::Empty),
-            Self::Drain => tracing::info_span!("rdm.node_admin.node.drain.via-call", op = "node.drain", outcome = tracing::field::Empty),
             Self::Create => tracing::info_span!("rdm.node_admin.node.create.via-workflow", op = "node.create", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Stop => tracing::info_span!("rdm.node_admin.node.stop.via-workflow", op = "node.stop", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Start => tracing::info_span!("rdm.node_admin.node.start.via-workflow", op = "node.start", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
@@ -167,10 +163,6 @@ pub enum NodeEvent {
     Joined,
     /// `node.started`: the node reports hydrated, nothing pending.
     Started,
-    /// `node.draining`: the drain started.
-    Draining,
-    /// `node.drained`: in-flight work finished.
-    Drained,
     /// `node.connections.deleted`: the hard cut.
     ConnectionsDeleted,
     /// `node.stopped`: the node reported it is parked, on the stop call's own stream.
@@ -190,8 +182,6 @@ impl NodeEvent {
             Self::Created => "node.created",
             Self::Joined => "node.joined",
             Self::Started => "node.started",
-            Self::Draining => "node.draining",
-            Self::Drained => "node.drained",
             Self::ConnectionsDeleted => "node.connections.deleted",
             Self::Stopped => "node.stopped",
             Self::Deleted => "node.deleted",
@@ -206,8 +196,6 @@ impl NodeEvent {
             Self::Created => tracing::info_span!("rdm.node_admin.node.created.via-reply-frame", event = "node.created"),
             Self::Started => tracing::info_span!("rdm.node_admin.node.started.via-reply-frame", event = "node.started"),
             Self::Joined => tracing::info_span!("rdm.node_admin.node.joined.via-reply-frame", event = "node.joined"),
-            Self::Draining => tracing::info_span!("rdm.node_admin.node.draining.via-reply-frame", event = "node.draining"),
-            Self::Drained => tracing::info_span!("rdm.node_admin.node.drained.via-reply-frame", event = "node.drained"),
             Self::ConnectionsDeleted => tracing::info_span!("rdm.node_admin.node.connections.deleted.via-reply-frame", event = "node.connections.deleted"),
             Self::Stopped => tracing::info_span!("rdm.node_admin.node.stopped.via-reply-frame", event = "node.stopped"),
             Self::Deleted => tracing::info_span!("rdm.node_admin.node.deleted.via-reply-frame", event = "node.deleted"),
@@ -227,8 +215,8 @@ pub enum NodeStep {
     Start,
     /// `node.join`: the node's digest reaching its authority.
     Join,
-    /// `node.drain`.
-    Drain,
+    /// `node.connections.delete`.
+    ConnectionsDelete,
     /// `node.stop`.
     Stop,
     /// `node.restart`.
@@ -244,7 +232,7 @@ impl NodeStep {
             Self::Create => "node.create",
             Self::Start => "node.start",
             Self::Join => "node.join",
-            Self::Drain => "node.drain",
+            Self::ConnectionsDelete => "node.connections.delete",
             Self::Stop => "node.stop",
             Self::Restart => "node.restart",
             Self::Delete => "node.delete",

@@ -399,7 +399,7 @@ impl Drop for Rig {
 
 /// Read a stream to its end. A stream that yields nothing for `within` is a defect of the stream,
 /// reported with the frames it did deliver.
-async fn drain(stream: &mut WorkflowStream, within: Duration) -> (Vec<Frame>, Option<CallEnd>) {
+async fn collect_frames(stream: &mut WorkflowStream, within: Duration) -> (Vec<Frame>, Option<CallEnd>) {
     let mut frames = Vec::new();
     loop {
         match tokio::time::timeout(within, stream.next()).await {
@@ -441,7 +441,7 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (frames, end) = drain(&mut stream, Duration::from_secs(5)).await;
+        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(5)).await;
         let published = rig.sink.0.lock().unwrap().clone();
         (frames, end, published)
     });
@@ -504,7 +504,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         // The Ready check polls again with the same reason: no second frame. Then the node is ready.
         tokio::time::sleep(Duration::from_millis(350)).await;
         *rig.membership.not_ready.lock().unwrap() = None;
-        let (after, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (after, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
         (blocked.unwrap(), after)
     });
@@ -539,7 +539,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
         });
         tokio::time::sleep(Duration::from_millis(450)).await;
         *rig.membership.pending.lock().unwrap() = None;
-        drain(&mut stream, Duration::from_secs(10)).await
+        collect_frames(&mut stream, Duration::from_secs(10)).await
     });
     assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Blocked { .. })), "a Pending node with no named blocker is not a Blocked frame: {frames:?}");
@@ -597,7 +597,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let mut resumed = nodes_over(&again.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
         rig.membership.joined.store(true, Ordering::SeqCst);
-        let (final_frames, resumed_end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        let (final_frames, resumed_end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(resumed_end.is_none(), "the resumed stream ends with its terminal frame: {resumed_end:?}");
         let receipts_after = builds.get(&accepted.build_id).await.unwrap();
         (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition)
@@ -657,12 +657,12 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         assert!(fp.facts().await.unwrap().iter().all(|f| !matches!(f, rafka_node_admin_core::build_state::BuildFact::Step(_))), "the fabric-primary's log holds no step receipt");
         let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
-        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        let (again, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         (first, again, disposition)
     });
@@ -696,7 +696,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         let completed = door.drives.get(&build).expect("the drive that completed the Build is held");
         assert!(completed.completed(), "the drive ended Complete");
@@ -706,7 +706,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         let kept = Arc::ptr_eq(&ensured, &completed) && door.drives.get(&build).is_some_and(|d| Arc::ptr_eq(&d, &completed));
         let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
-        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        let (again, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         (build, kept, first, again, disposition)
     });
@@ -803,14 +803,14 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         // The same Build log and executor under a fabric-primary that never drove this Build.
         let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), seats: before.seats.clone(), incarnation: before.incarnation.clone(), incumbent: before.incumbent.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
-        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        let (again, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         (first, again, disposition)
     });
@@ -898,18 +898,16 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(name.clone()), &view("retire-node:mesh1.rpc.3", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
-        [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
+        [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
     // A restart is one operation: its pre-event, the stop of the live process and the start of the
     // same process are all `restart-node:<path>` receipts, and its one `Complete` ends it.
-    let restart = vec!["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"];
+    let restart = vec!["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"];
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [
             Frame::Event(NodeEvent::Restarting),
-            Frame::Event(NodeEvent::Draining),
-            Frame::Event(NodeEvent::Drained),
             Frame::Event(NodeEvent::ConnectionsDeleted),
             Frame::Event(NodeEvent::Stopped),
             Frame::Event(NodeEvent::Joined),
@@ -923,7 +921,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap();
     assert_eq!((f.frames.len(), f.next), (0, Some(("restart-node".to_string(), "NodeRestarting".to_string()))));
     // Its stop half done, the restart is not over: the fold stands at the start.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..5].to_vec()), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
     assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
     // The SeatTransfer step runs only for a node-admin target (it moves the seats it holds before it
     // drains or stops; the pipeline decides on the target's kind): a node-admin's workflow has the
@@ -933,17 +931,18 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", admin_retire), 1).unwrap();
     assert_eq!(
         f.frames,
-        [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
+        [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
     let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(admin.clone()), &view("stop-node:mesh1.admin.2", vec!["SeatTransfer", "StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
-    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
     let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(name.clone()), &view("stop-node:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
-    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
-    // A standalone drain ends on the birth's `node-drained`: the process is not stopped and nothing is deleted.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Drain(name.clone()), &view("drain-node:mesh1.rpc.3", vec!["DrainNode", "AwaitNodeDrained", "Complete"]), 1).unwrap();
-    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Complete]);
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Drain(admin.clone()), &view("drain-node:mesh1.admin.2", vec!["SeatTransfer", "DrainNode", "AwaitNodeDrained", "Complete"]), 1).unwrap();
-    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Complete]);
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
+    // A standalone node.connections.delete { All } ends on the birth's node.connections.deleted: the
+    // process is not stopped and nothing is deleted.
+    let f = rafka_node_admin_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view("node.connections.delete:mesh1.rpc.3", vec!["DeleteConnections", "Complete"]), 1).unwrap();
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
+    let f = rafka_node_admin_client::fold(&WorkflowKind::DeleteConnections(admin.clone()), &view("node.connections.delete:mesh1.admin.2", vec!["SeatTransfer", "DeleteConnections", "Complete"]), 1).unwrap();
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
     // A node-admin whose transfer has not run yet: the fold stops at it, and a resume starts there.
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!((f.frames.len(), f.next.as_ref().map(|(_, s)| s.as_str())), (0, Some("SeatTransfer")));
@@ -1038,14 +1037,14 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
         let door = door_via(&rig, Duration::from_secs(60), move |_| script, proofs).await;
         let served = serve(door).await;
         let mut stream = nodes_over(&served.carrier).restart(&"mesh1.rpc.1".parse().unwrap()).await.expect("the fabric-primary accepts the restart");
-        let (frames, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?} after {frames:?}");
         frames
     });
     let events: Vec<NodeEvent> = frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect();
     assert_eq!(
         events,
-        [NodeEvent::Restarting, NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Restarted],
+        [NodeEvent::Restarting, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Restarted],
         "every event of the restart once, in order: {frames:?}"
     );
     assert_eq!(frames.last(), Some(&Frame::Complete));

@@ -18,7 +18,7 @@ mod peers;
 mod workflow;
 
 pub use build_stream::{BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, MeshCounts, StartDisposition};
-pub use calls::{CallEnd, DrainContext, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
+pub use calls::{CallEnd, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
 pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
     await_fact, BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, MetaField, MetaFieldIsRdmOwned, NameHeld, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
@@ -281,9 +281,10 @@ impl NodeAdminClient {
         Ok(a)
     }
 
-    /// `POST /api/nodes/{name}/drain`: open an attempt that drains the exact live birth.
-    pub async fn drain(&self, node: &PathName) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.post(&format!("/api/nodes/{node}/drain"), None).await?;
+    /// `POST /api/nodes/{name}/connections/delete`: open an attempt that runs
+    /// `node.connections.delete { All }` on the exact live birth.
+    pub async fn delete_connections(&self, node: &PathName) -> Result<Accepted, ClientError> {
+        let a: Accepted = self.post(&format!("/api/nodes/{node}/connections/delete"), None).await?;
         Ok(a)
     }
 

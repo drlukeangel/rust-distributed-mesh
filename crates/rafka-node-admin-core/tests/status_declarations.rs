@@ -1068,7 +1068,7 @@ async fn successor_drained(rig: &Rig) -> (Birth, ServedNode) {
     (b.node.status, b.node.declared) = (NodeStatus::Draining, Some("Draining".into()));
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node_with(&b, |req| match req {
-        StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![rafka_mesh_entity::ConnectionId::mint()], not_open: vec![], held: vec![] },
+        StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![rafka_mesh_entity::ConnectionId::mint()], not_open: vec![], held: vec![], receipt: None },
         _ => StatusReply::Applied,
     })
     .await;

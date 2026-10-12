@@ -89,7 +89,7 @@ mod mesh_shapes__role_build;
 mod mesh_shapes__shape_reconcile;
 mod node_lifecycle__admin_restart;
 mod node_lifecycle__node_delete;
-mod node_lifecycle__node_drain;
+mod node_lifecycle__node_connections_delete;
 mod node_lifecycle__node_replace;
 mod node_lifecycle__node_restart;
 mod node_lifecycle__node_stop;

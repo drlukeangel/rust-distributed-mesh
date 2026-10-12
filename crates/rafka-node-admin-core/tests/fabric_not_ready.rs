@@ -121,11 +121,11 @@ async fn a_drain_of_a_seat_holder_before_the_fabric_first_reaches_ready_for_traf
     let r = rig(ScopeStatus::StateSync).await;
     let before = r.facts().await;
     for holder in ["mesh1.admin.1", "mesh2.admin.1"] {
-        let (workflow, status) = refused(r.attempt(AttemptReason::Drain, holder, ActionKind::Drain).await);
+        let (workflow, status) = refused(r.attempt(AttemptReason::DeleteConnections, holder, ActionKind::DeleteConnections).await);
         assert_eq!((workflow.as_str(), status.as_str()), (format!("node.drain {holder} (a seat holder)").as_str(), "state-sync"));
     }
     assert_eq!(r.facts().await, before, "a refused drain opens no attempt");
-    let opened = r.attempt(AttemptReason::Drain, "mesh1.admin.2", ActionKind::Drain).await.expect("a node that holds no seat drains");
+    let opened = r.attempt(AttemptReason::DeleteConnections, "mesh1.admin.2", ActionKind::DeleteConnections).await.expect("a node that holds no seat drains");
     assert_eq!(opened.attempt, 2);
     assert_eq!(r.facts().await, before + 1, "the admitted drain opened its one attempt");
 }
