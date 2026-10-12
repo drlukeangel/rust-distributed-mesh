@@ -1152,7 +1152,7 @@ mod writer {
     /// Attempt `attempt` of `create-node:<name>` in the Build `build`, its receipts in `builds`, run by
     /// the executor whose rows writer `records` feeds, over `provider`, its births' data dirs under
     /// `data_root`: its error.
-    async fn create_attempt_over(records: &Records, provider: &dyn DeploymentProvider, builds: &dyn rafka_node_admin_core::build_state::BuildStateAdapter, build: &BuildId, name: &str, attempt: u32, data_root: &std::path::Path) -> Result<(), String> {
+    async fn create_attempt_over(records: &Records, provider: &dyn DeploymentProvider, observer: &dyn NodeObserver, builds: &dyn rafka_node_admin_core::build_state::BuildStateAdapter, build: &BuildId, name: &str, attempt: u32, data_root: &std::path::Path) -> Result<(), String> {
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
@@ -1165,7 +1165,7 @@ mod writer {
             mesh_issuer: None,
         };
         let joins = Joins::default();
-        let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
+        let pipeline = DeploymentPipeline { provider, joins: &joins, observer, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
         let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
@@ -1205,7 +1205,7 @@ mod writer {
                 let (a_builds, data_root, build, entered) = (a_builds.clone(), data_root.clone(), build.clone(), entered.clone());
                 tokio::spawn(async move {
                     let lost = LostBeforeLaunch { entered };
-                    create_attempt_over(&a_records, &lost, &*a_builds, &build, "mesh1.rpc.7", 1, &data_root).await
+                    create_attempt_over(&a_records, &lost, &Unheard, &*a_builds, &build, "mesh1.rpc.7", 1, &data_root).await
                 })
             };
             entered.notified().await;
@@ -1224,7 +1224,7 @@ mod writer {
             // Executor B: attempt 2, its journal holding none of A's receipts.
             let (b_records, _b_view) = writer_of("mesh1.admin.2", &view(), &storage);
             let proving = Proving::default();
-            let b_err = create_attempt_over(&b_records, &proving, &b_builds, &build, "mesh1.rpc.7", 2, &data_root).await;
+            let b_err = create_attempt_over(&b_records, &proving, &Unheard, &b_builds, &build, "mesh1.rpc.7", 2, &data_root).await;
             let row = storage.node_row_at(&"mesh1.rpc.7".parse().unwrap()).await.unwrap();
             let _ = std::fs::remove_dir_all(&data_root);
             (a_identity, b_err, proving.found.into_inner().unwrap(), proving.spawned.into_inner().unwrap(), row)
@@ -1318,7 +1318,7 @@ mod writer {
             let entered = Arc::new(tokio::sync::Notify::new());
             let a = {
                 let (a_builds, data_root, build, entered) = (a_builds.clone(), data_root.clone(), build.clone(), entered.clone());
-                tokio::spawn(async move { create_attempt_over(&a_records, &LostBeforeLaunch { entered }, &*a_builds, &build, "mesh1.rpc.8", 1, &data_root).await })
+                tokio::spawn(async move { create_attempt_over(&a_records, &LostBeforeLaunch { entered }, &Unheard, &*a_builds, &build, "mesh1.rpc.8", 1, &data_root).await })
             };
             entered.notified().await;
             a.abort();
@@ -1335,7 +1335,7 @@ mod writer {
                 .expect("A's journal holds its AllocateIdentity receipt");
             let (b_records, _b_view) = writer_of("mesh1.admin.2", &view(), &storage);
             let provider = LaunchedByTheLost::default();
-            let b_err = create_attempt_over(&b_records, &provider, &b_builds, &build, "mesh1.rpc.8", 2, &data_root).await;
+            let b_err = create_attempt_over(&b_records, &provider, &Unheard, &b_builds, &build, "mesh1.rpc.8", 2, &data_root).await;
             let _ = std::fs::remove_dir_all(&data_root);
             (a_identity, b_err, provider.terminated.into_inner().unwrap(), provider.spawned.into_inner().unwrap())
         });
@@ -1359,6 +1359,129 @@ mod writer {
         let stopped = cap.spans_named("rdm.node_admin.deployment.reject.via-lost-executor");
         assert_eq!(stopped.iter().map(|s| s["attributes"]["deployment_id"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>(), vec![deployment.clone()], "{stopped:#?}");
         eprintln!("trace {}: via-claimed-allocation node_id={x} outcome=launched-by-lost-executor; via-lost-executor deployment_id={deployment}; claims {rpc8:?}", settled[0]["trace_id"].as_str().unwrap_or(""));
+    }
+
+    /// Answers that every birth asked about has joined fabric membership.
+    struct Joined;
+    #[async_trait::async_trait]
+    impl NodeObserver for Joined {
+        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+            Some(Publication { runtime: None, data_dir: None })
+        }
+        async fn ready(&self, _: &Node) -> Result<(), String> {
+            Err("nothing is launched here".into())
+        }
+    }
+
+    /// Executor A runs attempt 1 of `create-node:<name>` in `build` through its claim and is lost inside
+    /// `DeployRuntime` before it launches anything; its births' data dirs under `data_root`. Returns
+    /// the identity A's AllocateIdentity receipt names.
+    async fn lost_after_claim(storage: &Arc<MemoryNodesStorage>, build: &BuildId, name: &str, data_root: &std::path::Path) -> Value {
+        use rafka_node_admin_core::build_state::{BuildFact, BuildStateAdapter, StepOutcome};
+        let a_builds = Arc::new(MemoryBuildStateAdapter::new());
+        let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
+        a_builds.publish_accepted(&accepted).await.unwrap();
+        let (a_records, _a_view) = writer_of("mesh1.admin.2", &view(), storage);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let a = {
+            let (a_builds, data_root, build, entered, name) = (a_builds.clone(), data_root.to_path_buf(), build.clone(), entered.clone(), name.to_string());
+            tokio::spawn(async move { create_attempt_over(&a_records, &LostBeforeLaunch { entered }, &Unheard, &*a_builds, &build, &name, 1, &data_root).await })
+        };
+        entered.notified().await;
+        a.abort();
+        let _ = a.await;
+        a_builds
+            .facts()
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|f| match f {
+                BuildFact::Step(r) if r.step == "AllocateIdentity" && r.outcome == StepOutcome::Complete => r.output,
+                _ => None,
+            })
+            .expect("A's journal holds its AllocateIdentity receipt")
+    }
+
+    /// CONTRACT (lifecycles/node-create.md: exact provider proof of a runtime's state, even for a
+    /// deployment that never joined; the receipt arm's rule: "the earlier attempt's runtime is gone: a
+    /// fresh birth"; node-identity-and-state.md: an incarnation names one exact runtime): A claims
+    /// `mesh1.rpc.9` in attempt 1, launches its birth, and is lost; that runtime has exited (the
+    /// provider finds none of it running) and the birth's data dir holds the runtime record naming A's
+    /// deployment. B, holding none of A's receipts, does not continue that birth: it withdraws its
+    /// claim (that birth's key only), mints a new birth, claims the free name for it and reaches
+    /// `DeployRuntime` with a deployment of its own. Must NOT happen: B relaunching the exited birth
+    /// under A's node id, incarnation and deployment.
+    #[test]
+    fn a_create_whose_lost_executor_launched_its_claimed_birth_which_exited_decides_a_new_birth() {
+        let cap = capture();
+        let (a_identity, b_err, spawned) = cap.run(async {
+            let storage = Arc::new(MemoryNodesStorage::default());
+            let data_root = std::env::temp_dir().join(format!("node-rows-launched-exited-{}", NodeId::mint()));
+            let build = BuildId("build-node-rows-9".into());
+            let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.9", &data_root).await;
+            // A launched the birth and it exited: its data dir holds the runtime record of A's deployment.
+            let dir = data_root.join(format!("mesh1.rpc.9-{}", a_identity["node_id"].as_str().unwrap()));
+            let mut record = rafka_mesh_entity::runtime::RuntimeFact::of_this_process("node-rows").unwrap();
+            record.deployment_id = a_identity["deployment_id"].as_str().unwrap().to_string();
+            record.write_record(&dir).unwrap();
+            let b_builds = MemoryBuildStateAdapter::new();
+            let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
+            rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
+            let (b_records, _b_view) = writer_of("mesh1.admin.2", &view(), &storage);
+            let proving = Proving::default();
+            let b_err = create_attempt_over(&b_records, &proving, &Unheard, &b_builds, &build, "mesh1.rpc.9", 2, &data_root).await;
+            let _ = std::fs::remove_dir_all(&data_root);
+            (a_identity, b_err, proving.spawned.into_inner().unwrap())
+        });
+        let x = a_identity["node_id"].as_str().unwrap().to_string();
+        let deployment = a_identity["deployment_id"].as_str().unwrap().to_string();
+        let b_err = b_err.expect_err("B's attempt fails where this provider launches nothing");
+        assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B decides a new birth and reaches DeployRuntime: {b_err}");
+        assert_eq!(spawned.len(), 1, "{spawned:?}");
+        assert_ne!(spawned[0].0, deployment, "B launches a deployment of its own, never the exited birth's again");
+        let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        let rpc9: Vec<(String, String)> = claims.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.9" && s["attributes"]["moment"] == "claim").map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
+        assert!(rpc9.len() == 2 && rpc9[0] == (x.clone(), "row-written".to_string()) && rpc9[1].0 != x && rpc9[1].1 == "row-written", "A's claim, then a new birth's once A's is withdrawn: {rpc9:?}");
+        let settled = cap.spans_named("rdm.node_admin.node.resolve.via-claimed-allocation");
+        assert_eq!(settled.iter().map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>(), vec![(x.clone(), "launched-exited".to_string())], "{settled:#?}");
+        eprintln!("trace {}: via-claimed-allocation node_id={x} outcome=launched-exited; claims {rpc9:?}", settled[0]["trace_id"].as_str().unwrap_or(""));
+    }
+
+    /// CONTRACT (the lost-executor rule stops only a birth that never joined; a recoverable refusal
+    /// over a terminated member): A claims `mesh1.rpc.10` in attempt 1 and is lost; the provider holds
+    /// a running runtime of the exact deployment A's claim names, and that birth has joined fabric
+    /// membership. B, holding none of A's receipts past the claim, refuses by name at
+    /// `AllocateIdentity`: nothing is stopped, the claim is not withdrawn, nothing is minted or
+    /// launched, and A's birth holds the row. Must NOT happen: B stopping a joined member on `find`
+    /// alone.
+    #[test]
+    fn a_create_whose_lost_executor_launched_a_birth_that_joined_is_refused_by_name_and_stops_nothing() {
+        let cap = capture();
+        let (a_identity, b_err, terminated, spawned, row) = cap.run(async {
+            let storage = Arc::new(MemoryNodesStorage::default());
+            let data_root = std::env::temp_dir().join(format!("node-rows-launched-joined-{}", NodeId::mint()));
+            let build = BuildId("build-node-rows-10".into());
+            let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.10", &data_root).await;
+            let b_builds = MemoryBuildStateAdapter::new();
+            let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
+            rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
+            let (b_records, _b_view) = writer_of("mesh1.admin.2", &view(), &storage);
+            let provider = LaunchedByTheLost::default();
+            let b_err = create_attempt_over(&b_records, &provider, &Joined, &b_builds, &build, "mesh1.rpc.10", 2, &data_root).await;
+            let row = storage.node_row_at(&"mesh1.rpc.10".parse().unwrap()).await.unwrap();
+            let _ = std::fs::remove_dir_all(&data_root);
+            (a_identity, b_err, provider.terminated.into_inner().unwrap(), provider.spawned.into_inner().unwrap(), row)
+        });
+        let x = a_identity["node_id"].as_str().unwrap().to_string();
+        let b_err = b_err.expect_err("B's attempt is refused");
+        assert!(b_err.contains("AllocateIdentity") && b_err.contains("joined fabric membership") && b_err.contains(&x), "refused by name at AllocateIdentity, naming the joined birth: {b_err}");
+        assert!(terminated.is_empty(), "nothing is stopped: {terminated:?}");
+        assert!(spawned.is_empty(), "nothing is launched: {spawned:?}");
+        assert_eq!(row.map(|r| r.node_id.to_string()), Some(x.clone()), "A's birth holds the row: its claim is not withdrawn");
+        let settled = cap.spans_named("rdm.node_admin.node.resolve.via-claimed-allocation");
+        assert_eq!(settled.iter().map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>(), vec![(x.clone(), "launched-and-joined".to_string())], "{settled:#?}");
+        assert!(cap.spans_named("rdm.node_admin.node.remove.via-claim-withdrawn").is_empty(), "no claim is withdrawn");
+        eprintln!("trace {}: via-claimed-allocation node_id={x} outcome=launched-and-joined", settled[0]["trace_id"].as_str().unwrap_or(""));
     }
 
     /// CONTRACT: another mesh's primary never writes a row of a mesh with no primary; the
