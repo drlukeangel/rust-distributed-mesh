@@ -1273,6 +1273,35 @@ impl LeaveBook {
     }
 }
 
+/// How long the owner waits for the leaving mesh's `MeshLeave` handoff before its attempt ends
+/// incomplete. A deleting primary whose member workflows end incomplete says so inside a
+/// `MeshLeave` call, which ends the attempt at once; this bound covers a handoff that never
+/// arrives (a lost call, a lost primary). An attempt that ends incomplete is handed back to the
+/// fabric-primary ([`crate::executor::RunEnd::Incomplete`]): the Build stays in progress and the
+/// fabric-primary's drive claims the next attempt once what it decides on moves, and that attempt
+/// resumes from the receipts.
+pub const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The owner's wait for the handoff of the open leave `key` (mesh-delete.md step 5), sent by the
+/// final primary `primary`: the validated manifest, or the attempt's incomplete end. `view` ticks
+/// when the owner's view changes and `final_primary_exited` answers whether the final primary is
+/// proven exited, naming the proof.
+pub async fn await_handoff<F, Fut>(key: &LeaveKey, primary: &str, mut handoff: watch::Receiver<Option<LeaveOutcome>>, _view: watch::Receiver<u64>, _final_primary_exited: F) -> Result<ExitManifest, crate::executor::RunEnd>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<String>>,
+{
+    let outer = key.operation.as_str();
+    match tokio::time::timeout(HANDOFF_WAIT, handoff.wait_for(|m| m.is_some())).await {
+        Ok(Ok(m)) => match m.clone().expect("waited for Some") {
+            Ok(manifest) => Ok(manifest),
+            Err(reason) => Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary} reported its member workflows incomplete: {reason}"))),
+        },
+        Ok(Err(_)) => Err(crate::executor::RunEnd::Incomplete(format!("{outer}: the open leave was closed while its handoff was awaited"))),
+        Err(_) => Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary} sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand"))),
+    }
+}
+
 /// One mesh leave at the leaving mesh's primary, on its natural key `(mesh_id, Leaving)`.
 #[derive(Debug, Clone)]
 enum LeaveRun {

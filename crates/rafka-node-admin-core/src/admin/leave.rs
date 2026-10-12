@@ -23,15 +23,6 @@ use crate::mesh_leave::{accepted_roster, manifest_reference, members_exited, Adm
 use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
-/// How long the owner waits for the leaving mesh's `MeshLeave` handoff before its attempt ends
-/// incomplete. A deleting primary whose member workflows end incomplete says so inside a
-/// `MeshLeave` call, which ends the attempt at once; this bound covers a handoff that never
-/// arrives (a lost call, a lost primary). An attempt that ends incomplete is handed back to the
-/// fabric-primary ([`crate::executor::RunEnd::Incomplete`]): the Build stays in progress and the
-/// fabric-primary's drive claims the next attempt once what it decides on moves, and that attempt
-/// resumes from the receipts.
-const HANDOFF_WAIT: Duration = Duration::from_secs(120);
-
 /// What serves `LeaveMesh` and `MeshLeave` for a running admin.
 pub struct LeaveDoor {
     pub(super) runner: Arc<AdminRunner>,
@@ -283,7 +274,7 @@ impl AdminRunner {
         node_rpc: &crate::node_rpc::ProcessNodeRpc,
         primary: &Node,
         key: &LeaveKey,
-        mut handoff: tokio::sync::watch::Receiver<Option<crate::mesh_leave::LeaveOutcome>>,
+        handoff: tokio::sync::watch::Receiver<Option<crate::mesh_leave::LeaveOutcome>>,
     ) -> Result<(), RunEnd> {
         let event = MeshLeaveEvent { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string(), receipt_manifest: None, final_primary: None };
         // Step 2: the accepted command's hook, then the command.
@@ -301,14 +292,7 @@ impl AdminRunner {
         // Steps 3-4 run at the mesh-primary; its validated handoff, mesh.deleted, is what this waits
         // for. The validation covered the accepted roster (and every amendment) exactly, every birth
         // but the final primary, which reports still running.
-        let manifest = match tokio::time::timeout(HANDOFF_WAIT, handoff.wait_for(|m| m.is_some())).await {
-            Ok(Ok(m)) => match m.clone().expect("waited for Some") {
-                Ok(manifest) => manifest,
-                Err(reason) => return Err(RunEnd::Incomplete(format!("{outer}: {} reported its member workflows incomplete: {reason}", primary.name))),
-            },
-            Ok(Err(_)) => return Err(RunEnd::Incomplete(format!("{outer}: the open leave was closed while its handoff was awaited"))),
-            Err(_) => return Err(RunEnd::Incomplete(format!("{outer}: {} sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand", primary.name))),
-        };
+        let manifest = crate::mesh_leave::await_handoff(key, &primary.name.to_string(), handoff, self.records.subscribe_view(), || std::future::ready(None)).await?;
         // Step 5: mesh.deleted ends the mesh.delete. The final primary is not deleted inside its own
         // mesh.delete: it keeps publishing its aggregate until a separate node.delete (step 7).
         self.record_mesh_deleted(key, manifest).await.map_err(RunEnd::Failed)
