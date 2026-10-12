@@ -172,7 +172,14 @@ impl SeatFold {
     /// a seat change reads the shared root). Every other admin of the mesh folds none of them: what
     /// it holds is only what it applied itself. Called under the view's write lock, so two installs
     /// never fold at once. A read that fails leaves the tenure unfolded, named in the span.
-    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>) {
+    ///
+    /// The fold is the successor's acquisition of the held member statuses (node-status-heartbeat-
+    /// connections.md §A.3), and `book`, this admin's digest book, is what its member projection is
+    /// published from: each folded birth of the mesh whose state is ahead of what the book holds for
+    /// it is adopted there ([`DigestBook::adopt_status`]), before the view naming this admin primary is
+    /// installed and so before its first projection (fabric-authority.md §7: hydration, not
+    /// transition). One `rdm.node_admin.status.update.via-seat-fold` per birth adopted or refused.
+    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, book: Option<&rafka_mesh_transport::membership::DigestBook>) {
         let holds = now.holds_mesh_seat(&self.mesh, &self.me);
         {
             let mut folded = self.folded.lock().unwrap();
@@ -208,12 +215,77 @@ impl SeatFold {
                 declared.lock().unwrap().fold_rows(meshes, events, rows);
                 *self.folded.lock().unwrap() = true;
                 span.in_scope(|| tracing::info!("this admin took its mesh's seat: the mesh's status rows are folded into what it applied"));
+                if let Some(book) = book {
+                    span.in_scope(|| self.adopt_into(declared, book));
+                }
             }
             Err(e) => {
                 span.record("error", e.as_str());
                 span.in_scope(|| tracing::info!("this admin took its mesh's seat and could not read the mesh's status rows: it holds only what it applied"));
             }
         }
+    }
+}
+
+impl SeatFold {
+    /// Adopt into `book` every birth of this admin's mesh that `declared` holds a state for ahead of
+    /// what `book` holds for that exact birth: the status its predecessor set, held by the successor.
+    fn adopt_into(&self, declared: &Mutex<Declared>, book: &rafka_mesh_transport::membership::DigestBook) {
+        let held: Vec<(NodeId, IncarnationId, crate::model::PathName, NodeState)> = {
+            let declared = declared.lock().unwrap();
+            declared
+                .nodes
+                .iter()
+                .filter(|((node_id, _), _)| *node_id != self.me)
+                .filter_map(|((node_id, incarnation), state)| declared.names.get(&(node_id.clone(), incarnation.clone())).filter(|n| n.mesh == self.mesh).map(|n| (node_id.clone(), incarnation.clone(), n.clone(), *state)))
+                .collect()
+        };
+        for (node_id, incarnation, name, state) in held {
+            let prior = book.member_status(&node_id, &incarnation);
+            if transition(prior.map(declared_of_member), state) != Transition::Apply {
+                continue;
+            }
+            let status = member_of_declared(state);
+            let outcome = match book.adopt_status(&node_id, &incarnation, &name, status) {
+                Ok(_) => "adopted",
+                Err(why) => why,
+            };
+            tracing::info_span!(
+                "rdm.node_admin.status.update.via-seat-fold",
+                node = %self.name,
+                member = %name,
+                node_id = %node_id,
+                incarnation_id = %incarnation.0,
+                status = ?status,
+                prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+                outcome,
+                "otel.kind" = "internal"
+            )
+            .in_scope(|| tracing::info!("the seat taker holds the status its predecessor set for the member: its projection carries it"));
+        }
+    }
+}
+
+/// What a node declared, as its mesh-primary's book holds it: the one mapping from the declaration
+/// vocabulary to the member status ([`declared_of_member`] is its inverse).
+pub fn member_of_declared(s: NodeState) -> rafka_mesh_entity::MemberStatus {
+    use rafka_mesh_entity::MemberStatus as M;
+    match s {
+        NodeState::Pending => M::Pending,
+        NodeState::ReadyForTraffic => M::ReadyForTraffic,
+        NodeState::Draining => M::Draining,
+        NodeState::Leaving => M::Leaving,
+    }
+}
+
+/// A member status in the declaration vocabulary: the inverse of [`member_of_declared`].
+pub fn declared_of_member(s: rafka_mesh_entity::MemberStatus) -> NodeState {
+    use rafka_mesh_entity::MemberStatus as M;
+    match s {
+        M::Pending => NodeState::Pending,
+        M::ReadyForTraffic => NodeState::ReadyForTraffic,
+        M::Draining => NodeState::Draining,
+        M::Leaving => NodeState::Leaving,
     }
 }
 
@@ -279,8 +351,7 @@ pub struct StatusAuthority {
     /// This admin's digest book: as its mesh's primary it sets each member's status there from the
     /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
     /// otherwise). `None` only where no admin owns a digest book.
-    pub book: Option<rafka_mesh_transport::membership::DigestBook>,
-}
+    pub book: Option<rafka_mesh_transport::membership::DigestBook>,}
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
 /// `Declared`: the effect is committed only after the put returned `Ok`.
@@ -782,14 +853,8 @@ impl StatusAuthority {
                     NodeState::ReadyForTraffic => {
                         book.started(&row.node_id, &row.incarnation_id);
                     }
-                    NodeState::Pending => {
-                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Pending);
-                    }
-                    NodeState::Draining => {
-                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Draining);
-                    }
-                    NodeState::Leaving => {
-                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Leaving);
+                    state => {
+                        book.reported(&row.node_id, &row.incarnation_id, member_of_declared(state));
                     }
                 }
             }
