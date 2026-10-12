@@ -736,6 +736,10 @@ pub trait LifecycleEvents: Send + Sync {
     /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
     /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
     async fn stopped(&self, op: &LifecycleOp);
+    /// The stopped birth answered `start-node` with `Started`: this executor took its `node.joined`
+    /// (`op` is the start's operation on that exact birth). Its stop ends here and nowhere else
+    /// (node-start.md step 2), the birth is held `Pending`, and this mesh's projection says so.
+    async fn joined(&self, op: &LifecycleOp);
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
     /// channel and the backbone.
     async fn draining(&self, op: &LifecycleOp);
@@ -765,6 +769,7 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
     async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn joined(&self, _op: &LifecycleOp) {}
     async fn draining(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
@@ -1698,13 +1703,31 @@ impl DeploymentPipeline<'_> {
         let _forget = Forget(self.joins, node.node_id.clone(), run.build_id.to_string(), run.attempt);
         let _reported = self.joins.expect(deployed.clone());
         let _ = handle;
+        // The start on this exact birth, as the stop it ends is keyed: `node.joined` is taken under it.
+        let start_op = node.incarnation_id.clone().map(|incarnation| LifecycleOp {
+            build_id: run.build_id.to_string(),
+            attempt: run.attempt,
+            operation: run.operation.clone(),
+            node_id: node.node_id.clone(),
+            incarnation,
+            name: node.name.clone(),
+            event_at_rafka_ms: 0,
+        });
         let admission: CommandAdmission = self
             .step(run, StartStep::StartNode.name(), async {
                 node.status = NodeStatus::Pending;
                 self.sink.publish(node.clone());
                 let admission = self.observer.send_command(node, NodeCommand::Start, &ctx).await;
                 match &admission {
-                    CommandAdmission::Started => Ok(admission),
+                    CommandAdmission::Started => {
+                        // `start-node` answered `Started`: the birth rejoined (node.joined, this step's
+                        // receipt). The executor ends its stop here and holds it Pending.
+                        if let Some(op) = &start_op {
+                            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
+                            self.lifecycle.joined(&op).await;
+                        }
+                        Ok(admission)
+                    }
                     CommandAdmission::StartFailed { step, reason } => Err(format!("{}: node.start failed at {step}: {reason}", node.name)),
                     other => Err(format!("{}: start-node was not answered Started ({other:?}); the birth is not known to have rejoined", node.name)),
                 }

@@ -104,7 +104,9 @@ impl Full {
     /// The complete difference from this full to `new`, loads omitted (gossip.md §3.3: one delta
     /// per move from a held version to a newer one, never a replay of the versions between).
     /// `in_flight` and `departed` carry the overlays and departures `new` holds that this one does
-    /// not; a cleared overlay or an expired departure is a local fact of the receiver's age.
+    /// not. A cleared stop overlay travels as its birth's own `changed` entry: a source's primary
+    /// never lists a stopped birth, and lists it again only after its `node.joined` cleared the
+    /// stop ([`Full::apply`]). An expired departure is a local fact of the receiver's age.
     pub fn delta_to(&self, new: &Full) -> Delta {
         Delta {
             changed: new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d))).map(|(_, d)| without_load(d)).collect(),
@@ -114,9 +116,13 @@ impl Full {
         }
     }
 
-    /// This full moved by `delta`.
+    /// This full moved by `delta`. A `changed` entry of a birth clears that exact birth's stop
+    /// overlay (`NodeStopped`, `stop-node:`), and only that overlay: the source lists the birth again
+    /// once its primary's `node.joined` ended the stop (gossip.md §3.1, `MembersDelta` carries
+    /// "overlay and departed changes"). A restart or deleting overlay keeps its own end.
     pub fn apply(&mut self, delta: &Delta) {
         for d in &delta.changed {
+            self.in_flight.retain(|_, o| !(o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
             self.digests.insert(d.node.node_id.to_string(), d.clone());
         }
         for id in &delta.removed {

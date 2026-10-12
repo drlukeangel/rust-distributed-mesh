@@ -1795,6 +1795,31 @@ struct SnapshotTaken {
     publication: Option<Publication>,
 }
 
+/// What a receiver held of one source before a projection frame of it applied.
+struct Prior {
+    held: Option<(PublisherId, u64)>,
+    stops: BTreeSet<(String, String)>,
+}
+
+impl Prior {
+    fn of(rx: &SnapshotReceiver, mesh: &str) -> Self {
+        Self { held: rx.held_version(mesh), stops: Fence::stops_of(rx.held_full(mesh)) }
+    }
+
+    /// The fence of a frame of `publisher` at `version` arriving on `side`, `after` the projection the
+    /// receiver holds once it applied.
+    fn fence(self, publisher: &PublisherId, side: Side, version: u64, after: Option<&Full>) -> Fence {
+        Fence {
+            publisher: publisher.to_string(),
+            channel: side.name(),
+            held: self.held.map(|(p, v)| (p.to_string(), v)),
+            version,
+            prior_stops: self.stops,
+            post_stops: Fence::stops_of(after),
+        }
+    }
+}
+
 /// A backbone snapshot as its publisher stamped it.
 struct Publication {
     publisher: PublisherId,
@@ -1836,8 +1861,11 @@ pub type CompletionCarrier = Arc<dyn Fn(&Frame) + Send + Sync>;
 
 impl View {
     fn new(mesh: &str, node: &str) -> Self {
-        let view = Self { mesh: mesh.to_string(), node: node.to_string(), ..Self::default() };
+        let mut view = Self { mesh: mesh.to_string(), node: node.to_string(), ..Self::default() };
         *view.book.holder.lock().unwrap() = node.to_string();
+        *view.book.own_mesh.lock().unwrap() = mesh.to_string();
+        // One flag: the view replays as its mesh's primary while the book authors its members' statuses.
+        view.primary = view.book.primary.clone();
         view
     }
 
@@ -2118,6 +2146,7 @@ impl View {
                 // The receiver's lock is held until the book holds what the version names: a reader of
                 // the held version never sees a version ahead of the book it describes.
                 let mut rx = self.receiver(side).lock().unwrap();
+                let prior = Prior::of(&rx, mesh);
                 let taken = rx.take_chunk(chunk);
                 match taken {
                     Taken::Waiting { .. } => SnapshotTaken::default(),
@@ -2137,7 +2166,7 @@ impl View {
                         SnapshotTaken::default()
                     }
                     Taken::Installed(i) => {
-                        let installed = self.installed(&i, fabric, side, *published_at_rafka_ms);
+                        let installed = self.installed(&i, fabric, side, *published_at_rafka_ms, prior);
                         drop(rx);
                         installed
                     }
@@ -2154,6 +2183,7 @@ impl View {
                 }
                 let delta = Delta { changed: changed.clone(), removed: removed.clone(), in_flight: in_flight.clone(), departed: departed.clone() };
                 let mut rx = self.mesh_rx.lock().unwrap();
+                let prior = Prior::of(&rx, mesh);
                 let moved = rx.take_delta(mesh, source_publisher, *base_version, *topology_version, &delta);
                 match moved {
                     Moved::Applied { delta, .. } => {
@@ -2171,7 +2201,8 @@ impl View {
                         )
                         .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
                         let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.departed.clone());
-                        let carried = self.apply_full(mesh, &full, fabric, side);
+                        let fence = prior.fence(source_publisher, side, *topology_version, rx.held_full(mesh));
+                        let carried = self.apply_full(mesh, &full, fabric, side, &fence);
                         drop(rx);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
@@ -2241,8 +2272,9 @@ impl View {
         }
     }
 
-    /// A complete snapshot is held: apply it to the book.
-    fn installed(&self, i: &Install, fabric: &FabricId, side: Side, published_at_rafka_ms: u64) -> SnapshotTaken {
+    /// A complete snapshot is held: apply it to the book. `prior` is what the receiver held of the
+    /// source before it.
+    fn installed(&self, i: &Install, fabric: &FabricId, side: Side, published_at_rafka_ms: u64, prior: Prior) -> SnapshotTaken {
         tracing::info_span!(
             "rdm.mesh.membership.update.via-snapshot-installed",
             node = %self.node,
@@ -2257,7 +2289,8 @@ impl View {
             refreshed = i.refreshed,
         )
         .in_scope(|| tracing::debug!("a complete snapshot installed"));
-        let carried = self.apply_full(&i.mesh, &i.full, fabric, side);
+        let fence = prior.fence(&i.publisher, side, i.topology_version, Some(&i.full));
+        let carried = self.apply_full(&i.mesh, &i.full, fabric, side, &fence);
         let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
         // The fabric primary's clock is sampled from its own mesh's aggregate, never from one it
         // publishes as the publisher of record of a mesh with no primary (no digests, R-NS1).
@@ -2271,8 +2304,12 @@ impl View {
     }
 
     /// Apply the members, overlays and departures of a snapshot or a delta to the book. Departures
-    /// first: a digest of a departed birth in the same snapshot is refused.
-    fn apply_full(&self, _mesh: &str, full: &Full, fabric: &FabricId, side: Side) -> Vec<MeshDigest> {
+    /// first: a digest of a departed birth in the same snapshot is refused. A listed birth this book
+    /// holds stopped ends its stop only when the source moved, in order, from a version carrying the
+    /// stop to this one (`fence`); any other entry of it is refused by name. An own-mesh birth's
+    /// entry gives its status and nothing else (gossip.md §3.1: liveness, endpoints and the runtime
+    /// fact come from its Digest), unless this node is the primary that authors it.
+    fn apply_full(&self, _mesh: &str, full: &Full, fabric: &FabricId, side: Side, fence: &Fence) -> Vec<MeshDigest> {
         for op in full.departed() {
             self.book.depart(op);
         }
@@ -2288,6 +2325,8 @@ impl View {
                 self.book.deleting(op);
             }
         }
+        self.book.note_stops_carried(fence);
+        let authors = self.primary.load(Ordering::Relaxed);
         let mut carried = Vec::new();
         for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
             // A read carries this node's own digest as the node read holds it: this node's own
@@ -2295,19 +2334,33 @@ impl View {
             if matches!(side, Side::Read | Side::ReadPeer) && d.node.name.to_string() == self.node {
                 continue;
             }
-            // A member of this node's own mesh is heard directly on its mesh channel: an
-            // aggregate copy of it is held as heard directly, and the Mesh channel's copy of it
-            // adds nothing.
             let own = d.node.name.mesh == self.mesh;
+            // The primary authors its own mesh's statuses: a projection of its own mesh on its own
+            // channel adds nothing; an aggregate of it on the backbone is held as heard, as before.
+            if own && authors && side == Side::MeshChannel {
+                continue;
+            }
+            if !(own && authors) && self.book.is_stopped(&d) {
+                if self.book.moved_past_stop(&d, fence) {
+                    self.book.stop_ended_in_projection(&d, fence);
+                } else {
+                    self.book.refuse_in_projection(&d, fence);
+                    continue;
+                }
+            }
             let prior = self.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
-                (Side::Backbone, true) => self.book.record(d.clone()),
+                (Side::Backbone, true) if authors => self.book.record(d.clone()),
+                // An own-mesh member's status from its primary's projection: nothing else of it.
+                (Side::Backbone, true) | (Side::MeshChannel, true) => {
+                    self.book.take_projected_status(&d, fence);
+                    continue;
+                }
                 (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
-                (Side::MeshChannel, true) => false,
                 (Side::MeshChannel, false) => self.book.record_topology(d.clone()),
                 // A read installs what an entry answer installed, by the rule `learn` applies
                 // (R-G2): a peer mesh's member is topology and refreshes no liveness; a member of
-                // this node's own mesh is held as the answerer heard it.
+                // this node's own mesh is held as the answerer heard it, with its status.
                 (Side::Read, true) => self.book.record_forwarded(d.clone()),
                 (Side::Read, false) | (Side::ReadPeer, false) => self.book.record_topology(d.clone()),
                 (Side::ReadPeer, true) => false,
@@ -2652,6 +2705,7 @@ impl Membership {
     /// sequence (from 1), and `emitted_at_rafka_ms` is the composed clock's reading. The order a
     /// receiver acts on is the sequence, whatever the clock reads.
     pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
+        *self.book.own.lock().unwrap() = Some(d.node.node_id.to_string());
         let mut d = self.with_config(d);
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
@@ -2801,10 +2855,11 @@ impl Membership {
     /// snapshot carries is held as heard and its location registered.
     pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
         let mut rx = self.view.mesh_rx.lock().unwrap();
+        let prior = Prior::of(&rx, &chunk.mesh);
         let taken = rx.take_read_chunk(chunk);
         if let Taken::Installed(i) = &taken {
             let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
-            self.view.installed(i, &self.fabric, side, 0);
+            self.view.installed(i, &self.fabric, side, 0, prior);
             drop(rx);
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
                 self.mesh.register(&d);
@@ -3265,15 +3320,15 @@ impl Backbone {
         }) {
             let _ = self.channel.broadcast(&frame).await;
         }
-        // This Mesh's members hear every birth directly: its own source goes into the Mesh as the
-        // overlays and departures a member that missed an event resynchronizes from (gossip.md
-        // §3.3), so the forwarded projection of it names no member.
-        let overlays = Full::new(Vec::new(), full.in_flight(), full.departed());
-        *self.own.lock().unwrap() = Some((version, overlays.clone()));
+        // The primary's own member projection goes onto its own mesh channel through the same
+        // full and delta machinery, under its epoch and this version (gossip.md §3.1, `Members` and
+        // `MembersDelta`): own-mesh members take every member's status from it, and liveness,
+        // endpoints and the runtime fact from each member's own Digest. Loads are omitted.
+        *self.own.lock().unwrap() = Some((version, full.clone()));
         if self.full_due.swap(false, Ordering::Relaxed) {
             self.forward_fulls().await;
         } else {
-            self.membership.forward_path.source(&self.node, &self.mesh, &self.publisher, version, &overlays, sent);
+            self.membership.forward_path.source(&self.node, &self.mesh, &self.publisher, version, &full, sent);
         }
         true
     }
@@ -3564,6 +3619,55 @@ pub enum Heard {
     Topology,
 }
 
+/// What a book holds of one stopped birth (`NodeStopped`).
+#[derive(Debug, Clone)]
+struct StopMark {
+    /// The stopped birth.
+    incarnation: IncarnationId,
+    /// The `digest_seq` of the digest this book held of it when it dropped it, 0 when it held none.
+    held_seq: u64,
+    /// The digest this book held of it when it dropped it: a node-admin keeps showing the birth.
+    held: Option<MeshDigest>,
+    /// The latest heartbeat of the stopped birth this book refused since: what the mesh-primary
+    /// holds the birth from again at `node.joined`.
+    latest: Option<MeshDigest>,
+    /// The highest version, and its publisher, at which a projection of the birth's mesh this book
+    /// applied carried the stop. A later projection of that source listing the birth moved past it.
+    carried: Option<(String, u64)>,
+}
+
+/// One projection frame as its receiver applies it: who published it, on which channel, and what
+/// the receiver held of that source before and after it. With the version at which a projection
+/// carried a stop ([`StopMark::carried`]), what tells a projection that moved past a stop from one
+/// that never carried it here.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Fence {
+    /// The source's publisher (its exact birth): the version's epoch.
+    publisher: String,
+    /// Where the frame arrived.
+    channel: &'static str,
+    /// The source held before the frame, `(publisher, version)`, when one was held.
+    held: Option<(String, u64)>,
+    /// The version the frame carries.
+    version: u64,
+    /// The stopped births `(node id, incarnation)` whose stop the held source carried before the frame.
+    prior_stops: BTreeSet<(String, String)>,
+    /// The stopped births whose stop the held source carries after the frame.
+    post_stops: BTreeSet<(String, String)>,
+}
+
+impl Fence {
+    /// The stop births a source projection carries.
+    fn stops_of(full: Option<&crate::snapshot::Full>) -> BTreeSet<(String, String)> {
+        full.map(|f| f.in_flight().into_iter().filter(LifecycleOp::is_stop).map(|o| (o.node_id.to_string(), o.incarnation.0)).collect()).unwrap_or_default()
+    }
+
+    /// The version held before the frame, for spans: -1 when none was held.
+    fn held_version(&self) -> i64 {
+        self.held.as_ref().map(|(_, v)| *v as i64).unwrap_or(-1)
+    }
+}
+
 /// The latest digest held per logical node: when it was taken, and how it was heard.
 #[derive(Debug, Clone)]
 pub struct DigestBook {
@@ -3594,10 +3698,22 @@ pub struct DigestBook {
     refused_departures: Arc<Mutex<HashMap<String, BTreeSet<(String, u32, String)>>>>,
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
     in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
-    /// The parked births (`NodeStopped`) by NodeId: the incarnation and the highest `digest_seq`
-    /// this book held of it when it dropped it. Only that birth's own rejoin (a `Pending`, or a
-    /// `ReadyForTraffic` after a `Draining`, with a higher sequence) reopens it.
-    stopped_marks: Arc<Mutex<HashMap<String, (IncarnationId, u64, Option<MeshDigest>)>>>,
+    /// The stopped births (`NodeStopped`) by NodeId: what this book held of each when it dropped it,
+    /// and the latest heartbeat of it refused since. No heartbeat of the stopped birth is taken; only
+    /// the mesh-primary's `node.joined` ([`Self::joined`]), its projection moving past the stop
+    /// (`View::apply_full`), a later incarnation of the NodeId or a departure ends the stop.
+    stopped_marks: Arc<Mutex<HashMap<String, StopMark>>>,
+    /// Whether this book's holder is its mesh's primary now (the same flag its view holds): the
+    /// primary authors its members' statuses; every other member takes them from its projection.
+    primary: Arc<std::sync::atomic::AtomicBool>,
+    /// The holder's own mesh: an own-mesh birth's status comes from that mesh's primary (gossip.md
+    /// §3.1 `Members`). Empty for a book no membership holds: no birth is own-mesh to it.
+    own_mesh: Arc<Mutex<String>>,
+    /// The holder's own NodeId, once it published: its own birth's word about itself is its own.
+    own: Arc<Mutex<Option<String>>>,
+    /// The status this book holds for each own-mesh birth, by NodeId: what the mesh-primary's
+    /// projection said, or, while this book's holder is the primary, what it authored.
+    member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rafka_mesh_entity::MemberStatus)>>>,
     /// The stop and restart overlays that ended here (their birth rejoined), by operation key: a
     /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
@@ -3760,6 +3876,10 @@ impl DigestBook {
             refused_departures: Arc::default(),
             in_flight: Arc::default(),
             stopped_marks: Arc::default(),
+            primary: Arc::default(),
+            own_mesh: Arc::default(),
+            own: Arc::default(),
+            member_statuses: Arc::default(),
             ended_overlays: Arc::default(),
             executed: Arc::default(),
             holder: Arc::default(),
@@ -3828,6 +3948,7 @@ impl DigestBook {
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().remove(&op.key());
         self.overlays_moved();
+        self.member_statuses.lock().unwrap().remove(&id);
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-deleted",
@@ -3965,13 +4086,19 @@ impl DigestBook {
         }
     }
 
-    /// Accept a parked birth (`op` is `stop-node:<path>`, naming the birth that stopped): the node
-    /// leaves the book and is not routable, and its own rejoin is the only digest that brings it
-    /// back (`stopped_refuses`). `false` when already held, when the node departed, or when a later
-    /// birth of the node is held (the stop is of an older birth).
+    /// Accept a stopped birth (`op` is `stop-node:<path>`, naming the birth that stopped): the node
+    /// leaves the book and is not routable, and no heartbeat of that birth is taken again
+    /// (`stopped_refuses`). Only the mesh-primary's `node.joined` ([`Self::joined`]), its projection
+    /// moving past the stop, a later incarnation of the NodeId or a departure ends it. `false` when
+    /// already held, when the node departed, when a later birth of the node is held (the stop is of
+    /// an older birth), or when the birth is this book's own holder: a node's own book holds itself,
+    /// and its own stop is its own state (a start's topology read carries it before `node.joined`).
     pub fn stopped(&self, op: LifecycleOp) -> bool {
         if self.is_departed(op.node_id.as_str()) {
             reject_departed_overlay(&self.holder.lock().unwrap(), &op, "node-stopped");
+            return false;
+        }
+        if self.own.lock().unwrap().as_deref() == Some(op.node_id.as_str()) {
             return false;
         }
         let held_digest = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| d.clone());
@@ -3988,7 +4115,9 @@ impl DigestBook {
         }
         self.overlays_moved();
         let seq = held.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
-        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), seq, held_digest));
+        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), StopMark { incarnation: op.incarnation.clone(), held_seq: seq, held: held_digest, latest: None, carried: None });
+        // A stopped birth's status is the overlay: the status held for it ends with it.
+        self.member_statuses.lock().unwrap().remove(op.node_id.as_str());
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-stopped",
@@ -4001,47 +4130,254 @@ impl DigestBook {
             was_held = removed,
             held_status = held.as_ref().map(|(_, _, st)| format!("{st:?}")).unwrap_or_default(),
             held_digest_seq = seq,
+            holder = %self.holder.lock().unwrap(),
         )
-        .in_scope(|| tracing::info!("the exact birth is parked: dropped from the view, it is heard again only when it rejoins as itself"));
+        .in_scope(|| tracing::info!("the exact birth is stopped: dropped from the view; no heartbeat of it is taken until its mesh-primary's node.joined ends the stop"));
         self.births.send_modify(|v| *v += 1);
         true
     }
 
-    /// Whether `d` is refused because its birth is parked: only the birth's own rejoin, a digest of
-    /// the parked incarnation with a higher sequence than the one held when it was dropped and a
-    /// status of `Pending` or `ReadyForTraffic`, is taken (and ends the stop). A digest of another
-    /// birth of the node ends the stop and is taken by the rules of any birth.
-    fn stopped_refuses(&self, d: &MeshDigest) -> bool {
-        let mark = self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).cloned();
-        let Some((incarnation, seq, _)) = mark else { return false };
-        let rejoin = incarnation != d.node.incarnation || (d.digest_seq > seq && matches!(d.status, rafka_mesh_entity::MemberStatus::Pending | rafka_mesh_entity::MemberStatus::ReadyForTraffic));
-        if !rejoin {
-            tracing::info_span!(
-                "rdm.mesh.membership.reject.via-stopped-birth",
-                node = %d.node.name,
-                node_id = %d.node.node_id,
-                incarnation_id = %d.node.incarnation.0,
-                status = ?d.status,
-                digest_seq = d.digest_seq,
-                held_digest_seq = seq,
-            )
-            .in_scope(|| tracing::info!("a digest of a parked birth that is not its rejoin: refused, the stop stands"));
-            return true;
-        }
-        self.end_stop(d.node.node_id.as_str());
-        tracing::info_span!("rdm.mesh.membership.update.via-node-started", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0, status = ?d.status, digest_seq = d.digest_seq)
-            .in_scope(|| tracing::info!("the parked birth rejoined as itself: held again"));
-        false
+    /// Whether `d`, arriving through `door`, is refused because its birth is stopped. Every digest of
+    /// the stopped incarnation is refused by name, whatever its status or sequence (gossip.md,
+    /// "Node-stopped lifecycle overlay": the stop stays until the next lifecycle op on that exact
+    /// birth). A digest of another birth of the node ends the stop and is taken by the rules of any
+    /// birth.
+    fn stopped_refuses(&self, d: &MeshDigest, door: &'static str) -> bool {
+        let held_seq = {
+            let mut marks = self.stopped_marks.lock().unwrap();
+            let Some(mark) = marks.get_mut(d.node.node_id.as_str()) else { return false };
+            if mark.incarnation != d.node.incarnation {
+                None
+            } else {
+                if mark.latest.as_ref().is_none_or(|l| d.digest_seq > l.digest_seq) && d.digest_seq > mark.held_seq {
+                    mark.latest = Some(d.clone());
+                }
+                Some(mark.held_seq)
+            }
+        };
+        let Some(held_seq) = held_seq else {
+            self.end_stop(d.node.node_id.as_str());
+            tracing::info_span!("rdm.mesh.membership.update.via-node-started", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0, status = ?d.status, digest_seq = d.digest_seq)
+                .in_scope(|| tracing::info!("a later birth of a stopped node is heard: the stop of the older birth is over"));
+            return false;
+        };
+        tracing::info_span!(
+            "rdm.mesh.membership.reject.via-stopped-birth",
+            node = %self.holder.lock().unwrap(),
+            member = %d.node.name,
+            node_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            status = ?d.status,
+            digest_seq = d.digest_seq,
+            held_digest_seq = held_seq,
+            door,
+        )
+        .in_scope(|| tracing::info!("a digest of a stopped birth: refused, the stop stands until its mesh-primary's node.joined"));
+        true
     }
 
-    /// The last digest this book held of each parked birth: a node-admin keeps showing the birth,
+    /// The mesh-primary took `node.joined` of the stopped birth `op` names on its start (node-start.md
+    /// step 2: "node.start clears NodeStopped at node.joined"; states.md: node pending is set by the
+    /// node's mesh-primary from the node.joined report): the stop ends, and this book holds the birth
+    /// again as `Pending`, from the latest digest it heard of it, under `op`'s name (the row's, which
+    /// the join canonicalized). Its projection carries both on its next round. `false` when this book
+    /// holds no stop of that exact birth (a restart's stop publishes none).
+    pub fn joined(&self, op: &LifecycleOp) -> bool {
+        let mark = self.stopped_marks.lock().unwrap().get(op.node_id.as_str()).cloned();
+        let Some(mark) = mark.filter(|m| m.incarnation == op.incarnation) else { return false };
+        let cleared: Vec<String> = self.in_flight().into_iter().filter(|o| o.is_stop() && o.node_id == op.node_id).map(|o| o.operation).collect();
+        // The overlay clears before the birth is held again: a projection built in between lists
+        // neither, never both.
+        self.end_stop(op.node_id.as_str());
+        let again = mark.latest.clone().or(mark.held.clone()).map(|mut d| {
+            d.status = rafka_mesh_entity::MemberStatus::Pending;
+            d.node.name = op.name.clone();
+            d
+        });
+        if let Some(d) = &again {
+            self.inner.lock().unwrap().insert(op.node_id.to_string(), (d.clone(), Instant::now(), Heard::Direct));
+            self.member_statuses.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), rafka_mesh_entity::MemberStatus::Pending));
+            self.heard.send_modify(|v| *v += 1);
+            self.births.send_modify(|v| *v += 1);
+            self.digests.send_modify(|v| *v += 1);
+        }
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-node-joined",
+            node = %self.holder.lock().unwrap(),
+            member = %op.name,
+            node_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            build_id = %op.build_id,
+            attempt = op.attempt,
+            operation = %op.operation,
+            stops_cleared = %cleared.join(","),
+            status = "Pending",
+            held_again = again.is_some(),
+            held_digest_seq = again.as_ref().map(|d| d.digest_seq).unwrap_or(0),
+        )
+        .in_scope(|| tracing::info!("the mesh-primary took node.joined: the stop is over and the birth is held Pending; its projection says so"));
+        true
+    }
+
+    /// Whether the birth `d` names is stopped in this book (the exact incarnation).
+    fn is_stopped(&self, d: &MeshDigest) -> bool {
+        self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|m| m.incarnation == d.node.incarnation)
+    }
+
+    /// A projection frame applied: every stopped birth whose stop the source carried, before the
+    /// frame at the version held or after it at the frame's version, is marked carried at the highest
+    /// such version of that publisher.
+    fn note_stops_carried(&self, fence: &Fence) {
+        let mut marks = self.stopped_marks.lock().unwrap();
+        let mut note = |key: &(String, String), publisher: &str, version: u64| {
+            if let Some(m) = marks.get_mut(&key.0).filter(|m| m.incarnation.0 == key.1) {
+                if m.carried.as_ref().is_none_or(|(p, v)| p != publisher || version > *v) {
+                    m.carried = Some((publisher.to_string(), version));
+                }
+            }
+        };
+        if let Some((publisher, version)) = &fence.held {
+            for key in &fence.prior_stops {
+                note(key, publisher, *version);
+            }
+        }
+        for key in &fence.post_stops {
+            note(key, &fence.publisher, fence.version);
+        }
+    }
+
+    /// The `(publisher, version)` at which a projection this book applied carried the stop of `d`.
+    fn stop_carried_at(&self, d: &MeshDigest) -> Option<(String, u64)> {
+        self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation).and_then(|m| m.carried.clone())
+    }
+
+    /// Whether the projection frame `fence` describes moved, in order, past the stop of `d`: a
+    /// projection of the source this book applied carried the stop at some version, this frame is
+    /// newer than that version, and the projection after it no longer carries the stop. A refresh at
+    /// the version that carried it, or a projection that never carried it here, moves nothing. A new
+    /// publisher's projection is the next epoch of the source (receivers install its full first).
+    fn moved_past_stop(&self, d: &MeshDigest, fence: &Fence) -> bool {
+        let key = (d.node.node_id.to_string(), d.node.incarnation.0.clone());
+        let Some((publisher, version)) = self.stop_carried_at(d) else { return false };
+        let newer = publisher != fence.publisher || fence.version > version;
+        newer && !fence.post_stops.contains(&key)
+    }
+
+    /// The mesh-primary's projection of the stopped birth `d`'s mesh moved, in order, from a version
+    /// carrying its stop to `version` listing it: its primary took `node.joined`, and the stop ends
+    /// here.
+    fn stop_ended_in_projection(&self, d: &MeshDigest, fence: &Fence) {
+        let cleared: Vec<String> = self.in_flight().into_iter().filter(|o| o.is_stop() && o.node_id == d.node.node_id).map(|o| o.operation).collect();
+        let carried = self.stop_carried_at(d).map(|(_, v)| v as i64).unwrap_or(-1);
+        self.end_stop(d.node.node_id.as_str());
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-stop-ended-in-projection",
+            node = %self.holder.lock().unwrap(),
+            member = %d.node.name,
+            node_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            stops_cleared = %cleared.join(","),
+            publisher = %fence.publisher,
+            channel = fence.channel,
+            held_version = fence.held_version(),
+            stop_carried_at = carried,
+            topology_version = fence.version,
+            status = ?d.status,
+        )
+        .in_scope(|| tracing::info!("the mesh-primary's projection moved from the version carrying the stop to one listing the birth: the stop is over"));
+    }
+
+    /// A projection entry of the stopped birth `d` from a version that never carried its stop here:
+    /// published before the stop, or a refresh at the version held. Refused by name; the stop stands.
+    fn refuse_in_projection(&self, d: &MeshDigest, fence: &Fence) {
+        tracing::info_span!(
+            "rdm.mesh.membership.reject.via-stopped-birth",
+            node = %self.holder.lock().unwrap(),
+            member = %d.node.name,
+            node_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            status = ?d.status,
+            digest_seq = d.digest_seq,
+            door = "projection",
+            publisher = %fence.publisher,
+            channel = fence.channel,
+            held_version = fence.held_version(),
+            topology_version = fence.version,
+            stop_carried_at = self.stop_carried_at(d).map(|(_, v)| v as i64).unwrap_or(-1),
+        )
+        .in_scope(|| tracing::info!("a projection entry of a stopped birth from a version that never carried its stop here: refused, the stop stands"));
+    }
+
+    /// Whether `d` is a birth of this book's own mesh other than its holder: its status comes from
+    /// that mesh's primary (gossip.md §3.1 `Members`).
+    fn own_mesh_member(&self, d: &MeshDigest) -> bool {
+        let own_mesh = self.own_mesh.lock().unwrap();
+        !own_mesh.is_empty() && d.node.name.mesh == *own_mesh && self.own.lock().unwrap().as_deref() != Some(d.node.node_id.as_str())
+    }
+
+    /// The status this book holds for the own-mesh birth `d`, as a non-primary takes it: its
+    /// primary's projection's, else `Pending` (a birth whose status this book was not told is not
+    /// routable, states.md "Routing").
+    fn projected_status(&self, d: &MeshDigest) -> rafka_mesh_entity::MemberStatus {
+        self.member_statuses.lock().unwrap().get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rafka_mesh_entity::MemberStatus::Pending)
+    }
+
+    /// The mesh-primary's projection lists the own-mesh birth `d` with its status (gossip.md §3.1:
+    /// own-mesh members receive authoritative statuses through the primary's versioned member
+    /// projection): the status is held for the birth, and the held digest, liveness, endpoints and
+    /// runtime as its own heartbeat said, takes that status. Nothing else of `d` is taken. `false`
+    /// when nothing moved.
+    fn take_projected_status(&self, d: &MeshDigest, fence: &Fence) -> bool {
+        if self.is_departed(d.node.node_id.as_str()) || self.is_stopped(d) {
+            return false;
+        }
+        let prior = {
+            let mut statuses = self.member_statuses.lock().unwrap();
+            let prior = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s);
+            if prior == Some(d.status) {
+                return false;
+            }
+            statuses.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
+            prior
+        };
+        let held = {
+            let mut inner = self.inner.lock().unwrap();
+            match inner.get_mut(d.node.node_id.as_str()) {
+                Some((h, _, _)) if h.node.incarnation == d.node.incarnation => {
+                    h.status = d.status;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if held {
+            self.heard.send_modify(|v| *v += 1);
+        }
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-projected-status",
+            node = %self.holder.lock().unwrap(),
+            member = %d.node.name,
+            member_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            status = ?d.status,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+            heartbeat_held = held,
+            publisher = %fence.publisher,
+            channel = fence.channel,
+            topology_version = fence.version,
+        )
+        .in_scope(|| tracing::info!("an own-mesh member's status taken from its mesh-primary's projection; its liveness stays its own heartbeat's"));
+        true
+    }
+
+    /// The last digest this book held of each stopped birth: a node-admin keeps showing the birth,
     /// `Leaving`, in its view though the book dropped it. A birth this book never held a digest of
     /// (a late joiner) is not listed.
     pub fn parked(&self) -> Vec<MeshDigest> {
-        self.stopped_marks.lock().unwrap().values().filter_map(|(_, _, d)| d.clone()).collect()
+        self.stopped_marks.lock().unwrap().values().filter_map(|m| m.held.clone()).collect()
     }
 
-    /// The open stop overlays of parked births this book never held a digest of (an admin that
+    /// The open stop overlays of stopped births this book never held a digest of (an admin that
     /// joined after the stop and read the overlay from the mesh topology): the only facts it has of
     /// them are the overlay's own, the node's path, id and incarnation.
     pub fn parked_unheard(&self) -> Vec<LifecycleOp> {
@@ -4050,12 +4386,13 @@ impl DigestBook {
             .lock()
             .unwrap()
             .values()
-            .filter(|op| op.is_stop() && marks.get(op.node_id.as_str()).is_some_and(|(inc, _, held)| *inc == op.incarnation && held.is_none()))
+            .filter(|op| op.is_stop() && marks.get(op.node_id.as_str()).is_some_and(|m| m.incarnation == op.incarnation && m.held.is_none()))
             .cloned()
             .collect()
     }
 
-    /// The stop of `node_id` is over (it rejoined, or departed): its overlay and mark clear.
+    /// The stop of `node_id` is over (its mesh-primary took node.joined, a later birth was heard, or
+    /// it departed): its overlay and mark clear.
     fn end_stop(&self, node_id: &str) {
         self.stopped_marks.lock().unwrap().remove(node_id);
         let cleared = {
@@ -4184,6 +4521,7 @@ impl DigestBook {
         self.end_stop(op.node_id.as_str());
         self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
         self.overlays_moved();
+        self.member_statuses.lock().unwrap().remove(&id);
         self.inner.lock().unwrap().remove(&id);
         true
     }
@@ -4280,14 +4618,25 @@ impl DigestBook {
         self.record_at(d, Instant::now())
     }
 
-    /// [`Self::record`], heard at `now`.
+    /// [`Self::record`], heard at `now`. `d` is a heartbeat: the member's liveness, endpoints and
+    /// runtime fact. A heartbeat of a stopped birth is refused by name. For a birth of this book's own
+    /// mesh, its status is the mesh-primary's (gossip.md §3.1: a Digest "carries no status: a member's
+    /// status comes only from its mesh-primary"): while this book's holder is the primary, it takes
+    /// its member's report and authors the status from it; otherwise the held status is the one its
+    /// primary's projection gave ([`Self::projected_status`]), and the heartbeat moves none.
     pub fn record_at(&self, d: MeshDigest, now: Instant) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "mesh-channel");
             return false;
         }
-        if self.stopped_refuses(&d) {
+        if self.stopped_refuses(&d, "heartbeat") {
             return false;
+        }
+        let own_mesh = self.own_mesh_member(&d);
+        let authors = self.primary.load(Ordering::Relaxed);
+        let mut stored = d.clone();
+        if own_mesh && !authors {
+            stored.status = self.projected_status(&d);
         }
 
         let mut inner = self.inner.lock().unwrap();
@@ -4305,10 +4654,13 @@ impl DigestBook {
             }
         }
         let prior = inner.get(d.node.node_id.as_str()).map(|(held, _, _)| held.status);
-        let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.status != d.status || now.saturating_duration_since(*at) > self.staleness_floor);
-        inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Direct));
+        let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != stored.node);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != stored.node || held.status != stored.status || now.saturating_duration_since(*at) > self.staleness_floor);
+        inner.insert(d.node.node_id.to_string(), (stored, now, Heard::Direct));
         drop(inner);
+        if own_mesh && authors {
+            self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
+        }
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
@@ -4341,7 +4693,7 @@ impl DigestBook {
             reject_departed(&d, "forwarded");
             return false;
         }
-        if self.stopped_refuses(&d) {
+        if self.stopped_refuses(&d, "topology") {
             return false;
         }
         let mut inner = self.inner.lock().unwrap();
@@ -4390,7 +4742,7 @@ impl DigestBook {
             reject_departed(&d, "forwarded");
             return false;
         }
-        if self.stopped_refuses(&d) {
+        if self.stopped_refuses(&d, "forwarded") {
             return false;
         }
 
@@ -4413,6 +4765,11 @@ impl DigestBook {
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
+        // An own-mesh birth held from what its mesh-primary serves (a topology read) or what it said
+        // when it joined (its join digest, at the authority that deployed it): that status is held.
+        if self.own_mesh_member(&d) {
+            self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
+        }
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
@@ -4866,12 +5223,14 @@ mod tests {
         assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, inc, "the book shows the same birth throughout");
     }
 
-    /// CONTRACT (ops-naming, `node.stop`): a `NodeStopped` for the exact birth drops it from the
-    /// book and keeps it unroutable; digests the parked birth sent before it stopped (a late
-    /// `Draining`, an older heartbeat) never bring it back; its own rejoin (a `Pending` digest with a
-    /// higher sequence) does, as the same birth, and closes the stop; a departure ends the stop for good.
+    /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): a `NodeStopped`
+    /// for the exact birth drops it from the book and keeps it unroutable; no digest of the stopped
+    /// birth brings it back, whatever its status or sequence and whichever door it arrives through
+    /// (a late `Draining`, an older heartbeat, a pending one with a higher sequence). Only the
+    /// mesh-primary's `node.joined` ends the stop: the birth is held again `Pending`, as the same
+    /// birth, and its later heartbeat moves on from there; a departure ends the stop for good.
     #[test]
-    fn a_stopped_birth_leaves_the_book_and_only_its_own_rejoin_brings_it_back() {
+    fn a_stopped_birth_leaves_the_book_and_only_node_joined_brings_it_back() {
         let book = DigestBook::default();
         hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
@@ -4884,16 +5243,20 @@ mod tests {
         assert!(!book.routable(id.as_str()));
         assert_eq!(book.in_flight(), vec![o.clone()]);
         assert!(book.departed().is_empty(), "a stop departs nothing");
-        for late in [digest(&id, &inc, None, MemberStatus::Draining, 111), digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 105), digest(&id, &inc, None, MemberStatus::Pending, 109)] {
+        for late in [digest(&id, &inc, None, MemberStatus::Draining, 111), digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 105), digest(&id, &inc, None, MemberStatus::Pending, 109), digest(&id, &inc, None, MemberStatus::Pending, 120)] {
             assert!(!book.record(late.clone()), "{late:?}");
             assert!(!book.record_forwarded(late.clone()), "{late:?}");
             assert!(!book.record_topology(late.clone()), "{late:?}");
         }
-        assert!(book.get(id.as_str()).is_none(), "no late digest brought it back");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 120)), "its own rejoin is taken");
-        assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, inc, "the same birth");
-        assert!(book.in_flight().is_empty(), "the rejoin closes the stop");
-        assert!(!book.routable(id.as_str()), "the rejoined birth is Pending: a routing stop until it says ready-for-traffic");
+        assert!(book.get(id.as_str()).is_none(), "no digest brought it back");
+        assert_eq!(book.in_flight(), vec![o.clone()], "the stop stands");
+        assert!(!book.joined(&op(&id, &IncarnationId::mint(), "start-node:mesh1.rpc.1")), "node.joined of another birth ends nothing");
+        assert!(book.joined(&op(&id, &inc, "start-node:mesh1.rpc.1")), "the mesh-primary's node.joined ends the stop");
+        let (held, _) = book.get(id.as_str()).expect("held again");
+        assert_eq!((held.node.incarnation.clone(), held.status, held.digest_seq), (inc.clone(), MemberStatus::Pending, 120), "the same birth, Pending, from the latest heartbeat heard of it");
+        assert!(book.in_flight().is_empty(), "node.joined closes the stop");
+        assert!(!book.routable(id.as_str()), "the joined birth is Pending: a routing stop until it is ready-for-traffic");
+        assert!(!book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 118)), "a heartbeat older than the one it is held from is not taken");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 125)));
         assert!(book.routable(id.as_str()), "its ready-for-traffic restores selection");
         // A departure ends a stop for good.
@@ -4902,6 +5265,103 @@ mod tests {
         assert!(book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1")));
         assert!(book.in_flight().is_empty(), "the departure cleared the stop overlay");
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a departed node never returns");
+    }
+
+    /// CONTRACT (gossip.md §3.1 `Members`; R-HB1): a non-primary node-admin of mesh1 takes its own
+    /// mesh's statuses from its primary's backbone aggregate, and a stop's end only when that
+    /// projection moves, in order, past the stop. Holding mesh1.rpc.1 stopped from the event: v1
+    /// again (a refresh at the version held, built before the stop) is refused by name; v2 carries
+    /// the stop; v3 lists neither (the primary's stop cleared before it held the birth again) and
+    /// ends nothing; v2 again (older than the version held) installs nothing; v4
+    /// lists the birth `Pending` and ends the stop, carried at v2. The heartbeat of the birth then
+    /// gives liveness and nothing of its status, which is the projection's `Pending`, then its
+    /// `ReadyForTraffic`. Must NOT happen: a stop ended by a projection that never carried it, by a
+    /// refresh, or by a heartbeat; an own-mesh status taken from a heartbeat.
+    #[test]
+    fn a_non_primary_admin_ends_a_stop_only_when_its_primarys_projection_moves_past_it() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = View::new("mesh1", "mesh1.admin.2");
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let b = |status, seq| digest(&id, &inc, None, status, seq);
+        let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        let members = |version: u64, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>| Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: publisher.clone(),
+            forwarded_by: None,
+            topology_version: version,
+            published_at_rafka_ms: version,
+            snapshot_id: version * 10 + in_flight.len() as u64,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests,
+            in_flight,
+            departed: Vec::new(),
+        };
+        let status = || view.book.get(id.as_str()).map(|(d, _)| d.status);
+        assert!(view.book.record(b(MemberStatus::ReadyForTraffic, 1)));
+        assert_eq!(status(), Some(MemberStatus::Pending), "a heartbeat gives no status: none is held until the projection gives one");
+        view.take_snapshot(&members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
+        assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "the projection's status");
+        assert!(view.book.record(b(MemberStatus::Draining, 2)));
+        assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "a heartbeat moves no status");
+
+        view.take(&Frame::NodeStopped { op: stop.clone(), forwarded_by: None }, &fabric, "mesh-channel");
+        assert!(view.book.get(id.as_str()).is_none() && view.book.in_flight() == vec![stop.clone()]);
+        view.take_snapshot(&members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
+        assert_eq!(view.book.in_flight(), vec![stop.clone()], "a refresh at the version held, built before the stop, ends nothing");
+        view.take_snapshot(&members(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone);
+        view.take_snapshot(&members(3, vec![], vec![]), &fabric, Side::Backbone);
+        assert_eq!(view.book.in_flight(), vec![stop.clone()], "a version listing neither the stop nor the birth ends nothing");
+        view.take_snapshot(&members(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone);
+        assert!(!view.book.record(b(MemberStatus::Pending, 3)), "a heartbeat of the stopped birth is refused");
+        view.take_snapshot(&members(4, vec![b(MemberStatus::Pending, 3)], vec![]), &fabric, Side::Backbone);
+        assert!(view.book.in_flight().is_empty(), "the projection moved past the stop: it is over");
+        assert!(view.book.get(id.as_str()).is_none(), "the projection gives the status, not liveness");
+        assert!(view.book.record(b(MemberStatus::ReadyForTraffic, 4)));
+        assert_eq!(status(), Some(MemberStatus::Pending), "the projection's Pending, not the heartbeat's ReadyForTraffic");
+        view.take_snapshot(&members(5, vec![b(MemberStatus::ReadyForTraffic, 4)], vec![]), &fabric, Side::Backbone);
+        assert_eq!(status(), Some(MemberStatus::ReadyForTraffic));
+
+        let refused = spans.named("rdm.mesh.membership.reject.via-stopped-birth");
+        let projection: Vec<(String, String, String)> = refused.iter().filter(|f| f["door"] == "projection").map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect();
+        assert_eq!(projection, vec![("1".into(), "1".into(), "-1".into())], "only the refresh before the stop listed the birth: {refused:?}");
+        assert!(refused.iter().any(|f| f["door"] == "heartbeat" && f["digest_seq"] == "3"), "{refused:?}");
+        let ended = spans.named("rdm.mesh.membership.update.via-stop-ended-in-projection");
+        assert_eq!(ended.iter().map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect::<Vec<_>>(), vec![("3".to_string(), "4".to_string(), "2".to_string())], "ended once, at v4 over the v3 held, the stop carried at v2: {ended:?}");
+    }
+
+    /// CONTRACT (gossip.md §3.1 `MembersDelta` carries "overlay and departed changes"; §3.3 a delta is
+    /// "the complete difference between the two projections"): a delta's `changed` entry of a birth
+    /// clears that exact birth's stop overlay in the held projection, because its source lists a
+    /// stopped birth again only after node.joined cleared the stop. Only `NodeStopped` of that exact
+    /// incarnation: a restart or deleting overlay of the birth, and a stop of another incarnation,
+    /// stay. The forwarder's delta for that move carries the birth in `changed` and no overlay.
+    #[test]
+    fn a_delta_listing_a_birth_again_clears_only_that_births_stop_overlay() {
+        use crate::snapshot::{Delta, Full};
+        let (id, inc, other) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        let old_stop = LifecycleOp { build_id: "b0".into(), ..op(&id, &other, "stop-node:mesh1.rpc.1") };
+        let restart = op(&id, &inc, "restart-node:mesh1.rpc.1");
+        let deleting = op(&id, &inc, "retire-node:mesh1.rpc.1");
+        let mut held = Full::new(Vec::new(), vec![stop.clone(), old_stop.clone(), restart.clone(), deleting.clone()], Vec::new());
+        held.apply(&Delta { changed: vec![digest(&id, &inc, None, MemberStatus::Pending, 9)], ..Delta::default() });
+        let mut left = held.in_flight();
+        left.sort_by(|a, b| a.key().cmp(&b.key()));
+        let mut want = vec![old_stop, restart, deleting];
+        want.sort_by(|a, b| a.key().cmp(&b.key()));
+        assert_eq!(left, want, "only the exact birth's stop overlay is cleared");
+        let at_stop = Full::new(Vec::new(), vec![stop.clone()], Vec::new());
+        let joined = Full::new(vec![digest(&id, &inc, None, MemberStatus::Pending, 9)], Vec::new(), Vec::new());
+        let delta = at_stop.delta_to(&joined);
+        assert_eq!((delta.changed.len(), delta.in_flight.len(), delta.removed.len()), (1, 0, 0), "the clear travels as the birth's own changed entry: {delta:?}");
+        let mut receiver = at_stop.clone();
+        receiver.apply(&delta);
+        assert!(receiver.same_topology(&joined), "the receiver holds what the source holds");
     }
 
     /// CONTRACT (membership.rs `restarts_from_facts`; node-restart.md: no event is inferred from
@@ -4943,9 +5403,10 @@ mod tests {
         assert!(book.restart_of(id3.as_str(), &inc3).is_none(), "its own attempt Converged closes it");
     }
 
-    /// CONTRACT: an overlay that ended because its birth rejoined stays ended: the primary re-applying
-    /// the operation each round (its `Complete` is not receipted yet) and a snapshot built before the
-    /// rejoin open nothing. Must NOT happen: a rejoined node held restarting or parked again.
+    /// CONTRACT: an overlay that ended stays ended: a restart its birth rejoined from, the primary
+    /// re-applying the operation each round (its `Complete` is not receipted yet), and a stop its
+    /// mesh-primary's node.joined ended, re-sent by a snapshot built before it, open nothing. Must NOT
+    /// happen: a rejoined node held restarting or stopped again.
     #[test]
     fn an_ended_restart_or_stop_overlay_is_not_opened_again_by_a_later_copy() {
         let book = DigestBook::default();
@@ -4962,14 +5423,15 @@ mod tests {
         assert!(book.routable(id.as_str()), "no overlay holds it: the ready birth of a ready mesh is selected");
         let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
         assert!(book.stopped(stop.clone()));
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 130)));
-        assert!(!book.stopped(stop), "a snapshot built before the rejoin does not park the node again");
+        assert!(!book.record(digest(&id, &inc, None, MemberStatus::Pending, 130)), "a heartbeat ends no stop");
+        assert!(book.joined(&op(&id, &inc, "start-node:mesh1.rpc.1")));
+        assert!(!book.stopped(stop), "a snapshot built before node.joined does not stop the node again");
         assert!(book.get(id.as_str()).is_some());
     }
 
     /// CONTRACT: a stop of an older birth than the one held, and a stop of a departed node, are refused;
-    /// a node this book holds nothing of is marked parked all the same (a late joiner reads it from
-    /// the aggregate's open overlays) and refuses what is not its rejoin.
+    /// a node this book holds nothing of is marked stopped all the same (a late joiner reads it from
+    /// the aggregate's open overlays) and refuses every heartbeat of that birth.
     #[test]
     fn a_stop_of_another_birth_is_refused_and_one_for_an_unheld_node_still_parks_it() {
         let book = DigestBook::default();
@@ -4980,7 +5442,9 @@ mod tests {
         let late_joiner = DigestBook::default();
         assert!(late_joiner.stopped(op(&id, &new, "stop-node:mesh1.rpc.1")));
         assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::Draining, 90)));
-        assert!(late_joiner.record(digest(&id, &new, None, MemberStatus::Pending, 1)));
+        assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::Pending, 91)), "a heartbeat ends no stop");
+        assert!(late_joiner.joined(&op(&id, &new, "start-node:mesh1.rpc.1")), "node.joined ends it");
+        assert_eq!(late_joiner.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::Pending, 91)), "held again from the latest heartbeat it refused");
     }
 
     /// CONTRACT: a stop is an open overlay of its mesh's aggregate (`Members.in_flight`), recognised
@@ -5517,9 +5981,10 @@ mod tests {
             }) {
                 let Frame::Members { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } = f else { unreachable!() };
                 let chunk = crate::snapshot::Chunk { mesh, publisher, forwarded_by: None, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed };
+                let prior = Prior::of(&joiner.mesh_rx.lock().unwrap(), &chunk.mesh);
                 let installed = joiner.mesh_rx.lock().unwrap().take_read_chunk(chunk);
                 if let crate::snapshot::Taken::Installed(i) = installed {
-                    joiner.installed(&i, &fabric, Side::Read, 0);
+                    joiner.installed(&i, &fabric, Side::Read, 0, prior);
                 }
             }
         }
@@ -5779,8 +6244,8 @@ mod tests {
         assert_eq!(listed.keys().cloned().collect::<Vec<_>>(), ["mesh1", "mesh4"], "{listed:?}");
         assert_eq!(listed["mesh1"], (vec![stop_last.clone()], vec![]), "only the stop it executed, never mesh1's other stop");
         assert_eq!(listed["mesh4"], (vec![], vec![delete.clone()]));
-        // The last admin is started again: its stop ends and it is listed no more.
-        assert!(book.record(digest(&last.0, &last.1, None, MemberStatus::Pending, 500)));
+        // The last admin is started again: its stop ends at node.joined and it is listed no more.
+        assert!(book.joined(&LifecycleOp { operation: "start-node:mesh1.admin.1".into(), ..stop_last.clone() }));
         assert!(!book.executed_overlays_beyond("mesh2").contains_key("mesh1"), "a start hands publishing back");
     }
 
