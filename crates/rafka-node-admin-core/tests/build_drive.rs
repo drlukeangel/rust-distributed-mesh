@@ -471,24 +471,32 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     assert_eq!(dispatched.last().map(|(x, _)| x.as_str()), Some("mesh2.admin.1"), "the mesh reconciles its own nodes once heard: {dispatched:?}");
 }
 
-/// CONTRACT (mesh-investigation.md step 5, "Fully crashed"; R-D1): mesh2 has lost every node-admin and
-/// the investigation's 60 s decision on it came out `unreachable`, a hold. The fabric-primary opened
-/// the attempt on the provider's exact exit proof of every node-admin, so the drive runs the create of
-/// the mesh's first node-admin, and only it, on the fabric-primary; the mesh's second admin and its
-/// ordinary node still wait for the mesh to be heard. With no decision at all the fence stands for the
-/// first admin too. Must NOT happen: the fence refusing the one create the exit proof opened (the
-/// mesh waiting for ever), or the hold releasing more than that create.
-#[tokio::test]
-async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does() {
+/// mesh2 has lost every node it had, both node-admins included, and the Build grows its rpc nodes to
+/// two; the investigation's state on mesh2 is the cell's.
+async fn crashed_rig() -> Rig {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
-    for n in ["mesh2.admin.1", "mesh2.rpc.1"] {
+    for n in ["mesh2.admin.1", "mesh2.admin.2", "mesh2.rpc.1"] {
         let mut lost = node(n, false, false);
         lost.status = NodeStatus::Dead;
         t.nodes.push(lost);
     }
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
-    let r = rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await;
+    rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await
+}
+
+/// CONTRACT (mesh-investigation.md step 5, "Fully crashed": "The fabric-primary acts on the provider's
+/// exact exit proof, never on silence, and creates mesh-x's node-admin in process"; R-D1): mesh2 has
+/// lost every node-admin and the investigation's 60 s decision on it came out `unreachable`, a hold.
+/// The drive reads the provider's exit proof of every node-admin of mesh2 itself, and on that proof
+/// it runs the create of the mesh's first node-admin, and only it, on the fabric-primary; the mesh's
+/// second admin and its ordinary node still wait for the mesh to be heard. With no decision at all
+/// the fence stands for the first admin too. Must NOT happen: the fence refusing the one create the
+/// exit proof admits (the mesh waiting for ever), or the hold releasing more than that create.
+#[tokio::test]
+async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does() {
+    let r = crashed_rig().await;
+    r.proofs.exited.lock().unwrap().extend(["mesh2.admin.1".to_string(), "mesh2.admin.2".to_string()]);
     let held = |unreachable_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: false, unreachable_decided };
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-crashed-mesh-drive");
     let drive = Drive::detached(r.build.clone());
@@ -514,6 +522,36 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     assert_eq!(fenced.len(), 2, "the fence is named for the undecided admin.1 and then for admin.2: {fenced:?}");
     assert_eq!((fenced[1].1.get("target").map(String::as_str), fenced[1].1.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("false")), "{:?}", fenced[1].1);
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", fenced[1].0, fenced[1].1);
+}
+
+/// CONTRACT (mesh-investigation.md step 5, "Fully crashed": "The fabric-primary acts on the provider's
+/// exact exit proof, never on silence ... else hold; backbone refeed continues"): the investigation's
+/// 60 s decision on mesh2 came out `unreachable`, and the provider proves `mesh2.admin.1` exited but
+/// not `mesh2.admin.2`. The mesh is held: the drive claims and dispatches nothing for it, the fence
+/// names the decision, and the proof read is its own span naming the node-admin not proven.
+/// Must NOT happen: the create of mesh2's first node-admin admitted on the `unreachable` decision
+/// alone, a silence, while a node-admin of the mesh is not proven exited.
+#[tokio::test]
+async fn an_unreachable_mesh_with_a_node_admin_the_provider_does_not_prove_exited_is_held_and_nothing_of_it_runs() {
+    let r = crashed_rig().await;
+    r.proofs.exited.lock().unwrap().insert("mesh2.admin.1".to_string());
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: false, unreachable_decided: true });
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-crash-proof-held");
+    let drive = Drive::detached(r.build.clone());
+    let before = r.builds.read_build(&r.build).await.unwrap();
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.1") && why.contains("unreachable"), "the fence holds the mesh's first admin and names the decision: {why}"),
+        other => panic!("nothing is claimed for an unreachable mesh with a node-admin not proven exited: {other:?}"),
+    }
+    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (before.attempt, None), "no attempt is claimed across the fence");
+    let proofs = capture.spans("rdm.node_admin.mesh.update.via-crash-proof");
+    assert_eq!(proofs.len(), 1, "the proof read is named once: {proofs:?}");
+    let a = &proofs[0].1;
+    assert_eq!((a.get("mesh").map(String::as_str), a.get("outcome").map(String::as_str), a.get("proven").map(String::as_str)), (Some("mesh2"), Some("held"), Some("mesh2.admin.1")), "{a:?}");
+    assert!(a.get("unproven").is_some_and(|u| u.contains("mesh2.admin.2")), "the hold names the node-admin not proven: {a:?}");
+    eprintln!("span rdm.node_admin.mesh.update.via-crash-proof trace_id={} {a:?}", proofs[0].0);
 }
 
 /// The R-D1 fixture: mesh2's only node-admin is proven exited (so the fabric-primary of mesh1 is
