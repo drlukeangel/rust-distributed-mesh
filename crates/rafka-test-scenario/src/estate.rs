@@ -923,7 +923,7 @@ impl Estate {
             let id = self.container_of(node).unwrap_or_else(|| panic!("{node}: no running container of fabric {}", self.fabric_id));
             return docker(&["inspect", "--format", "{{.State.Pid}}", &id]).ok().and_then(|p| p.parse().ok()).filter(|p| *p > 0).unwrap_or_else(|| panic!("{node}: container {id} has no running init"));
         }
-        let dir = self.data_dir_of(node).await;
+        let dir = self.data_dir(node).await;
         let d: Value = serde_json::from_slice(&std::fs::read(format!("{dir}/deployment.json")).unwrap()).unwrap();
         d["pid"].as_u64().unwrap_or_else(|| panic!("{node}: no pid in {d}"))
     }
