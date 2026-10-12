@@ -191,6 +191,26 @@ impl UpdateStep {
     }
 }
 
+/// The steps of creating a mesh (`create-mesh:<mesh>`, node-identity-and-state.md §2.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateMeshStep {
+    /// The mesh's name is claimed by insert-and-fail at its key. Receipted only when the claim is
+    /// refused: a won claim, or the mesh's own row found standing, ends in `Complete`.
+    ClaimMeshName,
+    /// The name is claimed and the mesh's id is held for its launches: the operation is done.
+    Complete,
+}
+
+impl CreateMeshStep {
+    /// The step's name as it appears in receipts and spans.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ClaimMeshName => "ClaimMeshName",
+            Self::Complete => "Complete",
+        }
+    }
+}
+
 /// One step of retiring a node, in the order of [`RetireStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetireStep {

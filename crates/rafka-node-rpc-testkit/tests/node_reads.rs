@@ -135,6 +135,18 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
         assert_eq!((fabric.name.as_str(), fabric.fabric_primary.clone()), ("fabric1", Some(me.node.name.clone())));
         assert_eq!(fabric.meshes.iter().map(|m| m.name.clone()).collect::<Vec<_>>(), held_meshes);
 
+        // fabric.get awaited: a fact the admin's view holds is the read that held it; a fact it never
+        // reports ends the call Indeterminate, naming the fact, the admin and its last report.
+        let awaited = fabrics.fact("the admin is the fabric-primary", WRONG, |f| f.fabric_primary.as_ref() == Some(&me.node.name)).await.unwrap_or_else(|e| panic!("fabric.get awaited: {e}"));
+        assert_eq!(awaited.fabric_primary, Some(me.node.name.clone()));
+        match fabrics.fact("a fabric-primary other than the admin", Duration::from_secs(1), |f| f.fabric_primary.as_ref().is_some_and(|p| *p != me.node.name)).await {
+            Err(CallEnd::Indeterminate { reason }) => assert!(
+                reason.contains("a fabric-primary other than the admin") && reason.contains(&me.node.name.to_string()) && reason.contains(&format!("fabric-primary {}", me.node.name)),
+                "the unreported fact is named with the admin and its last report: {reason}"
+            ),
+            other => panic!("a fact the admin never reports ends Indeterminate, not {other:?}"),
+        }
+
         // node.connections.get of the admin: exactly what it holds.
         let birth = ExactBirth { target: NodeTarget::ExactNode(me.node.node_id.clone()), node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() };
         let connections = nodes.connections_get(&birth).await.unwrap_or_else(|e| panic!("node.connections.get of the admin: {e}"));
