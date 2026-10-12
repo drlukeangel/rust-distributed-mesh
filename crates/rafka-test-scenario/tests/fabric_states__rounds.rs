@@ -610,7 +610,8 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
         ("DELETE", "/api/meshes/mesh2", "mesh.delete mesh2"),
     ];
     for (method, path, workflow) in refusals {
-        let (status, v) = if method == "POST" { estate.post(path, &json!({})).await } else { estate.delete(path).await };
+        // As is, at the fabric-primary (the entry admin): the estate's operator path would wait for a ready fabric.
+        let (status, v) = if method == "POST" { estate.post_raw(path, &json!({})).await } else { estate.delete_raw(path).await };
         assert_eq!((status, v["error"].as_str()), (422, Some("fabric-not-ready")), "{method} {path}: {v}");
         assert!(v["detail"].as_str().is_some_and(|d| d.contains(workflow) && d.contains("state-sync")), "the detail names the workflow ({workflow}) and the status: {v}");
     }

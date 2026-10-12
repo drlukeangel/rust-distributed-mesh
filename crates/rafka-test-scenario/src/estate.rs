@@ -739,8 +739,11 @@ impl Estate {
     /// fabric-primary, one Build at a time, so the request goes to the fabric control endpoint
     /// the entry admin advertises, follows the seat if it answers `rejected-not-authority`, and
     /// waits out a Build still reconciling (`build-in-progress`, or `attempt-taken`: the number the
-    /// request computed was opened first for the Build's own drift attempt), for up to two minutes. Every
-    /// other answer is returned as is.
+    /// request computed was opened first for the Build's own drift attempt), for up to two minutes. A
+    /// workflow the initial fabric refuses until it is ready-for-traffic (a node restart, replace,
+    /// drain, stop or delete, a mesh delete: states.md "The initial fabric before ready-for-traffic")
+    /// is sent once that fabric-primary reports the fabric ready-for-traffic. Every other answer is
+    /// returned as is.
     async fn topology_request(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut last = (0u16, Value::Null);
@@ -750,6 +753,15 @@ impl Estate {
                 Some(b) if self.fabric_at(&b).await.is_some() => b,
                 _ => self.admin.clone(),
             };
+            if Self::needs_ready_fabric(method, path) {
+                let ready = self.fabric_at(&base).await.is_some_and(|f| matches!(f["status"].as_str(), Some("ready-for-traffic" | "degraded")));
+                if !ready {
+                    last = (0, Value::String(format!("the fabric-primary at {base} does not report the fabric ready-for-traffic")));
+                    assert!(Instant::now() < deadline, "{method} {path}: the fabric was not ready-for-traffic within 120s; {}", last.1);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    continue;
+                }
+            }
             // Removing a node: the authority removes a birth it sees, so give its view the moment
             // gossip needs to hear a node another Mesh just created.
             if method == "DELETE" {
@@ -780,6 +792,16 @@ impl Estate {
             }
             assert!(Instant::now() < deadline, "{method} {path}: no fabric-primary accepted it within 120s; last answer: {} {}", last.0, last.1);
             tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Whether the initial fabric refuses this request until it is ready-for-traffic: a node restart,
+    /// replace, drain or stop, a node delete or a mesh delete.
+    fn needs_ready_fabric(method: &str, path: &str) -> bool {
+        match method {
+            "POST" => path.strip_prefix("/api/nodes/").is_some_and(|rest| ["/restart", "/replace", "/drain", "/stop"].iter().any(|op| rest.ends_with(op))),
+            "DELETE" => path.starts_with("/api/nodes/") || path.starts_with("/api/meshes/"),
+            _ => false,
         }
     }
 
