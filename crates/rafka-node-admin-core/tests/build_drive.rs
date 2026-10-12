@@ -963,3 +963,148 @@ async fn a_completed_drive_is_kept_for_its_own_attempt_and_replaced_once_the_bui
     assert!(matches!(terminal_of(&reopened).await, BuildReply::Complete { attempt, .. } if attempt == done + 1), "the new drive claims and ends attempt {}", done + 1);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), done), ("mesh1.admin.2".to_string(), done + 1)], "one build.attempt.run per attempt");
 }
+
+/// Ends a mesh shutdown the way the owner's workflow does when the leaving mesh's primary cannot
+/// finish the leave (`admin/leave.rs`): `Incomplete` while the primary is lost, naming the workflow;
+/// once it is not, the shutdown runs and the mesh leaves the view. Every other operation runs as in
+/// [`Creates`].
+struct LostLeaver {
+    ran: std::sync::OnceLock<Arc<Creates>>,
+    topology: Arc<RwLock<Topology>>,
+    /// What the shutdown ends with while the primary is lost.
+    ends: Mutex<Option<rafka_node_admin_core::executor::RunEnd>>,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for LostLeaver {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        if let (BuildOperation::ShutdownMesh { mesh, .. }, Some(end)) = (op, self.ends.lock().unwrap().clone()) {
+            let _ = mesh;
+            return Err(end);
+        }
+        self.ran.get().expect("the rig set the recorder").run(build, attempt, op).await?;
+        if let BuildOperation::ShutdownMesh { mesh, .. } = op {
+            self.topology.write().await.nodes.retain(|n| n.mesh != *mesh);
+        }
+        Ok(())
+    }
+}
+
+/// The fixture view with a second mesh, `mesh2`, whose primary is `mesh2.admin.1`, and the Build
+/// that removes it: the fabric-primary `mesh1.admin.1` executes the mesh's shutdown (`executor_for`).
+async fn removing_mesh2(ends: Option<rafka_node_admin_core::executor::RunEnd>) -> (Rig, Arc<LostLeaver>) {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", true, false));
+    t.nodes.push(node("mesh2.rpc.1", false, false));
+    let held: Arc<Mutex<Option<Arc<LostLeaver>>>> = Arc::default();
+    let slot = held.clone();
+    let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh2".into() }, move |ran, topology| {
+        let leaver = Arc::new(LostLeaver { ran: std::sync::OnceLock::new(), topology, ends: Mutex::new(ends) });
+        let _ = leaver.ran.set(ran);
+        *slot.lock().unwrap() = Some(leaver.clone());
+        leaver
+    })
+    .await;
+    let leaver = held.lock().unwrap().clone().expect("the rig built the runner");
+    (r, leaver)
+}
+
+/// The Build the rig seeded before the one under test (the older one).
+async fn seeded_before(r: &Rig) -> rafka_node_admin_core::build_state::CurrentBuild {
+    use rafka_node_admin_core::build_state::{BuildFact, CurrentBuild};
+    let older = r.builds.facts().await.unwrap().into_iter().find_map(|f| match f {
+        BuildFact::Accepted(a) if a.build_id != r.build => Some(a.build_id),
+        _ => None,
+    });
+    CurrentBuild::Completed(older.expect("the rig seeded a Build before the one under test"))
+}
+
+const LEAVE_INCOMPLETE: &str = "shutdown-mesh: mesh2.admin.1 sent no valid mesh-leave; the workflow is incomplete and its receipts stand";
+
+/// CONTRACT (R-BI4; mesh-delete.md, "Failure and receipts": "The next attempt resumes from the
+/// receipts"; "Resume after the primary's loss"): a mesh.delete whose leaving mesh's primary is lost
+/// ends its attempt incomplete, not failed. The attempt is handed back to the fabric-primary, so the
+/// Build is still in progress and the current-Build read (last in, first out) returns it: it is not a
+/// failed Build the read skips. The drive claims no further attempt while nothing the resume decides
+/// on has moved, and names why; when the leaving mesh's primary is proven gone it claims the next
+/// attempt, which runs the shutdown from the receipts and completes the Build.
+/// Must NOT happen: the Build failed and skipped (the current Build becomes the older one, nothing
+/// resumes the leave), or an attempt claimed again on every pass of the drive.
+#[test]
+fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_and_resumes_when_the_loss_is_proven() {
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildFact, BuildState, CurrentBuild};
+    let cap = crate::mesh_leave_resume::capture();
+    let (trace_id, first, second, third, facts, ran, dispatched, after) = cap.run(async {
+        let root = tracing::info_span!("cell.leave-incomplete-stays-in-progress");
+        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        // Attempt 1: the shutdown ends incomplete.
+        let first = r.env.run(&Drive::detached(r.build.clone())).await;
+        let first = (first, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap());
+        // The same drive again with nothing moved: no attempt is claimed.
+        let second = r.env.run(&Drive::detached(r.build.clone())).await;
+        let second = (second, r.builds.read_build(&r.build).await.unwrap().attempt, r.dispatch.dispatched.lock().unwrap().len());
+        // The leaving mesh's primary is proven gone: it is no longer live in the view, and the shutdown can run.
+        *leaver.ends.lock().unwrap() = None;
+        for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
+            n.status = NodeStatus::Dead;
+            n.is_primary = false;
+        }
+        let third = r.env.run(&Drive::detached(r.build.clone())).await;
+        let third = (third, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap());
+        let facts = r.builds.facts().await.unwrap();
+        let ran = r.ran.0.lock().unwrap().clone();
+        let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+        (trace_id, first, second, third, facts, ran, dispatched, r.build.clone())
+    });
+    let spans = cap.spans();
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cells/leave_incomplete_in_progress");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    let (end, p, current) = first;
+    assert_eq!(p.state, BuildState::Pending, "the attempt ended handed back to the fabric-primary: the Build waits for its next claim, it is not failed");
+    assert_eq!(current, CurrentBuild::InProgress(after.clone()), "the current-Build read returns the Build in progress; a failed Build would be skipped for the seeded one");
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains(LEAVE_INCOMPLETE)), "the drive names why it claims nothing more: {end:?}");
+    let verdict = facts.iter().find_map(|f| match f {
+        BuildFact::Attempt(a) if a.build_id == after && a.attempt == 1 => Some(a.outcome.clone()),
+        _ => None,
+    });
+    assert_eq!(verdict, Some(AttemptOutcome::HandedOff { to: "mesh1.admin.1".into() }), "attempt 1's verdict hands back to the fabric-primary: {verdict:?}");
+    let (end, attempt, dispatches) = second;
+    assert!(matches!(end, DriveEnd::Stalled(_)), "nothing moved: the drive stalls again, {end:?}");
+    assert_eq!((attempt, dispatches), (1, 1), "no attempt is claimed and no executor is called while nothing the resume decides on has moved");
+    let (end, p, current) = third;
+    assert_eq!(end, DriveEnd::Terminal, "the proven loss moved an input: attempt 2 is claimed and runs the shutdown to its end");
+    assert_eq!((p.attempt, p.state), (2, BuildState::Complete));
+    assert_eq!(current, CurrentBuild::Completed(after), "the resumed Build is the current one, completed");
+    assert_eq!(ran.iter().filter(|k| k.starts_with("shutdown-mesh:")).count(), 1, "the shutdown ran once, on the resumed attempt: {ran:?}");
+    assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)], "attempt 2 was claimed for the fabric-primary, once");
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    assert!(named("rdm.node_admin.build.update.via-reconcile").iter().any(|s| s["attributes"]["attempt"] == "1" && s["attributes"]["outcome"] == "handed-off" && s["attributes"]["incomplete"] == LEAVE_INCOMPLETE), "the executor's span says the attempt ended handed back, incomplete, with the reason");
+}
+
+/// CONTRACT (R-BI4: "Only an attempt that ended with a named terminal failure makes a Build
+/// failed"): a shutdown that ends with the workflow's own named failure (not a lost participant) ends
+/// the attempt `Failed`; the Build is failed, the current-Build read skips it and returns the Build
+/// before it, and the drive claims nothing more: a caller resubmits it.
+#[test]
+fn a_leave_that_ends_with_a_named_failure_fails_the_build_and_the_read_skips_it() {
+    use rafka_node_admin_core::build_state::BuildState;
+    let cap = crate::mesh_leave_resume::capture();
+    let (end, p, current, seeded, dispatched) = cap.run(async {
+        let root = tracing::info_span!("cell.leave-named-failure-fails-the-build");
+        let _in_root = root.enter();
+        let (r, _leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Failed("shutdown-mesh: mesh2 is refused before it is dismantled: its handover is not confirmed".into()))).await;
+        let seeded = seeded_before(&r).await;
+        let end = r.env.run(&Drive::detached(r.build.clone())).await;
+        let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+        (end, r.builds.read_build(&r.build).await.unwrap(), r.builds.current_build().await.unwrap(), seeded, dispatched)
+    });
+    assert_eq!(end, DriveEnd::Terminal, "the named failure ends the drive");
+    assert_eq!(p.state, BuildState::Failed);
+    assert_eq!(current, seeded, "the failed Build is skipped: the Build before it is current again");
+    assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1)], "no further attempt is claimed");
+}
