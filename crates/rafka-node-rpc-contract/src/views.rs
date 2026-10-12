@@ -109,6 +109,10 @@ pub struct NodeView {
     /// The node's mesh-channel counts from its latest digest: heard, neighbours, frames.
     #[serde(default)]
     pub gossip: Option<GossipStats>,
+    /// The node's tag labels (R-TG1): caller-owned meta set through `node.update`, read from the
+    /// node's row at its `path.name`, never from its digest.
+    #[serde(default)]
+    pub tags: std::collections::BTreeSet<String>,
 }
 
 /// One mesh as the answering node-admin's view holds it (`mesh.get`).

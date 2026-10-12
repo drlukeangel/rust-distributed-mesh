@@ -25,6 +25,7 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
         parked: false,
         load: None,
         gossip: None,
+        tags: Default::default(),
     }
 }
 

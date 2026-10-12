@@ -12,8 +12,9 @@
 //! - `nodes.storage`: the admin's own row (NodeId, path.name, the incarnation it last ran, its
 //!   transport identity), so a restart is the same logical node; the last-known
 //!   births it heard, as bootstrap contacts (a stored contact is a hint: never topology, never
-//!   death proof); and, when this admin is a birth's authority, the lifecycle state that birth
-//!   declared and the admin applied (`status_rpc`).
+//!   death proof); each mesh's Node rows with their id index and their tags index (R-TG1); and,
+//!   when this admin is a birth's authority, the lifecycle state that birth declared and the admin
+//!   applied (`status_rpc`).
 //! - `connections.storage`: the latest connection fact per (source, destination, kind).
 
 use async_trait::async_trait;
@@ -22,7 +23,7 @@ pub use rafka_node_admin_client::NameHeld;
 use crate::record_store::{FileRecords, StorageError};
 use rafka_mesh_entity::connections::{ConnectionIndex, NodeConnection};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -262,8 +263,9 @@ impl RuntimeRow {
 /// the acting primary of a mesh with none, `crate::node_rows`) and writes it whole, a blind put of
 /// the record it holds; the row follows the node's name and never decides who may hold one (the
 /// node owns its name). A `Deleted` row keeps the config for the next node created at the same
-/// `path.name`. Its store indexes: `path.name`, its key, and `id`, the name of the row each node
-/// holds ([`NodesStorage::node_row_name`]), kept by the store with every write of a row.
+/// `path.name`. Its store indexes: `path.name`, its key; `id`, the name of the row each node holds
+/// ([`NodesStorage::node_row_name`]); and `tags`, the nodes carrying each tag label
+/// ([`NodesStorage::tagged`]); both kept by the store with every write of a row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRow {
     /// The node's `path.name`: the row's key.
@@ -274,6 +276,26 @@ pub struct NodeRow {
     pub status: crate::model::NodeStatus,
     /// The application's own key/values on the node (capped: [`rafka_mesh_entity::check_config`]).
     pub config: BTreeMap<String, String>,
+    /// The node's tag labels (R-TG1): caller-owned meta set through `node.update`, each one a row
+    /// of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
+    /// a row written before tags existed carries none.
+    #[serde(default)]
+    pub tags: BTreeSet<String>,
+}
+
+impl NodeRow {
+    /// The labels the tags index holds for this row's node once the row is written over `previous`,
+    /// the row it replaces at its key, split into (leaving, arriving): a label the node's previous
+    /// row carried and this one does not, or every label of a `Deleted` row, leaves; every label of
+    /// a live row arrives. A previous row of another node (a `Deleted` row a new node takes over)
+    /// changes nothing: its labels left when it turned `Deleted`.
+    fn tag_moves(&self, previous: Option<&NodeRow>) -> (BTreeSet<String>, BTreeSet<String>) {
+        let held: BTreeSet<String> = previous.filter(|p| p.node_id == self.node_id).map(|p| p.tags.clone()).unwrap_or_default();
+        match self.status {
+            crate::model::NodeStatus::Deleted => (held.union(&self.tags).cloned().collect(), BTreeSet::new()),
+            _ => (held.difference(&self.tags).cloned().collect(), self.tags.clone()),
+        }
+    }
 }
 
 /// The durable record of the births this admin knows: its own row, its contacts and the runtimes it
@@ -318,6 +340,21 @@ pub trait NodesStorage: Send + Sync {
     /// in one step against every other row write; a row of another node there (the name was
     /// released before and claimed since) is left as it is. Returns whether `holder`'s row went.
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError>;
+    /// The nodes carrying `label`, in every mesh: a point read of the label's rows of the tags index
+    /// (R-TG1), never a read of any node's row. The index is a lookup structure the store keeps with
+    /// every write of a row, as it keeps the id index: one row per (label, node id), a blind put when
+    /// the node's row carries the label, the tombstone of its own key when the node's row stops
+    /// carrying it, turns `Deleted`, or is the only row the node lets go of. A `label` that is not a
+    /// tag label ([`rafka_node_rpc_contract::status::tag_refusal`]) is refused by name.
+    async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError>;
+}
+
+/// The refusal of a key the tags index cannot hold: `label` is not a tag label.
+fn tag_key(label: &str, store: &str) -> Result<(), StorageError> {
+    match rafka_node_rpc_contract::status::tag_refusal(label) {
+        None => Ok(()),
+        Some(reason) => Err(StorageError::Unrecognised { file: format!("{store} (tags index)"), reason }),
+    }
 }
 
 /// What a save of `row` meets in `held`, the row at its key: free, or held by another node.
@@ -337,6 +374,23 @@ pub struct MemoryNodesStorage {
     rows: Mutex<BTreeMap<String, NodeRow>>,
     /// The node row's id index: each node's row's `path.name`, kept with `rows` under its lock.
     ids: Mutex<BTreeMap<NodeId, PathName>>,
+    /// The node row's tags index: per label, the nodes carrying it, kept with `rows` under its lock.
+    tags: Mutex<BTreeMap<String, BTreeSet<NodeId>>>,
+}
+
+/// The tags index after `node_id`'s labels `leaving` go and `arriving` come.
+fn tags_move(tags: &mut BTreeMap<String, BTreeSet<NodeId>>, node_id: &NodeId, leaving: &BTreeSet<String>, arriving: &BTreeSet<String>) {
+    for l in leaving {
+        if let Some(nodes) = tags.get_mut(l) {
+            nodes.remove(node_id);
+            if nodes.is_empty() {
+                tags.remove(l);
+            }
+        }
+    }
+    for l in arriving {
+        tags.entry(l.clone()).or_default().insert(node_id.clone());
+    }
 }
 
 /// The id index after `row` is kept at its key, over `previous`, the row it replaced there: the
@@ -387,6 +441,8 @@ impl NodesStorage for MemoryNodesStorage {
         if claimed.is_ok() {
             let previous = rows.insert(row.name.to_string(), row.clone());
             index_put(&mut self.ids.lock().unwrap(), previous.as_ref(), row);
+            let (leaving, arriving) = row.tag_moves(previous.as_ref());
+            tags_move(&mut self.tags.lock().unwrap(), &row.node_id, &leaving, &arriving);
         }
         Ok(claimed)
     }
@@ -398,24 +454,32 @@ impl NodesStorage for MemoryNodesStorage {
     }
     async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let rows = self.rows.lock().unwrap();
-        let held = rows.get(&name.to_string()).is_some_and(|r| &r.node_id == holder);
-        if held {
-            self.ids.lock().unwrap().insert(holder.clone(), name.clone());
-        }
-        Ok(held)
+        let Some(row) = rows.get(&name.to_string()).filter(|r| &r.node_id == holder) else { return Ok(false) };
+        self.ids.lock().unwrap().insert(holder.clone(), name.clone());
+        let (leaving, arriving) = row.tag_moves(Some(row));
+        tags_move(&mut self.tags.lock().unwrap(), holder, &leaving, &arriving);
+        Ok(true)
     }
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let mut rows = self.rows.lock().unwrap();
         let key = name.to_string();
         let held = rows.get(&key).is_some_and(|r| &r.node_id == holder);
         if held {
-            rows.remove(&key);
+            let released = rows.remove(&key);
             let mut ids = self.ids.lock().unwrap();
             if ids.get(holder) == Some(name) {
+                // The node lets go of the only row it holds: its labels go with it.
                 ids.remove(holder);
+                if let Some(r) = released {
+                    tags_move(&mut self.tags.lock().unwrap(), holder, &r.tags, &BTreeSet::new());
+                }
             }
         }
         Ok(held)
+    }
+    async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError> {
+        tag_key(label, "memory nodes store")?;
+        Ok(self.tags.lock().unwrap().get(label).cloned().unwrap_or_default())
     }
 }
 
@@ -423,6 +487,15 @@ const NODE_FORMAT: &str = "node-record/4";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
 const ROW_FORMAT: &str = "node-row/1";
 const ROW_ID_FORMAT: &str = "node-row-id/1";
+const TAG_FORMAT: &str = "node-tag/1";
+
+/// One row of the node row's tags index: the node carries the label. Its key is the node id, in the
+/// label's own directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct TagRow {
+    label: String,
+    node_id: NodeId,
+}
 
 /// One entry of the node row's id index: the `path.name` of the row its node holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -433,18 +506,111 @@ struct RowId {
 
 /// One mesh's rows on the fabric's store root, `nodes/<mesh>/`: its members' Node rows
 /// (`rows/<path.name>.json`), the rows' id index (`ids/<node id>.json`: the `path.name` of the row
-/// the node holds) and contacts (`contacts/<node id>.json`), written by that mesh's primary.
+/// the node holds), the rows' tags index (`tags/<label>/<node id>.json`: one directory per label,
+/// so a label's rows are read without reading any other's) and contacts (`contacts/<node
+/// id>.json`), written by that mesh's primary.
 #[derive(Debug)]
 struct MeshNodes {
     rows: FileRecords,
     ids: FileRecords,
     contacts: FileRecords,
+    root: crate::store_root::StoreRoot,
+    base: std::path::PathBuf,
+    writer: IncarnationId,
+    /// Each label's rows of the tags index this store has read or written, opened on first use.
+    labels: Mutex<BTreeMap<String, FileRecords>>,
+    /// Set while a seat transfer cuts this mesh's rows off: a label's rows opened meanwhile are cut
+    /// off at their open, named.
+    labels_cut_off: Mutex<Option<String>>,
 }
 
 impl MeshNodes {
     async fn open(root: &crate::store_root::StoreRoot, mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
         let base = root.nodes(mesh);
-        Ok(Self { rows: root.records(&base, "rows", writer).await?, ids: root.records(&base, "ids", writer).await?, contacts: root.records(&base, "contacts", writer).await? })
+        Ok(Self {
+            rows: root.records(&base, "rows", writer).await?,
+            ids: root.records(&base, "ids", writer).await?,
+            contacts: root.records(&base, "contacts", writer).await?,
+            root: root.clone(),
+            base,
+            writer: writer.clone(),
+            labels: Mutex::new(BTreeMap::new()),
+            labels_cut_off: Mutex::new(None),
+        })
+    }
+
+    /// Every store of this mesh's rows opened so far: rows, ids, contacts and each label's rows.
+    fn stores(&self) -> Vec<FileRecords> {
+        let mut all = vec![self.rows.clone(), self.ids.clone(), self.contacts.clone()];
+        all.extend(self.labels.lock().unwrap_or_else(|e| e.into_inner()).values().cloned());
+        all
+    }
+
+    /// A label's rows opened from now on are cut off naming `reason` (`None`: they are not).
+    fn cut_off_labels(&self, reason: Option<String>) {
+        *self.labels_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = reason;
+    }
+
+    /// `label`'s rows of the tags index, written: opened on first use (its directory made), cut off
+    /// at its open while this mesh's rows are cut off.
+    async fn label(&self, label: &str) -> Result<FileRecords, StorageError> {
+        tag_key(label, &self.base.display().to_string())?;
+        if let Some(l) = self.labels.lock().unwrap_or_else(|e| e.into_inner()).get(label) {
+            return Ok(l.clone());
+        }
+        let opened = self.root.records(&self.base, &format!("tags/{label}"), &self.writer).await?;
+        let mut labels = self.labels.lock().unwrap_or_else(|e| e.into_inner());
+        let l = labels.entry(label.to_string()).or_insert(opened).clone();
+        if let Some(reason) = self.labels_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            l.cut_off(reason);
+        }
+        Ok(l)
+    }
+
+    /// The nodes of this mesh carrying `label`: its rows of the tags index, read from the label's
+    /// own directory. A label no row of this mesh was ever written for (no directory) is carried by
+    /// none, and the read makes no directory.
+    async fn tagged(&self, label: &str) -> Result<Vec<NodeId>, StorageError> {
+        tag_key(label, &self.base.display().to_string())?;
+        let opened = self.labels.lock().unwrap_or_else(|e| e.into_inner()).get(label).cloned();
+        let rows = match opened {
+            Some(l) => l,
+            None => {
+                let dir = self.base.join("tags").join(label);
+                let look = dir.clone();
+                let exists = crate::record_store::blocking_io(move || look.try_exists()).await.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
+                if !exists {
+                    return Ok(Vec::new());
+                }
+                self.label(label).await?
+            }
+        };
+        Ok(rows.list::<TagRow>(TAG_FORMAT).await?.into_iter().map(|r| r.node_id).collect())
+    }
+
+    /// The tags index rows of `node_id`'s labels `leaving`, each the tombstone of its own key:
+    /// written before the row that drops them, so a label never outlives the last row write that
+    /// carried it, whatever ends the write in between.
+    async fn tags_leave(&self, node_id: &NodeId, leaving: &BTreeSet<String>) -> Result<(), StorageError> {
+        for l in leaving {
+            self.label(l).await?.remove(node_id.as_str()).await?;
+        }
+        Ok(())
+    }
+
+    /// The tags index rows of `node_id`'s labels `arriving`, each a blind put of its own key, written
+    /// after the row that carries them (as the id index entry is), so an index row never names a
+    /// label no row carries yet. A row that stands is left as it is: a put of a row whose labels did
+    /// not change writes no index row; one a write ended before writing is written by the node's next
+    /// row write.
+    async fn tags_arrive(&self, node_id: &NodeId, arriving: &BTreeSet<String>) -> Result<(), StorageError> {
+        for l in arriving {
+            let rows = self.label(l).await?;
+            if !rows.holds(node_id.as_str()).await? {
+                rows.write(node_id.as_str(), TAG_FORMAT, &TagRow { label: l.clone(), node_id: node_id.clone() }).await?;
+            }
+        }
+        Ok(())
     }
 
     /// The id index after `row` was written at its key over `previous`, the row it replaced there
@@ -524,10 +690,17 @@ impl FileNodesStorage {
         FileRecords::open(own_data_dir, "nodes/runtimes", writer).await?.write(&row.key(), RUNTIME_FORMAT, row).await
     }
 
-    /// The records the mesh-primary seat writes (its own mesh's members' Node rows and contacts):
-    /// what a seat transfer cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 3] {
-        [&self.mine.1.rows, &self.mine.1.ids, &self.mine.1.contacts]
+    /// The records the mesh-primary seat writes (its own mesh's members' Node rows, their id index,
+    /// contacts and the label rows of their tags index opened so far): what a seat transfer cuts off
+    /// (R14 item 4).
+    pub fn mesh_primary_records(&self) -> Vec<FileRecords> {
+        self.mine.1.stores()
+    }
+
+    /// While a seat transfer cuts the mesh-primary seat's records off (`Some(reason)`), a label's
+    /// rows of this admin's own mesh opened meanwhile are cut off at their open; `None` lifts it.
+    pub fn cut_off_own_labels(&self, reason: Option<String>) {
+        self.mine.1.cut_off_labels(reason);
     }
 
     /// The rows of `mesh` on the shared root: a mesh this store has not opened yet is opened on the
@@ -543,9 +716,10 @@ impl FileNodesStorage {
         let mut others = self.others.lock().unwrap_or_else(|e| e.into_inner());
         let m = others.entry(mesh.to_string()).or_insert(opened).clone();
         if let Some(reason) = self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            m.rows.cut_off(reason.clone());
-            m.ids.cut_off(reason.clone());
-            m.contacts.cut_off(reason);
+            m.cut_off_labels(Some(reason.clone()));
+            for s in m.stores() {
+                s.cut_off(reason.clone());
+            }
         }
         Ok(m)
     }
@@ -558,8 +732,11 @@ impl FileNodesStorage {
             *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason.to_string());
             others.values().cloned().collect()
         };
-        let stores: Vec<&FileRecords> = opened.iter().flat_map(|m| [&m.rows, &m.ids, &m.contacts]).collect();
-        crate::record_store::cut_off_and_drain(&stores, reason).await;
+        for m in &opened {
+            m.cut_off_labels(Some(reason.to_string()));
+        }
+        let stores: Vec<FileRecords> = opened.iter().flat_map(|m| m.stores()).collect();
+        crate::record_store::cut_off_and_drain(&stores.iter().collect::<Vec<_>>(), reason).await;
     }
 
     /// Lift [`Self::cut_off_other_meshes`]: the transfer it was set for committed nothing. The
@@ -572,7 +749,8 @@ impl FileNodesStorage {
         };
         let mut first = Ok(());
         for m in opened {
-            for s in [&m.rows, &m.ids, &m.contacts] {
+            m.cut_off_labels(None);
+            for s in m.stores() {
                 if let (Err(e), true) = (s.lift_cut_off().await, first.is_ok()) {
                     first = Err(e);
                 }
@@ -588,7 +766,7 @@ impl FileNodesStorage {
         let opened: Vec<std::sync::Arc<MeshNodes>> = self.others.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
         let mut dropped = Vec::new();
         for m in opened {
-            for s in [&m.rows, &m.ids, &m.contacts] {
+            for s in m.stores() {
                 let n = s.drop_held().await;
                 if n > 0 {
                     dropped.push((s.store_name(), n));
@@ -653,11 +831,14 @@ impl NodesStorage for FileNodesStorage {
         let previous = rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?;
         let claimed = claim_against(previous.as_ref(), row);
         if claimed.is_ok() {
+            let (leaving, arriving) = row.tag_moves(previous.as_ref());
+            rows.tags_leave(&row.node_id, &leaving).await?;
             // Held before the fabric's first state-commit, the claim is decided again at the
             // publication against the row then standing at the key.
             let claim = row.clone();
             rows.rows.write_claimed(&key, ROW_FORMAT, row, move |standing| claim_against(standing, &claim).map(|()| true).map_err(|held| held.to_string())).await?;
             rows.index_put(previous.as_ref(), row).await?;
+            rows.tags_arrive(&row.node_id, &arriving).await?;
         }
         Ok(claimed)
     }
@@ -672,14 +853,23 @@ impl NodesStorage for FileNodesStorage {
         let rows = self.mesh(&name.mesh).await?;
         let Some(row) = rows.rows.read::<NodeRow>(&name.to_string(), ROW_FORMAT).await?.filter(|r| &r.node_id == holder) else { return Ok(false) };
         rows.index_put(None, &row).await?;
+        let (leaving, arriving) = row.tag_moves(Some(&row));
+        rows.tags_leave(holder, &leaving).await?;
+        rows.tags_arrive(holder, &arriving).await?;
         Ok(true)
     }
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError> {
         let _one = self.row_writes.lock().await;
         let key = name.to_string();
         let rows = self.mesh(&name.mesh).await?;
-        let held = rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.is_some_and(|r| &r.node_id == holder);
-        if held {
+        let released = rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.filter(|r| &r.node_id == holder);
+        let held = released.is_some();
+        if let Some(r) = released {
+            // The node lets go of the only row it holds (its id index entry names this key): its
+            // labels go with it, before the row does.
+            if rows.ids.read::<RowId>(holder.as_str(), ROW_ID_FORMAT).await?.is_some_and(|e| &e.name == name) {
+                rows.tags_leave(holder, &r.tags).await?;
+            }
             // Held before the fabric's first state-commit, the release removes the row standing at
             // the key at the publication only while it is still the holder's.
             let still = holder.clone();
@@ -687,6 +877,14 @@ impl NodesStorage for FileNodesStorage {
             rows.index_drop(holder, name).await?;
         }
         Ok(held)
+    }
+    async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError> {
+        tag_key(label, &self.root.dir().join("nodes").display().to_string())?;
+        let mut all = BTreeSet::new();
+        for mesh in self.meshes_on_root().await? {
+            all.extend(self.mesh(&mesh).await?.tagged(label).await?);
+        }
+        Ok(all)
     }
 }
 
@@ -938,7 +1136,7 @@ mod tests {
     }
 
     fn row(name: &str) -> NodeRow {
-        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() }
+        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }
     }
 
     /// CONTRACT (CLAUDE.md read rule: a lookup by id that cannot read the store's own key reads the
@@ -1022,7 +1220,7 @@ mod tests {
         let mut record = crate::model::Node::allocated(from.name.clone());
         record.node_id = from.node_id.clone();
         record.status = from.status;
-        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), &from.name, &to.name).await.unwrap();
+        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), &from.name, &to.name).await.unwrap();
         assert_eq!(file.node_row_at(&from.name).await.unwrap(), None, "the old key is let go");
         assert_eq!(file.node_row_at(&to.name).await.unwrap(), Some(to.clone()), "the row the node held there is left as it is");
         assert_eq!(file.node_row_name("mesh1", &from.node_id).await.unwrap(), Some(to.name.clone()), "the row the node holds is named in the id index");
@@ -1073,6 +1271,62 @@ mod tests {
         assert!(n1.node_row_at(&"mesh2.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh1's primary reads mesh2's row from the shared root");
         assert!(n2.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap().is_some(), "mesh2's primary reads mesh1's row from the shared root");
         assert_eq!(n1.contacts().await.unwrap().len(), 6, "a restart reads every mesh's contacts");
+    }
+
+    /// CONTRACT (R-TG1: "node.get with a tag filter names a label and answers every node carrying it,
+    /// through a tags index declared on the node store (a point read per label)"; CLAUDE.md: each
+    /// fact is its own keyed row, an index row is a blind put of its own key and a tombstone removes
+    /// it): the file store keeps the tags index with every write of a row, one file per (label, node
+    /// id) under `nodes/<mesh>/tags/<label>/`. Two meshes' rows carrying `red` are read by one label
+    /// read across the root, a second store of another incarnation included; a row put without a
+    /// label tombstones that label's file and no other; a rename keeps the node's labels (the index
+    /// is keyed by node id); a `Deleted` row tombstones every label its row carries; a release of the
+    /// only row a node holds tombstones its labels. A label no row ever carried reads as carried by
+    /// none and makes no directory; a key that is not a label is refused by name and nothing is read.
+    /// A label opened while the mesh-primary seat's records are cut off is cut off at its open.
+    #[tokio::test]
+    async fn the_tags_index_is_one_file_per_label_and_node_kept_with_every_row_write_and_read_per_label() {
+        let d = crate::record_store::tempdir("tags-index");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
+        let (n1, n2) = (FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap(), FileNodesStorage::open(&d.join("mesh2.admin.1"), &root, "mesh2", &IncarnationId::mint()).await.unwrap());
+        root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
+        let tags = |l: &[&str]| l.iter().map(|t| t.to_string()).collect::<BTreeSet<String>>();
+        let (a, b) = (NodeId::mint(), NodeId::mint());
+        let row_a = NodeRow { tags: tags(&["rabbit", "red"]), node_id: a.clone(), ..row("mesh1.rpc.1") };
+        n1.put_node_row(&row_a).await.unwrap().unwrap();
+        let row_b = NodeRow { name: "mesh2.rpc.1".parse().unwrap(), node_id: b.clone(), tags: tags(&["red"]), ..row("mesh2.rpc.1") };
+        n2.put_node_row(&row_b).await.unwrap().unwrap();
+        let files = |mesh: &str, label: &str| keys(&root.dir().join("nodes").join(mesh).join("tags").join(label));
+        assert_eq!((files("mesh1", "rabbit"), files("mesh1", "red"), files("mesh2", "red")), (vec![format!("{a}.json")], vec![format!("{a}.json")], vec![format!("{b}.json")]), "one file per (label, node id), under the node's mesh");
+        let other = FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
+        for n in [&n1, &n2, &other] {
+            assert_eq!(n.tagged("red").await.unwrap(), [a.clone(), b.clone()].into(), "one label read answers every mesh's nodes carrying it");
+        }
+        // A put without rabbit tombstones rabbit's row only.
+        n1.put_node_row(&NodeRow { tags: tags(&["red"]), ..row_a.clone() }).await.unwrap().unwrap();
+        assert_eq!((files("mesh1", "rabbit").len(), other.tagged("rabbit").await.unwrap().len(), other.tagged("red").await.unwrap().len()), (0, 0, 2), "the dropped label's row is tombstoned, the kept one stands");
+        // A rename keeps the labels: put at the new name, then the old key released.
+        let moved = NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), tags: tags(&["red"]), ..row_a.clone() };
+        n1.put_node_row(&moved).await.unwrap().unwrap();
+        assert!(n1.release_node_row(&row_a.name, &a).await.unwrap());
+        assert_eq!(other.tagged("red").await.unwrap(), [a.clone(), b.clone()].into(), "a renamed node keeps its labels");
+        // A Deleted row tombstones every label it carries; a release of a node's only row its labels.
+        n1.put_node_row(&NodeRow { status: crate::model::NodeStatus::Deleted, ..moved.clone() }).await.unwrap().unwrap();
+        assert!(n2.release_node_row(&row_b.name, &b).await.unwrap());
+        assert!(other.tagged("red").await.unwrap().is_empty(), "neither the deleted node nor the released one is named under red");
+        assert_eq!(n1.node_row_at(&moved.name).await.unwrap().map(|r| r.tags), Some(tags(&["red"])), "the Deleted row keeps its tags");
+        // A label no row carried: none, and no directory made.
+        assert!(other.tagged("blue").await.unwrap().is_empty());
+        assert!(!root.dir().join("nodes").join("mesh1").join("tags").join("blue").exists(), "a read makes no directory");
+        assert!(matches!(other.tagged("../rows").await, Err(StorageError::Unrecognised { reason, .. }) if reason.contains("\"../rows\"")), "a key that is not a label is refused by name");
+        // While a seat transfer cuts the mesh-primary seat's records off, a label's rows opened then
+        // are cut off at their open: the write of its index row is refused by name, never written.
+        n1.cut_off_own_labels(Some("the mesh-primary seat moves".into()));
+        let green = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), tags: tags(&["green"]), ..row("mesh1.rpc.2") };
+        assert!(matches!(n1.put_node_row(&green).await, Err(StorageError::CutOff { reason, .. }) if reason == "the mesh-primary seat moves"), "a label opened during the cut-off is cut off");
+        assert!(files("mesh1", "green").is_empty(), "nothing of the cut-off label is written");
     }
 
     /// CONTRACT (R14 items 1 and 9; acceptance "an ordinary node's connections rows land under
@@ -1180,7 +1434,7 @@ mod tests {
     /// thread keeps running meanwhile, and the read answers the row.
     #[test]
     fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
-        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new() };
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() };
         let name = row.name.clone();
         let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
         assert!(ran, "the runtime thread ran while the row read waited on the disk");
@@ -1228,7 +1482,7 @@ mod tests {
     async fn a_second_nodes_row_at_a_held_name_is_refused_by_the_adapter_and_nothing_is_written() {
         let d = crate::record_store::tempdir("storage-claim");
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]) };
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default() };
         let check = async |n: &dyn NodesStorage, store: &str| {
             let (first, second) = (NodeId::mint(), NodeId::mint());
             let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");

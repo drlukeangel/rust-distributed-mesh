@@ -357,7 +357,14 @@ pub struct SeatStores {
 impl SeatStores {
     /// Apply `c`: set cuts off and drains every store the moving seats write; lift gives them back.
     pub async fn apply(&self, c: WriteCutOff) {
-        let mut seat: Vec<&crate::record_store::FileRecords> = self.mesh.mesh_primary_records().into_iter().chain(self.nodes.mesh_primary_records()).chain(self.status.mesh_primary_records()).collect();
+        // A label's rows of the tags index opened from now on are cut off at their open: set before
+        // the seat's stores are collected, so a label store opened in between is in the collection
+        // or cut off at its open, never neither.
+        if let WriteCutOff::Set { reason, .. } = &c {
+            self.nodes.cut_off_own_labels(Some(reason.clone()));
+        }
+        let nodes = self.nodes.mesh_primary_records();
+        let mut seat: Vec<&crate::record_store::FileRecords> = self.mesh.mesh_primary_records().into_iter().chain(nodes.iter()).chain(self.status.mesh_primary_records()).collect();
         match c {
             WriteCutOff::Set { reason, fabric_seat } => {
                 if fabric_seat {
@@ -370,6 +377,7 @@ impl SeatStores {
                 crate::record_store::cut_off_and_drain(&seat, &reason).await;
             }
             WriteCutOff::Lift => {
+                self.nodes.cut_off_own_labels(None);
                 // A lifted store writes the rows it held through a publication made while it was
                 // cut off; one that cannot keeps holding them, and says which.
                 for s in seat.into_iter().chain(self.fabric.fabric_primary_records()) {

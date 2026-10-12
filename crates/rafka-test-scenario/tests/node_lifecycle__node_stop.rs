@@ -191,6 +191,7 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
         mesh: parked.mesh.clone(),
         kind: parked.kind,
         otel_debug: false,
+        tags: parked.tags.clone(),
     };
     let body = NodeMeta { name: renamed.clone(), ..held.clone() };
     let reply = nodes.update(&held, &body, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct).await.expect("node.update answered");
@@ -287,6 +288,7 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
         mesh: parked.mesh.clone(),
         kind: parked.kind,
         otel_debug: false,
+        tags: parked.tags.clone(),
     };
     let reply = nodes.update(&held, &NodeMeta { name: renamed.clone(), ..held.clone() }, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct).await.expect("node.update answered");
     assert_eq!(reply, StatusReply::NodeUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
