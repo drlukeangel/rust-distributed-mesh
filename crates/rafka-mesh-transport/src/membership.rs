@@ -6684,6 +6684,28 @@ mod tests {
         assert!(after >= Duration::from_secs(10), "the member stays as old as its last direct receipt");
     }
 
+    /// CONTRACT (R-G2: forwarded topology carries topology, never liveness; gossip.md §6.1: a stopped
+    /// status by itself and silence are not departure proof): a member known only from topology never
+    /// ages, whatever status the topology lists it with. One listed `Leaving` is held and current as
+    /// long as the topology holds it, like one listed ready. Must NOT happen: a topology-known member
+    /// that is `Leaving` and an hour old, silent past the staleness floor and absent from `current_at`
+    /// while a ready one of the same age stays.
+    #[test]
+    fn a_member_known_only_from_topology_never_ages_whatever_status_it_is_listed_with() {
+        let book = DigestBook::default();
+        let t0 = Instant::now();
+        let listed: Vec<(NodeId, MemberStatus)> = [MemberStatus::ReadyForTraffic, MemberStatus::Draining, MemberStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
+        for (id, status) in &listed {
+            assert!(book.record_topology_at(digest(id, &IncarnationId::mint(), None, *status, 10), t0));
+        }
+        let far = t0 + Duration::from_secs(3600);
+        for (id, status) in &listed {
+            assert_eq!(book.get_at(id.as_str(), far).unwrap().1, Duration::ZERO, "a topology member listed {status:?} never ages");
+        }
+        let current = book.current_at(book.staleness_floor(), far);
+        assert!(listed.iter().all(|(id, _)| current.iter().any(|d| &d.node.node_id == id)), "every topology member stays current: {current:?}");
+    }
+
     #[test]
     fn a_forwarded_copy_keeps_a_member_heard_and_never_reverts_it() {
         let book = DigestBook::default();
