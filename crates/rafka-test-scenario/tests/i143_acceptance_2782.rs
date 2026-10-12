@@ -403,6 +403,16 @@ impl Run {
         build_log::build_value(&self.estate.carrier_at(&path(&door.name)).await, id).await
     }
 
+    /// [`Self::build`] while the admin's log may hold no fact of the Build yet: a Build whose one
+    /// durable write is held is held by no log (R-BI3), which is the progress marker `held-by-no-log`.
+    async fn build_if_held(&self, door: &Door, id: &str) -> Value {
+        let facts = build_log::log_read(&self.estate.carrier_at(&path(&door.name)).await, id).await.ok();
+        match facts.and_then(|f| build_log::projection(&f, id)) {
+            Some(p) => serde_json::to_value(p).expect("a Build view serializes"),
+            None => json!({"state": "held-by-no-log", "attempt": 0, "steps": []}),
+        }
+    }
+
     /// the current build_id as the admin the estate asks holds it (`fabric.get`).
     async fn fabric_build_id(&self) -> String {
         self.estate.accepted_build_id().await
@@ -531,7 +541,7 @@ impl Run {
 
 /// One progress read of the Build a cut holds.
 async fn read(run: &Run, door: &Door, build_id: &str, op: &Option<String>) -> (String, bool, u64) {
-    let b = run.build(door, build_id).await;
+    let b = run.build_if_held(door, build_id).await;
     let attempt = b["attempt"].as_u64().unwrap_or(0);
     let done = op.as_ref().map(|o| done_steps(&b, o, attempt)).unwrap_or_default();
     let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "current_build": run.fabric_build_id().await, "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
@@ -969,7 +979,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     run.plain_create(NodeKind::RpcNode).await;
     silent_case(&run).await;
 
-    // The fabric-primary admin held while it accepts a Build: durable, and current from then on (R-BI3: "Each
+    // The fabric-primary admin held at the Build's one durable write: until it is made the Build is held by no admin (R-BI3: "Each
     // accepted Build is its own entity in the builds store, written once").
     let fdoor = run.fabric_door().await;
     let before = run.names().await;

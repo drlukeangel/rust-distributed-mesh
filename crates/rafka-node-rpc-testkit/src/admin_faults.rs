@@ -69,7 +69,9 @@ pub enum CutSpec {
         /// The node the hook concerns.
         #[serde(default)] node: Option<String>,
     },
-    /// An accepted Build is durable (`publish_accepted` returned) and the acceptance has not returned.
+    /// An accepted Build is about to become durable: its one write (`publish_accepted`) has been called
+    /// and has not been made. The Build is its own entity, current from the moment it is durable
+    /// (R-BI3), so until the release nothing holds it and nothing executes it.
     AcceptedBuild,
     /// An attempt's claim is durable on this admin's log and broadcast (`claim_attempt` decided
     /// `Won`) and the fabric-primary has not yet dispatched the attempt to its executor. `attempt`
@@ -351,9 +353,8 @@ pub(crate) struct FaultedBuilds {
 #[async_trait]
 impl BuildStateAdapter for FaultedBuilds {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        self.inner.publish_accepted(accepted).await?;
         self.faults.hold(Probe::Accepted { build_id: accepted.build_id.to_string() }).await;
-        Ok(())
+        self.inner.publish_accepted(accepted).await
     }
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await
