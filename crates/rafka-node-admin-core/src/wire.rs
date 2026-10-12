@@ -22,7 +22,7 @@ use crate::mesh_leave::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::{FabricRecord, FabricShutdown};
-use crate::model::{EndpointId, FabricId, IncarnationId, NodeId, NodeKind, PathName};
+use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rafka_mesh_entity::LifecycleOp;
 use serde::{Deserialize, Serialize};
@@ -93,6 +93,7 @@ struct WireTopology {
 #[derive(Serialize, Deserialize)]
 struct WireMesh {
     name: String,
+    mesh_id: MeshId,
     nodes: BTreeSet<PathName>,
     node_meta_by_path: BTreeMap<PathName, WireNodeMeta>,
 }
@@ -242,6 +243,7 @@ impl From<&FabricTopology> for WireTopology {
             .map(|(k, m)| {
                 let mesh = WireMesh {
                     name: m.name.clone(),
+                    mesh_id: m.mesh_id.clone(),
                     nodes: m.nodes.clone(),
                     node_meta_by_path: m.node_meta_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
                 };
@@ -257,7 +259,7 @@ impl From<WireTopology> for FabricTopology {
             .meshes
             .into_iter()
             .map(|(k, m)| {
-                let mesh = MeshTopology { name: m.name, nodes: m.nodes, node_meta_by_path: m.node_meta_by_path.into_iter().map(|(p, meta)| (p, meta.into())).collect() };
+                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, node_meta_by_path: m.node_meta_by_path.into_iter().map(|(p, meta)| (p, meta.into())).collect() };
                 (k, mesh)
             })
             .collect();

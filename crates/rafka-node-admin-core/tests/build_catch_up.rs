@@ -38,7 +38,7 @@ fn addr(e: &Endpoint) -> EndpointAddr {
 }
 
 fn intent(id: &BuildId) -> BuildAccepted {
-    BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }
+    BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

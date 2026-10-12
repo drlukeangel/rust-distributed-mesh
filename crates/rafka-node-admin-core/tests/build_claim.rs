@@ -85,7 +85,7 @@ async fn seat(b: &Birth, topology: Arc<RwLock<Topology>>, builds: Arc<dyn BuildS
 /// A Build whose log holds `settled` converged attempts: accepted, then claim + converged each.
 async fn settled(builds: &MemoryBuildStateAdapter, id: &BuildId, holder: &str, settled: u32) {
     builds
-        .publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     for attempt in 1..=settled {

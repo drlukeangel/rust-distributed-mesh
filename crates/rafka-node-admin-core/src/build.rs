@@ -109,10 +109,14 @@ pub struct FabricDesired {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum BuildOperation {
-    /// Create a mesh.
+    /// Create a mesh: claim its name for its id, the mesh's first durable write.
     CreateMesh {
         /// The mesh to create.
         mesh: String,
+        /// The mesh's id, minted once when the mesh entered the accepted topology
+        /// ([`crate::accepted::MeshTopology::mesh_id`]): every run of the operation, by any executor
+        /// and any attempt, claims the mesh's name with it, so a re-run finds the mesh's own row.
+        mesh_id: rafka_mesh_entity::MeshId,
     },
     /// Create a node at `node` (node-create.md).
     CreateNode {
@@ -214,7 +218,7 @@ impl BuildOperation {
     /// The idempotency key.
     pub fn key(&self) -> String {
         match self {
-            Self::CreateMesh { mesh } => format!("create-mesh:{mesh}"),
+            Self::CreateMesh { mesh, .. } => format!("create-mesh:{mesh}"),
             Self::CreateNode { node, .. } => format!("create-node:{node}"),
             Self::ReplaceNode { node, .. } => format!("replace-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),

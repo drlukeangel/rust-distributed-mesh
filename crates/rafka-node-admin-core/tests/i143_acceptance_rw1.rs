@@ -168,7 +168,7 @@ fn bid(s: &str) -> BuildId {
 }
 
 fn topology() -> FabricTopology {
-    let mut t = FabricTopology::root("fabric-1", "mesh1");
+    let mut t = FabricTopology::root("fabric-1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap());
     let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2), (NodeKind::Broker, 1)]));
     let broker: PathName = "mesh2.broker.1".parse().unwrap();
     let rpc: PathName = "mesh2.rpc.1".parse().unwrap();

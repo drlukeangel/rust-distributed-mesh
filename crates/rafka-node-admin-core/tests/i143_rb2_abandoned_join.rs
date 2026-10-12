@@ -116,7 +116,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
         builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 3, executor: "mesh1.admin.1".into() }).await.unwrap();
