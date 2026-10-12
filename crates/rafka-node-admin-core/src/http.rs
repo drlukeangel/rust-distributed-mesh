@@ -31,7 +31,7 @@ use tokio::sync::{Notify, RwLock};
 pub struct ControlPlane {
     /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
-    /// `Fabric.build_id` as this admin holds it (`crate::accepted`).
+    /// The Fabric identity as this admin holds it (`crate::accepted`).
     pub accepted: Arc<AcceptedStore>,
     /// This admin's path.name: topology is accepted only while it is the fabric-primary.
     pub me: PathName,
@@ -131,12 +131,14 @@ impl ControlPlane {
         Ok(())
     }
 
-    /// The accepted Build, and the refusal when another Build is still reconciling.
-    /// The admission is taken first and returned with the Build: the caller holds it through its write.
+    /// The current Build (R-BI3: the Build entities read last in, first out, a failed one skipped),
+    /// and the refusal when it is still reconciling. The admission is taken first and returned with
+    /// the Build: the caller holds it through its write.
     async fn current_settled(&self) -> Result<(tokio::sync::OwnedMutexGuard<()>, crate::build_state::BuildProjection), Refusal> {
         let admission = self.admission.clone().lock_owned().await;
-        let current = self.accepted.current(&*self.builds).await.ok_or_else(|| {
-            Refusal::Unavailable("this admin holds no accepted Build yet (Fabric.build_id is not hydrated); submit through a Ready node-admin".into())
+        // "Never written" and "could not be read" are distinct refusals: the store's own error is named.
+        let current = self.builds.current().await.map_err(Refusal::State)?.ok_or_else(|| {
+            Refusal::Unavailable("this admin holds no current Build yet (no Build in its builds store is in progress or completed); submit through a Ready node-admin".into())
         })?;
         if matches!(current.state, BuildState::Pending | BuildState::Running) {
             tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id, state = ?current.state)
@@ -146,8 +148,9 @@ impl ControlPlane {
         Ok((admission, current))
     }
 
-    /// Compile `change` once against the accepted topology into the next complete Build, persist
-    /// it, move `Fabric.build_id`, and broadcast both. One accepted topology, one Build in flight.
+    /// Compile `change` once against the current Build's topology into the next complete Build and
+    /// accept it: written once into the builds store, where it is the current Build from then on.
+    /// One accepted topology, one Build in flight.
     pub async fn submit(&self, route: &'static str, change: TopologyChange) -> Result<Opened, Refusal> {
         let span = tracing::info_span!(
             "rdm.node_admin.build.create.via-rest",
@@ -215,22 +218,26 @@ impl ControlPlane {
             if !minted.is_empty() {
                 span.record("minted_meshes", minted.join(",").as_str());
             }
+            // Strictly after every Build accepted before it, a failed one above the current Build
+            // included: the acceptance-order index is ordered by this stamp (R-BI3).
+            let newest = self.builds.newest_accepted_at_ms().await.map_err(Refusal::State)?.unwrap_or(current.submitted_at_ms);
             let accepted = BuildAccepted {
                 build_id: build_id.clone(),
                 topology,
                 submitted_change: Some(change),
-                // Strictly after the Build it succeeds: pointer rows are ordered by this stamp.
-                submitted_at_ms: self.time.now_ms().max(current.submitted_at_ms + 1),
+                submitted_at_ms: self.time.now_ms().max(newest.max(current.submitted_at_ms) + 1),
             };
             // The attempt's context is on this fabric-primary before the Build exists to be claimed.
             self.contexts
                 .put(&build_id, 1, &crate::build_claim::current_context())
                 .await
                 .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
-            // The Build is durable before the pointer names it (never the pointer first).
-            self.builds.publish_accepted(&accepted).await.map_err(Refusal::State)?;
-            let record = self.accepted.point(&build_id, accepted.submitted_at_ms, "accepted").await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
-            self.builds.publish_fabric(&record).await.map_err(Refusal::State)?;
+            // The Build is current the moment it is durable in the builds store: nothing else is written.
+            crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &self.me.to_string(), "accepted").await.map_err(Refusal::State)?;
+            // The Build topic carries the Fabric record as it always did, naming the Build now current.
+            if let Some(identity) = self.accepted.record().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))? {
+                self.builds.publish_fabric(&identity, Some(&build_id)).await.map_err(Refusal::State)?;
+            }
             tracing::info!(build_id = %build_id, "build accepted");
             self.build_submitted.notify_waiters();
             Ok::<Opened, Refusal>(Opened { build_id, attempt: 1 })
@@ -274,8 +281,8 @@ impl ControlPlane {
         Ok(Opened { build_id: current.build_id.clone(), attempt: opened.attempt })
     }
 
-    /// Open the next attempt of the accepted Build with a fenced action (a restart or a
-    /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
+    /// Open the next attempt of the current Build with a fenced action (a restart or a replacement
+    /// of one birth). The topology is unchanged; the Build stays the current one.
     pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind, named_birth: Option<crate::model::IncarnationId>) -> Result<Opened, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
         self.open_attempt_in(span, route, reason, path, kind, named_birth).await
@@ -472,8 +479,7 @@ impl ControlPlane {
         r
     }
 
-    /// A finished Build leaves history. The Build the pointer names, and a Build still reconciling,
-    /// stay.
+    /// A finished Build leaves history. The current Build, and a Build still reconciling, stay.
     pub async fn forget_build(&self, id: &BuildId) -> Result<(), Refusal> {
         let p = self.builds.read_build(id).await.map_err(|e| match e {
             BuildStateError::UnknownBuild(id) => Refusal::NotFound(format!("no Build {id}")),
@@ -482,8 +488,8 @@ impl ControlPlane {
         if matches!(p.state, BuildState::Pending | BuildState::Running) {
             return Err(Refusal::Conflict(format!("Build {id} is still {:?}; only finished Builds leave history", p.state)));
         }
-        if self.accepted.build_id().await.as_ref() == Some(id) {
-            return Err(Refusal::Conflict(format!("Build {id} is the accepted topology (Fabric.build_id); it leaves history once the pointer moves")));
+        if self.builds.current_build().await.map_err(Refusal::State)?.build_id() == Some(id) {
+            return Err(Refusal::Conflict(format!("Build {id} is the current Build (the newest in the builds store that is in progress or completed); it leaves history once a later Build is current")));
         }
         self.builds.forget(id).await.map_err(Refusal::State)
     }
@@ -767,16 +773,19 @@ async fn get_mesh(State(cp): State<Shared>, Path(id): Path<String>) -> Result<Re
     t.mesh_view(&id).map(|v| Json(v).into_response()).ok_or_else(|| Refusal::NotFound(format!("no mesh {id}")))
 }
 
-async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
+async fn get_fabric(State(cp): State<Shared>) -> Result<Json<Value>, Refusal> {
+    // The current Build (R-BI3), read from the builds store: a store that cannot be read is refused
+    // by name, never shown as a fabric with no Build.
+    let current = cp.builds.current_build().await.map_err(Refusal::State)?.into_build_id();
     let mut v = serde_json::to_value(cp.topology.read().await.fabric_view()).unwrap_or(Value::Null);
     // The shape the fabric should have, as this admin holds it.
     if let Some(o) = v.as_object_mut() {
-        o.insert("build_id".into(), serde_json::to_value(cp.accepted.build_id().await).unwrap_or(Value::Null));
+        o.insert("build_id".into(), serde_json::to_value(current).unwrap_or(Value::Null));
         // A fabric shutdown's progress as this admin sees it: diagnostics, never authority.
         let progress = cp.fabric_shutdown.get().and_then(|s| s.control.progress());
         o.insert("shutdown".into(), serde_json::to_value(progress).unwrap_or(Value::Null));
     }
-    Json(v)
+    Ok(Json(v))
 }
 
 /// `GET /api/connections`: the connection facts this admin holds, read-only. Each names its entry's
@@ -801,7 +810,7 @@ async fn create_mesh(State(cp): State<Shared>, raw: String) -> Result<Response, 
 
 async fn delete_mesh(State(cp): State<Shared>, Path(id): Path<String>) -> Result<Response, Refusal> {
     // By name in the accepted topology, or by id or name in the observed view.
-    let in_accepted = cp.accepted.current(&*cp.builds).await.is_some_and(|b| b.topology.meshes.contains_key(&id));
+    let in_accepted = cp.builds.current().await.map_err(Refusal::State)?.is_some_and(|b| b.topology.meshes.contains_key(&id));
     let mesh = if in_accepted {
         Some(id.clone())
     } else {

@@ -276,6 +276,12 @@ pub struct BuildProjection {
     /// continue by hand-off or take-over. A step receipt from it on is this run's.
     #[serde(default)]
     pub opened: u32,
+    /// The attempt whose `Converged` verdict first completed the Build, when one did. Kept when a
+    /// later attempt reopens it (a restart, a recovery, proven drift: attempts of an unchanged
+    /// topology, build.md §4.1), so a Build that once realized its topology stays the known state
+    /// whatever such an attempt ends with ([`CurrentBuild`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<u32>,
     /// The attempts whose executor reported its run's end by the attempt's verdict (`HandedOff` or
     /// `Converged`): what such a run completed is done. A run whose executor was lost reported nothing,
     /// and its successor re-checks the world for what it left.
@@ -312,6 +318,96 @@ impl BuildProjection {
     pub fn completed_in_run(&self, key: &str) -> bool {
         self.steps.iter().any(|s| self.reported_in_run(s.attempt) && s.operation == key && s.step == "Complete" && s.outcome == StepOutcome::Complete)
     }
+}
+
+/// The current Build (R-BI3, rulings 2026-10-12): the Build entities read last in, first out through
+/// the acceptance-order index, the first that is in progress or completed. A failed Build is skipped
+/// and never current; nothing resumes it on its own, and a caller resubmits it. No row points at it:
+/// the Fabric row carries no pointer to the newest Build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CurrentBuild {
+    /// The newest Build not failed is being driven (an attempt open or running): it is resumed, its
+    /// completed steps replayed and never run again.
+    InProgress(BuildId),
+    /// The newest Build not failed completed (it realized its topology once): the known state.
+    Completed(BuildId),
+    /// No Build held is in progress or completed.
+    None,
+}
+
+impl CurrentBuild {
+    /// The current Build's id, when there is one.
+    pub fn build_id(&self) -> Option<&BuildId> {
+        match self {
+            Self::InProgress(id) | Self::Completed(id) => Some(id),
+            Self::None => None,
+        }
+    }
+
+    /// The current Build's id, when there is one.
+    pub fn into_build_id(self) -> Option<BuildId> {
+        match self {
+            Self::InProgress(id) | Self::Completed(id) => Some(id),
+            Self::None => None,
+        }
+    }
+}
+
+/// What a read of `p`, one entry of the acceptance-order index, makes of it: in progress, completed,
+/// or skipped (`None`: failed, and it never completed).
+fn current_of(p: &BuildProjection) -> Option<CurrentBuild> {
+    match p.state {
+        BuildState::Pending | BuildState::Running => Some(CurrentBuild::InProgress(p.build_id.clone())),
+        BuildState::Complete => Some(CurrentBuild::Completed(p.build_id.clone())),
+        BuildState::Failed if p.completed_at.is_some() => Some(CurrentBuild::Completed(p.build_id.clone())),
+        BuildState::Failed => None,
+    }
+}
+
+/// Whether `p` may be driven now: it is the current Build, or it is a failed Build accepted after the
+/// current one (each Build between them failed too) while the current one is not in progress. The
+/// resubmit that resumes it opens its next attempt, which makes it the current Build (R-BI3: "a
+/// caller resubmits it"); one Build is in flight at a time.
+pub async fn drivable(builds: &dyn BuildStateAdapter, p: &BuildProjection) -> Result<bool, BuildStateError> {
+    let current = builds.current_build().await?;
+    if current.build_id() == Some(&p.build_id) {
+        return Ok(true);
+    }
+    if p.state != BuildState::Failed || p.completed_at.is_some() {
+        return Ok(false);
+    }
+    Ok(match current {
+        CurrentBuild::InProgress(_) => false,
+        CurrentBuild::None => true,
+        CurrentBuild::Completed(id) => {
+            let c = builds.read_build(&id).await?;
+            (p.submitted_at_ms, &p.build_id) > (c.submitted_at_ms, &c.build_id)
+        }
+    })
+}
+
+/// Accept `accepted` (build.md §5.2, acceptance): the Build entity is written once into the builds
+/// store, and it is current from the moment it is there (an index read finds it newest), so nothing
+/// is moved after it and nothing can read it as current before it is durable. `previous` is the Build
+/// that was current, which the span names; `via` names the surface (`accepted`, `day-0`, `seeded`).
+pub async fn accept(builds: &dyn BuildStateAdapter, accepted: &BuildAccepted, previous: Option<&BuildId>, node: &str, via: &str) -> Result<(), BuildStateError> {
+    use tracing::Instrument as _;
+    // The span opens BEFORE the write: the Build is current to a reader the moment it is in the
+    // store, which is before `publish_accepted` returns.
+    let span = tracing::info_span!(
+        "rdm.node_admin.build.create.via-accepted",
+        node = %node,
+        build_id = %accepted.build_id,
+        previous_build_id = %previous.map(|b| b.0.as_str()).unwrap_or(""),
+        submitted_at_ms = accepted.submitted_at_ms,
+        via,
+    );
+    let put = builds.publish_accepted(accepted).instrument(span.clone()).await;
+    match &put {
+        Ok(()) => span.in_scope(|| tracing::info!("the Build is in the builds store: it is the newest accepted, and the current Build")),
+        Err(e) => span.in_scope(|| tracing::info!(error = %e, "the Build could not be written to the builds store: nothing is accepted")),
+    }
+    put
 }
 
 /// The result of claiming an attempt.
@@ -433,6 +529,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     attempt_actions: BTreeMap::new(),
                     attempt_executors: BTreeMap::new(),
                     opened: 0,
+                    completed_at: None,
                     reported: Default::default(),
                 });
             }
@@ -493,7 +590,10 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                         continue; // a superseded attempt's verdict does not decide the Build
                     }
                     match &a.outcome {
-                        AttemptOutcome::Converged => p.state = BuildState::Complete,
+                        AttemptOutcome::Converged => {
+                            p.state = BuildState::Complete;
+                            p.completed_at.get_or_insert(a.attempt);
+                        }
                         AttemptOutcome::Failed { reason } => {
                             p.state = BuildState::Failed;
                             p.last_failure = Some(reason.clone());
@@ -642,13 +742,32 @@ pub trait BuildStateAdapter: Send + Sync {
     /// same drift) changes nothing and succeeds; one that asks for another action is refused
     /// `AttemptTaken`, so no caller is told an attempt is open for an action it does not carry.
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError>;
-    /// Tell the fabric `Fabric.build_id` moved (the record it names). A local-only adapter has no
+    /// Tell the fabric the Fabric record and the Build `current` this admin reads as current, on the
+    /// Build topic (its frame is unchanged: `crate::wire::WireMessage`). A local-only adapter has no
     /// fabric to tell.
-    async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricRecord) -> Result<(), BuildStateError> {
+    async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricIdentity, _current: Option<&BuildId>) -> Result<(), BuildStateError> {
         Ok(())
     }
     /// The folded view of `build_id`.
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError>;
+    /// The current Build ([`CurrentBuild`], R-BI3): the acceptance-order index read last in, first
+    /// out, each Build read from its own facts, until the first that is in progress or completed. A
+    /// failed Build is skipped; no Build accepted before the current one is read. Every adapter
+    /// answers it from its index (or delegates to the adapter it decorates).
+    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError>;
+    /// The acceptance stamp (`submitted_at_ms`) of the newest Build accepted, whatever its state: the
+    /// head of the acceptance-order index. A Build accepted next is stamped after it.
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError>;
+    /// The current Build's folded view: [`Self::current_build`], then a point read of that Build.
+    /// `Ok(None)`: no Build in the store is in progress or completed (none was ever accepted here, or
+    /// every one failed). `Err`: the store could not be read, named; never answered as `None`, so a
+    /// caller never takes "could not be read" for "never written".
+    async fn current(&self) -> Result<Option<BuildProjection>, BuildStateError> {
+        match self.current_build().await?.into_build_id() {
+            None => Ok(None),
+            Some(id) => self.read_build(&id).await.map(Some),
+        }
+    }
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
     /// Insert-and-fail on `(build_id, attempt)`. Only the fabric-primary calls this on its own
@@ -812,6 +931,13 @@ struct FactLog {
     /// ...and every attempt claimed or decided, with its verdict once one is held: the first
     /// appended, as [`fold`] reads it.
     verdicts: std::collections::HashMap<BuildId, BTreeMap<u32, Option<AttemptOutcome>>>,
+    /// The acceptance-order index (R-BI3): every Build accepted, by its own acceptance stamp
+    /// `(submitted_at_ms, build_id)`, entered once by its `Accepted` fact and never rewritten, in
+    /// whatever order the facts arrive. Read newest first by [`FactLog::current_build`].
+    accepted_order: std::collections::BTreeSet<(u64, BuildId)>,
+    /// Each Build's own facts, by their position in `facts`: a Build is read by folding its facts
+    /// alone ([`FactLog::read`]).
+    by_build: std::collections::HashMap<BuildId, Vec<usize>>,
 }
 
 impl Default for FactLog {
@@ -826,6 +952,8 @@ impl Default for FactLog {
             opens: Default::default(),
             verdicts: Default::default(),
             mesh_deleted: Default::default(),
+            accepted_order: Default::default(),
+            by_build: Default::default(),
         }
     }
 }
@@ -880,8 +1008,12 @@ impl FactLog {
                     *held = Some(a.outcome.clone());
                 }
             }
+            BuildFact::Accepted(a) => {
+                self.accepted_order.insert((a.submitted_at_ms, a.build_id.clone()));
+            }
             _ => {}
         }
+        self.by_build.entry(fact.build_id().clone()).or_default().push(self.facts.len());
         self.facts.push(fact);
         if let Some(derive) = &self.derived.0 {
             derive(&self.facts);
@@ -964,7 +1096,7 @@ impl FactLog {
     /// A claim that is not the Build's next attempt, or is on a complete Build: refused by name,
     /// never recorded (the fold would ignore it, but the attempt number stays free).
     fn not_open(&self, claim: &BuildAttemptClaim) -> Option<ClaimOutcome> {
-        let p = fold(&self.facts).remove(&claim.build_id)?;
+        let p = self.read(&claim.build_id).ok()?;
         if matches!(p.state, BuildState::Complete) || claim.attempt != p.attempt + 1 {
             return Some(ClaimOutcome::NotOpen { next: (!matches!(p.state, BuildState::Complete)).then_some(p.attempt + 1) });
         }
@@ -1015,8 +1147,22 @@ impl FactLog {
         self.facts.iter().any(|f| matches!(f, BuildFact::Accepted(i) if &i.build_id == build_id))
     }
 
+    /// The folded view of `build_id`, from its own facts alone.
     fn read(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        fold(&self.facts).remove(build_id).ok_or_else(|| BuildStateError::UnknownBuild(build_id.clone()))
+        let own: Vec<BuildFact> = self.by_build.get(build_id).map(|at| at.iter().map(|i| self.facts[*i].clone()).collect()).unwrap_or_default();
+        fold(&own).remove(build_id).ok_or_else(|| BuildStateError::UnknownBuild(build_id.clone()))
+    }
+
+    /// The point read of [`BuildStateAdapter::current_build`]: the acceptance-order index newest
+    /// first, each Build read from its own facts, until the first in progress or completed. A Build
+    /// forgotten has left the views and is passed over, as a failed one is.
+    fn current_build(&self) -> CurrentBuild {
+        self.accepted_order.iter().rev().find_map(|(_, id)| self.read(id).ok().as_ref().and_then(current_of)).unwrap_or(CurrentBuild::None)
+    }
+
+    /// The point read of [`BuildStateAdapter::newest_accepted_at_ms`]: the index's head.
+    fn newest_accepted_at_ms(&self) -> Option<u64> {
+        self.accepted_order.last().map(|(at, _)| *at)
     }
 
     fn active(&self) -> Vec<BuildProjection> {
@@ -1116,6 +1262,14 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.log.lock().unwrap().read(build_id)
+    }
+
+    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
+        Ok(self.log.lock().unwrap().current_build())
+    }
+
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        Ok(self.log.lock().unwrap().newest_accepted_at_ms())
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
@@ -1263,6 +1417,14 @@ impl BuildStateAdapter for FileJournal {
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.log.lock().unwrap().read(build_id)
+    }
+
+    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
+        Ok(self.log.lock().unwrap().current_build())
+    }
+
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        Ok(self.log.lock().unwrap().newest_accepted_at_ms())
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
@@ -1657,6 +1819,102 @@ mod tests {
         let again = FileJournal::open(&dir).await.unwrap();
         assert_eq!(again.read_build(&BuildId("b1".into())).await.unwrap().state, BuildState::Complete);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn accepted_at(id: &str, at_ms: u64) -> BuildAccepted {
+        BuildAccepted { submitted_at_ms: at_ms, ..intent(id) }
+    }
+
+    /// CONTRACT (R-BI3: "it reads the builds till it finds the last committed/completed build id and
+    /// then uses that as known state"; "if we're LIFO it would be in-progress || completed"; "failed
+    /// Builds are skipped. A failed Build is never current"): the acceptance-order index is read
+    /// newest first and the first Build in progress or completed is current. A Build that realized
+    /// its topology once stays the known state when a later attempt of it (a restart, proven drift:
+    /// build.md §4.1, the topology unchanged) fails; a Build that never completed and failed is
+    /// skipped; a forgotten one has left the views. Memory and the journal answer alike, and the
+    /// journal answers the same after a restart replays it.
+    #[tokio::test]
+    async fn the_current_build_is_the_newest_in_progress_or_completed_and_a_failed_one_is_skipped() {
+        let dir = tmp();
+        let journal = FileJournal::open(&dir).await.unwrap();
+        for s in [&MemoryBuildStateAdapter::new() as &dyn BuildStateAdapter, &journal] {
+            let id = |b: &str| BuildId(b.into());
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::None, "an empty store holds no current Build");
+            s.publish_accepted(&accepted_at("b0", 10)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b0")), "an accepted Build is current, in progress");
+            s.claim_attempt(&claim("b0", 1, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b0", 1, AttemptOutcome::Converged)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")));
+            s.publish_accepted(&accepted_at("b1", 20)).await.unwrap();
+            s.claim_attempt(&claim("b1", 1, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Failed { reason: "x".into() })).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "the failed b1 is skipped: b0 is the known state");
+            assert_eq!(s.newest_accepted_at_ms().await.unwrap(), Some(20), "the index's head is the failed b1, whatever its state");
+            // A restart of b0 is an attempt of it: in progress while it runs, and b0 stays the known
+            // state when it fails.
+            s.open_attempt(&opened("b0", 2, AttemptReason::Restart)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b0")));
+            s.claim_attempt(&claim("b0", 2, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b0", 2, AttemptOutcome::Failed { reason: "restart failed".into() })).await.unwrap();
+            assert_eq!(s.read_build(&id("b0")).await.unwrap().state, BuildState::Failed);
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "an attempt of an unchanged topology that failed never makes an older Build current");
+            // The failed b1 resubmitted: its next attempt makes it the Build in progress.
+            s.open_attempt(&opened("b1", 2, AttemptReason::AuthorityMoved)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
+            s.claim_attempt(&claim("b1", 2, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b1", 2, AttemptOutcome::Converged)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b1")));
+            // A newer Build that failed and was forgotten leaves the views: b1 stays current.
+            s.publish_accepted(&accepted_at("b2", 30)).await.unwrap();
+            s.claim_attempt(&claim("b2", 1, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b2", 1, AttemptOutcome::Failed { reason: "y".into() })).await.unwrap();
+            s.forget(&id("b2")).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b1")));
+        }
+        let replayed = FileJournal::open(&dir).await.unwrap(); // the admin restarted
+        assert_eq!(replayed.current_build().await.unwrap(), CurrentBuild::Completed(BuildId("b1".into())), "the journal's replay answers the same current Build");
+        assert_eq!(replayed.newest_accepted_at_ms().await.unwrap(), Some(30));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (R-BI3: "Each accepted Build is its own entity in the builds store, written once"):
+    /// the acceptance order is each Build's own stamp, written once in its accepted fact, so facts
+    /// absorbed in any order (gossip, catch-up) give the same current Build: an older Build's facts
+    /// arriving after a newer one's never make the older one current.
+    #[tokio::test]
+    async fn the_acceptance_order_is_each_builds_own_stamp_whatever_order_the_facts_arrive() {
+        let newer = [BuildFact::Accepted(accepted_at("bnew", 20)), BuildFact::Claim(claim("bnew", 1, "a")), BuildFact::Attempt(attempt("bnew", 1, AttemptOutcome::Converged))];
+        let older = [BuildFact::Accepted(accepted_at("bold", 10)), BuildFact::Claim(claim("bold", 1, "a")), BuildFact::Attempt(attempt("bold", 1, AttemptOutcome::Converged))];
+        let (a, b) = (MemoryBuildStateAdapter::new(), MemoryBuildStateAdapter::new());
+        a.absorb(&newer);
+        a.absorb(&older);
+        b.absorb(&older);
+        b.absorb(&newer);
+        for s in [&a, &b] {
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(BuildId("bnew".into())));
+        }
+    }
+
+    /// CONTRACT (R-BI3: "a caller resubmits it"; one Build in flight): a failed Build may be driven
+    /// again while it is newer than the current Build and the current Build is not in progress; a
+    /// Build older than the current one, or any Build while another is in progress, is not.
+    #[tokio::test]
+    async fn a_failed_build_newer_than_the_current_one_is_drivable_and_an_older_one_is_not() {
+        let s = MemoryBuildStateAdapter::new();
+        let id = |b: &str| BuildId(b.into());
+        for (b, at, outcome) in [("b0", 10, AttemptOutcome::Failed { reason: "x".into() }), ("b1", 20, AttemptOutcome::Converged), ("b2", 30, AttemptOutcome::Failed { reason: "y".into() })] {
+            s.publish_accepted(&accepted_at(b, at)).await.unwrap();
+            s.claim_attempt(&claim(b, 1, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt(b, 1, outcome)).await.unwrap();
+        }
+        let held = &s;
+        let p = |b: &'static str| async move { held.read_build(&BuildId(b.into())).await.unwrap() };
+        assert!(drivable(&s, &p("b1").await).await.unwrap(), "the current Build");
+        assert!(drivable(&s, &p("b2").await).await.unwrap(), "a failed Build accepted after the current one");
+        assert!(!drivable(&s, &p("b0").await).await.unwrap(), "a failed Build older than the current one");
+        s.open_attempt(&opened("b1", 2, AttemptReason::Restart)).await.unwrap();
+        assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
+        assert!(!drivable(&s, &p("b2").await).await.unwrap(), "one Build in flight: not while the current one is in progress");
     }
 
     /// CONTRACT (node-recovery.md "A repeat submit answers AlreadyApplied ... never a second

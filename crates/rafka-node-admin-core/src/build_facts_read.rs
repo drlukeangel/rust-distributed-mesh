@@ -29,8 +29,6 @@ pub struct BuildFactsDoor {
     pub me: crate::model::PathName,
     /// The Build state this admin holds (its local log, through whatever decorates it).
     pub builds: Arc<dyn BuildStateAdapter>,
-    /// This admin's `Fabric.build_id` holder.
-    pub accepted: Arc<crate::accepted::AcceptedStore>,
     /// The attempt floor this admin's entry named, when it was served one.
     pub floor: Arc<std::sync::Mutex<Option<(BuildId, u32)>>>,
 }
@@ -70,7 +68,7 @@ impl BuildFactsDoor {
             let facts = held.len() as u32;
             let (messages, refused) = encode_chunks(held);
             let floor = self.floor.lock().unwrap().clone();
-            let whole = refused.is_empty() && crate::admin::hydration_blocker(&self.me, &self.accepted, &*self.builds, floor).await.is_none();
+            let whole = refused.is_empty() && crate::admin::hydration_blocker(&self.me, &*self.builds, floor).await.is_none();
             for e in &refused {
                 tracing::info_span!("rdm.node_admin.build.reject.via-unservable-fact", node = %self.me, build_id = %build_id, detail = %e)
                     .in_scope(|| tracing::info!("a held Build fact fits no chunk: this answer is not complete"));

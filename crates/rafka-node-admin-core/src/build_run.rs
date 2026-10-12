@@ -245,11 +245,17 @@ impl BuildStateAdapter for FramedBuilds {
     async fn open_attempt(&self, opened: &crate::build_state::AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await
     }
-    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricRecord) -> Result<(), BuildStateError> {
-        self.inner.publish_fabric(record).await
+    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricIdentity, current: Option<&BuildId>) -> Result<(), BuildStateError> {
+        self.inner.publish_fabric(record, current).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
+    }
+    async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
     }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
@@ -551,6 +557,12 @@ mod tests {
         async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
             self.0.read_build(id).await
         }
+        async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+            self.0.current_build().await
+        }
+        async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
+            self.0.newest_accepted_at_ms().await
+        }
         async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
             self.0.list_active().await
         }
@@ -596,6 +608,12 @@ mod tests {
         }
         async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
             self.0.read_build(id).await
+        }
+        async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+            self.0.current_build().await
+        }
+        async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
+            self.0.newest_accepted_at_ms().await
         }
         async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
             self.0.list_active().await

@@ -102,6 +102,12 @@ pub enum Verdict {
         /// The decode failure.
         reason: String,
     },
+    /// No Build in the builds store is in progress or completed (R-BI3): there is no accepted
+    /// topology to hold the node against, so nothing is decided for it.
+    NoCurrentBuild {
+        /// The node.
+        node: PathName,
+    },
     /// The Build log (or its active Builds) cannot be read: neither the age nor the open-Build
     /// reference can be decided.
     UnreadableBuildLog {
@@ -217,7 +223,7 @@ impl crate::http::ControlPlane {
     /// whose current attempt's fenced action acts on the birth.
     async fn open_reference(&self, incarnation: &IncarnationId) -> Result<Option<BuildId>, String> {
         let mut open = self.builds.list_active().await.map_err(|e| format!("the active Builds cannot be read: {e}"))?;
-        if let Some(current) = self.accepted.current(&*self.builds).await {
+        if let Some(current) = self.builds.current().await.map_err(|e| format!("the current Build cannot be read: {e}"))? {
             if current.state != BuildState::Complete {
                 open.push(current);
             }
@@ -228,11 +234,15 @@ impl crate::http::ControlPlane {
     /// The scan: every stopped birth this admin's view holds, with its verdict at `now_ms`.
     pub async fn scan_stopped(&self, ttl: Duration, now_ms: u64) -> Vec<Verdict> {
         let view = self.view().await;
-        // The accepted topology, or why it cannot be read: a pointer naming no Build this admin can
+        // The current Build's topology, or why it cannot be read: no current Build this admin can
         // read is not the node's absence from it.
-        let desired: Result<crate::accepted::FabricTopology, String> = match self.accepted.build_id().await {
-            None => Err("the fabric's pointer names no accepted Build".into()),
-            Some(id) => self.builds.read_build(&id).await.map(|b| b.topology).map_err(|e| format!("the accepted Build {id} cannot be read: {e}")),
+        // "No current Build" and "the store cannot be read" are distinct verdicts.
+        let desired: Result<Option<crate::accepted::FabricTopology>, String> = match self.builds.current_build().await {
+            Err(e) => Err(format!("the builds store cannot be read for the current Build: {e}")),
+            Ok(current) => match current.into_build_id() {
+                None => Ok(None),
+                Some(id) => self.builds.read_build(&id).await.map(|b| Some(b.topology)).map_err(|e| format!("the current Build {id} cannot be read: {e}")),
+            },
         };
         let facts = self.builds.facts().await;
         let mut stopped: Vec<&crate::model::Node> = view.members().filter(|n| n.parked).collect();
@@ -249,11 +259,15 @@ impl crate::http::ControlPlane {
                     out.push(Verdict::UnreadableBuildLog { node, reason: reason.clone() });
                     continue;
                 }
-                Ok(t) if !t.contains(&node) => {
+                Ok(None) => {
+                    out.push(Verdict::NoCurrentBuild { node });
+                    continue;
+                }
+                Ok(Some(t)) if !t.contains(&node) => {
                     out.push(Verdict::Deleting { node });
                     continue;
                 }
-                Ok(_) => {}
+                Ok(Some(_)) => {}
             }
             match self.open_reference(&incarnation).await {
                 Ok(Some(build_id)) => {
@@ -312,6 +326,8 @@ impl crate::http::ControlPlane {
                     .in_scope(|| tracing::info!(%reason, "no stop receipt opens the birth's current stopped period: skipped, never treated as expired")),
                 Verdict::UnreadableReceipt { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-unreadable-stop-receipt", node = %node, reason = %reason, ttl = ttl_ms)
                     .in_scope(|| tracing::info!(%reason, "the birth's stop receipt cannot be read: skipped, never treated as expired")),
+                Verdict::NoCurrentBuild { node } => tracing::info_span!("rdm.node_admin.node.reject.via-no-current-build", node = %node, ttl = ttl_ms)
+                    .in_scope(|| tracing::info!("no Build in the builds store is in progress or completed: there is no accepted topology to hold the stopped node against, skipped")),
                 Verdict::UnreadableBuildLog { node, reason } => tracing::info_span!("rdm.node_admin.node.reject.via-unreadable-build-log", node = %node, reason = %reason, ttl = ttl_ms)
                     .in_scope(|| tracing::info!(%reason, "the Build log cannot be read: the birth's age is not decided, skipped")),
             }

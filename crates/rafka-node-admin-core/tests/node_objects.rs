@@ -211,7 +211,6 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
-        accepted,
         builds: rig.builds.clone(),
         door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: dispatcher(run.clone()),
@@ -237,7 +236,6 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
-        accepted,
         builds: fp.clone(),
         door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: fp.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: Arc::new(Local(run.clone())),
@@ -738,7 +736,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
         let exited = cp.topology.read().await.node(&path).unwrap().clone();
         let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
-        let b0 = cp.accepted.build_id().await.unwrap();
+        let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
         let settle = |attempt: u32| {
             let (builds, b0) = (rig.builds.clone(), b0.clone());
             async move {

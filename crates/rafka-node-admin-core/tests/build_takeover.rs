@@ -126,7 +126,6 @@ fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Ar
     Arc::new(DriveEnv {
         me: me.parse().unwrap(),
         topology: topology.clone(),
-        accepted: a.accepted.clone(),
         builds: a.builds.clone(),
         door: Arc::new(rafka_node_admin_core::build_claim::ClaimDoor { me: me.parse().unwrap(), node_id: topology.try_read().expect("the view is free").node(&me.parse().unwrap()).expect("the fabric-primary is in the view").node_id.clone(), topology: topology.clone(), builds: a.builds.clone(), contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()) }),
         dispatcher: dispatch,
@@ -212,7 +211,6 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .append_attempt_receipt(&rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: seed.clone(), attempt: 1, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged })
         .await
         .unwrap();
-    a.accepted.point(&seed, 0, "seeded").await.unwrap();
     let mut cp = ControlPlane::new(a.builds.clone(), a.accepted.clone(), "mesh1.admin.1".parse().unwrap(), observed(), crate::adopted_time());
     cp.topology = topology.clone();
     let build_id = cp
@@ -253,11 +251,11 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
 
     // B drives the same Build: the same build id, the next attempt, only what is left.
     let b_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: None, died: Arc::new(Notify::new()) });
-    // B's pointer names the Build through its Build topic, never set by hand: the successor may
-    // drive only what Fabric.build_id names.
-    eventually("B's Fabric.build_id names the Build", || {
-        let (accepted, id) = (b.accepted.clone(), build_id.clone());
-        async move { accepted.build_id().await == Some(id) }
+    // B holds the Build through its Build topic, never set by hand: the successor may drive only
+    // its current Build (R-BI3), read from its own builds store.
+    eventually("B's current Build is the Build", || {
+        let (builds, id) = (b.builds.clone(), build_id.clone());
+        async move { builds.current_build().await.ok().and_then(|c| c.into_build_id()) == Some(id) }
     })
     .await;
     let b_dispatch = crate::loopback::Loopback::new(b.builds.clone(), b.local.clone(), topology.clone(), b_runner.clone());

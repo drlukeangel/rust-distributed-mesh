@@ -22,7 +22,8 @@ use rafka_node_admin_core::deployment::pipeline::Bound;
 use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion, CreateStep, RetireStep, StorageDisposition};
 use rafka_node_admin_core::deployment::provider::DeploymentHandle;
 use rafka_node_admin_core::fabric_builds::{encode_chunks, BuildMessage};
-use rafka_node_admin_core::fabric_storage::{FabricRecord, FabricShutdown};
+use rafka_node_admin_core::fabric_builds::FabricMessage;
+use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricShutdown};
 use rafka_node_admin_core::model::{DeploymentId, ProviderKind};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -321,8 +322,8 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     }
     result.insert("build_fact_shapes_round_tripped".into(), json!(all_facts.len()));
 
-    // The Fabric record (with and without its Build) and a shutdown ride a message of their own.
-    let record = |build_id: Option<BuildId>| FabricRecord { fabric_id: fabric(), name: "fabric-1".into(), build_id };
+    // The Fabric record (with and without the sender's current Build) and a shutdown ride a message of their own.
+    let record = |current: Option<BuildId>| FabricMessage { identity: FabricIdentity { fabric_id: fabric(), name: "fabric-1".into() }, current };
     let shutdown = FabricShutdown { initiated_by: "mesh1.admin.1".into(), initiated_by_node_id: NodeId::mint().to_string(), initiated_at_ms: 99 };
     for r in [record(None), record(Some(bid("bld-1")))] {
         let m = BuildMessage { nonce: 7, facts: vec![], fabric: Some(r.clone()), shutdown: Some(shutdown.clone()) };

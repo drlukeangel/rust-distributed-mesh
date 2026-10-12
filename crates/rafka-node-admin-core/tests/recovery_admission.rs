@@ -88,7 +88,7 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     // `mesh1.rpc.2` has gone silent since: TRUE OFFLINE, Dead in the view.
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
     let settle = |attempt: u32| {
@@ -143,7 +143,7 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     // an earlier Build's receipts. A repeat submit of it is still the recovery already applied,
     // never a recovery of the path that a new node now runs.
     settle_other(&builds, &other.build_id).await;
-    assert_eq!(cp.accepted.build_id().await.as_ref(), Some(&other.build_id), "the topology Build is the accepted one");
+    assert_eq!(cp.builds.current_build().await.unwrap().into_build_id().as_ref(), Some(&other.build_id), "the topology Build is the accepted one");
     let before_late = opened(&builds.facts().await.unwrap());
     let late = cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await;
     assert!(matches!(&late, Ok(Recovery::AlreadyApplied(o)) if *o == first), "a repeat after a later Build was accepted names the attempt that recovered the birth: {late:?}");
@@ -184,7 +184,7 @@ async fn a_recovery_submit_for_a_birth_a_replace_deleted_is_answered_already_app
     let (node_id, birth) = (replaced.node_id.clone(), replaced.incarnation_id.clone().unwrap());
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
     // `mesh1.rpc.2` is replaced: attempt 2 terminates the birth, creates its successor at the
@@ -315,7 +315,7 @@ async fn a_recovery_run_by_a_mesh_primary_that_is_not_the_fabric_primary_is_answ
     let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
     let accepted = AcceptedStore::seeded(&*fp, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let cp = Arc::new(ControlPlane::new(fp.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
-    let b0 = cp.accepted.build_id().await.unwrap();
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     fp.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     fp.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);

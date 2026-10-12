@@ -132,7 +132,7 @@ impl Harness {
 async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_an_attempt() {
     let h = harness(Router::new()).await;
     let before = h.cp.topology.read().await.clone();
-    let b0 = h.cp.accepted.build_id().await.unwrap().0;
+    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
     let seed = h.facts().await.len();
 
     // A change: the next complete Build, and Fabric.build_id names it.
@@ -188,7 +188,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
 #[tokio::test]
 async fn a_replace_opens_the_next_attempt_of_the_accepted_build_fenced_to_the_live_birth() {
     let h = harness(Router::new()).await;
-    let b0 = h.cp.accepted.build_id().await.unwrap().0;
+    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
     let seed = h.facts().await.len();
     let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.9/replace", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "{v}");
@@ -252,7 +252,7 @@ async fn refusals_are_named_and_publish_nothing() {
 #[tokio::test]
 async fn build_history_is_readable_and_only_finished_builds_that_are_not_current_can_be_forgotten() {
     let h = harness(Router::new()).await;
-    let b0 = h.cp.accepted.build_id().await.unwrap().0;
+    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
     // A restart opens an attempt of the accepted Build: it is in flight, not history.
     let (_, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.1/restart", None).await;
     assert_eq!(v["build_id"], b0.as_str(), "{v}");
@@ -384,6 +384,12 @@ impl rafka_node_admin_core::build_state::BuildStateAdapter for RefusingAccept {
     async fn read_build(&self, b: &BuildId) -> Result<rafka_node_admin_core::build_state::BuildProjection, rafka_node_admin_core::build_state::BuildStateError> {
         self.0.read_build(b).await
     }
+    async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.newest_accepted_at_ms().await
+    }
     async fn list_active(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildProjection>, rafka_node_admin_core::build_state::BuildStateError> {
         self.0.list_active().await
     }
@@ -416,22 +422,21 @@ impl rafka_node_admin_core::build_state::BuildStateAdapter for RefusingAccept {
     }
 }
 
-/// CONTRACT (i143 export gate: complete Build persistence precedes the Fabric.build_id write): a
-/// change whose Build builds.storage refuses is refused with the store's reason, and
-/// Fabric.build_id still names the previous Build: the pointer never names a Build that is not
-/// durable.
+/// CONTRACT (build.md §5.2, acceptance is crash-safe; R-BI3: the current Build is read from the
+/// builds store): a change whose Build builds.storage refuses is refused with the store's reason,
+/// and the current Build is still the previous one: no Build is current that is not durable.
 #[tokio::test]
-async fn a_build_the_store_refuses_is_never_named_by_fabric_build_id() {
+async fn a_build_the_store_refuses_is_never_the_current_build() {
     let mem = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
     let accepted = AcceptedStore::seeded(&*mem, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    let previous = accepted.build_id().await.expect("the seeded Build is named");
+    let previous = mem.current_build().await.unwrap().into_build_id().expect("the seeded Build is current");
     let cp = Arc::new(ControlPlane::new(Arc::new(RefusingAccept(mem.clone())), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
     let app = router(cp, Router::new());
     let (s, v) = call(&app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
     assert!(v["detail"].as_str().unwrap_or_default().contains("builds.storage refused Build"), "the refusal carries the store's reason: {v}");
-    assert_eq!(accepted.build_id().await, Some(previous), "Fabric.build_id still names the previous Build");
+    assert_eq!(mem.current_build().await.unwrap().into_build_id(), Some(previous), "the current Build is still the previous one");
 }
 
 /// Every span's name with its fields rendered, so a refusal is read from its own span.
@@ -500,7 +505,7 @@ async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_st
 #[tokio::test]
 async fn a_silent_node_absent_from_the_view_is_replaced_by_the_birth_the_caller_names() {
     let h = harness(Router::new()).await;
-    let b0 = h.cp.accepted.build_id().await.unwrap().0;
+    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
     let birth = h.cp.topology.read().await.node(&"mesh1.rpc.3".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
     h.cp.topology.write().await.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.3");
     let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.3/replace", None).await;

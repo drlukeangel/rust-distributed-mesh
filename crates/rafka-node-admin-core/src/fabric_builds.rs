@@ -25,7 +25,7 @@ use crate::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter,
     BuildStateError, BuildStepReceipt, ClaimOutcome, LocalBuildLog,
 };
-use crate::fabric_storage::FabricRecord;
+use crate::fabric_storage::FabricIdentity;
 use futures_lite::StreamExt as _;
 use iroh::EndpointAddr;
 use iroh_gossip::api::{Event, GossipSender};
@@ -37,18 +37,18 @@ use tracing::Instrument as _;
 /// One message on the Build topic, one postcard frame (`rafka_mesh_transport::wire`). The nonce
 /// makes every send distinct, so a catch-up resend is never taken for a message already seen.
 ///
-/// `fabric` is the Fabric record (`Fabric.build_id`): Fabric control state of
-/// its own, sent alone when the pointer moves and to a new neighbour, never
-/// inside a run of Build facts. A neighbour's catch-up hands it the record and
-/// the facts of the Build it names and of every active Build. Facts and the Fabric record
-/// travel in their wire shapes (`crate::wire`), never the JSON-shaped domain types.
+/// `fabric` is the Fabric record ([`FabricMessage`]): Fabric control state of its own, sent alone
+/// when a Build is accepted and to a new neighbour, never inside a run of Build facts. A neighbour's
+/// catch-up hands it the record and the facts of the sender's current Build and of every active
+/// Build. Facts and the Fabric record travel in their wire shapes (`crate::wire`), never the
+/// JSON-shaped domain types.
 pub struct BuildMessage {
     /// The message's nonce.
     pub nonce: u64,
     /// The Build facts the message carries.
     pub facts: Vec<BuildFact>,
     /// The Fabric record the message carries.
-    pub fabric: Option<FabricRecord>,
+    pub fabric: Option<FabricMessage>,
     /// A fabric shutdown in force: Fabric control state, sent alone when initiated and to a new
     /// neighbour first (fabric-mesh-lifecycle.md §11.1). Never a Build fact.
     pub shutdown: Option<crate::fabric_storage::FabricShutdown>,
@@ -72,8 +72,20 @@ fn encode_shutdown(s: &crate::fabric_storage::FabricShutdown) -> Result<bytes::B
     BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: None, shutdown: Some(s.clone()) }.to_bytes()
 }
 
-fn encode_fabric(r: &FabricRecord) -> Result<bytes::Bytes, BuildStateError> {
-    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: Some(r.clone()), shutdown: None }.to_bytes()
+/// The Fabric record a Build-topic message carries: the Fabric's identity, and the Build its sender
+/// read as current ([`BuildStateAdapter::current_build`]) when it sent it. The frame is the one the
+/// topic always carried (`crate::wire::WireMessage`, whose `fabric` keeps its `build_id`); a receiver
+/// takes the identity only and reads its own current Build from its own Build entities (R-BI3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FabricMessage {
+    /// The Fabric's identity.
+    pub identity: FabricIdentity,
+    /// The Build the sender read as current.
+    pub current: Option<BuildId>,
+}
+
+fn encode_fabric(identity: &FabricIdentity, current: Option<BuildId>) -> Result<bytes::Bytes, BuildStateError> {
+    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: Some(FabricMessage { identity: identity.clone(), current }), shutdown: None }.to_bytes()
 }
 
 pub use rafka_mesh_transport::chunking::{GOSSIP_FRAME_LIMIT, MAX_MESSAGE_BYTES};
@@ -121,8 +133,7 @@ fn span_refused(sent_by: &str, refused: &[BuildStateError]) {
     }
 }
 
-/// The facts of every active Build `local` holds, and of `also` (the Build the pointer names),
-/// in append order.
+/// The facts of every active Build `local` holds, and of `also` (its current Build), in append order.
 async fn active_facts(local: &dyn LocalBuildLog, also: Option<BuildId>) -> Vec<BuildFact> {
     let mut active: std::collections::BTreeSet<BuildId> = match local.list_active().await {
         Ok(a) => a.into_iter().map(|b| b.build_id).collect(),
@@ -284,9 +295,9 @@ impl FabricBuildStateAdapter {
     /// Join `fabric`'s Build topic through `peers` (the other node-admins), as
     /// bootstrap hints: it returns at once, connected or not.
     ///
-    /// `accepted` is this admin's `Fabric.build_id` holder: every Fabric record heard on the
-    /// topic is offered to it, and a new neighbour is handed the one it holds first. `node` names
-    /// this admin in evidence.
+    /// `accepted` is this admin's Fabric identity holder: every Fabric identity heard on the topic is
+    /// offered to it, and a new neighbour is handed the one it holds first, with the current Build
+    /// this admin reads. `node` names this admin in evidence.
     pub async fn join(
         gossip: &Gossip,
         book: &rafka_mesh_transport::membership::LocationBook,
@@ -337,9 +348,7 @@ impl FabricBuildStateAdapter {
                                 }
                                 absorb.absorb_facts(&w.facts).await;
                                 if let Some(r) = heard_fabric {
-                                    store.learn(r, &*absorb, &m.delivered_from.to_string()).await;
-                                } else if !w.facts.is_empty() {
-                                    store.resolve_wanted(&*absorb).await;
+                                    store.learn(r.identity, &m.delivered_from.to_string()).await;
                                 }
                             }
                             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, sender = %m.delivered_from.fmt_short(), bytes = m.content.len(), error = %e)
@@ -355,7 +364,22 @@ impl FabricBuildStateAdapter {
                             }
                             // Sent from its own task: the receive loop never waits on the actor.
                             let (absorb, shared, fabric_name) = (absorb.clone(), shared.clone(), fabric_name.clone());
-                            let (record, pointer) = (store.record().await.ok().flatten(), store.build_id().await);
+                            // What cannot be read is named and left out of the catch-up, never sent as "none".
+                            let unreadable = |what: &str, e: String| {
+                                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "neighbour-up", node = %node, peer = %peer, what, error = %e)
+                                    .in_scope(|| tracing::info!("a store could not be read for the neighbour-up catch-up: what it holds is left out"));
+                            };
+                            let record = store.record().await.unwrap_or_else(|e| {
+                                unreadable("fabric identity", e.to_string());
+                                None
+                            });
+                            let current = match absorb.current_build().await {
+                                Ok(c) => c.into_build_id(),
+                                Err(e) => {
+                                    unreadable("current Build", e.to_string());
+                                    None
+                                }
+                            };
                             let in_force = held_shutdown.held();
                             let sent_by = node.clone();
                             tokio::spawn(async move {
@@ -372,13 +396,13 @@ impl FabricBuildStateAdapter {
                                     None => {}
                                 }
                                 // The Fabric record first, as its own message; then the facts of the
-                                // Build it names and of every active Build.
-                                match record.as_ref().map(encode_fabric) {
+                                // current Build and of every active Build.
+                                match record.as_ref().map(|r| encode_fabric(r, current.clone())) {
                                     Some(Ok(r)) => send(r, "the Fabric record").await,
                                     Some(Err(e)) => span_refused(&catch_up, &[e]),
                                     None => {}
                                 }
-                                let facts = active_facts(&*absorb, pointer.clone()).await;
+                                let facts = active_facts(&*absorb, current.clone()).await;
                                 let _span = tracing::info_span!(
                                     "rdm.node_admin.build.update.via-neighbor-up",
                                     fabric = %fabric_name,
@@ -551,6 +575,14 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.read_build(build_id).await
     }
 
+    async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, BuildStateError> {
+        self.local.current_build().await
+    }
+
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.local.newest_accepted_at_ms().await
+    }
+
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.local.list_active().await
     }
@@ -613,10 +645,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
 
-    async fn publish_fabric(&self, record: &FabricRecord) -> Result<(), BuildStateError> {
+    async fn publish_fabric(&self, record: &FabricIdentity, current: Option<&BuildId>) -> Result<(), BuildStateError> {
         let _gate = self.authority.enter().await?;
         let sender = self.sender.read().await.clone();
-        sender.broadcast(encode_fabric(record)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting the Fabric record: {e}")))
+        sender.broadcast(encode_fabric(record, current.cloned())?).await.map_err(|e| BuildStateError::Io(format!("broadcasting the Fabric record: {e}")))
     }
 }
 

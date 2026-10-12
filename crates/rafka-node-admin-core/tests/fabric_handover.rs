@@ -11,7 +11,7 @@ use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::election::{resolve_with, Incumbency};
 use rafka_node_admin_core::build_facts_read::FetchFailure;
 use rafka_node_admin_core::fabric_handover::{won_claim_from_read, HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, SourceFailure, Stage, WonClaims, WriteCutOff};
-use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage, SeatRow, SeatTransferRow};
+use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage, SeatRow, SeatTransferRow};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -126,13 +126,9 @@ impl FailingStorage {
 
 #[async_trait::async_trait]
 impl FabricStorage for FailingStorage {
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
+    async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
         self.check("fabric")?;
         self.inner.fabric().await
-    }
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
-        self.check("fabric_rows")?;
-        self.inner.fabric_rows().await
     }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         self.check("claim_identity")?;
@@ -140,10 +136,6 @@ impl FabricStorage for FailingStorage {
     }
     async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
         self.inner.release_name(identity).await
-    }
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        self.check("put_pointer")?;
-        self.inner.put_pointer(pointer).await
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         self.check("shutdown")?;

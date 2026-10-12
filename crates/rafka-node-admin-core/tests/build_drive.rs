@@ -127,7 +127,6 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: topology.clone(),
-        accepted,
         builds: builds.clone(),
         door: Arc::new(ClaimDoor { node_id: fp_id.clone(), me, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
         dispatcher: dispatch.clone(),
@@ -653,7 +652,6 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
     let env = Arc::new(DriveEnv {
         me: e.me.clone(),
         topology: e.topology.clone(),
-        accepted: e.accepted.clone(),
         builds: e.builds.clone(),
         door: e.door.clone(),
         dispatcher: e.dispatcher.clone(),

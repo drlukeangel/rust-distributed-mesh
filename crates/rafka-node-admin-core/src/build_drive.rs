@@ -397,8 +397,6 @@ pub struct DriveEnv {
     pub me: PathName,
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
-    /// `Fabric.build_id` as this admin holds it: only the accepted Build is driven.
-    pub accepted: Arc<crate::accepted::AcceptedStore>,
     /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The claim door: the one place an attempt's claim is decided.
@@ -722,8 +720,10 @@ impl DriveEnv {
                 drive.finish(BuildReply::Complete { build_id: id.0.clone(), attempt: p.attempt });
                 return DriveEnd::Terminal;
             }
-            if self.accepted.build_id().await.as_ref() != Some(&id) {
-                return self.stalled(drive, format!("{}: Build {id} is not the accepted Build (Fabric.build_id): nothing drives it", self.me));
+            match crate::build_state::drivable(&*self.builds, &p).await {
+                Ok(true) => {}
+                Ok(false) => return self.stalled(drive, format!("{}: Build {id} is neither the current Build nor a failed Build accepted after it: nothing drives it", self.me)),
+                Err(e) => return self.stalled(drive, format!("{}: the current Build could not be read to admit Build {id}: {e}", self.me)),
             }
             // The claim's holder was proven departed: by this pass, or by an earlier pass or the
             // drift reconcile, whose proof this admin recorded for its exact birth. Either way the

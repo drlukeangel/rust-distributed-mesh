@@ -119,7 +119,7 @@ pub struct Wiring {
     pub catch_up_seam: Option<Arc<dyn CatchUpSeam>>,
     /// Asked by the leave before each announcement publish.
     pub leave_seam: Option<Arc<dyn LeaveSeam>>,
-    /// Wraps `fabric.storage` before the accepted-Build pointer and the shutdown control take it.
+    /// Wraps `fabric.storage` before the Fabric identity holder and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the
     /// drift check all use.

@@ -1,7 +1,7 @@
 //! The wire shape of the Build topic (`fabric_builds`): every type here is positional postcard
 //! (`rafka_mesh_transport::wire`), carrying every field and no internally tagged enum.
 //!
-//! The domain types (`BuildFact`, `FabricRecord`, the accepted topology) are JSON elsewhere: the
+//! The domain types (`BuildFact`, `FabricIdentity`, the accepted topology) are JSON elsewhere: the
 //! REST views, the local journal and the tests read `"fact"`, `"kind"`, `"action"`,
 //! `"persistence"` keys and absent optional fields. They keep that shape; these mirrors are what
 //! travels. A conversion is one `From` per direction, so a field added to a domain type without
@@ -21,7 +21,7 @@ use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Iden
 use crate::mesh_leave::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
-use crate::fabric_storage::{FabricRecord, FabricShutdown};
+use crate::fabric_storage::{FabricIdentity, FabricShutdown};
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rafka_mesh_entity::LifecycleOp;
@@ -682,11 +682,21 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
     })
 }
 
+/// The Fabric record of the Build topic's frame: the identity, and the Build its sender read as
+/// current when it sent it. The frame is the one the topic always carried; no receiver takes
+/// `build_id` as a pointer (R-BI3: a receiver reads its current Build from its own Build entities).
 #[derive(Serialize, Deserialize)]
 struct WireFabric {
     fabric_id: FabricId,
     name: String,
     build_id: Option<BuildId>,
+}
+
+/// The Fabric identity a join answer carries.
+#[derive(Serialize, Deserialize)]
+struct WireFabricIdentity {
+    fabric_id: FabricId,
+    name: String,
 }
 
 /// The message of the Build topic as it travels: one postcard frame.
@@ -704,7 +714,7 @@ impl WireMessage {
         Ok(Self {
             nonce: m.nonce,
             facts: m.facts.iter().map(fact_to_wire).collect::<Result<_, _>>()?,
-            fabric: m.fabric.as_ref().map(|r| WireFabric { fabric_id: r.fabric_id.clone(), name: r.name.clone(), build_id: r.build_id.clone() }),
+            fabric: m.fabric.as_ref().map(|r| WireFabric { fabric_id: r.identity.fabric_id.clone(), name: r.identity.name.clone(), build_id: r.current.clone() }),
             shutdown: m.shutdown.clone(),
         })
     }
@@ -713,7 +723,7 @@ impl WireMessage {
         Ok(BuildMessage {
             nonce: self.nonce,
             facts: self.facts.into_iter().map(fact_from_wire).collect::<Result<_, _>>()?,
-            fabric: self.fabric.map(|r| FabricRecord { fabric_id: r.fabric_id, name: r.name, build_id: r.build_id }),
+            fabric: self.fabric.map(|r| crate::fabric_builds::FabricMessage { identity: FabricIdentity { fabric_id: r.fabric_id, name: r.name }, current: r.build_id }),
             shutdown: self.shutdown,
         })
     }
@@ -739,11 +749,12 @@ pub struct JoinAnswer {
 pub struct JoinControl {
     /// The deployment provider the fabric's policy names.
     pub provider: crate::model::ProviderKind,
-    /// The Fabric record the admin holds.
-    pub fabric: Option<FabricRecord>,
+    /// The Fabric identity the admin holds.
+    pub fabric: Option<FabricIdentity>,
     /// The shutdown the admin holds.
     pub shutdown: Option<FabricShutdown>,
-    /// The attempt of the pointed Build the joiner's copy of its facts must reach before Ready.
+    /// The answering admin's current Build and its attempt: the joiner's copy of that Build's facts
+    /// must reach the attempt before Ready.
     pub build: Option<BuildFloor>,
     /// The answering admin's rafka-time now, in milliseconds: the joiner adopts it as it stands.
     /// An admin that holds no rafka-time answers `NotReady` naming why and builds no answer.
@@ -761,7 +772,7 @@ pub struct JoinControl {
     pub config: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// The attempt of the pointed Build a joiner's copy must reach before Ready.
+/// The answering admin's current Build, and the attempt a joiner's copy of it must reach before Ready.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildFloor {
     /// The Build.
@@ -780,7 +791,7 @@ struct WireJoinAnswer {
 #[derive(Serialize, Deserialize)]
 struct WireControl {
     provider: crate::model::ProviderKind,
-    fabric: Option<WireFabric>,
+    fabric: Option<WireFabricIdentity>,
     shutdown: Option<FabricShutdown>,
     build: Option<WireBuildFloor>,
     rafka_time_ms: u64,
@@ -802,7 +813,7 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
         served_by: answer.served_by.clone(),
         control: WireControl {
             provider: c.provider,
-            fabric: c.fabric.as_ref().map(|r| WireFabric { fabric_id: r.fabric_id.clone(), name: r.name.clone(), build_id: r.build_id.clone() }),
+            fabric: c.fabric.as_ref().map(|r| WireFabricIdentity { fabric_id: r.fabric_id.clone(), name: r.name.clone() }),
             shutdown: c.shutdown.clone(),
             build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone(), attempt: b.attempt }),
             rafka_time_ms: c.rafka_time_ms,
@@ -822,7 +833,7 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
         served_by: w.served_by,
         control: JoinControl {
             provider: w.control.provider,
-            fabric: w.control.fabric.map(|r| FabricRecord { fabric_id: r.fabric_id, name: r.name, build_id: r.build_id }),
+            fabric: w.control.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
             shutdown: w.control.shutdown,
             build: w.control.build.map(|b| BuildFloor { build_id: b.build_id, attempt: b.attempt }),
             rafka_time_ms: w.control.rafka_time_ms,

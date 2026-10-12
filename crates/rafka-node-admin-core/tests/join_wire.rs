@@ -3,7 +3,7 @@
 //! the topology is read with `GetTopology` (op `0x1E`), never in the join.
 
 use rafka_mesh_entity::FabricId;
-use rafka_node_admin_core::fabric_storage::{FabricRecord, FabricShutdown};
+use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricShutdown};
 use rafka_node_admin_core::model::ProviderKind;
 use rafka_node_admin_core::wire::{answer_from_wire, answer_to_wire, BuildFloor, JoinAnswer, JoinControl};
 
@@ -12,7 +12,7 @@ fn answer() -> JoinAnswer {
         served_by: "mesh1.admin.1".into(),
         control: JoinControl {
             provider: ProviderKind::Process,
-            fabric: Some(FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: None }),
+            fabric: Some(FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }),
             shutdown: Some(FabricShutdown { initiated_by: "mesh1.admin.1".into(), initiated_by_node_id: "n".into(), initiated_at_ms: 4 }),
             build: Some(BuildFloor { build_id: rafka_node_admin_core::build::BuildId::mint(), attempt: 2 }),
             rafka_time_ms: 1_700_000_000_123,

@@ -13,7 +13,7 @@
 //! - The application work is behind two hooks: `sync_state` (state-sync) and `traffic_opened`
 //!   (one notice, gating nothing). What a node writes at commit-state is behind [`RoundActions`].
 
-use crate::accepted::{AcceptedStore, FabricTopology};
+use crate::accepted::FabricTopology;
 use crate::admin::Records;
 use crate::build_claim::AttemptContexts;
 use crate::build_state::BuildStateAdapter;
@@ -191,8 +191,6 @@ pub(crate) struct RoundEnv {
     pub topology: Arc<RwLock<Topology>>,
     /// The process's Node RPC client.
     pub client: Arc<NodeRpcClient>,
-    /// The accepted Build pointer.
-    pub accepted: Arc<AcceptedStore>,
     /// The Build log.
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The attempts' observability contexts.
@@ -389,8 +387,13 @@ impl FabricRounds {
     }
 
     async fn step_ready(self: &Arc<Self>, climb: &mut Climb) {
-        let Some(build) = self.env.accepted.current(&*self.env.builds).await else { return };
-        self.resized(climb, &build);
+        match self.env.builds.current().await {
+            Ok(Some(build)) => {
+                self.resized(climb, &build);
+            }
+            Ok(None) => {}
+            Err(e) => self.block(climb, &[unreadable(&e)], "ready-for-traffic reads the current Build"),
+        }
     }
 
     fn fabric_book_reset(&self) {
@@ -423,7 +426,10 @@ impl FabricRounds {
     }
 
     async fn step_pending(self: &Arc<Self>, climb: &mut Climb, view: &Topology) {
-        let accepted = self.env.accepted.current(&*self.env.builds).await;
+        let accepted = match self.env.builds.current().await {
+            Ok(b) => b,
+            Err(e) => return self.block(climb, &[unreadable(&e)], "state-sync names the current Build"),
+        };
         let blockers = self.entry_blockers(view, accepted.as_ref().map(|b| &b.topology));
         if !blockers.is_empty() {
             self.block(climb, &blockers, "state-sync waits for every mesh to be ready-for-traffic");
@@ -465,9 +471,10 @@ impl FabricRounds {
     }
 
     async fn step_state_sync(self: &Arc<Self>, climb: &mut Climb) {
-        let Some(build) = self.env.accepted.current(&*self.env.builds).await else {
-            self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "sync_state names the accepted Build");
-            return;
+        let build = match self.env.builds.current().await {
+            Ok(Some(build)) => build,
+            Ok(None) => return self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "sync_state names the accepted Build"),
+            Err(e) => return self.block(climb, &[unreadable(&e)], "sync_state names the current Build"),
         };
         if self.resized(climb, &build) {
             return;
@@ -545,9 +552,10 @@ impl FabricRounds {
     }
 
     async fn step_state_commit(self: &Arc<Self>, climb: &mut Climb, view: &Topology) {
-        let Some(build) = self.env.accepted.current(&*self.env.builds).await else {
-            self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "commit-state names the accepted Build");
-            return;
+        let build = match self.env.builds.current().await {
+            Ok(Some(build)) => build,
+            Ok(None) => return self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "commit-state names the accepted Build"),
+            Err(e) => return self.block(climb, &[unreadable(&e)], "commit-state names the current Build"),
         };
         if self.resized(climb, &build) {
             return;
@@ -605,10 +613,12 @@ impl FabricRounds {
             tracing::info_span!(parent: parent, "rdm.node_admin.fabric.update.via-round-opened", node = %self.env.me, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the fabric-primary opened a round"));
         }
-        let accepted = self.env.accepted.current(&*self.env.builds).await;
-        let meshes: Vec<String> = match &accepted {
-            Some(b) => b.topology.meshes.keys().cloned().collect(),
-            None => view.meshes.iter().map(|m| m.name.clone()).collect(),
+        // A builds store that cannot be read plans nothing: the round stays open, named, and is
+        // never planned from the view in its place.
+        let meshes: Vec<String> = match self.env.builds.current().await {
+            Ok(Some(b)) => b.topology.meshes.keys().cloned().collect(),
+            Ok(None) => view.meshes.iter().map(|m| m.name.clone()).collect(),
+            Err(e) => return vec![unreadable(&e)],
         };
         let mut planned = BTreeMap::new();
         let mut unresolved = Vec::new();
@@ -718,10 +728,20 @@ impl FabricRounds {
                 self.mesh_book.close(key);
                 return;
             }
-            let accepted = self.env.accepted.current(&*self.env.builds).await;
-            let paths: Vec<PathName> = match &accepted {
-                Some(b) => crate::round::planned(&b.topology, &mesh),
-                None => view.members().filter(|n| n.mesh == mesh).map(|n| n.name.clone()).collect(),
+            // A builds store that cannot be read plans nothing this turn, named: the planned births
+            // are never taken from the view in its place.
+            let paths: Vec<PathName> = match self.env.builds.current().await {
+                Ok(Some(b)) => crate::round::planned(&b.topology, &mesh),
+                Ok(None) => view.members().filter(|n| n.mesh == mesh).map(|n| n.name.clone()).collect(),
+                Err(e) => {
+                    tracing::info_span!("rdm.node_admin.fabric.reject.via-build-store-unreadable", node = %self.env.me, round = key.kind.command(), mesh = %mesh, error = %e, "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the current Build could not be read: this mesh round plans nothing until it can"));
+                    tokio::select! {
+                        _ = book_tick.changed() => {}
+                        _ = view_tick.changed() => {}
+                    }
+                    continue;
+                }
             };
             let mut planned = BTreeMap::new();
             let mut unresolved = Vec::new();
@@ -921,6 +941,12 @@ async fn run_sync_state(hook: Option<SyncState>, me: PathName, sent: StateSyncRo
     .instrument(span)
     .await;
     *progress.lock().unwrap() = Progress::Answered(answer);
+}
+
+/// The blocker a builds store that could not be read names: the store's own error, never read as
+/// "no accepted Build".
+fn unreadable(e: &crate::build_state::BuildStateError) -> Missing {
+    Missing { who: format!("build ({e})"), why: "build-store-unreadable" }
 }
 
 #[cfg(test)]
