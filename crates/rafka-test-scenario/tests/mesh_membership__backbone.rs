@@ -26,7 +26,7 @@
 //!    heal its rightful executor runs it without re-creating a live node;
 //! 8. a restarted node is ready only once it holds every mesh.
 //!
-//! The faults drop UDP on loopback (`iptables`, as root or `sudo -n`); where
+//! The faults drop UDP on loopback (`nft`, as root or `sudo -n`); where
 //! the host cannot, cells 6-7 are a named skip, a failure under
 //! `RDM_REQUIRE_NETFAULT=1` (CI).
 

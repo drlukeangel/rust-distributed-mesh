@@ -7,8 +7,9 @@ acknowledged it) or refused (with the reason; nothing was done).
 - `process_faults`: kill, stop and continue of ONE exact process runtime, read from the runtime
   record its birth published (control domain, pid, kernel start token). A pid alone is never a
   target; a recycled pid or a foreign host is refused by name.
-- `netfault`: UDP between two sets of loopback ports dropped with `iptables` (root or `sudo -n`)
-  until the `Partition` is dropped. Where the host cannot, `Partition::start` names why.
+- `netfault`: UDP between two sets of loopback ports dropped by an nftables table (`nft`, root or
+  `sudo -n`) that the installing process owns: the table ends when the `Partition` is dropped and
+  when its installer dies, however it dies. Where the host cannot, `Partition::start` names why.
 - `container_faults`: Docker primitives against the exact containers of a container estate
   (`ContainerEstate` names the Fabric and its containers).
 

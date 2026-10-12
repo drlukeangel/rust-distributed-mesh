@@ -68,7 +68,7 @@ async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
 
 /// CONTRACT: a netfault cut drops UDP between one rpc node and the rest of the estate; while it
 /// holds, the admin's view stops hearing the node; when the cut is dropped, the node is heard and
-/// ready again with the same node id. Needs iptables as root or through `sudo -n`.
+/// ready again with the same node id. Needs nft as root or through `sudo -n`.
 #[tokio::test(flavor = "multi_thread")]
 async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
     let mut estate = small_estate("poc_netfault_cut_unhears_one_node_and_heal_restores_it").await;

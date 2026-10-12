@@ -4465,7 +4465,7 @@ async fn await_direct(estate: &Estate, holder: &str, dest: &str, what: &str, bou
     }
 }
 
-/// The cut between two nodes' transport sockets: UDP dropped both ways, installed by `iptables`;
+/// The cut between two nodes' transport sockets: UDP dropped both ways, installed as an nftables table this process owns;
 /// `Partition::start` returning is the host's acknowledgement that every rule is in. The fabric-primary
 /// is never one of the two. Held until the returned value drops.
 fn cut_between(nodes: &[Value], a: &str, b: &str, fabric_primary: &str) -> (Partition, Value) {

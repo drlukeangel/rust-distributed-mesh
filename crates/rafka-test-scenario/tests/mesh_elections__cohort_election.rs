@@ -26,7 +26,7 @@
 //! node_id_crockford`); the mesh primary by `via-mesh-primary`.
 //!
 //! The partition drops UDP between the two sides' endpoint ports on loopback
-//! (`iptables`, as root or through `sudo -n`). Where that is unavailable the
+//! (`nft`, as root or through `sudo -n`). Where that is unavailable the
 //! partition case is a named skip; `RDM_REQUIRE_NETFAULT=1` (CI) makes it a
 //! failure.
 

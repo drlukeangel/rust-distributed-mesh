@@ -705,7 +705,7 @@ enum Cut {
     /// Container provider: a packet filter in the namespaces of the mesh's containers.
     Container(container_faults::Silenced),
     /// Process provider: UDP between the mesh's transport sockets and every other mesh's dropped
-    /// by `iptables`; dropping the value lifts it.
+    /// by an nftables table; dropping the value lifts it.
     Udp { partition: Partition, members: Vec<String> },
 }
 

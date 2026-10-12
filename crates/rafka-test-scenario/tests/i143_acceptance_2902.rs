@@ -5,7 +5,7 @@
 //! cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
 //! The estate: two meshes of two node-admins and two rpc nodes each, settled through a Build. All
-//! UDP between the two meshes' processes is dropped (`iptables`, `crate::netfault::Partition`); no
+//! UDP between the two meshes' processes is dropped (an nftables table, `crate::netfault::Partition`); no
 //! process is cut from a member of its own mesh. The held-member repair of `gossip.md` §6 is read
 //! from the `rdm.mesh.connection.update.via-refeed` spans (`reason = stale-held-member`) and from
 //! the views of every admin.

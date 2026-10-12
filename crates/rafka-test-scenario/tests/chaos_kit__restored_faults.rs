@@ -3,7 +3,7 @@
 //! and the heal.
 //!
 //! The fabric-primary is never a target: each cell passes it as protected. The network cells need
-//! `iptables` (root, or `sudo -n`); where the host cannot, the fault answers
+//! `nft` (root, or `sudo -n`); where the host cannot, the fault answers
 //! `LinkRefusal::Unavailable` and the cell skips by that reason, or fails with it when
 //! `RDM_REQUIRE_NETFAULT=1`.
 //!
@@ -274,7 +274,23 @@ fn delivered(rx: &std::net::UdpSocket, to: std::net::SocketAddr) -> bool {
     rx.recv_from(&mut [0u8; 32]).is_ok()
 }
 
-/// Removes the owner and the chain the pre-fix kit left for it, so this cell never poisons the host.
+/// Whether process `pid` has exited, waiting up to `within` for it to: a pidfd polls readable at exit.
+fn exited(pid: u32, within: Duration) -> bool {
+    // SAFETY: pidfd_open(2) with a pid and no flags names no memory; poll(2) reads one pollfd on
+    // the stack; the fd it returned is closed.
+    unsafe {
+        let fd = libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0 as libc::c_uint) as libc::c_int;
+        if fd < 0 {
+            return std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        }
+        let mut watch = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let ready = libc::poll(&mut watch, 1, within.as_millis() as libc::c_int);
+        libc::close(fd);
+        ready == 1
+    }
+}
+
+/// The fault owner process: killed when the cell ends, so a failed cell leaves none running.
 struct Owned {
     child: std::process::Child,
 }
@@ -283,30 +299,32 @@ impl Drop for Owned {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let chain = format!("RAFKA-INB-{}-0", self.child.id());
-        for args in [["-D", "INPUT", "-j", &chain], ["-F", &chain, "", ""], ["-X", &chain, "", ""]] {
-            let args: Vec<&str> = args.iter().copied().filter(|a| !a.is_empty()).collect();
-            let _ = std::process::Command::new("sudo").args(["-n", "iptables", "-w"]).args(&args).output();
-        }
     }
 }
 
 /// CONTRACT: inbound UDP dropped to one node stops being dropped when the process that installed
-/// the drop dies, however it dies. A fault owner is killed with SIGKILL, so no destructor runs; a
-/// datagram to the port it was dropping then reaches the port's socket. What must NOT happen: a drop
-/// left on the host by a dead owner, deafening whichever process binds that port next.
+/// the drop dies, however it dies. A fault owner is killed with SIGKILL, so no destructor runs; once
+/// the helper process that carries its packet-filter table has exited, a datagram to the port it was
+/// dropping reaches the port's socket. What must NOT happen: a drop left on the host by a dead owner,
+/// deafening whichever process binds that port next.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn firewall_inbound_ends_with_the_process_that_installed_it() {
-    if crate::own_process::delegated(module_path!(), "firewall_inbound_ends_with_the_process_that_installed_it") {
+    const CELL: &str = "firewall_inbound_ends_with_the_process_that_installed_it";
+    if crate::own_process::delegated(module_path!(), CELL) {
         return;
     }
+    let evidence = rafka_test_scenario::estate::artifacts_root().join("chaos-kit").join(CELL);
+    std::fs::create_dir_all(&evidence).unwrap();
+    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
+    let guard = rafka_mesh_telemetry::init_evidence_telemetry("rafka-chaos-kit");
     if let Ok(marker) = std::env::var(OWNER_MARKER) {
         let port = std::env::var(OWNER_PORT).expect("the owner is told its port");
         let nodes = vec![json!({"name": "mesh1.rpc.1", "transport_addr": format!("127.0.0.1:{port}")})];
         let said = match FirewallInbound::start(&nodes, "mesh1.rpc.1", &[]) {
-            Ok(_fault) => {
-                std::fs::write(format!("{marker}.tmp"), "installed").unwrap();
+            Ok(fault) => {
+                std::fs::write(format!("{marker}.tmp"), format!("installed {}", fault.holder_pid())).unwrap();
                 std::fs::rename(format!("{marker}.tmp"), &marker).unwrap();
+                drop(guard);
                 loop {
                     std::thread::park();
                 }
@@ -322,7 +340,7 @@ async fn firewall_inbound_ends_with_the_process_that_installed_it() {
     assert!(delivered(&rx, to), "control: with no fault a datagram to {to} is delivered");
     let marker = std::env::temp_dir().join(format!("rdm-fault-owner-{}-{}", std::process::id(), to.port()));
     let _ = std::fs::remove_file(&marker);
-    let full = format!("{}::firewall_inbound_ends_with_the_process_that_installed_it", module_path!().split_once("::").map(|(_, m)| m).unwrap_or(""));
+    let full = format!("{}::{CELL}", module_path!().split_once("::").map(|(_, m)| m).unwrap_or(""));
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([full.as_str(), "--exact", "--nocapture", "--test-threads=1"])
         .env(OWNER_MARKER, &marker)
@@ -332,13 +350,23 @@ async fn firewall_inbound_ends_with_the_process_that_installed_it() {
     let mut owned = Owned { child };
     let said = wait_for("the owner installed the drop", Duration::from_secs(60), || async { std::fs::read_to_string(&marker).ok() }).await;
     let _ = std::fs::remove_file(&marker);
-    if said != "installed" {
+    let Some(holder) = said.strip_prefix("installed ").and_then(|p| p.parse::<u32>().ok()) else {
         eprintln!("skip: {said}");
         assert!(std::env::var("RDM_REQUIRE_NETFAULT").is_err(), "the fault was refused: {said}");
         return;
-    }
+    };
     assert!(!delivered(&rx, to), "control: while its owner lives the drop holds a datagram to {to} back");
+    let span = tracing::info_span!("rdm.testkit.fault.remove.via-owner-exit", fault = "inbound-drop", owner_pid = owned.child.id(), holder_pid = holder, port = to.port(), outcome = tracing::field::Empty);
+    let _in = span.enter();
+    let killed = std::time::Instant::now();
     owned.child.kill().expect("SIGKILL to the owner");
     owned.child.wait().expect("the owner is reaped");
-    assert!(delivered(&rx, to), "the owner was killed with SIGKILL and a datagram to {to} is still dropped: the drop outlived the process that installed it");
+    assert!(exited(holder, Duration::from_secs(30)), "holder {holder} still runs 30 s after its owner was killed with SIGKILL");
+    let held_ms = killed.elapsed().as_millis();
+    let back = delivered(&rx, to);
+    span.record("outcome", tracing::field::display(format!("owner killed with SIGKILL; holder {holder} exited {held_ms} ms later; datagram to {to} delivered={back}")));
+    drop(_in);
+    drop(span);
+    drop(guard);
+    assert!(back, "the owner was killed with SIGKILL, its holder {holder} exited, and a datagram to {to} is still dropped: the drop outlived the process that installed it");
 }
