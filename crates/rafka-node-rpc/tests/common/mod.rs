@@ -233,7 +233,7 @@ pub fn spans_exporter() -> Spans {
 }
 
 /// A cell's trace left on disk: when the guard drops, whether the cell passed or panicked, every span
-/// of `trace` the executable's capture holds goes to `target/i143-node-rpc/<cell>.<pid>.spans.json`,
+/// of `trace` the executable's capture holds goes to `target/i143-node-rpc/<cell>.<pid>.<trace>.spans.json`,
 /// so a cell is read from its own trace and a red never needs a rerun.
 pub struct TraceArtifact {
     trace: String,
@@ -269,7 +269,7 @@ impl Drop for TraceArtifact {
             .collect();
         let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-node-rpc");
-        let path = dir.join(format!("{cell}.{}.spans.json", std::process::id()));
+        let path = dir.join(format!("{cell}.{}.{}.spans.json", std::process::id(), self.trace));
         let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&rows).unwrap()));
         eprintln!("node-rpc: trace {} ({} spans) -> {} (flush: {flushed:?}, write: {written:?})", self.trace, rows.len(), path.display());
     }
