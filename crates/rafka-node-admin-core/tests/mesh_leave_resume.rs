@@ -1265,13 +1265,12 @@ fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row
 /// "Resume after the primary's loss" step 3, "Failure/certainty behavior": "No timeout or gossip
 /// absence proves exit"): the admin the fabric-primary created for a leaving mesh with no admin
 /// left works the roster, not its view's liveness. `mesh2.rpc.1` was stopped by the lost primary
-/// before its exit was proven: it sent its terminal `Leaving` and has been silent since, so the
-/// created admin's view dropped it one gossip interval after that `Leaving` (fabric-node-lifecycle.md
-/// §6). It is still a roster birth with no Exited receipt, and its record is the one this admin's
-/// membership holds of that exact birth: the record of another birth at the path is never taken.
+/// before its exit was proven, and the created admin's view does not list it. It is still a roster
+/// birth with no Exited receipt, and its record is the one this admin's membership holds of that
+/// exact birth: the record of another birth at the path is never taken.
 /// Its workflow runs, its row is written Deleted on its receipt, and the tier completes.
 #[test]
-fn a_roster_birth_the_view_dropped_after_its_leaving_is_worked_from_the_record_its_membership_holds() {
+fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_membership_holds() {
     let cap = capture();
     let records: Vec<Node> = [FAILING, EXITING, FINAL].iter().map(|n| node(n)).collect();
     let birth = |name: &str| RosterBirth::of(records.iter().find(|n| n.name.to_string() == name).unwrap()).unwrap();

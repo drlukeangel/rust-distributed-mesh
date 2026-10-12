@@ -1411,7 +1411,7 @@ impl RepairSchedule {
 }
 
 /// The held members of `book` that `pick` selects, each with how long it has gone unheard; a
-/// terminal `Leaving` is a graceful departure, never a repair target.
+/// member held `Leaving` is never a repair target.
 pub(crate) fn held_targets(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool) -> Vec<RepairTarget> {
     let now = Instant::now();
     // A member under an open restart or removal is held through it, but its address is a birth's
@@ -4413,8 +4413,8 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
 
 /// How long a member has gone unheard at `now`: the time since its receipt, a member heard directly
 /// or on the backbone alike. A member known only from forwarded topology never ages (R-G2:
-/// forwarded topology carries topology, never liveness); a terminal `Leaving` is a proven
-/// departure, not silence, so it ages from its receipt however it was heard.
+/// forwarded topology carries topology, never liveness); one held `Leaving` ages from its receipt
+/// however it was heard.
 fn unheard(d: &MeshDigest, at: &Instant, heard: Heard, now: Instant) -> Duration {
     match heard {
         Heard::Topology if d.status != rafka_mesh_entity::MemberStatus::Leaving => Duration::ZERO,
@@ -5722,18 +5722,11 @@ impl DigestBook {
         self.current_at(fresh, Instant::now())
     }
 
-    /// Digests heard within `fresh` of `now`. A graceful departure (a terminal `Leaving`, then
-    /// nothing for one gossip interval) is gone within that tick (fabric-node-lifecycle.md §6): it
-    /// is not current, so no view and no aggregate carries it on.
+    /// Digests heard within `fresh` of `now`, whatever status each holds: a member held `Leaving`
+    /// is current like any member (gossip.md §6.1: a stopped status by itself and silence are not
+    /// departure proof), and every aggregate carries it as held.
     pub(crate) fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
-        self.inner
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|(d, at, fw)| unheard(d, at, *fw, now) <= fresh)
-            .filter(|(d, at, _)| !(d.status == rafka_mesh_entity::MemberStatus::Leaving && now.saturating_duration_since(*at) > gossip_interval()))
-            .map(|(d, _, _)| d.clone())
-            .collect()
+        self.inner.lock().unwrap().values().filter(|(d, at, fw)| unheard(d, at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
     }
 
     /// The digests this node received straight from their members (their own word, on the channel

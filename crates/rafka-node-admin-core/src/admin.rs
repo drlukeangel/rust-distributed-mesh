@@ -1061,11 +1061,6 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
             continue;
         }
         let silent = age > book.staleness_floor();
-        // A graceful departure: a terminal `Leaving` digest, then nothing for one gossip interval.
-        // It leaves the view within one tick (fabric-node-lifecycle.md §6), never a staleness floor.
-        if !restarting && d.status == MemberStatus::Leaving && age > gossip_interval() {
-            continue;
-        }
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(name.mesh.clone()).or_insert(id);
         }
@@ -1276,7 +1271,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
 }
 
 /// How often the view is rebuilt when no routing fact moved: the projection also reads the clock
-/// (a member silent past the staleness floor, a terminal `Leaving` one gossip interval old).
+/// (a member silent past the staleness floor).
 const VIEW_POLL: Duration = Duration::from_millis(200);
 
 /// The view's next rebuild is due: at once when a routing fact the book holds moved since the last
@@ -3250,8 +3245,7 @@ fn spawn_entry_sweep(
         // A reply proves a live exact birth: the view holds it (until membership speaks for
         // it), settled as ReadyForTraffic, in transition as its source held it (a Leaving
         // member that answers is alive and still leaving). A settled node that did not answer
-        // stays in the map as not yet reached; one in transition is left to its own last digest
-        // (a stopped member's terminal Leaving is a departure, never silence the tick watches).
+        // stays in the map as not yet reached; one in transition is left to its own last digest.
         for n in &report.reached {
             records.publish(n.as_node(n.transition.unwrap_or(NodeStatus::ReadyForTraffic), provider_kind));
         }

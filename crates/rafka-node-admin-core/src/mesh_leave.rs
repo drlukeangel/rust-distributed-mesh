@@ -654,10 +654,9 @@ where
 /// The records the leave's member workflows act on (R11: the leave acts on the immutable accepted
 /// roster's exact births; mesh-leave.md "Failure/certainty behavior": "No timeout or gossip absence
 /// proves exit"): every roster birth as `view` holds that exact birth (node id and incarnation), else
-/// as `held` gives it, the record this admin's membership holds of the birth. A member that sent its
-/// terminal `Leaving` and went silent leaves the view one gossip interval later (a graceful
-/// departure, fabric-node-lifecycle.md §6) and still has no Exited receipt: its record is the held
-/// one. A birth neither holds is absent here, and runs from the roster birth itself
+/// as `held` gives it, the record this admin's membership holds of the birth. A birth the view does
+/// not list and that has no Exited receipt is worked from the held record. A birth neither holds is
+/// absent here, and runs from the roster birth itself
 /// ([`members_exited`], [`RosterBirth::record`]).
 pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&RosterBirth) -> Option<Node>) -> Vec<Node> {
     let exact = |b: &RosterBirth, n: &Node| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
