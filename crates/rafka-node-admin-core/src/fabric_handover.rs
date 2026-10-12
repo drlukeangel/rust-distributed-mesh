@@ -75,6 +75,16 @@ pub fn operation(mesh_id: impl std::fmt::Display) -> String {
     format!("fabric-primary-handover:{mesh_id}")
 }
 
+/// The operation identity of the seat update that precedes the Build operation `op_key` of Build
+/// `build_id` (R-MT1): node.primary.update for a mesh-primary seat, node.fabric-primary.update for
+/// the fabric seat.
+pub fn update_operation(seat: Seat, _build_id: &str, op_key: &str) -> String {
+    match seat {
+        Seat::MeshPrimary => format!("node.primary.update:{op_key}"),
+        Seat::FabricPrimary => format!("node.fabric-primary.update:{op_key}"),
+    }
+}
+
 /// The payload of one handover, as both calls carry it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Payload {

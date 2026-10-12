@@ -2327,17 +2327,19 @@ impl crate::build_drive::Gate for SeatGate {
     async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<(), String> {
         let door = &self.handover;
         let refused = |r: rafka_node_rpc_contract::handover::FabricPrimaryHandoverReply| format!("{}: {r:?}", r.name());
+        use crate::fabric_handover::update_operation;
+        use rafka_mesh_entity::Seat;
         if m.holder.node_id != door.node_id {
             if m.mesh_seat {
-                door.command_update_primary(&m.holder, &build_id.0, attempt, &format!("node.primary.update:{operation}")).await?;
+                door.command_update_primary(&m.holder, &build_id.0, attempt, &update_operation(Seat::MeshPrimary, &build_id.0, operation)).await?;
             }
             return Ok(());
         }
         if m.mesh_seat {
-            door.update_primary(rafka_mesh_entity::Seat::MeshPrimary, None, &build_id.0, attempt, &format!("node.primary.update:{operation}")).await.map_err(refused)?;
+            door.update_primary(Seat::MeshPrimary, None, &build_id.0, attempt, &update_operation(Seat::MeshPrimary, &build_id.0, operation)).await.map_err(refused)?;
         }
         if m.fabric_seat {
-            door.update_primary(rafka_mesh_entity::Seat::FabricPrimary, None, &build_id.0, attempt, &format!("node.fabric-primary.update:{operation}")).await.map_err(refused)?;
+            door.update_primary(Seat::FabricPrimary, None, &build_id.0, attempt, &update_operation(Seat::FabricPrimary, &build_id.0, operation)).await.map_err(refused)?;
         }
         Ok(())
     }
