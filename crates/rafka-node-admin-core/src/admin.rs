@@ -1484,37 +1484,123 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me
     claimed
 }
 
-/// `create-mesh:<mesh>` at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent ... Until
-/// the mesh has a primary, the fabric-primary writes its rows"; R13; CLAUDE.md: the claim is the first
-/// durable write of a create): `mesh_id`, the id the operation carries (minted once, when the mesh
-/// entered the accepted topology: node-identity-and-state.md §2.7, "Who mints it"), is claimed at the
-/// mesh's name before anything else of the mesh is written, and held in `records` (what every launch
-/// of the mesh carries) only once the claim won. Every run of the operation claims with that id, so
-/// a re-run (a later attempt, or a successor fabric-primary that holds nothing of the first run) finds
-/// the mesh's own row: the same MeshId re-claiming is idempotent. A refused claim fails the operation
-/// by name, holding nothing of the mesh: the Build runs no create of its nodes, so no node row of the
-/// mesh is claimed.
-pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<MeshId, String> {
+/// Why `create-mesh:<mesh>` did not claim the mesh's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CreateMeshError {
+    /// The mesh store answered and refused the claim by name: nothing of the mesh is written.
+    Refused(String),
+    /// The mesh store did not answer: nothing is decided, and nothing of the mesh is written.
+    Unanswered(String),
+}
+
+impl std::fmt::Display for CreateMeshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(why) | Self::Unanswered(why) => f.write_str(why),
+        }
+    }
+}
+
+/// The mesh id the operation carries, held for what every launch of the mesh carries.
+fn hold_mesh_id(records: &Records, mesh: &str, mesh_id: &MeshId) {
+    records.meshes.lock().unwrap().insert(mesh.to_string(), mesh_id.clone());
+    records.wake.poke();
+}
+
+/// The claim `create-mesh:<mesh>` makes at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent
+/// ... Until the mesh has a primary, the fabric-primary writes its rows"; R13; CLAUDE.md: the claim is
+/// the first durable write of a create): `mesh_id`, the id the operation carries (minted once, when the
+/// mesh entered the accepted topology: node-identity-and-state.md §2.7, "Who mints it"), is claimed at the
+/// mesh's name before anything else of the mesh is written, and held in `records` (what every launch of
+/// the mesh carries) only once the claim won. Every run of the operation claims with that id, so a run
+/// whose predecessor claimed and was lost finds the mesh's own row: the same MeshId re-claiming is
+/// idempotent. A refused claim fails the operation by name, holding nothing of the mesh: the Build runs
+/// no create of its nodes, so no node row of the mesh is claimed.
+pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<MeshId, CreateMeshError> {
     match claim_mesh_name(meshes, me, mesh, mesh_id).await {
         Ok(Ok(_)) => {
             // The won claim's id is the mesh's: it replaces any id held for the name before (a
             // removed mesh's), so no launch of this mesh carries another.
-            records.meshes.lock().unwrap().insert(mesh.to_string(), mesh_id.clone());
-            records.wake.poke();
+            hold_mesh_id(records, mesh, mesh_id);
             Ok(mesh_id.clone())
         }
-        Ok(Err(refused)) => Err(format!("{me}: create-mesh:{mesh}: the claim of the mesh's name for mesh {mesh_id} was refused, and nothing of the mesh is written: {refused}")),
-        Err(e) => Err(format!("{e}; nothing of the mesh is written")),
+        Ok(Err(refused)) => Err(CreateMeshError::Refused(format!("{me}: create-mesh:{mesh}: the claim of the mesh's name for mesh {mesh_id} was refused, and nothing of the mesh is written: {refused}"))),
+        Err(e) => Err(CreateMeshError::Unanswered(format!("{e}; nothing of the mesh is written"))),
     }
 }
 
-/// `create-mesh:<mesh>` as the Build runs it (node-rpc-envelope.md, Build carrier: "Completed steps are
-/// not rerun. Settle an idempotent uncertain step by its natural key"): the operation's one step is the
-/// claim of the mesh's name, and its `Complete` receipt is the step's durable commit.
+/// A step's receipt, its durable commit: the Build state takes it, or the step is not committed and the
+/// refusal is named with the step, its operation and its attempt.
+async fn commit_receipt(builds: &dyn BuildStateAdapter, me: &str, receipt: crate::build_state::BuildStepReceipt) -> Result<(), (&'static str, String)> {
+    builds
+        .append_step_receipt(&receipt)
+        .await
+        .map_err(|e| ("receipt-refused", format!("{me}: the {} receipt of {} (Build {}, attempt {}) was not written: {e}", receipt.step, receipt.operation, receipt.build_id, receipt.attempt)))
+}
+
+/// `create-mesh:<mesh>` as the Build runs it (node-rpc-envelope.md, Build op 0x20: "completed step
+/// receipts are read and replayed, never executed again"; Build carrier: "Completed steps are not
+/// rerun. Settle an idempotent uncertain step by its natural key"). The operation's one step is the
+/// claim of the mesh's name ([`create_mesh`]), and its `Complete` receipt, written by `executor`, is the
+/// step's durable commit.
+///
+/// - A `Complete` receipt of the operation in the Build, from this attempt or an earlier one, is the step
+///   done: it is replayed, which holds the operation's mesh id for this admin's launches and claims
+///   nothing and writes nothing.
+/// - No receipt is an uncertain step, run by its natural key: the claim finds the mesh free (written),
+///   or its own row standing (`row-held-by-mesh`: an earlier run claimed and was lost before it
+///   receipted), and the `Complete` receipt follows. A claim refused by name leaves a `Failed` receipt of
+///   `ClaimMeshName` naming the holder, and the step fails.
+/// - A mesh store that does not answer decides nothing and receipts nothing; a receipt the Build state
+///   does not take leaves the step uncommitted. Each fails the step by its own name.
+///
+/// One `rdm.node_admin.mesh.create.via-receipt` span per run; its `outcome` is `replayed`, `complete`,
+/// `refused`, `store-unanswered`, `receipt-refused` or `build-unreadable`, and the claim's own span is its
+/// child.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::storage::MeshStorage, _builds: &dyn BuildStateAdapter, _executor: &str, me: &str, _build_id: &crate::build::BuildId, _attempt: u32, op: &BuildOperation) -> Result<(), String> {
+pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::storage::MeshStorage, builds: &dyn BuildStateAdapter, executor: &str, me: &str, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    use crate::build_state::{BuildStepReceipt, StepOutcome};
+    use crate::deployment::pipeline::CreateMeshStep;
     let BuildOperation::CreateMesh { mesh, mesh_id } = op else { return Err(format!("{me}: {} is not a create-mesh operation", op.key())) };
-    create_mesh(records, meshes, me, mesh, mesh_id).await.map(|_| ())
+    let operation = op.key();
+    let span = tracing::info_span!(
+        "rdm.node_admin.mesh.create.via-receipt",
+        node = %me,
+        mesh = %mesh,
+        mesh_id = %mesh_id,
+        build_id = %build_id,
+        attempt,
+        operation = %operation,
+        outcome = tracing::field::Empty,
+        detail = tracing::field::Empty,
+        "otel.kind" = "internal",
+    );
+    let receipt = |step: CreateMeshStep, outcome: StepOutcome| BuildStepReceipt { build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.name().into(), outcome, output: None, executor: Some(executor.to_string()) };
+    let run = async {
+        let held = builds.read_build(build_id).await.map_err(|e| ("build-unreadable", format!("{me}: {operation}: the Build {build_id} could not be read for its receipts: {e}")))?;
+        if held.steps.iter().any(|r| r.operation == operation && r.step == CreateMeshStep::Complete.name() && r.outcome == StepOutcome::Complete && r.attempt <= attempt) {
+            hold_mesh_id(records, mesh, mesh_id);
+            return Ok("replayed");
+        }
+        match create_mesh(records, meshes, me, mesh, mesh_id).await {
+            Ok(_) => {
+                commit_receipt(builds, me, receipt(CreateMeshStep::Complete, StepOutcome::Complete)).await?;
+                Ok("complete")
+            }
+            Err(CreateMeshError::Refused(reason)) => {
+                commit_receipt(builds, me, receipt(CreateMeshStep::ClaimMeshName, StepOutcome::Failed { reason: reason.clone() })).await?;
+                Err(("refused", reason))
+            }
+            Err(CreateMeshError::Unanswered(reason)) => Err(("store-unanswered", reason)),
+        }
+    };
+    let r = tracing::Instrument::instrument(run, span.clone()).await;
+    match &r {
+        Ok(outcome) => span.record("outcome", *outcome),
+        Err((outcome, detail)) => span.record("outcome", *outcome).record("detail", detail.as_str()),
+    };
+    span.in_scope(|| tracing::info!("create-mesh: the operation's step is receipted, or replayed from its receipt"));
+    r.map(|_| ()).map_err(|(_, detail)| detail)
 }
 
 /// fabric.create's claim of the fabric's name (node-identity-and-state.md §2.8), by the fabric store's
@@ -7157,6 +7243,7 @@ mod tests {
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the won claim's id is what the mesh's launches carry");
         assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2", &carried).await, Ok(minted.clone()), "a re-run claims the same id");
         let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3", &mesh3_carried).await.expect_err("mesh3's name is held by another mesh's live row");
+        let refused = refused.to_string();
         assert!(refused.contains("create-mesh:mesh3") && refused.contains(&holder.to_string()), "the refusal names the operation and the holder: {refused}");
         assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused claim wrote nothing: mesh3's row is the holder's");
         assert_eq!(records.meshes.lock().unwrap().get("mesh3"), None, "no id is held for a mesh whose claim was refused: no launch of it can carry one");
@@ -7312,6 +7399,109 @@ mod tests {
         assert_eq!((*attempt, step.as_str(), executor.as_deref()), (1, "ClaimMeshName", Some("key1@127.0.0.1:1")));
         assert!(matches!(outcome, crate::build_state::StepOutcome::Failed { reason } if reason.contains(&holder.to_string())), "the Failed receipt names the holder: {outcome:?}");
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), None, "no id is held for a mesh whose claim was refused");
+    }
+
+    /// A Build state over `0` whose step receipts are refused: nothing else differs.
+    struct RefusesReceipts(Arc<crate::build_state::MemoryBuildStateAdapter>);
+
+    #[async_trait::async_trait]
+    impl BuildStateAdapter for RefusesReceipts {
+        async fn publish_accepted(&self, a: &crate::build_state::BuildAccepted) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.publish_accepted(a).await
+        }
+        async fn open_attempt(&self, o: &crate::build_state::AttemptOpened) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.open_attempt(o).await
+        }
+        async fn read_build(&self, id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
+            self.0.read_build(id).await
+        }
+        async fn list_active(&self) -> Result<Vec<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
+            self.0.list_active().await
+        }
+        async fn claim_attempt(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, crate::build_state::BuildStateError> {
+            self.0.claim_attempt(c).await
+        }
+        async fn adopt_claim(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.adopt_claim(c).await
+        }
+        async fn append_step_receipt(&self, r: &crate::build_state::BuildStepReceipt) -> Result<(), crate::build_state::BuildStateError> {
+            Err(crate::build_state::BuildStateError::Io(format!("the journal refused the {} receipt of {}", r.step, r.operation)))
+        }
+        async fn append_attempt_receipt(&self, r: &crate::build_state::BuildAttemptReceipt) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.append_attempt_receipt(r).await
+        }
+        async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
+            self.0.facts().await
+        }
+        async fn forget(&self, id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.forget(id).await
+        }
+        async fn recovery_of(&self, p: &crate::model::PathName, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
+            self.0.recovery_of(p, n, i).await
+        }
+        async fn mesh_deleted_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
+            self.0.mesh_deleted_of(n, i).await
+        }
+        async fn exits_owed(&self, id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
+            self.0.exits_owed(id, mesh).await
+        }
+    }
+
+    /// A mesh store that does not answer.
+    struct UnansweredMeshes;
+
+    #[async_trait::async_trait]
+    impl crate::storage::MeshStorage for UnansweredMeshes {
+        async fn mesh(&self, _: &str) -> Result<Option<crate::storage::MeshRecord>, crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Io { file: "meshes".into(), reason: "the disk did not answer".into() })
+        }
+        async fn claim_mesh(&self, _: &crate::storage::MeshRecord) -> Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Io { file: "meshes/mesh2.json".into(), reason: "the disk did not answer".into() })
+        }
+        async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Io { file: "meshes".into(), reason: "the disk did not answer".into() })
+        }
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: a step is committed by its receipt; CLAUDE.md: an
+    /// error state names what failed and where, distinct facts distinct arms): `create-mesh:mesh2` fails
+    /// by its own name when (1) the Build cannot be read for its receipts, so it claims nothing, (2) the
+    /// mesh store does not answer the claim, so it receipts nothing, and (3) the Build state refuses the
+    /// `Complete` receipt after the claim won: the step is uncommitted, and the next run settles it by its
+    /// natural key (`row-held-by-mesh`) and receipts it. One
+    /// `rdm.node_admin.mesh.create.via-receipt` span per run, `outcome` `build-unreadable`,
+    /// `store-unanswered`, `receipt-refused`, then `complete`. Must NOT happen: a `Complete` receipt of a
+    /// step that was not decided, or a step reported done whose receipt the Build state refused.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_create_mesh_that_cannot_read_decide_or_commit_fails_by_name_and_the_next_run_settles_it() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let memory = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let (build_id, op) = build_creating_mesh2(&memory).await;
+        let BuildOperation::CreateMesh { mesh_id, .. } = &op else { unreachable!() };
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-cannot");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        // (1) A Build the log never accepted: nothing is claimed.
+        let unknown = crate::build::BuildId("bld-never-accepted".into());
+        let unread = create_mesh_step(&Records::default(), &meshes, &*memory, "key1@127.0.0.1:1", "mesh1.admin.1", &unknown, 1, &op).await.expect_err("the Build is not held");
+        assert!(unread.contains("could not be read for its receipts") && unread.contains("bld-never-accepted"), "{unread}");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), None, "nothing was claimed beside a Build that could not be read");
+        // (2) The mesh store does not answer: nothing is receipted.
+        let unanswered = create_mesh_step(&Records::default(), &UnansweredMeshes, &*memory, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect_err("the mesh store does not answer");
+        assert!(unanswered.contains("did not answer") && unanswered.contains("mesh2"), "{unanswered}");
+        assert_eq!(receipts_of(&memory, &build_id, "create-mesh:mesh2").await, vec![], "an undecided step is not receipted");
+        // (3) The claim won and the receipt is refused: the step is uncommitted.
+        let refused = create_mesh_step(&Records::default(), &meshes, &RefusesReceipts(memory.clone()), "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect_err("the Build state refuses the receipt");
+        assert!(refused.contains("Complete receipt of create-mesh:mesh2") && refused.contains("was not written") && refused.contains("journal refused"), "{refused}");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(mesh_id.clone()), "the claim stands");
+        assert_eq!(receipts_of(&memory, &build_id, "create-mesh:mesh2").await, vec![], "the refused receipt is not in the log");
+        // The next run settles the uncertain step by its natural key.
+        create_mesh_step(&Records::default(), &meshes, &*memory, "key2@127.0.0.1:2", "mesh1.admin.2", &build_id, 2, &op).await.expect("the next run settles the step");
+        assert_eq!(receipts_of(&memory, &build_id, "create-mesh:mesh2").await.len(), 1);
+        let outcomes: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-receipt").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(outcomes, ["build-unreadable", "store-unanswered", "receipt-refused", "complete"]);
+        let claims: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-mesh-row").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(claims, ["row-refused", "row-written", "row-held-by-mesh"], "the claim made beside the unanswered store is refused by name; the settled run finds the mesh's own row");
     }
 
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
