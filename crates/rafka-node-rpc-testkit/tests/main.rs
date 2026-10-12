@@ -40,6 +40,7 @@ mod status_probe_apply;
 mod park_start;
 mod gossip_shutdown_once;
 mod mesh_leave_member;
+mod rig_teardown;
 mod apply_node_name;
 mod rejoin_name;
 mod command_natural_key;
