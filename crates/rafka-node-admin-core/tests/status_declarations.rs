@@ -1311,7 +1311,7 @@ fn a_node_update_before_the_fabric_first_reaches_ready_for_traffic_is_refused_by
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
 
         // The fabric reaches ready-for-traffic: the same put is admitted.
-        rig.authority.first_ready.reach();
+        rig.authority.first_ready.reach("the test fabric reached ready-for-traffic");
         rig.topology.write().await.fabric.status = ScopeStatus::Pending;
         let put = reply(&call(&rig, &b["admin2"], &update_node_tagged(rpc1, "mesh1.rpc.1", &["rabbit"])).await);
         assert_eq!(put, StatusReply::NodeUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() }, "admitted once the fabric has first been ready-for-traffic, a resize notwithstanding");

@@ -76,9 +76,13 @@ impl FirstReady {
         Self::default()
     }
 
-    /// Record that the fabric is ready-for-traffic.
-    pub fn reach(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    /// Record that the fabric is ready-for-traffic, and why this admin knows: `because` is told once, the
+    /// first time (`rdm.node_admin.fabric.update.via-first-ready`).
+    pub fn reach(&self, because: &'static str) {
+        if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tracing::info_span!("rdm.node_admin.fabric.update.via-first-ready", reason = because, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("this admin knows the fabric has first reached ready-for-traffic: workflows a caller submits are admitted as usual"));
+        }
     }
 
     /// Whether the fabric has reached ready-for-traffic at some time, or holds it `now`.

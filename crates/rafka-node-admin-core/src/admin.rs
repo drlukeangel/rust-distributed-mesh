@@ -500,7 +500,7 @@ impl Records {
     /// Hold the fabric state; the view follows at its next projection.
     pub fn set_fabric_state(&self, state: crate::fabric_state::FabricState) {
         if state == crate::fabric_state::FabricState::ReadyForTraffic {
-            self.first_ready.reach();
+            self.first_ready.reach("ready-for-traffic");
         }
         let changed = std::mem::replace(&mut *self.fabric_state.lock().unwrap(), state) != state;
         if changed {
@@ -4978,6 +4978,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // Before the fabric's first state-commit every row this admin writes is held in its scratchpad;
     // its commit-state action publishes them (states.md, Rounds).
     storage_step.record("writes_to", store_root.writes_to());
+    // A root that already holds the Fabric row was published at the fabric's first state-commit: its rows no
+    // longer live in a scratchpad, so this admin knows the fabric has first reached ready-for-traffic
+    // whatever status it hears next (a resize puts the fabric back to pending).
+    let fabric_row_on_root = store_root.scratchpad().is_none();
     let round_actions: Arc<dyn crate::fabric_rounds::RoundActions> = Arc::new(crate::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), embedding_round_actions));
     let fabric_files = Arc::new(crate::fabric_storage::FileFabricStorage::open(&store_root, &incarnation).await.map_err(storage_err)?);
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_files.clone());
@@ -5376,6 +5380,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // its entry pull or the fabric control topic.
                 let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
                 let records = Arc::new(Records::default());
+                if fabric_row_on_root {
+                    records.first_ready.reach("fabric-row-on-store-root");
+                }
                 records.set_me(node_id.clone());
                 // Only the fabric seat holder puts a pointer, and only its held `fabric/` rows are published: the
                 // file store reads the committed fabric seat record, as the Build gate does.

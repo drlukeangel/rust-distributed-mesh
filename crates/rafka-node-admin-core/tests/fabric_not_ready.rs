@@ -195,7 +195,7 @@ async fn the_initial_accepted_build_and_growth_are_admitted_before_the_fabric_fi
 async fn a_workflow_is_admitted_once_the_fabric_has_reached_ready_for_traffic_and_stays_admitted_through_a_resize() {
     let r = rig(ScopeStatus::StateSync).await;
     refused(r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await);
-    r.cp.first_ready.reach();
+    r.cp.first_ready.reach("the test fabric reached ready-for-traffic");
     r.cp.topology.write().await.fabric.status = ScopeStatus::Pending;
     let opened = r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await.expect("admitted once the fabric has been ready-for-traffic");
     assert_eq!(opened.attempt, 2);
