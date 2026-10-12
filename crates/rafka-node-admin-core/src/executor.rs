@@ -634,6 +634,104 @@ mod tests {
         assert_eq!(lead_for(&[create("mesh2.rpc.1")], &mm(true)).map(|p| p.to_string()).as_deref(), Some("mesh2.admin.1"));
     }
 
+    /// A runner that realises the replace recipe's stop and rename of the seat holder P in the shared
+    /// view, as the real ops do: the stop moves P's seats to the executor by TakeSeats and parks P;
+    /// the rename lists P at `<P>.old`.
+    struct RecipeRunner {
+        view: Arc<RwLock<Topology>>,
+        ran: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl OperationRunner for RecipeRunner {
+        async fn run(&self, _build_id: &BuildId, _attempt: u32, op: &BuildOperation) -> Result<(), String> {
+            use rafka_node_rpc_contract::build::RecipeStep;
+            self.ran.lock().unwrap().push(op.key());
+            let BuildOperation::RecipeStep { step, .. } = op else { return Ok(()) };
+            let mut t = self.view.write().await;
+            match step {
+                RecipeStep::Stop { node } => {
+                    let heir = node.successor();
+                    for n in t.nodes.iter_mut() {
+                        if n.name == *node {
+                            (n.parked, n.status, n.is_primary, n.is_fabric_primary) = (true, NodeStatus::Leaving, false, false);
+                        } else if n.name == heir {
+                            (n.is_primary, n.is_fabric_primary) = (true, true);
+                        }
+                    }
+                }
+                RecipeStep::Update { node, name } => {
+                    for n in t.nodes.iter_mut().filter(|n| n.name == *node) {
+                        n.name = name.clone();
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    /// CONTRACT (#3087 red 4; node-rpc-envelope.md "Build, op 0x20": "a run that stops at another
+    /// executor's operation ends HandedOff { to }" and "Hand-off is the fabric-primary's next claim
+    /// and call"; node-admin-lifecycle.md §1.3: the fabric primary's replace "is executed by its
+    /// same-mesh successor, which takes its seats"): the fabric primary P plans attempt 5 of its
+    /// own replace recipe for the successor it elects, `mesh1.admin.1.new` (lowest Ready NodeId of
+    /// P's mesh once P is gone): the run is P's stop and rename, and in P's view the step after it,
+    /// the stop of `.new`, is P's own (P is `.new`'s mesh primary). The run's own stop moves both
+    /// seats to `.new` and parks P, and its rename lists P at `mesh1.admin.1.old`. The run's trailing
+    /// hand-off is resolved from the view it ends with: it hands back to the fabric primary that view
+    /// seats, `.new`, whose next claim names the admin that executes what is left there,
+    /// `mesh1.admin.2`. Must NOT happen: the run handing off to P, the stopped and renamed seat
+    /// holder that planned it (the drive then claims attempt 6 for a birth that can never run it).
+    #[tokio::test]
+    async fn a_run_that_stops_the_seat_holder_that_planned_it_hands_off_from_the_view_it_ends_with() {
+        use rafka_node_rpc_contract::build::RecipeStep;
+        let with = |path: &str, id: &str, primary: bool, fabric: bool| {
+            let mut n = node(path, primary, fabric);
+            n.node_id = rafka_mesh_entity::ids::NodeId::parse(id).unwrap();
+            n
+        };
+        let mut t = mm(false);
+        t.nodes = vec![
+            with("mesh1.admin.1", "5000000000aa", true, true),
+            with("mesh1.admin.2", "9000000000aa", false, false),
+            with("mesh1.admin.1.new", "2000000000aa", false, false),
+            with("mesh1.rpc.1", "6000000000aa", false, false),
+        ];
+        let p: PathName = "mesh1.admin.1".parse().unwrap();
+        let step = |step: RecipeStep| BuildOperation::RecipeStep { step, birth: None };
+        let ops = [
+            step(RecipeStep::Stop { node: p.clone() }),
+            step(RecipeStep::Update { node: p.clone(), name: p.renamed() }),
+            step(RecipeStep::Stop { node: p.successor() }),
+            step(RecipeStep::Update { node: p.successor(), name: p.clone() }),
+            step(RecipeStep::Start { node: p.clone() }),
+            step(RecipeStep::Delete { node: p.renamed() }),
+        ];
+        // P's plan for attempt 5, as P's drive makes it (`build_drive` plan_dispatch -> run_of).
+        let plan = run_of(&ops, &t, &p.successor());
+        assert_eq!(plan.operations, ops[..2].to_vec(), "the run is P's stop and rename, executed by .new");
+        assert_eq!(plan.hand_off_to.as_deref(), Some("mesh1.admin.1"), "in P's view the step after the run is P's: the plan says more follows");
+        let view = Arc::new(RwLock::new(t));
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let id = BuildId("bld-recipe".into());
+        builds
+            .publish_accepted(&crate::build_state::BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
+            .await
+            .unwrap();
+        let runner = Arc::new(RecipeRunner { view: view.clone(), ran: Default::default() });
+        let exec = BuildExecutor { executor: "mesh1.admin.1.new".into(), builds: builds.clone(), topology: view.clone(), runner: runner.clone() };
+        let r = exec.run_attempt(&id, 5, &rafka_node_rpc_contract::context::CallContext::default(), &plan).await;
+        assert_eq!(*runner.ran.lock().unwrap(), vec!["stop-node:mesh1.admin.1".to_string(), "update-node:mesh1.admin.1".to_string()], "the run ran P's stop and rename");
+        let Reconciled::HandedOff { attempt: 5, to, .. } = &r else { panic!("the run hands off: {r:?}") };
+        assert_ne!(to, "mesh1.admin.1", "the run handed off to P, which it stopped and renamed: {r:?}");
+        assert_eq!(to, "mesh1.admin.1.new", "the run hands back to the fabric primary its ending view seats: {r:?}");
+        let end = view.read().await.clone();
+        assert_eq!(lead_for(&ops[2..], &end).map(|n| n.to_string()).as_deref(), Some("mesh1.admin.2"), "that fabric primary's next claim names .new's same-mesh successor for what is left");
+        let p_after = builds.read_build(&id).await.unwrap();
+        assert_eq!(p_after.state, BuildState::Pending, "the Build waits for the next claim");
+    }
+
     #[test]
     fn a_handed_off_attempt_leaves_the_build_waiting_for_its_next_claim() {
         use crate::build_state::{fold, BuildAccepted, BuildFact};
