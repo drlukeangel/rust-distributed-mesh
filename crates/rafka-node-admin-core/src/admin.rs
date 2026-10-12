@@ -2247,8 +2247,11 @@ fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], re
 ///   own MeshId (mesh-investigation.md step 6). The attempt is the one-step recipe of that create
 ///   (`AttemptAction::Recipe`, reason Recipe); the create's own fence asks the provider about the lost
 ///   admin and deletes it only on its exact exit, so nothing is proven or recorded here;
-/// - a mesh that lost its mesh-primary, whose node-admin the provider proves exited (mesh-investigation.md
-///   step 5, "Fully crashed": exact exit proof, never silence): the same recipe, for that admin;
+/// - a mesh this authority hears (it is not held unheard) that lost its mesh-primary, whose node-admin the
+///   provider proves exited (exact exit proof, never silence): the same recipe, for that admin. A peer mesh
+///   held unheard is evidence only (R-D1), so the case of mesh-investigation.md step 5, "Fully crashed" (a
+///   mesh whose every node is gone is unheard by construction and the ladder decides `unreachable`), opens
+///   nothing from here yet;
 /// - surplus: a live birth of a kept mesh the topology does not name, or an incomplete mesh.delete.
 ///
 /// A member of a mesh with a live mesh-primary, a node-admin included, is not repaired here: its
