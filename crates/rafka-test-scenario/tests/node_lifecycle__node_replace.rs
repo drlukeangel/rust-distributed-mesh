@@ -100,7 +100,7 @@ async fn two_mesh_estate(test: &str) -> (Estate, String) {
     estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(90)).await;
     // The cells hold, kill and replace members: workflows the initial fabric refuses until it has first
     // reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
-    estate.fabric_ready(SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
     (estate, build)
 }
 
@@ -1211,7 +1211,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     // The stop of mesh2's primary below moves a seat, which the initial fabric refuses until it has first
     // reached ready-for-traffic; a killed member keeps it from ever climbing.
-    estate.fabric_ready(SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
     let floor = rafka_mesh_transport::membership::staleness_floor();
     let nodes = estate.nodes().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);

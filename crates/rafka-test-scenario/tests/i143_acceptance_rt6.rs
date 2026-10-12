@@ -7,10 +7,10 @@
 //! settled through a Build; every birth joined its maker with `JoinNode` and read the maker's
 //! topology with `GetTopology`.
 
+use rafka_node_admin_client::NodeView;
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::time::Duration;
 
 const MEMBER: &str = "mesh1.rpc.1";
 
@@ -44,22 +44,16 @@ fn at(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
-async fn estate(cell: &str) -> (Estate, Vec<Value>) {
+async fn estate(cell: &str) -> (Estate, Vec<NodeView>) {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [
-            {"name": "mesh1", "node_admin": 1, "rpc_node": 1},
-            {"name": "mesh2", "node_admin": 1, "rpc_node": 2},
-        ]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let nodes = estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 1, 2)], Duration::from_secs(60)).await;
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    let nodes = estate.settled_views(&shape).await;
     (estate, nodes)
 }
 
-fn node_id(nodes: &[Value], name: &str) -> String {
-    nodes.iter().find(|n| n["name"] == name).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{name} is not in the view"))
+fn node_id(nodes: &[NodeView], name: &str) -> String {
+    nodes.iter().find(|n| n.name.to_string() == name).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{name} is not in the view"))
 }
 
 /// The members of `mesh` across every chunk of its one snapshot, with the snapshot's identity.
@@ -79,9 +73,16 @@ fn kinds(frames: &[Value]) -> Vec<String> {
     frames.iter().map(|f| s(&f["frame"])).collect()
 }
 
+/// The frames of a read without the seat records and the rafka-time it also streams before `End`
+/// (node-rpc-envelope.md, Topology op 0x1E: `TopologyReply::Seats`, `TopologyReply::RafkaTime`).
+fn topology_frames(frames: &[Value]) -> Vec<Value> {
+    frames.iter().filter(|f| f["frame"] != "seats" && f["frame"] != "rafka-time").cloned().collect()
+}
+
 /// CONTRACT: an ordinary member (an rpc node, neither a primary nor a maker) answers
 /// `GetTopology` with the fabric topology it holds: its own mesh and the other mesh, each at its
-/// publisher and `topology_version`, as `Started`, one snapshot per mesh, `End`. A read naming the
+/// publisher and `topology_version`, as `Started`, one snapshot per mesh, the seat records and
+/// rafka-time it holds (`Seats`, `RafkaTime`), `End`. A read naming the
 /// version it holds is `Unchanged` and sends no snapshot; a caller one version behind is sent the
 /// snapshot; a mesh it does not hold is refused as `UnknownMesh` and nothing else is sent. The read
 /// changes nothing at the member: the member's version of each mesh after the reads is the one
@@ -101,7 +102,9 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     let k = kinds(&frames);
     assert_eq!(k.first().map(String::as_str), Some("started"), "{k:?}");
     assert_eq!(frames.last().unwrap(), &json!({"frame": "end", "meshes": 2}), "{frames:?}");
-    assert!(k[1..k.len() - 1].iter().all(|f| f == "snapshot"), "{k:?}");
+    // Between Started and End: the snapshots, then the seat records and the rafka-time the member holds
+    // (node-rpc-envelope.md, Topology op 0x1E: `TopologyReply` carries `Seats` and `RafkaTime` frames).
+    assert!(k[1..k.len() - 1].iter().all(|f| f == "snapshot" || f == "seats" || f == "rafka-time"), "{k:?}");
     let (mesh1, mesh1_pub, mesh1_v, _) = snapshot_of(&frames, "mesh1");
     let (mesh2, mesh2_pub, mesh2_v, _) = snapshot_of(&frames, "mesh2");
     assert_eq!(mesh1, vec!["mesh1.admin.1", "mesh1.rpc.1"], "its own mesh: the members its book holds, itself among them");
@@ -114,7 +117,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     // The version it holds: Unchanged, no snapshot.
     let since = format!("{mesh2_pub}|{incarnation}|{mesh2_v}");
     let held = estate.probe(&["topology", "--target", &target, "--mesh", "mesh2", "--since", &since]);
-    let held_frames = held["frames"].as_array().unwrap().clone();
+    let held_frames = topology_frames(held["frames"].as_array().unwrap());
     assert_eq!(kinds(&held_frames), vec!["started", "unchanged", "end"], "{held_frames:?}");
     assert_eq!(held_frames[1]["topology_version"], mesh2_v);
     assert_eq!(held_frames[2]["meshes"], 1, "End counts Unchanged");

@@ -8,7 +8,6 @@
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
-use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
     Owner {
@@ -21,10 +20,6 @@ fn owner(test: &str) -> Owner {
     }
 }
 
-fn s(v: &Value) -> String {
-    v.as_str().unwrap_or_default().to_string()
-}
-
 /// The boot file of a joining admin: it arms `spec` before the admin's first line runs.
 fn arm_at_birth(estate: &Estate, admin: &str, id: &str, spec: Value) {
     let dir = estate.root.join("faults");
@@ -35,29 +30,28 @@ fn arm_at_birth(estate: &Estate, admin: &str, id: &str, spec: Value) {
 }
 
 /// CONTRACT: every admin withholds the catch-up it owes a neighbour that comes up on the Build
-/// topic (the seam, nothing else). The two joining admins of the Build hold `Fabric.build_id` from
-/// the fabric-primary's row on the fabric's store root (R14) and the attempt floor from their join,
-/// and the Build's facts from none of their neighbours' catch-up: each one's own Build log cannot
-/// read the Build the pointer names (the Build journal is per admin, R14 answer 1), so each fetches
-/// its facts with `FetchBuildFacts` (0x1F), absorbs them into its own Build log and is Ready, and the
-/// Build completes.
+/// topic (the seam, nothing else). The two joining admins of the Build know the accepted Build from
+/// the fabric-primary's row on the fabric's store root once the fabric's first commit-state has
+/// published it there (fabric-state-commit.md step 2: each node writes what its scratchpad holds into
+/// the store; blocker `unreadable-build`), or, before that, from the Build their join's entry answer
+/// named (blocker `no-pointer-wanted`): which of the two a joiner meets is the order of its birth and
+/// the fabric's first commit-state, which nothing orders. They hold the Build's facts from none of
+/// their neighbours' catch-up: each one's own Build log cannot read that Build (the Build journal is
+/// per admin, R14 answer 1), so each fetches its facts with `FetchBuildFacts` (0x1F), absorbs them
+/// into its own Build log and is Ready, and the Build completes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_completes() {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner("joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_completes"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
         .await
         .expect("the faulted-admin binding set is accepted");
-    let nodes = estate.nodes().await;
-    let day0 = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").expect("the Day-0 admin");
-    Door::open(&estate.root, "mesh1.admin.1", &s(&day0["admin_api_base"])).await.arm("catch-up-withheld", json!({"kind": "catch-up"})).await;
+    let day0 = estate.node_view("mesh1.admin.1").await;
+    Door::open(&estate.root, "mesh1.admin.1", day0.admin_api_base.as_deref().expect("the Day-0 admin advertises its door")).await.arm("catch-up-withheld", json!({"kind": "catch-up"})).await;
     for joiner in ["mesh1.admin.2", "mesh1.admin.3"] {
         arm_at_birth(&estate, joiner, "catch-up-withheld", json!({"kind": "catch-up"}));
     }
 
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 3, "rpc_node": 0}]})).await;
-    assert_eq!(status, 202, "{a}");
-    let build = s(&a["build_id"]);
-    estate.await_build(&build, Duration::from_secs(60)).await;
+    let build = estate.reconcile_shape("fabric1", &[("mesh1", 3, 0)]).await.build_id.0;
     estate.stop().await;
 
     let spans = estate.spans();
@@ -70,7 +64,10 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
     for joiner in ["mesh1.admin.2", "mesh1.admin.3"] {
         let mine: Vec<&&Value> = fetched.iter().filter(|sp| sp["attributes"]["node"] == joiner && sp["attributes"]["outcome"] == "absorbed").collect();
         assert!(!mine.is_empty(), "{joiner} absorbed the Build's facts from a FetchBuildFacts read: {fetched:#?}");
-        assert!(mine.iter().all(|sp| sp["attributes"]["blocker"] == "unreadable-build" && sp["attributes"]["build_id"] == build.as_str()), "{joiner} fetched for the Build its pointer names: {mine:#?}");
+        assert!(
+            mine.iter().all(|sp| (sp["attributes"]["blocker"] == "unreadable-build" || sp["attributes"]["blocker"] == "no-pointer-wanted") && sp["attributes"]["build_id"] == build.as_str()),
+            "{joiner} fetched for the accepted Build, named by the pointer on the store root or by its entry answer: {mine:#?}"
+        );
         let served: Vec<Value> = named(&spans, "rdm.node_admin.build.serve.via-fetch-facts").into_iter().filter(|sp| sp["attributes"]["node"] == mine[0]["attributes"]["target"]).cloned().collect();
         assert!(served.iter().any(|sp| sp["attributes"]["complete"] == "true" && sp["attributes"]["outcome"] == "served"), "{joiner}'s responder served a complete snapshot: {served:#?}");
     }
@@ -85,11 +82,7 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_build_of_three_node_admins_completes_with_every_joiner_ready() {
     let mut estate = Estate::bootstrap(owner("a_build_of_three_node_admins_completes_with_every_joiner_ready"), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 3, "rpc_node": 0}]})).await;
-    assert_eq!(status, 202, "{a}");
-    let build = s(&a["build_id"]);
-    estate.await_build(&build, Duration::from_secs(60)).await;
-    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.admin.3"].iter().map(|n| n.to_string()).collect();
-    estate.settled(&names, Duration::from_secs(30)).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 3, 0)]).await;
+    estate.settled_views(&[("mesh1", 3, 0)]).await;
     estate.stop().await;
 }

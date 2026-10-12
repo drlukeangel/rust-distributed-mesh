@@ -4,12 +4,13 @@
 //! `I143_ACCEPTANCE_DIR` (each cell's `result.json` goes there) and whose estate commands set
 //! `RDM_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
 
+use rafka_mesh_entity::NodeKind;
 use rafka_node_admin_client::binding::{sha256_file, Binding, BindingError, BindingSet, Candidate};
+use rafka_node_admin_client::{FabricDesired, MeshDesired};
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner, RUNTIME_IMAGE};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 fn provider() -> String {
     std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into())
@@ -170,7 +171,7 @@ fn variant(e: &BindingError) -> String {
 /// The exact executable and image a node of the estate runs, observed from the provider (the
 /// process's `/proc/<pid>/exe`, the container's entry point and bind mount), never from a span.
 async fn observe_launch(estate: &Estate, node: &str) -> Value {
-    let n = estate.node(node).await;
+    let n = estate.node_value(node).await;
     if provider() == "container" {
         let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
         let inspect: Value = serde_json::from_str(&docker(&["inspect", "--format", "{{json .}}", &id])).unwrap();
@@ -217,7 +218,7 @@ fn launched_path(o: &Value) -> PathBuf {
 /// starts the Day-0 admin, a second admin and the broker, gateway and compute the admin launches;
 /// each runs the bound path with the bound hash (read from the provider, not a span); a proof
 /// round-trip through the launched nodes succeeds; restarting a node and the second admin launches
-/// the same binding as the same birth (same incarnation, same NodeId); the estate's spans carry the
+/// the same binding under a new incarnation and the same NodeId; the estate's spans carry the
 /// consumer admin's service and never the built-in admin's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scenario_runner_launches_explicit_external_binary_set() {
@@ -251,11 +252,9 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     // 2. The healthy set: the presence control. It starts, serves and restarts through the binding.
     let set = consumer_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(cell, "external-binding"), "fabric1", "mesh1", &set, &sha, &REQUIRED).await.unwrap_or_else(|e| panic!("the healthy set is accepted: {e}"));
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "broker": 1, "gateway": 1, "compute": 1}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
     let names: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.broker.1", "mesh1.gateway.1", "mesh1.compute.1"].iter().map(|n| n.to_string()).collect();
-    estate.settled(&names, Duration::from_secs(30)).await;
+    estate.settled_named(&names).await;
 
     let by_kind = |kind: &str| set.bindings.iter().find(|b| b.launch_id == kind).unwrap().clone();
     let expect_for = |node: &str| by_kind(match node.split('.').nth(1).unwrap() { "admin" => "node_admin", k => k });
@@ -281,22 +280,18 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     // Restarts through the same binding: a role node, and the admin that launched the nodes.
     let mut restarts = Vec::new();
     for node in ["mesh1.broker.1", "mesh1.admin.2"] {
-        let before = estate.node(node).await;
-        let (status, r) = estate.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
-        assert_eq!(status, 202, "{node}: {r}");
-        estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
-        // A restart keeps the birth (node-restart.md: "Same node.id, incarnation, ...").
-        let after = rafka_test_scenario::estate::wait_for(&format!("{node} ready again after its restart"), Duration::from_secs(60), || async {
-            let n = estate.node_opt(node).await?;
-            (n["status"] == "ready-for-traffic").then_some(n)
-        })
-        .await;
-        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{node}: a restart keeps the NodeId and the birth");
+        let before = estate.node_value(node).await;
+        let mut restart = estate.nodes_obj().await.restart(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("{node}: the fabric-primary refused the restart: {e}"));
+        Estate::complete(&mut restart).await;
+        let after = estate.node_value(node).await;
+        assert_eq!(after["status"], "ready-for-traffic", "{node}: ready after the restart: {after}");
+        assert_eq!(after["node_id"], before["node_id"], "{node}: a restart keeps the NodeId");
+        assert_eq!(after["incarnation_id"], before["incarnation_id"], "{node}: a restart is stop then start on the parked process: the same birth");
         let o = observe_launch(&estate, node).await;
         let b = expect_for(node);
         assert_eq!(launched_path(&o), b.executable, "{node} restarts on the bound executable: {o}");
         assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{node} restarts on the bound bytes: {o}");
-        restarts.push(json!({ "node": node, "incarnation_id": after["incarnation_id"], "launch": o }));
+        restarts.push(json!({ "node": node, "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"], "launch": o }));
     }
     let get = estate.probe(&["get", "--target", "path:mesh1.broker.1", "--key", "7"]);
     assert_eq!(get["outcome"], "Reply", "the restarted broker answers: {get}");
@@ -316,7 +311,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let mut chains = Vec::new();
     for r in &restarts {
         let node = r["node"].as_str().unwrap();
-        let rest = named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().find(|s| s["attributes"]["node"] == node).cloned().unwrap_or_else(|| panic!("{node}: no build.update.via-rest span for the restart call"));
+        let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|s| s["attributes"]["node"] == node).cloned().unwrap_or_else(|| panic!("{node}: no build.update.via-node-rpc span for the restart call"));
         let op = format!("restart-node:{node}");
         let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|s| s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op))).cloned().unwrap_or_else(|| panic!("{node}: no reconcile executed {op}"));
         let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|s| s["attributes"]["node"] == node && descends_from(&spans, s, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.update.via-build under the reconcile"));
@@ -463,7 +458,7 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
 /// written replay manifest alone, on a fresh estate - repeats the same ordered actions, the same
 /// typed semantic outcomes and the same final proof state, with the exact seed and fault schedule
 /// retained. The seeded fault is a restart through the node-admin Build rectifier: the restarted
-/// node keeps its NodeId and its birth in both runs. Each run leaves its complete
+/// node keeps its NodeId and its incarnation in both runs (node-restart.md "Kept"). Each run leaves its complete
 /// manifest, its per-host spans and its RPC ledger under its own estate directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
@@ -496,7 +491,7 @@ async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
     assert_eq!(a.final_state, b.final_state, "the same final proof state");
     let restarts: Vec<&StepOutcome> = a.outcomes.iter().filter(|o| o.action == "restart_node").collect();
     assert_eq!(restarts.len(), 1, "the seeded fault ran: {:?}", a.outcomes);
-    assert_eq!(restarts[0].result, json!({"same_node_id": true, "same_incarnation": true}), "a restart keeps the NodeId and the birth");
+    assert_eq!(restarts[0].result, json!({"same_node_id": true, "same_incarnation": true}), "a restart keeps the NodeId and the incarnation (node-restart.md \"Kept\")");
     assert_eq!(a.final_state["mesh1.rpc.1/10"]["value"], "a2");
     assert_eq!(a.final_state["mesh1.rpc.2/11"]["found"], false);
 
@@ -658,7 +653,10 @@ fn acceptance_runner_rejects_invalid_job_execution_receipts() {
     let want = sha256_file(&stage.join("rshape-x")).unwrap();
     let manifest = |hash: &str| {
         let p = stage.join("build-manifest.json");
-        std::fs::write(&p, json!({ "candidate_sha": "c", "binaries": { "rshape-x": hash } }).to_string()).unwrap();
+        // The candidate is this tree's commit: the runner refuses a manifest naming a commit the repository
+        // does not hold, or whose source differs from the run's, before any hash is compared
+        // (scripts/i143-acceptance-gate.sh consumer_candidate_reason).
+        std::fs::write(&p, json!({ "candidate_sha": candidate_sha(), "binaries": { "rshape-x": hash } }).to_string()).unwrap();
         p
     };
     let consumer_cmd = |bin: &Path, estate_mode: &str| {

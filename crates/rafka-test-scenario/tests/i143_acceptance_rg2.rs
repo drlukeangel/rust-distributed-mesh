@@ -10,6 +10,7 @@
 //! peer mesh from the backbone alone: it marks the mesh silent in the cut and learns it again
 //! after the heal.
 
+use rafka_mesh_entity::NodeKind;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
@@ -66,28 +67,23 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [
-            {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
-            {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
-        ]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let nodes = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 2, 2)], Duration::from_secs(60)).await;
-    let ordinary: BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
-    let admins: BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
+    let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    let views = estate.settled_views(&shape).await;
+    let nodes: Vec<Value> = views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
+    let ordinary: BTreeSet<String> = views.iter().filter(|n| n.kind == NodeKind::RpcNode).map(|n| n.name.to_string()).collect();
+    let admins: BTreeSet<String> = views.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| n.name.to_string()).collect();
     assert_eq!((ordinary.len(), admins.len()), (4, 4), "{nodes:#?}");
-    let side = |m: &str| -> Vec<String> { nodes.iter().filter(|n| n["mesh"] == m).map(|n| s(&n["name"])).collect() };
+    let side = |m: &str| -> Vec<String> { views.iter().filter(|n| n.mesh == m).map(|n| n.name.to_string()).collect() };
     let (mesh1, mesh2) = (side("mesh1"), side("mesh2"));
 
     // Quiet: every node holds both meshes, then 60 s pass with nothing changing.
-    wait_for("every node has learned both meshes", Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        let learned: BTreeSet<(String, String)> = named(&spans, "rdm.mesh.membership.update.via-mesh-learned").into_iter().map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect();
-        nodes.iter().all(|n| ["mesh1", "mesh2"].iter().all(|m| learned.contains(&(s(&n["name"]), m.to_string())))).then_some(())
-    })
-    .await;
+    let peers = estate.peers().await;
+    for n in &views {
+        for m in ["mesh1", "mesh2"] {
+            peers.fact(n, m, &format!("{} has learned {m}", n.name), |held| !held.members.is_empty()).await;
+        }
+    }
     let quiet_from = now_ns();
     tokio::time::sleep(Duration::from_secs(60)).await;
     let quiet = silent_since(&estate.spans(), quiet_from);
@@ -124,7 +120,6 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
         "ordinary_nodes": ordinary, "ordinary_silent_in_cut": ordinary_during.len(), "ordinary_silent_after_heal": ordinary_after.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
-    let (_, fabric) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric["admin_api_base"]);
+    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
     estate.stop().await;
 }

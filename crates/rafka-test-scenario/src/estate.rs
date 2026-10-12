@@ -562,6 +562,8 @@ pub struct Estate {
     /// Admins this estate restarted on their own data dirs.
     restarted: Vec<Child>,
     http: reqwest::Client,
+    /// The handover of the typed objects (`crate::typed`): made once per control base.
+    pub(crate) wire: tokio::sync::Mutex<Option<crate::typed::Wire>>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
 }
@@ -646,7 +648,7 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), wire: tokio::sync::Mutex::new(None), _scope: scope };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.
@@ -739,11 +741,8 @@ impl Estate {
     /// fabric-primary, one Build at a time, so the request goes to the fabric control endpoint
     /// the entry admin advertises, follows the seat if it answers `rejected-not-authority`, and
     /// waits out a Build still reconciling (`build-in-progress`, or `attempt-taken`: the number the
-    /// request computed was opened first for the Build's own drift attempt), for up to two minutes. A
-    /// workflow the initial fabric refuses until it is ready-for-traffic (a node restart, replace,
-    /// drain, stop or delete, a mesh delete: states.md "The initial fabric before ready-for-traffic")
-    /// is sent once that fabric-primary reports the fabric ready-for-traffic. Every other answer is
-    /// returned as is.
+    /// request computed was opened first for the Build's own drift attempt), for up to two minutes. Every
+    /// other answer is returned as is.
     async fn topology_request(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut last = (0u16, Value::Null);
@@ -753,15 +752,6 @@ impl Estate {
                 Some(b) if self.fabric_at(&b).await.is_some() => b,
                 _ => self.admin.clone(),
             };
-            if Self::needs_ready_fabric(method, path) {
-                let ready = self.fabric_at(&base).await.is_some_and(|f| matches!(f["status"].as_str(), Some("ready-for-traffic" | "degraded")));
-                if !ready {
-                    last = (0, Value::String(format!("the fabric-primary at {base} does not report the fabric ready-for-traffic")));
-                    assert!(Instant::now() < deadline, "{method} {path}: the fabric was not ready-for-traffic within 120s; {}", last.1);
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    continue;
-                }
-            }
             // Removing a node: the authority removes a birth it sees, so give its view the moment
             // gossip needs to hear a node another Mesh just created.
             if method == "DELETE" {
@@ -792,23 +782,6 @@ impl Estate {
             }
             assert!(Instant::now() < deadline, "{method} {path}: no fabric-primary accepted it within 120s; last answer: {} {}", last.0, last.1);
             tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
-    /// Wait until the entry admin reports the fabric ready-for-traffic: the state a caller's node
-    /// workflow needs, and the one a cell reaches before it faults a node or moves a seat (states.md
-    /// "The initial fabric before ready-for-traffic").
-    pub async fn fabric_ready(&self, within: Duration) {
-        wait_for("the fabric is ready-for-traffic", within, || async { matches!(self.get("/api/fabric").await.1["status"].as_str(), Some("ready-for-traffic" | "degraded")).then_some(()) }).await;
-    }
-
-    /// Whether the initial fabric refuses this request until it is ready-for-traffic: a node restart,
-    /// replace, drain or stop, a node delete or a mesh delete.
-    fn needs_ready_fabric(method: &str, path: &str) -> bool {
-        match method {
-            "POST" => path.strip_prefix("/api/nodes/").is_some_and(|rest| ["/restart", "/replace", "/drain", "/stop"].iter().any(|op| rest.ends_with(op))),
-            "DELETE" => path.starts_with("/api/nodes/") || path.starts_with("/api/meshes/"),
-            _ => false,
         }
     }
 
@@ -950,7 +923,7 @@ impl Estate {
             let id = self.container_of(node).unwrap_or_else(|| panic!("{node}: no running container of fabric {}", self.fabric_id));
             return docker(&["inspect", "--format", "{{.State.Pid}}", &id]).ok().and_then(|p| p.parse().ok()).filter(|p| *p > 0).unwrap_or_else(|| panic!("{node}: container {id} has no running init"));
         }
-        let dir = self.data_dir_of(node).await;
+        let dir = self.data_dir(node).await;
         let d: Value = serde_json::from_slice(&std::fs::read(format!("{dir}/deployment.json")).unwrap()).unwrap();
         d["pid"].as_u64().unwrap_or_else(|| panic!("{node}: no pid in {d}"))
     }

@@ -950,13 +950,7 @@ impl NodeSelf {
                     Cycle::Starting { outcome, .. } => Next::Join(outcome.clone()),
                     Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
                     Cycle::Live => {
-                        let current = match (self.status)() {
-                            MemberStatus::Pending => NodeState::Pending,
-                            MemberStatus::ReadyForTraffic => NodeState::ReadyForTraffic,
-                            MemberStatus::Draining => NodeState::Draining,
-                            MemberStatus::Leaving => NodeState::Leaving,
-                        };
-                        return StatusReply::RejectedInvalidNodeTransition { current };
+                        return StatusReply::RejectedInvalidNodeTransition { current: crate::status_rpc::declared_of_member((self.status)()) };
                     }
                 }
             };

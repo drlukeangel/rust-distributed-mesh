@@ -8,6 +8,7 @@
 //! The cell does not touch the fabric-primary node-admin, and no mesh loses every node-admin.
 
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
+use rafka_node_admin_client::NodeStatus;
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use rafka_test_scenario::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault, Refusal as FaultRefusal};
 use rafka_test_scenario::wedge::*;
@@ -91,15 +92,13 @@ fn attr<'a>(sp: &'a Value, k: &str) -> &'a str {
 /// mesh1 with `admins` node-admins and `rpcs` rpc nodes, through the rectifier.
 async fn estate(cell: &str, admins: u32, rpcs: u32) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": admins, "rpc_node": rpcs}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(&s(&a["build_id"]), Duration::from_secs(120)).await;
-    estate.settled_shape(&[("mesh1", admins, rpcs)], Duration::from_secs(60)).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", admins, rpcs)]).await;
+    estate.settled_views(&[("mesh1", admins, rpcs)]).await;
     estate
 }
 
 async fn published(estate: &Estate, node: &str) -> ExactRuntime {
-    let dir = estate.data_dir_of(node).await;
+    let dir = estate.data_dir(node).await;
     ExactRuntime::published(std::path::Path::new(&dir)).unwrap_or_else(|r| panic!("{node}: no exact runtime published in {dir}: {r:?}"))
 }
 
@@ -116,7 +115,7 @@ fn fabric_primary(nodes: &[Value]) -> String {
 
 /// The highest attempt of Build `id` as the admin at the estate's control API holds it.
 async fn attempt_of(estate: &Estate, id: &str) -> u64 {
-    num(&estate.get(&format!("/api/builds?id={id}")).await.1["attempt"])
+    estate.attempt_of_build(id).await
 }
 
 /// CONTRACT (#2783): the process fault backend acts on the exact runtime a birth published
@@ -151,8 +150,8 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // and a launched admin that is neither primary is always left to kill.
     let mut estate = estate(KILL_CELL, 3, 3).await;
     let floor = rafka_mesh_transport::membership::staleness_floor();
-    let build_id = s(&estate.get("/api/fabric").await.1["build_id"]);
-    let nodes0 = estate.nodes().await;
+    let build_id = estate.accepted_build_id().await;
+    let nodes0 = estate.node_values().await;
     let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["kind"] == "rpc_node").cloned().collect();
     assert_eq!(rpcs.len(), 3);
     let (hold_n, kill_n) = (&rpcs[0], &rpcs[1]);
@@ -186,7 +185,9 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let stopped = hold_rt.apply(Fault::Stop).expect("the exact runtime is held");
     assert_eq!(stopped.state_after, Some('T'));
     ev.primitive = Some(Primitive { armed: true, ack: serde_json::to_value(&stopped).unwrap() });
-    let silent_view = wait_for(&format!("{hold} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), || async { estate.node_opt(&hold).await.filter(|n| n["status"] != "ready-for-traffic") }).await;
+    let silent_view = estate
+        .until_node(&hold, &format!("{hold} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |n| n.filter(|n| n.status != NodeStatus::ReadyForTraffic).map(|n| serde_json::to_value(n).expect("a view serializes")))
+        .await;
     let mut reads = Vec::new();
     let mut outcomes = Vec::new();
     for _ in 0..2 {
@@ -198,7 +199,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     ev.fault = Some(FaultAck { held: true, names: Some(json!({"pid": hold_rt.pid, "start": hold_rt.start, "control_domain": hold_rt.control_domain, "view_status": silent_view["status"]})), held_at_last_read });
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
     ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
-    let nodes_during = estate.nodes().await;
+    let nodes_during = estate.node_values().await;
     let (seats_during, detail_during) = seats(&nodes_during);
     let during = nodes_during.iter().find(|n| n["name"] == hold.as_str()).cloned();
     let attempt_during = attempt_of(&estate, &build_id).await;
@@ -206,13 +207,15 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let replaced = during.as_ref().is_none_or(|n| n["node_id"] != hold_n["node_id"]);
     let thawed = hold_rt.apply(Fault::Continue).expect("the hold is released");
     ev.release = Some(Release { acked: true, hold_ended: thawed.state_after != Some('T') });
-    let back = wait_for(&format!("{hold} back as its own birth"), floor * 2 + Duration::from_secs(30), || async {
-        estate.node_opt(&hold).await.filter(|n| n["incarnation_id"] == hold_n["incarnation_id"] && n["status"] == "ready-for-traffic")
-    })
-    .await;
+    let back = estate
+        .until_node(&hold, &format!("{hold} back as its own birth"), floor * 2 + Duration::from_secs(30), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (n["incarnation_id"] == hold_n["incarnation_id"] && n["status"] == "ready-for-traffic").then_some(n)
+        })
+        .await;
     let kept = estate.probe(&["get", "--target", &hold_exact, "--key", "83"]);
     ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"proc_state": proc_state(hold_rt.pid).map(String::from), "outcome": kept["outcome"]}).to_string() });
-    let nodes_after = estate.nodes().await;
+    let nodes_after = estate.node_values().await;
     let (seats_after, detail_after) = seats(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
@@ -234,15 +237,16 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
 
     // ---- Kill: the exact runtime of another rpc node exits; the rectifier recovers the path.
     let kill_rt = published(&estate, &kill).await;
-    let kill_dir = estate.data_dir_of(&kill).await;
+    let kill_dir = estate.data_dir(&kill).await;
     let killed = kill_rt.apply(Fault::Kill).expect("the exact runtime is killed");
     assert!(killed.exited, "the OS observed the exit: {killed:?}");
     assert!(matches!(kill_rt.apply(Fault::Kill), Err(FaultRefusal::AlreadyExited { .. })), "a second kill finds nothing");
-    let replacement = wait_for("a new logical node holds the path", Duration::from_secs(120), || async {
-        let n = estate.node_opt(&kill).await?;
-        (n["status"] == "ready-for-traffic" && n["node_id"] != kill_n["node_id"]).then_some(n)
-    })
-    .await;
+    let replacement = estate
+        .until_node(&kill, "a new logical node holds the path", Duration::from_secs(120), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (n["status"] == "ready-for-traffic" && n["node_id"] != kill_n["node_id"]).then_some(n)
+        })
+        .await;
     let replacement_rt = published(&estate, &kill).await;
     assert_ne!((replacement_rt.pid, replacement_rt.start), (kill_rt.pid, kill_rt.start));
     assert_ne!(replacement["incarnation_id"], kill_n["incarnation_id"], "a new incarnation: {replacement}");
@@ -256,35 +260,36 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     assert_eq!(estate.live_runtimes().iter().filter(|(d, _)| d.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&format!("{kill}-")))).count(), 1, "one runtime serves the path");
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact runtime.
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && n["name"] != "mesh1.admin.1").cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
     let admin = s(&admin_n["name"]);
     let admin_rt = published(&estate, &admin).await;
-    let admin_dir = estate.data_dir_of(&admin).await;
+    let admin_dir = estate.data_dir(&admin).await;
     let admin_killed = admin_rt.apply(Fault::Kill).expect("the admin's exact runtime is killed");
     assert!(admin_killed.exited);
-    let admin_new = wait_for("a new logical node holds the admin's path", Duration::from_secs(120), || async {
-        let n = estate.node_opt(&admin).await?;
-        (n["status"] == "ready-for-traffic" && n["node_id"] != admin_n["node_id"]).then_some(n)
-    })
-    .await;
+    let admin_new = estate
+        .until_node(&admin, "a new logical node holds the admin's path", Duration::from_secs(120), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (n["status"] == "ready-for-traffic" && n["node_id"] != admin_n["node_id"]).then_some(n)
+        })
+        .await;
     assert_ne!(admin_new["incarnation_id"], admin_n["incarnation_id"], "a new incarnation: {admin_new}");
     assert_eq!(admin_new["endpoint_id"], admin_n["endpoint_id"], "the recovered node-admin holds the endpoint key of the data dir it inherited: {admin_new}");
-    assert_eq!(estate.data_dir_of(&admin).await, admin_dir, "the recovered node-admin runs over the inherited data dir");
+    assert_eq!(estate.data_dir(&admin).await, admin_dir, "the recovered node-admin runs over the inherited data dir");
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
     // submit followed the recovery's operations to the attempt's terminal frame.
     wait_for("the node-admin's recovery is followed to its terminal", Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| attr(sp, "node") == admin && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
     })
     .await;
-    estate.settled_shape(&[("mesh1", 3, 3)], Duration::from_secs(120)).await;
-    let nodes_end = estate.nodes().await;
+    estate.settled_views(&[("mesh1", 3, 3)]).await;
+    let nodes_end = estate.node_values().await;
     let survivors_after: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["node_id"])).collect();
     let untouched: Vec<&String> = survivors_before.iter().filter(|id| ![s(&kill_n["node_id"]), s(&admin_n["node_id"])].contains(id)).collect();
     assert!(untouched.iter().all(|id| survivors_after.contains(*id)), "no other node was replaced: before {survivors_before:?} after {survivors_after:?}");
     let seats_end = seats(&nodes_end);
     assert!(seats_end.0, "{}", seats_end.1);
-    let build_end = s(&estate.get("/api/fabric").await.1["build_id"]);
+    let build_end = estate.accepted_build_id().await;
     assert_eq!(build_end, build_id, "Fabric.build_id is the Build it was");
     estate.stop().await;
 

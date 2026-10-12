@@ -9,11 +9,12 @@
 //! node-admin Build only.
 
 use rafka_test_scenario::canary::restart_canary;
-use rafka_test_scenario::estate::{artifacts_root, wait_for, Estate, Owner};
+use rafka_mesh_entity::NodeKind;
+use rafka_node_admin_client::{BuildSpec, BuildStream, CallEnd, FabricDesired, MeshDesired};
+use rafka_test_scenario::estate::{artifacts_root, Estate, Owner};
 use rafka_test_scenario::{runner, scenario::Scenario};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::time::Duration;
 
 const FEATURE: &str = "i143-2777";
 
@@ -143,65 +144,58 @@ async fn seed_runner_completes_every_operation_on_container() {
     seed_cell("seed_runner_completes_every_operation_on_container", "container").await;
 }
 
-/// The control base of the fabric-primary as the entry admin advertises it now.
-async fn primary_base(estate: &Estate) -> String {
-    let (_, fabric) = estate.get("/api/fabric").await;
-    fabric["admin_api_base"].as_str().filter(|b| !b.is_empty()).expect("the fabric advertises its primary").to_string()
-}
-
-/// One MN estate whose Build is accepted; returns it with the Build id and the base of the admin that accepted it.
-async fn estate_with_build_in_flight(cell: &str) -> (Estate, String, String) {
+/// One MN estate whose Build is accepted and still reconciling: the estate and the stream that follows the Build.
+async fn estate_with_build_in_flight(cell: &str) -> (Estate, BuildStream) {
     let estate = Estate::bootstrap(owner(cell, "restart-refusals"), "fabric1", "mesh1").await;
-    let shape = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]});
-    let (status, accepted) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{accepted}");
-    let build = accepted["build_id"].as_str().expect("build_id").to_string();
-    let base = primary_base(&estate).await;
-    (estate, build, base)
+    let stream = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])] })).await;
+    (estate, stream)
 }
 
-/// CONTRACT: while a Build is still reconciling, a restart is refused `409 build-in-progress` naming
+/// The refusal `restart` of `node` ended with, named: the reason and the detail the fabric-primary gave.
+async fn restart_refused(estate: &Estate, node: &str) -> CallEnd {
+    match estate.nodes_obj().await.restart(&node.parse().expect("a path.name")).await {
+        Err(refused) => refused,
+        Ok(stream) => panic!("the fabric-primary accepted the restart of {node} as Build {} attempt {}", stream.accepted().build_id, stream.accepted().attempt),
+    }
+}
+
+/// CONTRACT: while a Build is still reconciling, a restart is refused `build-in-progress` naming
 /// that Build and opens no attempt; once the Build settles the same restart is accepted as the next
 /// attempt of that Build.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_during_an_inflight_build_is_refused_and_opens_no_attempt() {
     require_provider("process");
     let cell = "restart_during_an_inflight_build_is_refused_and_opens_no_attempt";
-    let (estate, build, base) = estate_with_build_in_flight(cell).await;
-    let (status, refused) = estate.http_post(&base, "/api/nodes/mesh1.rpc.2/restart", &json!({})).await;
-    assert_eq!(status, 409, "{refused}");
-    assert_eq!((refused["error"].as_str(), refused["current_build_id"].as_str()), (Some("build-in-progress"), Some(build.as_str())), "{refused}");
-    let (_, view) = estate.http_get(&base, &format!("/api/builds?id={build}")).await;
-    assert!(view["attempt"].as_u64().unwrap_or(0) <= 1 && view["reason"] != "restart", "the refusal opened no attempt: {view}");
-    estate.await_build(&build, Duration::from_secs(120)).await;
-    wait_for("MN settled", Duration::from_secs(120), || async {
-        let nodes = estate.nodes().await;
-        (nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["status"] == "ready-for-traffic").count() == 3).then_some(())
-    })
-    .await;
-    let base = primary_base(&estate).await;
-    let (status, accepted) = estate.http_post(&base, "/api/nodes/mesh1.rpc.2/restart", &json!({})).await;
-    assert_eq!(status, 202, "{accepted}");
-    assert_eq!(accepted["build_id"], build.as_str(), "the restart is an attempt of the accepted Build: {accepted}");
-    estate.await_attempt(&build, Estate::attempt_of(&accepted), Duration::from_secs(120)).await;
-    write_result(cell, &json!({"cell": cell, "provider": "process", "build_id": build, "refused": refused, "restart_accepted": accepted}));
+    let (estate, mut stream) = estate_with_build_in_flight(cell).await;
+    let build = stream.build_id().clone();
+    let refused = restart_refused(&estate, "mesh1.rpc.2").await;
+    assert_eq!(refused, CallEnd::BuildInProgress { current: build.clone() }, "{refused}");
+    let view = estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build");
+    assert!(view.attempt <= 1 && view.reason != "restart", "the refusal opened no attempt: {view:?}");
+    Estate::until_complete(&mut stream).await;
+    estate.settled_views(&[("mesh1", 2, 3)]).await;
+    let mut restart = estate.nodes_obj().await.restart(&"mesh1.rpc.2".parse().unwrap()).await.expect("the fabric-primary accepts the restart once the Build settled");
+    let accepted = Estate::complete(&mut restart).await;
+    assert_eq!(accepted.build_id, build, "the restart is an attempt of the accepted Build: {accepted:?}");
+    write_result(cell, &json!({"cell": cell, "provider": "process", "build_id": build, "refused": {"error": "build-in-progress", "current_build_id": build}, "restart_accepted": {"build_id": accepted.build_id, "attempt": accepted.attempt}}));
     estate.shutdown().await;
 }
 
-/// CONTRACT: a restart naming a path the Build does not hold is refused `404 unknown-node` and
+/// CONTRACT: a restart naming a path the Build does not hold is refused `unknown-node` and
 /// opens no attempt; the accepted Build's attempt count is what it was.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt() {
     require_provider("process");
     let cell = "restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt";
-    let (estate, build, _) = estate_with_build_in_flight(cell).await;
-    estate.await_build(&build, Duration::from_secs(120)).await;
-    let base = primary_base(&estate).await;
-    let (_, before) = estate.http_get(&base, &format!("/api/builds?id={build}")).await;
-    let (status, refused) = estate.http_post(&base, "/api/nodes/mesh1.rpc.9/restart", &json!({})).await;
-    assert_eq!((status, refused["error"].as_str()), (404, Some("unknown-node")), "{refused}");
-    let (_, after) = estate.http_get(&base, &format!("/api/builds?id={build}")).await;
-    assert_eq!(before["attempt"], after["attempt"], "the refusal opened no attempt: {before} / {after}");
-    write_result(cell, &json!({"cell": cell, "provider": "process", "build_id": build, "refused": refused, "attempt_before": before["attempt"], "attempt_after": after["attempt"]}));
+    let (estate, mut stream) = estate_with_build_in_flight(cell).await;
+    let build = stream.build_id().clone();
+    Estate::until_complete(&mut stream).await;
+    let before = estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build");
+    let refused = restart_refused(&estate, "mesh1.rpc.9").await;
+    let CallEnd::Rejected { reason, detail } = &refused else { panic!("the restart of an unknown node ends Rejected: {refused:?}") };
+    assert_eq!(reason, "unknown-node", "{detail}");
+    let after = estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build");
+    assert_eq!(before.attempt, after.attempt, "the refusal opened no attempt: {before:?} / {after:?}");
+    write_result(cell, &json!({"cell": cell, "provider": "process", "build_id": build, "refused": {"error": reason, "detail": detail}, "attempt_before": before.attempt, "attempt_after": after.attempt}));
     estate.shutdown().await;
 }
