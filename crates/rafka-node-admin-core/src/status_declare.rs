@@ -18,7 +18,9 @@
 //! A key is owed again when the authority is another node or a new incarnation of the same node.
 //! A Mesh declaration is owed by the Mesh's primary and a fabric event by the fabric-primary.
 //! When this admin no longer holds the seat that owes a key, the key is withdrawn: the seat's
-//! new holder owes it from its own view.
+//! new holder owes it from its own view. A round completion is withdrawn too once the accepted
+//! Build has moved past its round (`FabricRounds::withdraw_superseded`, before each round of
+//! sends): the completion of a superseded round is never sent.
 //! RejectedStaleBirth               this birth is superseded in the authority's view: done, named
 //! RejectedInvalidTransition        the authority holds a later state: done, named
 //! NotSent | Indeterminate          failed delivery: sent again when the route is viable again
@@ -382,7 +384,22 @@ impl Declarer {
     /// round it completes (`superseded_by` says how). A completion withdrawn is forgotten whole, so a
     /// successor fabric-primary is not owed it either.
     pub(crate) fn withdraw_round(&self, me: &PathName, key: &Key, superseded_by: &str) {
-        let _ = (me, key, superseded_by);
+        self.requests.lock().unwrap().remove(key);
+        self.done.lock().unwrap().remove(key);
+        self.pending.lock().unwrap().remove(key);
+        tracing::info_span!("rdm.node_admin.status.remove.via-round-superseded", node = %me, key = ?key, superseded_by = %superseded_by)
+            .in_scope(|| tracing::info!("the accepted Build moved past the round this completion belongs to: withdrawn"));
+    }
+
+    /// Every round completion this admin holds, owed or answered, with the round it completes.
+    pub(crate) fn round_completions(&self) -> Vec<(Key, crate::fabric_state::RoundKey)> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| matches!(k, Key::Round(_)))
+            .filter_map(|(k, (_, request, _))| crate::fabric_state::RoundOp::of(request).map(|op| (k.clone(), op.key())))
+            .collect()
     }
 
     /// The send of `key` to `target` ended without finishing it; `typed` says a typed reply came back.
