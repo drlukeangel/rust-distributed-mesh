@@ -7556,7 +7556,9 @@ mod tests {
     ///   mesh1.admin.1's v9 is refused, naming the publisher stopped;
     /// - an own-mesh member on its mesh channel holds mesh1.admin.1's stop and mesh1.rpc.1's restart,
     ///   each from the fabric-primary's event; mesh1.admin.1's v8, listing itself Ready and carrying no
-    ///   restart, is taken, and the stop and the restart both stand.
+    ///   restart, is taken, and the stop and the restart both stand;
+    /// - a node-admin that holds mesh1.admin.1 departed (deleted) takes its v8 the same way; the
+    ///   departed publisher is not held again (its own entry is refused by name, the departure stands).
     /// Must NOT happen: a receiver kept on an older version of the epoch it holds; a stopped
     /// publisher's delayed version ending a stop or a restart; a receiver switched back to the
     /// stopped publisher after the successor's full.
@@ -7601,6 +7603,18 @@ mod tests {
         assert_eq!(held(&member, Side::MeshChannel), Some((publisher_of(&p), 8)), "a newer version of the held epoch is taken on the mesh channel too");
         assert!(member.book.in_flight().contains(&stop_p) && member.book.get(p.node.node_id.as_str()).is_none(), "the publisher's own stop, carried by the fabric-primary, stands");
         assert!(member.book.in_flight().contains(&restart), "a restart another publisher carried stands: the stopped publisher's version is not ordered after it");
+
+        // A node-admin that holds the publisher departed, on the backbone.
+        let gone = View::new("mesh2", "mesh2.admin.3");
+        gone.book.seats.take(Seat::MeshPrimary, &seat_of(&p, 1));
+        gone.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), None, 7, 7, vec![p.clone(), x.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::Backbone);
+        assert!(gone.book.depart(op_at("mesh1.admin.1", &p.node.node_id, &p.node.incarnation, "delete-node:mesh1.admin.1")), "mesh1.admin.1's departure is held");
+        gone.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), None, 8, 8, vec![p.clone(), rpc.clone()], vec![stop_x.clone()], vec![]), &fabric, Side::Backbone);
+        assert_eq!(held(&gone, Side::Backbone), Some((publisher_of(&p), 8)), "a departed publisher's newer version of the held epoch is taken");
+        assert!(gone.book.in_flight().contains(&stop_x) && !gone.book.routable(x.node.node_id.as_str()), "the stop it carries is held");
+        assert!(gone.book.is_departed(p.node.node_id.as_str()) && gone.book.get(p.node.node_id.as_str()).is_none(), "the departed publisher is not held again");
+        let departed = spans.named("rdm.mesh.membership.reject.via-departed-birth");
+        assert!(departed.iter().any(|f| f["node"] == "mesh1.admin.1" && f["via"] == "forwarded"), "the departed publisher's own entry is refused by name: {departed:#?}");
 
         let refused = spans.named("rdm.mesh.membership.reject.via-predecessor-publisher");
         assert_eq!(
