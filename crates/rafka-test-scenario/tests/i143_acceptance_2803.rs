@@ -254,7 +254,8 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
 /// fabric is lost at once (exact SIGKILL of all four admin runtimes) and, with no admin running,
 /// one ordinary member of the fabric primary's mesh dies as well. A person starts ONE node-admin on
 /// the former fabric primary's data dir with both primary flags. It is not Day 0: it comes back as
-/// the same node (same NodeId, a new incarnation) with no maker, takes its durable map as the
+/// a new node over that data dir (a new NodeId and incarnation, the same path.name; node-admin-lifecycle.md
+/// 3) with no maker, takes its durable map as the
 /// topology, connects to a local node of its own mesh, sweeps its own mesh once with a Ping (the
 /// dead sibling and the dead member do not answer), and sends them to the standard decommission.
 /// The other mesh's admins are restored by the fabric under the same Build with their existing
@@ -329,7 +330,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         if name.contains(".admin.") || *name == window_victim {
             assert_ne!(&new[name], inc, "{name}: a new birth");
             if *name == holder {
-                assert_eq!(new_ids[name], old_ids[name], "{name}: the restarted admin is the same node");
+                assert_ne!(new_ids[name], old_ids[name], "{name}: the relaunched admin is a new node over its data dir: a new node.id");
             }
         } else {
             assert_eq!(&new[name], inc, "{name}: an ordinary member that lives is preserved, never re-created");
