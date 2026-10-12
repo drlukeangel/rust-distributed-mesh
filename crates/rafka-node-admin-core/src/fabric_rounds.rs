@@ -63,6 +63,16 @@ impl RoundActions for NoScratchpad {
     }
 }
 
+/// The reason the Build this admin holds accepted, `accepted`, supersedes the round `key`, or `None`
+/// while the round is current (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to
+/// the accepted Build, attempt and planned exact births"; states.md, The round checklist: the checklist
+/// "names the accepted Build's PLANNED births"). `key_build` is the round's own Build as this admin's
+/// log holds it, read only when it is another Build than the accepted one.
+pub(crate) fn superseded_by(key: &RoundKey, accepted: &crate::build_state::BuildProjection, key_build: Option<&crate::build_state::BuildProjection>) -> Option<String> {
+    let _ = (key, accepted, key_build);
+    None
+}
+
 /// RDM standalone's commit-state action (fabric-state-commit.md step 2: "Each node writes what it
 /// holds in its scratchpad into the store the state-sync work established"; node-admin-lifecycle.md
 /// §7): the node publishes its scratchpad to the fabric's store root, then runs the embedding's own
@@ -950,6 +960,38 @@ mod tests {
             t.meshes.push(Mesh { id: None, name: m.into(), status });
         }
         t
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to the accepted
+    /// Build, attempt and planned exact births"; states.md, The round checklist: it "names the accepted
+    /// Build's PLANNED births"): a mesh round is superseded, named, once the accepted Build moved past
+    /// it: a later attempt of the same Build, or a Build accepted after the round's own. A round of the
+    /// accepted Build and attempt is current, and so is a round ahead of what this admin holds (an
+    /// attempt it has not seen claimed, a Build accepted after the one it holds, or one its log has not
+    /// learned): the command that opened it came ahead of the pointer. Must NOT happen: a superseded
+    /// round still commanding (gate red, tree b24a4303, fabric_states__rounds: bld-9abb attempt 1's
+    /// mesh round, trace 95adb727, sent commit-state to mesh1.admin.2 at 816848 after the two-mesh
+    /// Build bld-7c91 attempt 2 was accepted and its own round's commit-state was applied at 816816,
+    /// trace a04036d1).
+    #[tokio::test]
+    async fn a_round_the_accepted_build_moved_past_is_superseded_and_a_round_ahead_of_this_admins_pointer_is_not() {
+        use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
+        let builds = MemoryBuildStateAdapter::new();
+        let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
+        let (one, two) = (crate::build::BuildId("bld-one".into()), crate::build::BuildId("bld-two".into()));
+        for (b, at) in [(&one, 1_000), (&two, 2_000)] {
+            builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
+        }
+        let (b1, b2) = (builds.read_build(&one).await.unwrap(), builds.read_build(&two).await.unwrap());
+        let fabric = FabricId::mint();
+        let key = |b: &crate::build::BuildId, attempt: u32| RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: b.0.clone(), attempt };
+        let (one_at_1, one_at_2, two_at_1) = (BuildProjection { attempt: 1, ..b1.clone() }, BuildProjection { attempt: 2, ..b1.clone() }, BuildProjection { attempt: 1, ..b2.clone() });
+        assert_eq!(superseded_by(&key(&one, 1), &one_at_1, None), None, "the accepted Build and attempt: current");
+        assert!(superseded_by(&key(&one, 1), &one_at_2, None).is_some(), "a later attempt of the same Build supersedes the round");
+        assert_eq!(superseded_by(&key(&one, 3), &one_at_2, None), None, "an attempt ahead of the one this admin holds: its command came first");
+        assert!(superseded_by(&key(&one, 1), &two_at_1, Some(&one_at_1)).is_some(), "a Build accepted after the round's own supersedes it");
+        assert_eq!(superseded_by(&key(&two, 1), &one_at_1, Some(&two_at_1)), None, "a round of a Build accepted after the one this admin holds: its pointer lags");
+        assert_eq!(superseded_by(&key(&crate::build::BuildId("bld-unlearned".into()), 1), &two_at_1, None), None, "a round of a Build this admin's log has not learned: its command came ahead");
     }
 
     /// CONTRACT (R-S2): only an admission ends a round command. A refusal by name rests on the receiver's own view, which
