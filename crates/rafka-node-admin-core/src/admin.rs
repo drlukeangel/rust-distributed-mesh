@@ -4240,6 +4240,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // When the fabric seat moves to another holder, this admin, if it is a mesh primary, pulls
                 // rafka-time once from the new fabric-primary.
                 tasks_early.push(park_gate.spawn(crate::rafka_time::run_seat_move_pull(rafka_time.clone(), name.clone(), node_id.clone(), node_rpc.client.clone(), membership.clone())));
+                // A delta that does not follow what this admin holds desynchronizes that source of its mesh
+                // channel; it tops up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each
+                // such mesh, as every node does. Held behind the gate: a parked admin tops up nothing, and a
+                // gap signalled while it was parked is topped up once it runs again.
+                tasks_early.push(park_gate.spawn(membership.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone(), rafka_time.clone(), name.to_string(), node_id.clone()))));
                 // The seat records on the store root (`fabric.storage`): this admin enters knowing who held the
                 // seats.
                 for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
