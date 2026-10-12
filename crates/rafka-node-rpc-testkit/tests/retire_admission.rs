@@ -138,7 +138,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
 
         let build = publish_build(
             &builds,
-            FabricTopology::root("fabric1", "mesh1"),
+            FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()),
         )
         .await;
         let retired = pipeline
@@ -215,7 +215,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         // Retiring B: B ignores its stop and keeps running, every departure is lost.
         let build = publish_build(
             &builds,
-            FabricTopology::root("fabric1", "mesh1"),
+            FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()),
         )
         .await;
         let retired = pipeline

@@ -1345,7 +1345,7 @@ mod tests {
     fn intent(id: &str) -> BuildAccepted {
         BuildAccepted {
             build_id: BuildId(id.into()),
-            topology: FabricTopology::root("fabric1", "mesh1"),
+            topology: FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()),
             submitted_change: None,
             submitted_at_ms: 1,
         }

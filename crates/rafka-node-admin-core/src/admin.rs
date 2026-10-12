@@ -1486,18 +1486,22 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me
 
 /// `create-mesh:<mesh>` at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent ... Until
 /// the mesh has a primary, the fabric-primary writes its rows"; R13; CLAUDE.md: the claim is the first
-/// durable write of a create): the mesh's id, the one `records` already holds for it (an earlier
-/// attempt of this create) or a new one, is claimed at the mesh's name before anything else of the
-/// mesh is written, and held in `records` (what every launch of the mesh carries) only once the claim
-/// won. A refused claim fails the operation by name, holding nothing of the mesh: the Build runs no
-/// create of its nodes, so no node row of the mesh is claimed.
-pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str) -> Result<MeshId, String> {
-    let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned().unwrap_or_else(MeshId::mint);
-    match claim_mesh_name(meshes, me, mesh, &mesh_id).await {
+/// durable write of a create): `mesh_id`, the id the operation carries (minted once, when the mesh
+/// entered the accepted topology: node-identity-and-state.md §2.7, "Who mints it"), is claimed at the
+/// mesh's name before anything else of the mesh is written, and held in `records` (what every launch
+/// of the mesh carries) only once the claim won. Every run of the operation claims with that id, so
+/// a re-run (a later attempt, or a successor fabric-primary that holds nothing of the first run) finds
+/// the mesh's own row: the same MeshId re-claiming is idempotent. A refused claim fails the operation
+/// by name, holding nothing of the mesh: the Build runs no create of its nodes, so no node row of the
+/// mesh is claimed.
+pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<MeshId, String> {
+    match claim_mesh_name(meshes, me, mesh, mesh_id).await {
         Ok(Ok(_)) => {
-            records.meshes.lock().unwrap().entry(mesh.to_string()).or_insert_with(|| mesh_id.clone());
+            // The won claim's id is the mesh's: it replaces any id held for the name before (a
+            // removed mesh's), so no launch of this mesh carries another.
+            records.meshes.lock().unwrap().insert(mesh.to_string(), mesh_id.clone());
             records.wake.poke();
-            Ok(mesh_id)
+            Ok(mesh_id.clone())
         }
         Ok(Err(refused)) => Err(format!("{me}: create-mesh:{mesh}: the claim of the mesh's name for mesh {mesh_id} was refused, and nothing of the mesh is written: {refused}")),
         Err(e) => Err(format!("{e}; nothing of the mesh is written")),
@@ -4244,7 +4248,7 @@ impl AdminRunner {
     async fn run_op(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         use tracing::Instrument;
         match op {
-            BuildOperation::CreateMesh { mesh } => create_mesh(&self.records, &*self.mesh_storage, &self.me.to_string(), mesh).await.map(|_| ()),
+            BuildOperation::CreateMesh { mesh, mesh_id } => create_mesh(&self.records, &*self.mesh_storage, &self.me.to_string(), mesh, mesh_id).await.map(|_| ()),
             BuildOperation::CreateNode { node, over: Some(from) } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.0);
@@ -5276,7 +5280,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     } else if accepted.build_id().await.is_none() {
                                         let b0 = crate::build_state::BuildAccepted {
                                             build_id: crate::build::BuildId::mint(),
-                                            topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh),
+                                            topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh, mesh_id.clone()),
                                             submitted_change: None,
                                             submitted_at_ms: rafka_time.now_ms(),
                                         };
@@ -7120,8 +7124,8 @@ mod tests {
     /// its rows"; CLAUDE.md: the claim is the first durable write of a create, nothing is written for the
     /// entity until it wins; node-identity-and-state.md §2.7: `NameHeld` names the holder, the same MeshId
     /// re-claiming is idempotent): `create-mesh:mesh2` at the fabric-primary claims mesh2's name first.
-    /// On a free key it writes the Mesh row under the id it mints and holds that id for the mesh's
-    /// launches; a re-run of the operation claims the same id and finds its own row. Where another mesh's
+    /// On a free key it writes the Mesh row under the id the operation carries and holds that id for the
+    /// mesh's launches; a re-run of the operation claims the same id and finds its own row. Where another mesh's
     /// live row holds mesh3, the operation fails naming the holder: mesh3's row stands and no id is held
     /// for mesh3, so no launch can carry one and the Build runs no create of mesh3's nodes. One
     /// `rdm.node_admin.mesh.create.via-mesh-row` span per claim, naming the fabric-primary. Must NOT
@@ -7134,13 +7138,16 @@ mod tests {
         let holder = MeshId::mint();
         let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false };
         assert_eq!(crate::storage::MeshStorage::claim_mesh(&meshes, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written { over: None })));
+        // The ids the two operations carry, minted when each mesh entered the accepted topology.
+        let (carried, mesh3_carried) = (MeshId::mint(), MeshId::mint());
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-claim");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let minted = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2").await.expect("a free name is claimed");
-        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false }), "the claim wrote mesh2's row under the minted id");
+        let minted = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2", &carried).await.expect("a free name is claimed");
+        assert_eq!(minted, carried, "the claim is made for the id the operation carries");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false }), "the claim wrote mesh2's row under the carried id");
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the won claim's id is what the mesh's launches carry");
-        assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2").await, Ok(minted.clone()), "a re-run claims the same id");
-        let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3").await.expect_err("mesh3's name is held by another mesh's live row");
+        assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2", &carried).await, Ok(minted.clone()), "a re-run claims the same id");
+        let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3", &mesh3_carried).await.expect_err("mesh3's name is held by another mesh's live row");
         assert!(refused.contains("create-mesh:mesh3") && refused.contains(&holder.to_string()), "the refusal names the operation and the holder: {refused}");
         assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused claim wrote nothing: mesh3's row is the holder's");
         assert_eq!(records.meshes.lock().unwrap().get("mesh3"), None, "no id is held for a mesh whose claim was refused: no launch of it can carry one");
@@ -7168,17 +7175,20 @@ mod tests {
     async fn a_successor_re_running_create_mesh_of_the_same_build_claims_with_its_mesh_id_and_finds_its_own_row() {
         let meshes = crate::storage::MemoryMeshStorage::default();
         let observed = view(&[digest("mesh1.admin.1", MemberStatus::ReadyForTraffic)]);
-        let current = crate::accepted::FabricTopology::root("fabric1", "mesh1");
+        let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
         let change = crate::accepted::TopologyChange::CreateMesh { desired: crate::build::MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]) };
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
         let create_mesh_of = |plan: crate::build::BuildPlan| plan.operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
         let (first_op, successor_op) = (create_mesh_of(crate::accepted::plan(&accepted, &observed, None)), create_mesh_of(crate::accepted::plan(&accepted, &observed, None)));
-        let (BuildOperation::CreateMesh { mesh: first_mesh, .. }, BuildOperation::CreateMesh { mesh: successor_mesh, .. }) = (&first_op, &successor_op) else { unreachable!() };
+        let (BuildOperation::CreateMesh { mesh: first_mesh, mesh_id: first_id }, BuildOperation::CreateMesh { mesh: successor_mesh, mesh_id: successor_id }) = (&first_op, &successor_op) else { unreachable!() };
+        let minted = &accepted.mesh("mesh2").expect("the accepted topology holds mesh2").mesh_id;
+        assert_eq!((first_id, successor_id), (minted, minted), "every plan of the Build carries the MeshId minted when mesh2 was accepted");
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-rerun");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let (first, successor) = (Records::default(), Records::default());
-        let claimed = create_mesh(&first, &meshes, "mesh1.admin.1", first_mesh).await.expect("the first run claims mesh2's free name");
-        let rerun = create_mesh(&successor, &meshes, "mesh1.admin.2", successor_mesh).await;
+        let claimed = create_mesh(&first, &meshes, "mesh1.admin.1", first_mesh, first_id).await.expect("the first run claims mesh2's free name");
+        assert_eq!(&claimed, minted, "the first run claims with the Build's MeshId");
+        let rerun = create_mesh(&successor, &meshes, "mesh1.admin.2", successor_mesh, successor_id).await;
         assert_eq!(rerun, Ok(claimed.clone()), "the successor's re-run of the same Build's create-mesh claims with the same MeshId and finds its own row");
         assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(&claimed), "the successor's launches of mesh2 carry the id mesh2's row holds");
         assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(claimed.clone()), "mesh2's row is the first claim's");
@@ -7680,7 +7690,7 @@ mod tests {
             executor: Some("mesh2.admin.2".into()),
         };
         builds.absorb(&[
-            crate::build_state::BuildFact::Accepted(crate::build_state::BuildAccepted { build_id: b1.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 1 }),
+            crate::build_state::BuildFact::Accepted(crate::build_state::BuildAccepted { build_id: b1.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
             crate::build_state::BuildFact::Opened(crate::build_state::AttemptOpened {
                 build_id: b1.clone(),
                 attempt: 2,
@@ -7891,7 +7901,7 @@ mod tests {
         };
         let build = crate::build::BuildId(op.build_id.clone());
         let mut facts = vec![
-            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2"), submitted_change: None, submitted_at_ms: 1 }),
+            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
             BuildFact::Step(BuildStepReceipt { build_id: build.clone(), attempt: 2, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&op).unwrap()), executor: None }),
         ];
         let capture = crate::span_capture::Capture::new("i143-3068-failed-removal-recovered");
@@ -8841,7 +8851,7 @@ mod tests {
         store.point(&id, 0, "test").await.unwrap();
         let blocked = hydration_blocker(&me, &store, &builds, None).await.expect("blocked while the pointed Build is not held").to_string();
         assert!(blocked.contains("bld-0") && blocked.contains("cannot read it"), "{blocked}");
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         assert_eq!(hydration_blocker(&me, &store, &builds, None).await, None, "an admin served no entry owes no attempt floor");
         let blocked = hydration_blocker(&me, &store, &builds, Some((id.clone(), 2))).await.expect("blocked below the entry's attempt").to_string();
         assert!(blocked.contains("holds attempt 0 of Build bld-0") && blocked.contains("held attempt 2"), "{blocked}");

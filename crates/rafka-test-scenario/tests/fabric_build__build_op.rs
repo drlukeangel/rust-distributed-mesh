@@ -564,8 +564,9 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
 /// state-commit, on a retry or from a replaced primary, is idempotent and accepted"; node-rpc-envelope.md
 /// Build carrier: "Reissuing a naturally idempotent uncertain step can settle it with AlreadyApplied",
 /// and a successor "plans from accepted intent and observed topology"): the fabric is past its first
-/// state-commit, so a claim is written to its store root. The fabric-primary accepts mesh2, claims
-/// mesh2's name at `create-mesh:mesh2` (its row lands on the store root), and is lost before the next
+/// state-commit, so a claim is written to its store root. The fabric-primary accepts mesh2, minting
+/// mesh2's id at that acceptance (its span names it), claims mesh2's name with that id at
+/// `create-mesh:mesh2` (its row lands on the store root), and is lost before the next
 /// step's receipt is durable: the first admin's `AllocateIdentity`. The successor fabric-primary resumes
 /// the same Build: it re-runs `create-mesh:mesh2` with the MeshId the Build carries, finds its own row
 /// (`row-held-by-mesh`) and streams the Build to `Complete`. mesh2 is the mesh the lost fabric-primary's
@@ -607,6 +608,12 @@ async fn a_successor_fabric_primary_re_running_create_mesh_claims_with_the_build
     let row: Value = serde_json::from_slice(&std::fs::read(root.join("meshes/mesh2.json")).expect("the fabric-primary's claim of mesh2 wrote its row to the store root")).unwrap();
     let claimed = s(&row["record"]["mesh_id"]);
     assert!(!claimed.is_empty() && row["record"]["name"] == "mesh2", "{row}");
+    // The acceptance minted mesh2's id: the one its claim wrote. Its span is exported before the cut.
+    let acceptance = wait_for("the fabric-primary's acceptance of the Build is exported", Duration::from_secs(30), || async {
+        spans_named(&estate.spans(), "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build_id.0).cloned()
+    })
+    .await;
+    assert_eq!(s(&acceptance["attributes"]["minted_meshes"]), format!("mesh2={claimed}"), "mesh2's id is minted when the Build is accepted, and the claim is made with it: {acceptance}");
     // The fabric-primary dies at that cut.
     estate.kill_bootstrap();
     let end = loop {
@@ -652,6 +659,7 @@ async fn a_successor_fabric_primary_re_running_create_mesh_claims_with_the_build
         .unwrap_or_else(|| panic!("the successor re-ran create-mesh:mesh2: {said:?}"));
     assert_eq!((s(&reclaim["attributes"]["mesh_id"]), s(&reclaim["attributes"]["outcome"])), (claimed.clone(), "row-held-by-mesh".to_string()), "the re-run claims with the Build's MeshId and finds its own row: {said:?}");
     assert!(said.iter().all(|(_, id, outcome)| *id == claimed && outcome != "name-held"), "no claim of mesh2 is made under another MeshId or refused: {said:?}");
+    eprintln!("trace {}: rdm.node_admin.build.create.via-node-rpc build_id={} minted_meshes=mesh2={claimed}", s(&acceptance["trace_id"]), build_id.0);
     eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 node={successor} mesh_id={claimed} outcome=row-held-by-mesh", s(&reclaim["trace_id"]));
     estate.record_trace_url(reclaim["trace_id"].as_str().unwrap_or(""));
 }

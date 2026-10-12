@@ -1011,7 +1011,7 @@ mod writer {
             let builds = MemoryBuildStateAdapter::new();
             let (build, other) = (BuildId("build-node-rows-5".into()), BuildId("build-node-rows-6".into()));
             for id in [&build, &other] {
-                let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 };
+                let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
                 rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
             }
             // Lost before the AllocateIdentity receipt of attempt 1.

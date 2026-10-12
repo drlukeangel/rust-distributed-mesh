@@ -469,7 +469,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     builds
         .publish_accepted(&rafka_node_admin_core::build_state::BuildAccepted {
             build_id: build_id.clone(),
-            topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"),
+            topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()),
             submitted_change: None,
             submitted_at_ms: 0,
         })
