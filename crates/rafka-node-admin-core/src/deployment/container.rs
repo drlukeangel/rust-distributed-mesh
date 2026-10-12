@@ -109,17 +109,16 @@ fn parse_network_addresses(out: &str) -> std::collections::BTreeSet<IpAddr> {
 }
 
 /// Does a `docker inspect` failure say no object has that name (and nothing else)?
-/// The record a launch's spawn writes in its data dir, naming the launch and its container: a
-/// container this provider removed (its terminate, `remove_fabric`) leaves the daemon nothing by its
-/// name, and this record is what says the launch ran ([`ContainerDeploymentProvider::find`]).
+/// The record a launch's spawn writes in its data dir, naming the launch, durable before the
+/// container is created ([`super::provider::write_launch_record`]): a container this provider removed
+/// (its terminate, `remove_fabric`) leaves the daemon nothing by its name, and this record is what says
+/// the launch ran ([`ContainerDeploymentProvider::find`]).
 const LAUNCH_FILE: &str = "container-launch.json";
 
-/// Write the launch record of `deployment`, whose container is `container`, in `data_dir`. A
-/// blocking call: run it on the blocking pool.
-fn record_launch(data_dir: &Path, deployment: &crate::model::DeploymentId, container: &str) -> Result<(), String> {
-    let file = data_dir.join(LAUNCH_FILE);
-    let record = serde_json::json!({ "deployment_id": deployment.0, "container": container });
-    std::fs::write(&file, record.to_string()).map_err(|e| format!("{}: {e}", file.display()))
+/// Write the launch record of `deployment` in `data_dir`. A blocking call: run it on the blocking
+/// pool.
+fn record_launch(data_dir: &Path, deployment: &crate::model::DeploymentId) -> Result<(), String> {
+    super::provider::write_launch_record(data_dir, LAUNCH_FILE, &serde_json::json!({ "deployment_id": deployment.0 }))
 }
 
 /// Whether the launch record in `data_dir` names `deployment`: `false` when none was written or it
@@ -467,9 +466,10 @@ impl ContainerDeploymentProvider {
 
     /// What became of this launch's container, by its name (the name carries the deployment id):
     /// one that runs is the live runtime; one that exited or is dead ran and has exited; one Docker
-    /// created and never started was never launched. None by that name: the launch ran and its
-    /// container was removed when its launch record ([`LAUNCH_FILE`]) in the data dir names it, else
-    /// it was never launched. `Err` names a `docker inspect` that failed for any other reason, or
+    /// created and never started was never launched. None by that name: the launch's record
+    /// ([`LAUNCH_FILE`], written before the container is created) in the data dir names it and no
+    /// container of it is left, so it has exited (it ran and was removed, or its executor was lost
+    /// before the container existed); else it was never launched. `Err` names a `docker inspect` that failed for any other reason, or
     /// answered what this build cannot read (a status it cannot place included), or a launch record
     /// that cannot be read.
     async fn find_by_name(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
@@ -540,6 +540,10 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             let (data_dir, env) = (spec.data_dir.clone(), spec.env.clone());
             crate::record_store::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
         };
+        // Which launch the container realises, durable before the container exists, so one that runs
+        // always has its record and a later `find` knows the launch ran once the container is removed.
+        let (dir, deployment) = (spec.data_dir.clone(), spec.deployment_id.clone());
+        crate::record_store::blocking_io(move || record_launch(&dir, &deployment)).await.map_err(err)?;
         let name = container_name(spec);
         let data = spec.data_dir.display().to_string();
         let mut args: Vec<String> = vec![
@@ -606,9 +610,6 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         // `docker run -d` answers the immutable id: the runtime's identity,
         // not the (reusable) name.
         let id = docker(&argv).await.map_err(err)?.trim().to_string();
-        // Which launch this container realises, so a later `find` knows it ran once the container is removed.
-        let (dir, deployment, container) = (spec.data_dir.clone(), spec.deployment_id.clone(), id.clone());
-        crate::record_store::blocking_io(move || record_launch(&dir, &deployment, &container)).await.map_err(err)?;
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
         let pid = docker(&["inspect", "--format", "{{.State.Pid}}", &id]).await.map_err(err)?.parse::<u32>().ok().filter(|p| *p > 0);
         // The pipeline registers this exact handle and makes its runtime fact
@@ -864,9 +865,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (this, other) = (crate::model::DeploymentId::mint(), crate::model::DeploymentId::mint());
         assert_eq!(recorded_launch(&dir, &this), Ok(false), "no record: never launched");
-        record_launch(&dir, &other, "c0ffee").unwrap();
+        record_launch(&dir, &other).unwrap();
         assert_eq!(recorded_launch(&dir, &this), Ok(false), "the record of another launch");
-        record_launch(&dir, &this, "c0ffee").unwrap();
+        record_launch(&dir, &this).unwrap();
         assert_eq!(recorded_launch(&dir, &this), Ok(true), "the record names this launch");
         std::fs::write(dir.join(LAUNCH_FILE), b"not json").unwrap();
         assert!(recorded_launch(&dir, &this).expect_err("an unparsable record").contains(LAUNCH_FILE));
