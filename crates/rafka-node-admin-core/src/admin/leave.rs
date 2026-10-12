@@ -292,10 +292,59 @@ impl AdminRunner {
         // Steps 3-4 run at the mesh-primary; its validated handoff, mesh.deleted, is what this waits
         // for. The validation covered the accepted roster (and every amendment) exactly, every birth
         // but the final primary, which reports still running.
-        let manifest = crate::mesh_leave::await_handoff(key, &primary.name.to_string(), handoff, self.records.subscribe_view(), || std::future::ready(None)).await?;
+        // The wait ends on the handoff, or on the final primary proven exited in this owner's view.
+        let Some(admitted) = self.leaves.admitted(key) else {
+            return Err(RunEnd::Incomplete(format!("{outer}: the open leave was closed before its handoff was awaited")));
+        };
+        let named = format!("{} {}", admitted.final_primary.node, admitted.final_primary.incarnation_id);
+        let inspected = std::sync::Mutex::new(None);
+        let manifest = crate::mesh_leave::await_handoff(key, &named, handoff, self.records.subscribe_view(), || self.final_primary_exit(key, primary, &admitted, &inspected)).await?;
         // Step 5: mesh.deleted ends the mesh.delete. The final primary is not deleted inside its own
         // mesh.delete: it keeps publishing its aggregate until a separate node.delete (step 7).
         self.record_mesh_deleted(key, manifest).await.map_err(RunEnd::Failed)
+    }
+
+    /// Whether the leave's final primary `primary` (the admitted or amended birth `admitted` names)
+    /// is proven exited, naming the proof: its exit-proof row read in this owner's view (put by
+    /// whichever admin proved it from the provider: the mesh's surviving admin's seat watch), or,
+    /// once the view holds it silent (no longer live, or gone from the view), the provider's exact
+    /// Exited of its durable runtime row, which this owner proves and records as its exit-proof row
+    /// (the proof "Resume after the primary's loss" step 1 records; with no surviving admin of the
+    /// mesh this owner is the only one that proves it). The provider is asked once per status the
+    /// view holds it at (`inspected`); an exit not proven is named on its span and keeps the wait
+    /// open: silence is not death.
+    async fn final_primary_exit(&self, key: &LeaveKey, primary: &Node, admitted: &crate::mesh_leave::Admitted, inspected: &std::sync::Mutex<Option<Option<NodeStatus>>>) -> Option<String> {
+        let lost = &admitted.final_primary;
+        let incarnation = IncarnationId(lost.incarnation_id.clone());
+        if self.records.is_exited(&primary.node_id, &incarnation) {
+            return Some("its exit-proof row is read in this fabric-primary's view".to_string());
+        }
+        let status = self.topology.read().await.nodes.iter().find(|n| n.node_id == primary.node_id && n.incarnation_id.as_ref() == Some(&incarnation)).map(|n| n.status);
+        if status.is_some_and(NodeStatus::is_live) {
+            return None;
+        }
+        if inspected.lock().unwrap().replace(status) == Some(status) {
+            return None;
+        }
+        let unproven = |reason: String| {
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-final-primary-unproven", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", lost.node, lost.incarnation_id), status = ?status, reason = %reason)
+                .in_scope(|| tracing::info!("the final primary is silent and not proven exited: the owner's wait stays open"));
+            None
+        };
+        let Some(store) = self.records.contacts.get() else {
+            return unproven(format!("{} holds no durable runtime rows to prove its exit from", self.me));
+        };
+        let row = match self.lost_primary_row(&**store, lost).await {
+            Ok(row) => row,
+            Err(e) => return unproven(e),
+        };
+        match crate::mesh_leave::prove_predecessor_exit(&*self.provider, row.as_ref(), lost, &admitted.final_runtime).await {
+            Ok(terminal) => match self.records.put_exit_of_receipt(&terminal).await {
+                Ok(_) => Some(format!("its provider proved it exited (exit code {:?}) and this fabric-primary put its exit-proof row", terminal.exit_code)),
+                Err(e) => Some(format!("its provider proved it exited (exit code {:?}); its exit-proof row was not put: {e}", terminal.exit_code)),
+            },
+            Err(reason) => unproven(reason),
+        }
     }
 
     /// mesh.deleted's completion (mesh-delete.md step 5): the validated manifest `manifest` (every

@@ -1273,32 +1273,61 @@ impl LeaveBook {
     }
 }
 
-/// How long the owner waits for the leaving mesh's `MeshLeave` handoff before its attempt ends
-/// incomplete. A deleting primary whose member workflows end incomplete says so inside a
-/// `MeshLeave` call, which ends the attempt at once; this bound covers a handoff that never
-/// arrives (a lost call, a lost primary). An attempt that ends incomplete is handed back to the
+/// The bound on the owner's wait for a `MeshLeave` handoff that no event ends: the final primary's
+/// `MeshLeave` call lost while it lives (the call answered NotSent or Indeterminate;
+/// `call_mesh_leave` records the outcome and nothing calls again), or the final primary exiting
+/// after the owner found it silent and not exited, with no later change of the owner's view to
+/// prove it on. Every other end is an event: the handoff, the incomplete report inside the call,
+/// or the final primary proven exited ([`await_handoff`]). An attempt that ends incomplete is handed back to the
 /// fabric-primary ([`crate::executor::RunEnd::Incomplete`]): the Build stays in progress and the
 /// fabric-primary's drive claims the next attempt once what it decides on moves, and that attempt
 /// resumes from the receipts.
 pub const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The owner's wait for the handoff of the open leave `key` (mesh-delete.md step 5), sent by the
-/// final primary `primary`: the validated manifest, or the attempt's incomplete end. `view` ticks
-/// when the owner's view changes and `final_primary_exited` answers whether the final primary is
-/// proven exited, naming the proof.
-pub async fn await_handoff<F, Fut>(key: &LeaveKey, primary: &str, mut handoff: watch::Receiver<Option<LeaveOutcome>>, _view: watch::Receiver<u64>, _final_primary_exited: F) -> Result<ExitManifest, crate::executor::RunEnd>
+/// final primary `primary` (its exact birth, named): the validated manifest, or the attempt's
+/// incomplete end. A handoff held is read first. Each time the owner's view changes (`view`),
+/// `final_primary_exited` answers whether the final primary is proven exited, naming the proof; a
+/// proven exit ends the attempt incomplete at once, so the next attempt resumes the leave in the
+/// order "Resume after the primary's loss" gives (the lost primary's exact Exited recorded first,
+/// then `RosterAmended`, then a fresh claim). A view change that proves nothing keeps the wait open:
+/// silence is not death.
+pub async fn await_handoff<F, Fut>(key: &LeaveKey, primary: &str, mut handoff: watch::Receiver<Option<LeaveOutcome>>, mut view: watch::Receiver<u64>, mut final_primary_exited: F) -> Result<ExitManifest, crate::executor::RunEnd>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<String>>,
 {
     let outer = key.operation.as_str();
-    match tokio::time::timeout(HANDOFF_WAIT, handoff.wait_for(|m| m.is_some())).await {
-        Ok(Ok(m)) => match m.clone().expect("waited for Some") {
-            Ok(manifest) => Ok(manifest),
-            Err(reason) => Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary} reported its member workflows incomplete: {reason}"))),
-        },
-        Ok(Err(_)) => Err(crate::executor::RunEnd::Incomplete(format!("{outer}: the open leave was closed while its handoff was awaited"))),
-        Err(_) => Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary} sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand"))),
+    let bound = tokio::time::sleep(HANDOFF_WAIT);
+    tokio::pin!(bound);
+    view.borrow_and_update();
+    loop {
+        let held = handoff.borrow_and_update().clone();
+        if let Some(outcome) = held {
+            return outcome.map_err(|reason| crate::executor::RunEnd::Incomplete(format!("{outer}: {primary} reported its member workflows incomplete: {reason}")));
+        }
+        if let Some(proof) = final_primary_exited().await {
+            tracing::info_span!("rdm.node_admin.mesh.update.via-final-primary-exited", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, final_primary = %primary, proof = %proof)
+                .in_scope(|| tracing::info!("the final primary is proven exited before it sent mesh-leave: this attempt ends and the next resumes the leave from its receipts"));
+            return Err(crate::executor::RunEnd::Incomplete(format!(
+                "{outer}: the final primary {primary} is proven exited ({proof}) and sent no mesh-leave; the workflow is incomplete, its receipts stand, and the next attempt resumes it from that exit"
+            )));
+        }
+        tokio::select! {
+            changed = handoff.changed() => {
+                if changed.is_err() {
+                    return Err(crate::executor::RunEnd::Incomplete(format!("{outer}: the open leave was closed while its handoff was awaited")));
+                }
+            }
+            changed = view.changed() => {
+                if changed.is_err() {
+                    return Err(crate::executor::RunEnd::Incomplete(format!("{outer}: the owner's view ended while the handoff of {primary} was awaited")));
+                }
+            }
+            _ = &mut bound => {
+                return Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary}, live and not proven exited, sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand")));
+            }
+        }
     }
 }
 
