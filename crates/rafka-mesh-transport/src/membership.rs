@@ -7462,7 +7462,7 @@ mod tests {
 
     /// CONTRACT (#3068; gossip.md §3.1 receiver rules: "the fence is the NodeId"; fabric-authority.md
     /// §7; R-ML2): the departed fence on a mesh status is per exact birth, never per name. The old
-    /// mesh primary X departed (its replace-node NodeDeleted is applied first); a node-admin joining
+    /// mesh primary X departed (its node.delete NodeDeleted is applied first); a node-admin joining
     /// the live mesh at X's path.name is a new birth Y. Y takes its mesh's held status, replayed to it
     /// before its own first heartbeat put it in its own book: the name is Y's own, X's departure is
     /// its predecessor's, and as successor mesh primary Y adopts that status. A late status under X's
@@ -7475,7 +7475,7 @@ mod tests {
         let _capture = crate::span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
-        let departure = op_at("mesh2.admin.1", &x, &x_inc, "replace-node:mesh2.admin.1");
+        let departure = op_at("mesh2.admin.1", &x, &x_inc, "retire-node:mesh2.admin.1");
         let status = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: Some("mesh2.admin.2".into()), changed_at_rafka_ms: 5 };
         let held = Some(MeshStatus { status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
 
@@ -7626,7 +7626,7 @@ mod tests {
         peer.take_snapshot(&snapshot_of("mesh2", &publisher_of(&admin2), None, 1, 1, mesh2_full(), vec![], vec![]), &fabric, Side::Backbone);
         peer.take_snapshot(&snapshot_of("mesh3", &publisher_of(&admin3), None, 1, 1, vec![admin3.clone()], vec![], vec![]), &fabric, Side::Backbone);
         // The fabric-primary, acting for both: mesh2.admin.1 deleted, mesh3.admin.1 stopped.
-        let deleted = op_at("mesh2.admin.1", &admin2.node.node_id, &admin2.node.incarnation, "delete-node:mesh2.admin.1");
+        let deleted = op_at("mesh2.admin.1", &admin2.node.node_id, &admin2.node.incarnation, "retire-node:mesh2.admin.1");
         let stopped = op_at("mesh3.admin.1", &admin3.node.node_id, &admin3.node.incarnation, "stop-node:mesh3.admin.1");
         peer.take_snapshot(&snapshot_of("mesh2", &fp, None, 1, 1, rpc.to_vec(), vec![], vec![deleted.clone()]), &fabric, Side::Backbone);
         peer.take_snapshot(&snapshot_of("mesh3", &fp, None, 1, 2, vec![], vec![stopped.clone()], vec![]), &fabric, Side::Backbone);
@@ -7744,7 +7744,7 @@ mod tests {
         let gone = View::new("mesh2", "mesh2.admin.3");
         gone.book.seats.take(Seat::MeshPrimary, &seat_of(&p, 1));
         gone.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), None, 7, 7, vec![p.clone(), x.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::Backbone);
-        assert!(gone.book.depart(op_at("mesh1.admin.1", &p.node.node_id, &p.node.incarnation, "delete-node:mesh1.admin.1")), "mesh1.admin.1's departure is held");
+        assert!(gone.book.depart(op_at("mesh1.admin.1", &p.node.node_id, &p.node.incarnation, "retire-node:mesh1.admin.1")), "mesh1.admin.1's departure is held");
         gone.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), None, 8, 8, vec![p.clone(), rpc.clone()], vec![stop_x.clone()], vec![]), &fabric, Side::Backbone);
         assert_eq!(held(&gone, Side::Backbone), Some((publisher_of(&p), 8)), "a departed publisher's newer version of the held epoch is taken");
         assert!(gone.book.in_flight().contains(&stop_x) && !gone.book.routable(x.node.node_id.as_str()), "the stop it carries is held");
@@ -7840,7 +7840,7 @@ mod tests {
         mesh2_member.book.seats.take(Seat::MeshPrimary, &seat_of(&stopped_admin, 1));
         assert!(mesh2_member.book.stopped(op_at("mesh1.admin.3", &stopped_admin.node.node_id, &stopped_admin.node.incarnation, "stop-node:mesh1.admin.3")));
         let s2 = subject("mesh1.rpc.2");
-        mesh2_member.take(&event(StatusEvent::Deleting, &s2, "delete-node:mesh1.rpc.2", &stopped_admin), &fabric, "mesh-channel");
+        mesh2_member.take(&event(StatusEvent::Deleting, &s2, "retire-node:mesh1.rpc.2", &stopped_admin), &fabric, "mesh-channel");
         assert_eq!(mesh2_member.book.in_flight().len(), 1, "only the publisher's own stop is held");
 
         // The seated primary's event is taken; the held fabric-primary's (acting for the mesh) too.

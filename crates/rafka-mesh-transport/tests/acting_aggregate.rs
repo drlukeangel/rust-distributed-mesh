@@ -175,7 +175,7 @@ async fn the_acting_aggregate_carries_the_held_digests_of_a_living_mesh_and_none
     let (source_publisher, source_version) = fp_bb.held_source("mesh2").unwrap();
 
     // The fabric-primary, as executor: mesh2.admin.1 deleted on its exit proof, mesh3.admin.1 stopped.
-    let deleted = op("delete-node", &admin2);
+    let deleted = op("retire-node", &admin2);
     assert!(fp_m.book.depart(deleted.clone()));
     fp_m.book.executed_delete(&deleted);
     let stopped = op("stop-node", &admin3);
@@ -311,7 +311,7 @@ async fn a_living_mesh_with_no_primary_ages_out_at_a_peer_while_the_fabric_prima
     drop(bb2);
     n2.ep.close().await;
     let lost_at = std::time::Instant::now();
-    let deleted = op("delete-node", &admin2);
+    let deleted = op("retire-node", &admin2);
     assert!(fp_m.book.depart(deleted.clone()));
     fp_m.book.executed_delete(&deleted);
     fp_bb.set_fabric_primary(true);

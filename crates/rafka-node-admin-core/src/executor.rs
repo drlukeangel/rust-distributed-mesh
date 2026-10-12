@@ -376,10 +376,11 @@ impl BuildExecutor {
             let driver = self.topology.read().await.fabric_primary().map(|n| n.name.to_string());
             return match driver {
                 Some(to) => self.hand_off(&build, attempt, operations.clone(), to).await,
+                // No operation failed: the receipt names none, so no step is blamed for it.
                 None => {
-                    let last = operations.last().map(BuildOperation::key).unwrap_or_default();
-                    let reason = format!("{}: the run of attempt {attempt} ended after {:?} with more of the plan to follow, and this admin's view seats no fabric primary to hand it back to", self.executor, if last.is_empty() { "no operation" } else { last.as_str() });
-                    self.finish(&build, attempt, Err((last, reason))).await
+                    let last = operations.last().map(BuildOperation::key).unwrap_or_else(|| "no operation".into());
+                    let reason = format!("{}: the run of attempt {attempt} ended after {last} with more of the plan to follow, and this admin's view seats no fabric primary to hand it back to", self.executor);
+                    self.finish(&build, attempt, Err((String::new(), reason))).await
                 }
             };
         }
@@ -398,6 +399,7 @@ impl BuildExecutor {
     async fn finish(&self, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, (String, String)>) -> Reconciled {
         let outcome = match &r {
             Ok(_) => AttemptOutcome::Converged,
+            Err((op, reason)) if op.is_empty() => AttemptOutcome::Failed { reason: reason.clone() },
             Err((op, reason)) => AttemptOutcome::Failed { reason: format!("{op}: {reason}") },
         };
         let receipt = BuildAttemptReceipt { build_id: build.build_id.clone(), attempt, outcome };
@@ -406,6 +408,7 @@ impl BuildExecutor {
         }
         match r {
             Ok(operations) => Reconciled::Converged { attempt, operations },
+            Err((operation, reason)) if operation.is_empty() => Reconciled::Failed { attempt, reason, operation },
             Err((operation, reason)) => Reconciled::Failed { attempt, reason: format!("{operation}: {reason}"), operation },
         }
     }

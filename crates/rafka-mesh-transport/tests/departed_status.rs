@@ -9,7 +9,7 @@
 //!
 //! The defect this cell pins (traces bec3d0cbaa59317b18f954c1d27fdb73, d2427d34ca338d823e76781c4c052624;
 //! fresh pending 647061808568a00bf7a6d8f8ef75a55c): the new mesh2.admin.1 held its predecessor's
-//! replace-node departure before its entry answer, was not in its own book before its first heartbeat,
+//! node.delete departure before its entry answer, was not in its own book before its first heartbeat,
 //! refused its mesh's status by name, and published a fresh `pending`.
 
 use iroh::protocol::Router;
@@ -113,7 +113,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 
 /// CONTRACT (#3068; gossip.md §3.1 "the fence is the NodeId"; fabric-authority.md §7; R-ML2): through
 /// real gossip on mesh2's channel. mesh2.admin.2 holds mesh2's status as the old primary X
-/// (mesh2.admin.1) published it, then executes X's replace-node and publishes `NodeDeleted`; the
+/// (mesh2.admin.1) published it, then executes X's node.delete and publishes `NodeDeleted`; the
 /// node-admin joining the live mesh at X's path.name (a new birth Y) and the member mesh2.rpc.1 each
 /// hold X departed. Y's entry answer (mesh2.admin.2's held statuses, the original publisher kept) gives
 /// Y its mesh's status before Y's first heartbeat: Y takes it, the name being its own, and holds X's
@@ -148,9 +148,9 @@ async fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_fro
     let held = Some(MeshStatus { status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
     assert_eq!(p.mesh_status("mesh2"), held, "mesh2.admin.2 holds X's status");
 
-    // X's replace-node: its executor publishes NodeDeleted on mesh2's channel.
+    // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
     let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
-    let departure = LifecycleOp { build_id: "bld-s41".into(), attempt: 1, operation: "replace-node:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
+    let departure = LifecycleOp { build_id: "bld-s41".into(), attempt: 1, operation: "retire-node:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
     p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
     until("Y and the member to hold X departed", || y.book.is_departed(x.as_str()) && m.book.is_departed(x.as_str())).await;
     assert!(y.book.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's book");
@@ -185,7 +185,7 @@ async fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_fro
     assert_eq!(refused.len(), 1, "one refusal, at the member, none at Y: {refused:#?}");
     assert_eq!(
         (attr(refused[0], "holder"), attr(refused[0], "node_id"), attr(refused[0], "incarnation_id"), attr(refused[0], "operation"), attr(refused[0], "publisher"), attr(refused[0], "forwarded_by"), attr(refused[0], "changed_at_rafka_ms"), attr(refused[0], "via")),
-        ("mesh2.rpc.1".to_string(), x.to_string(), x_inc.0.clone(), "replace-node:mesh2.admin.1".to_string(), "mesh2.admin.1".to_string(), "mesh2.admin.2".to_string(), "5".to_string(), "entry-answer".to_string()),
+        ("mesh2.rpc.1".to_string(), x.to_string(), x_inc.0.clone(), "retire-node:mesh2.admin.1".to_string(), "mesh2.admin.1".to_string(), "mesh2.admin.2".to_string(), "5".to_string(), "entry-answer".to_string()),
         "the refusal names X's exact departure and the status refused"
     );
     let taken_at_m: Vec<&&Value> = taken.iter().filter(|s| attr(s, "node") == "mesh2.rpc.1").collect();

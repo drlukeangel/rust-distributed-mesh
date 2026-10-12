@@ -59,7 +59,7 @@ pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwL
     let StatusRequest::UpdateNode { node_id, incarnation, name, tags } = req else { unreachable!("update is called for UpdateNode only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
-        node = %me, node_id = %node_id, incarnation_id = %incarnation.0, from = tracing::field::Empty, to = %name, tags = tracing::field::Empty,
+        node = %me, node_id = %node_id, incarnation_id = %incarnation.0, from = tracing::field::Empty, to = %name, tags = %crate::node_rows::labels(tags),
         tags_arrived = tracing::field::Empty, tags_left = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty,
         seeded_from = tracing::field::Empty, outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
@@ -163,7 +163,10 @@ async fn put(
         PutTags::Held => was.clone(),
     };
     let tags = &tags;
-    span.record("tags", crate::node_rows::labels(tags).as_str());
+    // A recipe's rename puts the held tags: the span names those, not the request's (none).
+    if tags_from == PutTags::Held {
+        span.record("tags", crate::node_rows::labels(tags).as_str());
+    }
     let mut config = known.map(|r| r.config).unwrap_or_else(|| held.config.clone());
     // A successor taking the name from `<name>.new` carries the predecessor's config, read from the
     // `<name>.old` row it left (lifecycles/node-replace.md step 4); any other put keeps the node's
