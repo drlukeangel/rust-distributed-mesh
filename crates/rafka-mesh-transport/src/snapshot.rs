@@ -334,6 +334,13 @@ pub enum Refusal {
         /// The version offered.
         offered_version: u64,
     },
+    /// The publisher's birth is one this receiver holds stopped or departed: a stopped birth
+    /// publishes nothing and a departed one has left, so its publication was delayed
+    /// (node-status-heartbeat-connections.md §A.3, §A.4). `reason` says which.
+    PredecessorPublisher {
+        /// `publisher-stopped` or `publisher-departed`.
+        reason: &'static str,
+    },
     /// A chunk of a snapshot older than the one being assembled from the same source.
     /// The chunk belongs to a snapshot older than the one being assembled from the same source.
     OlderThanPending {

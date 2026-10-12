@@ -2110,9 +2110,54 @@ impl View {
         }
     }
 
+    /// Why a projection frame of `mesh` from `publisher`, arriving on `side` while this node holds
+    /// the source from `held`, is a predecessor's publication (node-status-heartbeat-connections.md
+    /// §A.3: "a delayed predecessor publication cannot switch receivers back"); `None` when it is
+    /// not. Author ordering is the publisher epochs and the LeadershipView (§A.3; gossip.md §3.3:
+    /// "the source publisher's exact identity is its epoch"):
+    /// - the publisher's birth is held stopped or departed here ([`DigestBook::publisher_left`]): it
+    ///   publishes nothing, so the frame was delayed, on every side;
+    /// - on the backbone or the mesh channel, a frame of another epoch than the one held, from a
+    ///   publisher the held seat record of `mesh` does not name and that is not the held
+    ///   fabric-primary (the acting primary of a mesh with no primary, R-NS1): `not-seated`, naming
+    ///   the seat holder. A receiver that holds no seat record of `mesh` has no evidence against it.
+    ///   A topology read is this node's own top-up from the primary it chose by that record, so a
+    ///   read is refused only for a publisher that left.
+    fn predecessor(&self, mesh: &str, publisher: &PublisherId, held: Option<&PublisherId>, side: Side) -> Option<(&'static str, Option<SeatHolder>)> {
+        if let Some(reason) = self.book.publisher_left(&publisher.incarnation) {
+            return Some((reason, None));
+        }
+        if !matches!(side, Side::Backbone | Side::MeshChannel) || held == Some(publisher) {
+            return None;
+        }
+        let holder = self.book.seats.mesh(mesh)?;
+        let acting = self.book.seats.fabric().is_some_and(|f| f.incarnation == publisher.incarnation);
+        (holder.incarnation != publisher.incarnation && !acting).then_some(("not-seated", Some(holder)))
+    }
+
+    /// A predecessor's publication refused by name: what it was, who published it, what this node
+    /// holds of the source, and why the publisher is not the epoch this node takes.
+    #[allow(clippy::too_many_arguments)]
+    fn refuse_predecessor(&self, side: Side, frame: &'static str, mesh: &str, publisher: &PublisherId, topology_version: u64, held: Option<&(PublisherId, u64)>, reason: &'static str, seat: Option<&SeatHolder>) {
+        tracing::info_span!(
+            "rdm.mesh.membership.reject.via-predecessor-publisher",
+            node = %self.node,
+            channel = side.name(),
+            frame,
+            mesh = %mesh,
+            publisher = %publisher,
+            topology_version,
+            held_publisher = %held.map(|(p, _)| p.to_string()).unwrap_or_default(),
+            held_version = held.map(|(_, v)| *v as i64).unwrap_or(-1),
+            reason,
+            seat_holder = %seat.map(ToString::to_string).unwrap_or_default(),
+        )
+        .in_scope(|| tracing::info!("a publication of an epoch before the one this node takes: refused, the held projection stands"));
+    }
+
     /// A `Members` chunk or a `MembersDelta`, arrived on `side`. A snapshot is applied to the book
     /// only once complete; a delta only at exactly its base. A frame that does not belong on its
-    /// channel is refused by name.
+    /// channel, and a predecessor's publication ([`View::predecessor`]), are refused by name.
     fn take_snapshot(&self, f: &Frame, fabric: &FabricId, side: Side) -> SnapshotTaken {
         match f {
             Frame::Members { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } => {
@@ -2146,6 +2191,12 @@ impl View {
                 // The receiver's lock is held until the book holds what the version names: a reader of
                 // the held version never sees a version ahead of the book it describes.
                 let mut rx = self.receiver(side).lock().unwrap();
+                let held = rx.held_version(mesh);
+                if let Some((reason, seat)) = self.predecessor(mesh, publisher, held.as_ref().map(|(p, _)| p), side) {
+                    drop(rx);
+                    self.refuse_predecessor(side, "members", mesh, publisher, *topology_version, held.as_ref(), reason, seat.as_ref());
+                    return SnapshotTaken::default();
+                }
                 let prior = Prior::of(&rx, mesh);
                 let taken = rx.take_chunk(chunk);
                 match taken {
@@ -2183,6 +2234,12 @@ impl View {
                 }
                 let delta = Delta { changed: changed.clone(), removed: removed.clone(), in_flight: in_flight.clone(), departed: departed.clone() };
                 let mut rx = self.mesh_rx.lock().unwrap();
+                let held = rx.held_version(mesh);
+                if let Some((reason, seat)) = self.predecessor(mesh, source_publisher, held.as_ref().map(|(p, _)| p), side) {
+                    drop(rx);
+                    self.refuse_predecessor(side, "members-delta", mesh, source_publisher, *topology_version, held.as_ref(), reason, seat.as_ref());
+                    return SnapshotTaken::default();
+                }
                 let prior = Prior::of(&rx, mesh);
                 let moved = rx.take_delta(mesh, source_publisher, *base_version, *topology_version, &delta);
                 match moved {
@@ -2863,11 +2920,17 @@ impl Membership {
     /// install into; a source it ends the desynchronization of is resumed. Every member the
     /// snapshot carries is held as heard and its location registered.
     pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
+        let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
         let mut rx = self.view.mesh_rx.lock().unwrap();
+        let held = rx.held_version(&chunk.mesh);
+        if let Some((reason, seat)) = self.view.predecessor(&chunk.mesh, &chunk.publisher, held.as_ref().map(|(p, _)| p), side) {
+            drop(rx);
+            self.view.refuse_predecessor(side, "read", &chunk.mesh, &chunk.publisher, chunk.topology_version, held.as_ref(), reason, seat.as_ref());
+            return Taken::Refused(crate::snapshot::Refusal::PredecessorPublisher { reason });
+        }
         let prior = Prior::of(&rx, &chunk.mesh);
         let taken = rx.take_read_chunk(chunk);
         if let Taken::Installed(i) = &taken {
-            let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
             self.view.installed(i, &self.fabric, side, 0, prior);
             drop(rx);
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
@@ -4226,6 +4289,19 @@ impl DigestBook {
         )
         .in_scope(|| tracing::info!("the mesh-primary took node.joined: the stop is over and the birth is held Pending; its projection says so"));
         true
+    }
+
+    /// Why the birth `incarnation` publishes nothing any more, as this book holds it: its stop
+    /// (`publisher-stopped`; §A.4: "A stopped birth publishes nothing") or its departure
+    /// (`publisher-departed`). Any publication of such a birth this book's holder hears was delayed.
+    fn publisher_left(&self, incarnation: &IncarnationId) -> Option<&'static str> {
+        if self.departed.lock().unwrap().values().any(|(op, _)| &op.incarnation == incarnation) {
+            return Some("publisher-departed");
+        }
+        if self.stopped_marks.lock().unwrap().values().any(|m| &m.incarnation == incarnation) {
+            return Some("publisher-stopped");
+        }
+        None
     }
 
     /// Whether the birth `d` names is stopped in this book (the exact incarnation).
