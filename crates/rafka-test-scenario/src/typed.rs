@@ -43,13 +43,23 @@ impl Estate {
                 Some(w) => w.peers,
                 None => Arc::new(Peers::of(&[]).await),
             };
-            let views = NodeAdminClient::new(self.admin.clone()).nodes().await.unwrap_or_else(|e| panic!("the handover: the admin at {} lists no nodes: {e}", self.admin));
-            peers.learn_known(&views);
-            let entry = views
-                .iter()
-                .find(|n| n.admin_api_base.as_deref() == Some(self.admin.as_str()))
-                .map(|n| n.name.clone())
-                .unwrap_or_else(|| panic!("the handover: no node-admin of {} advertises the control base {}", self.fabric_id, self.admin));
+            // The control base names the admin; the admin answers over Node RPC once its row carries the
+            // birth that is running (an admin a test just started on a former seat's data dir lists its
+            // old birth until it has rejoined), so the handover reads the listing until the admin it names
+            // answers `fabric.get` under the birth the listing gives.
+            let admin = NodeAdminClient::new(self.admin.clone());
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+            let entry = loop {
+                let views = admin.nodes().await.unwrap_or_else(|e| panic!("the handover: the admin at {} lists no nodes: {e}", self.admin));
+                peers.learn_known(&views);
+                let entry = views.iter().find(|n| n.admin_api_base.as_deref() == Some(self.admin.as_str())).map(|n| n.name.clone()).unwrap_or_else(|| panic!("the handover: no node-admin of {} advertises the control base {}", self.fabric_id, self.admin));
+                let answers = tokio::time::timeout(std::time::Duration::from_secs(2), Fabrics::new(peers.carrier_at(entry.clone())).get()).await;
+                if matches!(answers, Ok(Ok(_))) {
+                    break entry;
+                }
+                assert!(tokio::time::Instant::now() < deadline, "the handover: {entry} (the admin at {}) does not answer fabric.get over Node RPC within 120 s; last: {answers:?}", self.admin);
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            };
             *wire = Some(Wire { base: self.admin.clone(), peers, entry });
         }
         let w = wire.as_ref().expect("the handover was made");
@@ -64,9 +74,7 @@ impl Estate {
     /// `fabric.get` at `admin`, only when it answers within 2 s and its view names this estate's
     /// Fabric: an admin that is gone, or does not hold this Fabric, answers `None`.
     pub async fn fabric_view_at(&self, admin: &PathName) -> Option<FabricView> {
-        let fabrics = Fabrics::new(self.carrier_at(admin).await);
-        let f = tokio::time::timeout(std::time::Duration::from_secs(2), fabrics.get()).await.ok()?.ok()?;
-        (f.id.to_string() == self.fabric_id).then_some(f)
+        fabric_view_of(self.peers().await.as_ref(), admin, &self.fabric_id).await
     }
 
     /// `node.get` of every node of every mesh `admin` holds, as that admin's view holds them, `None`
@@ -113,6 +121,13 @@ impl Estate {
     /// The `build` objects.
     pub async fn builds_obj(&self) -> Builds {
         Builds::new(self.carrier().await)
+    }
+
+    /// `Fabric.build_id` as the admin the estate asks holds it: the id of the Build whose topology the
+    /// fabric accepted. `fabric.get` (op `0x1B`) carries no `build_id` today, so this one read is the
+    /// control API's `GET /api/fabric` field (finding: the typed `FabricView` has no accepted-Build id).
+    pub async fn accepted_build_id(&self) -> String {
+        self.get("/api/fabric").await.1["build_id"].as_str().unwrap_or_default().to_string()
     }
 
     /// `fabric.get` at the admin the estate asks.
@@ -176,23 +191,46 @@ impl Estate {
     }
 
     /// The view the Build left: every `(mesh, node_admin, rpc_node)` cohort holds exactly its count of
-    /// nodes, every one ready-for-traffic, as one `node.get` per mesh reads it. A Build's shape is
-    /// counts, not paths: a shrink retires non-primaries, so which ordinals remain depends on where
-    /// the seats are.
+    /// nodes, every one ready-for-traffic, as `node.get` reads it at the admin the estate asks. A Build's
+    /// shape is counts, not paths: a shrink retires non-primaries, so which ordinals remain depends on
+    /// where the seats are. The Build's terminal frame is the executor's: the answering admin learns the
+    /// nodes of another mesh by gossip, so its view converges on the shape a moment after (a wait on the
+    /// view, bounded at 60 s, named when it does not settle).
     pub async fn settled_views(&self, meshes: &[(&str, u32, u32)]) -> Vec<NodeView> {
+        self.settles_to(meshes, std::time::Duration::from_secs(60)).await
+    }
+
+    /// The view the Build left, by name: exactly `names`, every one ready-for-traffic, as one `node.get` per
+    /// mesh reads it.
+    pub async fn settled_named(&self, names: &std::collections::BTreeSet<String>) -> Vec<NodeView> {
+        let meshes: std::collections::BTreeSet<String> = names.iter().map(|n| n.split('.').next().unwrap_or_default().to_string()).collect();
         let mut all = Vec::new();
-        let mut have: std::collections::BTreeMap<(String, NodeKind), usize> = std::collections::BTreeMap::new();
-        for (mesh, _, _) in meshes {
-            for n in self.mesh_node_views(mesh).await {
-                *have.entry((n.mesh.clone(), n.kind)).or_default() += 1;
-                all.push(n);
-            }
+        for mesh in meshes {
+            all.extend(self.mesh_node_views(&mesh).await);
         }
+        let have: std::collections::BTreeSet<String> = all.iter().map(|n| n.name.to_string()).collect();
+        assert!(&have == names && all.iter().all(|n| n.status == NodeStatus::ReadyForTraffic), "the view does not hold the nodes the Build completed: wanted {names:?}, the admin lists {:?}", all.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect::<Vec<_>>());
+        all
+    }
+
+    /// The view once the fabric has recovered to `meshes` after a fault: every `(mesh, node_admin, rpc_node)`
+    /// cohort holds exactly its count of nodes, every one ready-for-traffic. No stream announces it: the
+    /// recovery is the rectifier's (a later attempt of the accepted Build, or a person's admin on a former
+    /// seat's data dir), where no call is held open. `within` bounds the wait and a view that does not settle
+    /// is named.
+    pub async fn settles_to(&self, meshes: &[(&str, u32, u32)], within: std::time::Duration) -> Vec<NodeView> {
         let want: std::collections::BTreeMap<(String, NodeKind), usize> =
             meshes.iter().flat_map(|(m, a, r)| [((m.to_string(), NodeKind::NodeAdmin), *a as usize), ((m.to_string(), NodeKind::RpcNode), *r as usize)]).filter(|(_, n)| *n > 0).collect();
-        let ready = all.iter().all(|n| n.status == NodeStatus::ReadyForTraffic);
-        assert!(have == want && ready, "the view does not hold the shape the Build completed: wanted {want:?}, the admin lists {have:?}: {:#?}", all.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect::<Vec<_>>());
-        all
+        let named: std::collections::BTreeSet<&str> = meshes.iter().map(|(m, _, _)| *m).collect();
+        self.until_view(&format!("the view settles on {want:?}, every node ready-for-traffic"), within, |views| {
+            let views: Vec<NodeView> = views.iter().filter(|n| named.contains(n.mesh.as_str())).cloned().collect();
+            let mut have: std::collections::BTreeMap<(String, NodeKind), usize> = std::collections::BTreeMap::new();
+            for n in &views {
+                *have.entry((n.mesh.clone(), n.kind)).or_default() += 1;
+            }
+            (have == want && views.iter().all(|n| n.status == NodeStatus::ReadyForTraffic)).then_some(views)
+        })
+        .await
     }
 
     /// Wait until the node `witness` holds the exact birth the admin's view lists for `node` (same node id,
@@ -234,6 +272,50 @@ impl Estate {
             assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; {name} last read: {:?}", view.map(|n| format!("{:?}/{}", n.status, n.node_id)));
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+    }
+
+    /// [`Self::node_views`] as the JSON each view serializes to: the shape the cells record.
+    pub async fn node_values(&self) -> Vec<serde_json::Value> {
+        self.node_views().await.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
+    }
+
+    /// [`Self::node_views_at`] of the admin named `admin`, as JSON; an admin that does not answer for this
+    /// Fabric is named.
+    pub async fn node_values_at(&self, admin: &str) -> Vec<serde_json::Value> {
+        let path: PathName = admin.parse().unwrap_or_else(|e| panic!("{admin} is not a path.name: {e:?}"));
+        let views = self.node_views_at(&path).await.unwrap_or_else(|| panic!("{admin} does not answer node.get for {}", self.fabric_id));
+        views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
+    }
+
+    /// [`Self::node_view_opt`] as the JSON the view serializes to.
+    pub async fn node_value_opt(&self, name: &str) -> Option<serde_json::Value> {
+        self.node_view_opt(name).await.map(|n| serde_json::to_value(n).expect("a view serializes"))
+    }
+
+    /// [`Self::node_view`] as the JSON the view serializes to.
+    pub async fn node_value(&self, name: &str) -> serde_json::Value {
+        serde_json::to_value(self.node_view(name).await).expect("a view serializes")
+    }
+
+    /// The data dir of `node`. Only the admin that launched a node advertises it, and that is whichever
+    /// admin executed its creation, so the entry admin's view is read first and then every other
+    /// ready node-admin's, each as that admin's own `node.get`.
+    pub async fn data_dir(&self, node: &str) -> String {
+        let entry = self.entry().await;
+        let mut admins = vec![entry.clone()];
+        admins.extend(self.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic && n.name != entry).map(|n| n.name));
+        for admin in admins {
+            let Some(views) = self.node_views_at(&admin).await else { continue };
+            if let Some(dir) = views.into_iter().find(|n| n.name.to_string() == node).and_then(|n| n.data_dir) {
+                return dir;
+            }
+        }
+        panic!("no live admin advertises {node}'s data dir")
+    }
+
+    /// The attempt the accepted Build `build_id` has reached, as `build.get` reads it.
+    pub async fn attempt_of_build(&self, build_id: &str) -> u64 {
+        u64::from(self.builds_obj().await.get(&BuildId(build_id.into())).await.unwrap_or_else(|e| panic!("build.get of {build_id}: {e}")).attempt)
     }
 
     /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The Build the fabric
@@ -379,4 +461,13 @@ pub async fn until_arrival<T>(what: &str, within: std::time::Duration, arrivals:
             panic!("timed out after {within:?} waiting for: {what}");
         }
     }
+}
+
+/// `fabric.get` at `admin` over `peers`, only when it answers within 2 s and its view names the Fabric
+/// `fabric_id`: an admin that is gone, or does not hold that Fabric, answers `None`. A sampler that
+/// outlives a borrow of the estate asks through this.
+pub async fn fabric_view_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Option<FabricView> {
+    let fabrics = Fabrics::new(peers.carrier_at(admin.clone()));
+    let f = tokio::time::timeout(std::time::Duration::from_secs(2), fabrics.get()).await.ok()?.ok()?;
+    (f.id.to_string() == fabric_id).then_some(f)
 }

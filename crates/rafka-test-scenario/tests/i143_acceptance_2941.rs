@@ -58,8 +58,8 @@ async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>
     let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
     Estate::complete(&mut restart).await;
     let after = estate.node_view(NODE).await;
-    assert!(after.status == NodeStatus::ReadyForTraffic && after.incarnation_id != before.incarnation_id, "the restarted birth is ready under a new incarnation: {after:?}");
-    assert_eq!(after.node_id, before.node_id, "a restart keeps the NodeId");
+    assert_eq!(after.status, NodeStatus::ReadyForTraffic, "the restarted birth is ready: {after:?}");
+    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "a restart is stop then start on the parked process: it keeps the NodeId and the incarnation");
     estate.stop().await;
     let spans = estate.spans();
     let json = |n: &NodeView| serde_json::to_value(n).expect("a view serializes");
@@ -121,12 +121,16 @@ async fn restarted_member_joins_mesh_channel_within_gossip_interval() {
     let (admin, before, after, restart_at, spans) = restart_one_member(cell).await;
     let gossip_ms: u64 = std::env::var("RDM_GOSSIP_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
 
-    let joined = named(&spans, "rdm.mesh.membership.update.via-subscribe")
+    // A restarted node rejoins on the process it parked on: its entry pull completes (`membership-joined`)
+    // and its mesh channel is resubscribed at once after (the resubscribe span names no node: the first
+    // one on the channel after the rejoin is the node's own).
+    let rejoin = named(&spans, "rdm.mesh.node.update.via-membership-joined").into_iter().filter(|sp| sp["attributes"]["node"] == NODE && at(sp) > restart_at).min_by_key(|sp| at(sp)).cloned().expect("the restarted node rejoined its mesh");
+    let joined = named(&spans, "rdm.mesh.membership.update.via-resubscribe")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == NODE && sp["attributes"]["channel"] == "mesh:mesh1" && at(sp) > restart_at)
+        .filter(|sp| sp["attributes"]["channel"] == "mesh:mesh1" && at(sp) >= at(&rejoin))
         .min_by_key(|sp| at(sp))
         .cloned()
-        .expect("the reborn birth joined its mesh channel");
+        .expect("the restarted node resubscribed its mesh channel");
     let up = named(&spans, "rdm.mesh.connection.update.via-neighbour-up")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == NODE && sp["attributes"]["channel"] == "mesh:mesh1" && at(sp) >= at(&joined))

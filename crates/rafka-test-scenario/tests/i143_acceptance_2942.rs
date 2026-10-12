@@ -12,9 +12,10 @@
 
 use rafka_mesh_entity::NodeKind;
 use rafka_node_admin_client::{NodeStatus, NodeView};
-use rafka_test_scenario::estate::{named, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// The unchanged observation bound.
 const OBSERVE_BOUND_MS: u64 = 10_000;
@@ -95,8 +96,12 @@ async fn retire_mesh1(test: &str) -> Retired {
         .expect("a ready mesh2 admin");
     let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.0;
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
-    let left: Vec<NodeView> = estate.mesh_node_views("mesh1").await;
-    assert!(left.len() == 1 && left[0].status == NodeStatus::ReadyForTraffic, "mesh1's last admin is alive after mesh.deleted, its members deleted: {:?}", left.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect::<Vec<_>>());
+    let left: Vec<NodeView> = estate
+        .until_view("mesh1's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
+            let mesh1: Vec<&NodeView> = views.iter().filter(|n| n.mesh == "mesh1").collect();
+            (mesh1.len() == 1 && mesh1[0].status == NodeStatus::ReadyForTraffic).then(|| vec![mesh1[0].clone()])
+        })
+        .await;
     let last = left[0].name.to_string();
     let last_id = before.iter().find(|n| n.name.to_string() == last).map(|n| n.node_id.to_string()).unwrap();
     estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
@@ -107,11 +112,12 @@ async fn retire_mesh1(test: &str) -> Retired {
         assert!(!alive(*pid), "{name}'s runtime is gone once the mesh.delete and the last admin's node.delete are complete");
     }
     // A peer mesh's ordinary node holds the deleted birth Gone, from its executor's NodeDeleted.
-    let peer = estate.node_view("mesh2.rpc.1").await;
-    let dead: rafka_mesh_entity::NodeId = last_id.parse().expect("a minted node id");
-    estate.peers().await.fact(&peer, "mesh2", &format!("mesh2.rpc.1 holds {last} Gone"), |v| v.departed.iter().any(|o| o.node_id == dead)).await;
     let query = format!("exact:{last_id}");
-    let resolution = estate.probe(&["resolve", "--target", "path:mesh2.rpc.1", "--query", &query]);
+    let resolution = wait_for(&format!("mesh2.rpc.1 holds {last} Gone"), Duration::from_secs(30), || async {
+        let r = estate.probe(&["resolve", "--target", "path:mesh2.rpc.1", "--query", &query]);
+        (r["reply"]["resolution"] == "gone").then_some(r)
+    })
+    .await;
     estate.stop().await;
     let mut builds = vec![b];
     if !builds.contains(&c) {

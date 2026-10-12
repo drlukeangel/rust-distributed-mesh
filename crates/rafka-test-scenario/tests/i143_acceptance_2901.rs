@@ -18,9 +18,11 @@ use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::Event;
-use rafka_mesh_entity::{FabricId, MeshId};
+use rafka_mesh_entity::{FabricId, MeshId, NodeKind};
+use rafka_node_admin_client::NodeView;
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, Estate, Owner};
+use rafka_test_scenario::typed::until_arrival;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -64,6 +66,8 @@ struct Observer {
     endpoint: Endpoint,
     _router: iroh::protocol::Router,
     seen: Arc<Mutex<Vec<Seen>>>,
+    /// Woken by every frame the observer records.
+    arrivals: Arc<tokio::sync::Notify>,
     started: Instant,
 }
 
@@ -75,22 +79,24 @@ impl Observer {
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
         let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
+        let arrivals = Arc::new(tokio::sync::Notify::new());
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
         for (channel, topic) in [("backbone", backbone_topic(fabric)), ("mesh1", mesh_topic(fabric, mesh_id))] {
             let (_sender, mut receiver) = gossip.subscribe(topic, peers.clone()).await.unwrap().split();
-            let seen = seen.clone();
+            let (seen, arrivals) = (seen.clone(), arrivals.clone());
             tokio::spawn(async move {
                 let _keep = _sender;
                 while let Some(ev) = receiver.next().await {
                     if let Ok(Event::Received(m)) = ev {
                         if let Ok(frame) = Frame::decode(&Bytes::copy_from_slice(&m.content)) {
                             seen.lock().unwrap().push(Seen { at: Instant::now(), channel, frame });
+                            arrivals.notify_waiters();
                         }
                     }
                 }
             });
         }
-        Self { endpoint, _router: router, seen, started: Instant::now() }
+        Self { endpoint, _router: router, seen, arrivals, started: Instant::now() }
     }
 
     fn all(&self) -> Vec<Seen> {
@@ -120,14 +126,13 @@ fn row(o: &Observer, x: &Seen) -> Value {
     json!({ "at_ms": x.at.duration_since(o.started).as_millis() as u64, "channel": x.channel, "frame": kind, "scope": scope, "status": status, "publisher": publisher, "forwarded_by": forwarded_by, "changed_at_rafka_ms": at })
 }
 
-fn seeds_of(nodes: &[Value]) -> Vec<EndpointAddr> {
+fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
     nodes
         .iter()
-        .filter(|n| n["kind"] == "node_admin")
+        .filter(|n| n.kind == NodeKind::NodeAdmin)
         .filter_map(|n| {
-            let key = s(&n["endpoint_id"]).parse::<iroh::PublicKey>().ok()?;
-            let addr = s(&n["transport_addr"]).parse::<std::net::SocketAddr>().ok()?;
-            Some(EndpointAddr::new(key).with_ip_addr(addr))
+            let key = n.endpoint_id.as_deref()?.parse::<iroh::PublicKey>().ok()?;
+            Some(EndpointAddr::new(key).with_ip_addr(n.transport_addr?))
         })
         .collect()
 }
@@ -140,17 +145,15 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let (anchor, anchor_unix_ns) = (Instant::now(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64);
 
     // The fabric: mesh1, shaped by a Build through its node-admin.
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let nodes = estate.settled_shape(&[("mesh1", 1, 1)], Duration::from_secs(30)).await;
-    let (_, fabric_view) = estate.get("/api/fabric").await;
-    let fabric = FabricId::parse(&s(&fabric_view["id"])).expect("the fabric id");
-    let mesh1_id = MeshId::parse(&s(&fabric_view["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh1").expect("mesh1")["id"])).expect("the mesh1 id");
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
+    let nodes = estate.settled_views(&[("mesh1", 1, 1)]).await;
+    let fabric_view = estate.fabric_view().await;
+    let fabric = fabric_view.id.clone();
+    let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
 
     // The first observer joins before the change.
     let early = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
-    wait_for("the early observer hears the backbone's aggregate and mesh1's heartbeat", Duration::from_secs(30), || async {
+    until_arrival("the early observer hears the backbone's aggregate and mesh1's heartbeat", Duration::from_secs(30), &early.arrivals, || {
         let all = early.all();
         let members = all.iter().any(|x| x.channel == "backbone" && matches!(x.frame, Frame::Members { .. }));
         let digest = all.iter().any(|x| x.channel == "mesh1" && matches!(x.frame, Frame::Digest { .. }));
@@ -160,22 +163,20 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
 
     // The change: a Build adds mesh2. Its first (and only) admin becomes mesh2's primary and
     // publishes mesh2's status. The Build is the node-admin's rectifier; nothing is killed.
-    let shape = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}, {"name": "mesh2", "node_admin": 1, "rpc_node": 1}]});
-    let (status, a) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settled_views(&shape).await;
 
     // The change's frames: mesh2's status, authored by mesh2's admin, on the backbone.
     let authored = |o: &Observer| -> Vec<Seen> {
         o.statuses().into_iter().filter(|x| x.channel == "backbone" && matches!(&x.frame, Frame::MeshStatus { mesh, publisher, forwarded_by: None, .. } if mesh == "mesh2" && publisher == "mesh2.admin.1")).collect()
     };
-    wait_for("the early observer heard mesh2's status", Duration::from_secs(30), || async { (!authored(&early).is_empty()).then_some(()) }).await;
+    until_arrival("the early observer heard mesh2's status", Duration::from_secs(30), &early.arrivals, || (!authored(&early).is_empty()).then_some(())).await;
     // A member joins while the sends are still running (the first was just heard; the second is due
     // within a second): it holds the status once.
-    let joiner = Observer::join(&fabric, &mesh1_id, seeds_of(&estate.nodes().await)).await;
+    let joiner = Observer::join(&fabric, &mesh1_id, seeds_of(&estate.node_views().await)).await;
     let joined_at = Instant::now();
-    wait_for("the member that joined mid-window holds mesh2's status", Duration::from_secs(30), || async { (!authored(&joiner).is_empty()).then_some(()) }).await;
+    until_arrival("the member that joined mid-window holds mesh2's status", Duration::from_secs(30), &joiner.arrivals, || (!authored(&joiner).is_empty()).then_some(())).await;
     let joiner_heard_at = joiner.statuses().iter().filter(|x| matches!(&x.frame, Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).map(|x| x.at).min().unwrap();
     // Let the five sends finish, then keep watching: nothing more is sent.
     tokio::time::sleep(Duration::from_secs(8)).await;
@@ -190,12 +191,12 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
 
     // The quiet window: nothing changes, the fabric primary stays the same, and no status frame
     // crosses either channel while the heartbeat and the aggregate keep going.
-    let primary_before = estate.get("/api/fabric").await.1["fabric_primary"].clone();
+    let primary_before = estate.fabric_view().await.fabric_primary;
     let window_start = Instant::now();
     let before = early.all().len();
     tokio::time::sleep(Duration::from_secs(10)).await;
     let window: Vec<Seen> = early.all().into_iter().filter(|x| x.at >= window_start).collect();
-    let primary_after = estate.get("/api/fabric").await.1["fabric_primary"].clone();
+    let primary_after = estate.fabric_view().await.fabric_primary;
     assert_eq!(primary_before, primary_after, "no seat moved during the quiet window");
     let status_in_window: Vec<&Seen> = window.iter().filter(|x| is_status(&x.frame)).collect();
     assert!(status_in_window.is_empty(), "a quiet fabric carries no status frame: {:#?}", status_in_window.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
@@ -213,9 +214,9 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
 
     // The late member joins now, with everything already said and the five sends long over.
     let held_at: std::collections::BTreeMap<String, u64> = std::iter::once(("mesh2".to_string(), instants[0])).collect();
-    let late_nodes = estate.nodes().await;
+    let late_nodes = estate.node_views().await;
     let late = Observer::join(&fabric, &mesh1_id, seeds_of(&late_nodes)).await;
-    wait_for("the late member is told the held statuses of mesh1, mesh2 and the fabric", Duration::from_secs(30), || async {
+    until_arrival("the late member is told the held statuses of mesh1, mesh2 and the fabric", Duration::from_secs(30), &late.arrivals, || {
         let st = late.statuses();
         let has = |want: &str| st.iter().any(|x| { let p = parts(&x.frame); p.0 == want });
         let mesh = |m: &str| st.iter().any(|x| { let p = parts(&x.frame); p.0 == "mesh-status" && p.1 == m });

@@ -7,9 +7,10 @@
 //! the lost mesh: the cohort lost is the one whose admins do not hold it (a fabric-primary's mesh is
 //! only ever lost after its authority was handed off; that is a separate cell).
 
+use rafka_node_admin_client::NodeView;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -35,13 +36,9 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for (m, a, r) in meshes {
-        out.extend((1..=*a).map(|i| format!("{m}.admin.{i}")));
-        out.extend((1..=*r).map(|i| format!("{m}.rpc.{i}")));
-    }
-    out
+/// The views as the JSON the cell records.
+fn values(views: &[NodeView]) -> Vec<Value> {
+    views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
 }
 
 /// name -> incarnation
@@ -68,28 +65,18 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let dir = acceptance_dir("chaos-process", cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let shape = json!({"fabric": "fabric1", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": 3},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 3},
-    ]});
-    let (status, a) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{a}");
-    let accepted = s(&a["build_id"]);
-    estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let want = names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]);
-    let before = estate.settled(&want, Duration::from_secs(30)).await;
+    let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
+    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.0;
+    let before = values(&estate.settled_views(&shape).await);
 
     // The lost mesh: the one whose admins do not hold the fabric seat.
     let fabric_holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let lost = if fabric_holder.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
-    let (_, lost_view) = estate.get(&format!("/api/meshes/{lost}")).await;
-    let lost_mesh_id = s(&lost_view["id"]);
+    let lost_mesh_id = estate.mesh_view(lost).await.id.expect("the lost mesh has its id").to_string();
     let window_victim = format!("{lost}.rpc.3");
     let survivors: Vec<String> = (1..=2).map(|i| format!("{lost}.rpc.{i}")).collect();
-    let (_, fabric) = estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric["build_id"]), accepted, "the accepted Build names the topology");
-    let (_, b0) = estate.get(&format!("/api/builds?id={accepted}")).await;
-    let attempt_before = b0["attempt"].as_u64().unwrap_or(0);
+    assert_eq!(estate.accepted_build_id().await, accepted, "the accepted Build names the topology");
+    let attempt_before = estate.attempt_of_build(&accepted).await;
     let lost_births: BTreeMap<String, String> = births(&before).into_iter().filter(|(n, _)| n.starts_with(&format!("{lost}.admin.")) || *n == window_victim).collect();
     let victim_id = before.iter().find(|n| s(&n["name"]) == window_victim).map(|n| s(&n["node_id"])).expect("the member's node id");
 
@@ -126,18 +113,16 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         let estate = &estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births.clone());
         async move {
-            let (_, b) = estate.get(&format!("/api/builds?id={accepted}")).await;
-            let later = b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) > attempt_before;
-            let reborn = births(&estate.nodes().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
+            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId(accepted.clone())).await.expect("build.get of the accepted Build");
+            let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
+            let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
             (later && reborn).then_some(b)
         }
     })
     .await;
-    let after = estate.settled(&want, Duration::from_secs(60)).await;
-    let (_, fabric_after) = estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build: Fabric.build_id is unchanged");
-    let (_, lost_after) = estate.get(&format!("/api/meshes/{lost}")).await;
-    assert_eq!(s(&lost_after["id"]), lost_mesh_id, "{lost} recovered under its own MeshId");
+    let after = values(&estate.settled_views(&shape).await);
+    assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build: Fabric.build_id is unchanged");
+    assert_eq!(estate.mesh_view(lost).await.id.expect("the lost mesh still has its id").to_string(), lost_mesh_id, "{lost} recovered under its own MeshId");
     let (old, new) = (births(&before), births(&after));
     for (name, inc) in &old {
         if lost_births.contains_key(name) {
@@ -147,8 +132,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         }
     }
 
-    let (_, fabric) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric["admin_api_base"]);
+    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
     estate.stop().await;
     let spans = estate.spans();
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
@@ -233,7 +217,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         "mesh_name": lost,
         "accepted_build_id": accepted,
         "attempt_before": attempt_before,
-        "attempt": done["attempt"],
+        "attempt": done.attempt,
         "fabric_primary": fabric_holder,
         "killed": killed,
         "recovery_admin": recovery_admin,
@@ -266,24 +250,16 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let dir = acceptance_dir("chaos-process", cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let shape = json!({"fabric": "fabric1", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": 3},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 3},
-    ]});
-    let (status, a) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{a}");
-    let accepted = s(&a["build_id"]);
-    estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let want = names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]);
-    let before = estate.settled(&want, Duration::from_secs(30)).await;
+    let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
+    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.0;
+    let before = values(&estate.settled_views(&shape).await);
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let holder_mesh = holder.split('.').next().unwrap().to_string();
-    let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir_of(&holder).await };
+    let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&holder).await };
     let mesh_ids: BTreeMap<String, String> = {
         let mut m = BTreeMap::new();
         for mesh in ["mesh1", "mesh2"] {
-            let (_, v) = estate.get(&format!("/api/meshes/{mesh}")).await;
-            m.insert(mesh.to_string(), s(&v["id"]));
+            m.insert(mesh.to_string(), estate.mesh_view(mesh).await.id.expect("the mesh has its id").to_string());
         }
         m
     };
@@ -315,13 +291,11 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     // The person starts one node-admin on the former fabric primary's data dir.
     let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
     estate.admin = base;
-    let after = estate.settled(&want, Duration::from_secs(240)).await;
+    let after = values(&estate.settles_to(&shape, Duration::from_secs(240)).await);
 
-    let (_, fabric_after) = estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new Build: Fabric.build_id is unchanged");
+    assert_eq!(estate.accepted_build_id().await, accepted, "no new Build: Fabric.build_id is unchanged");
     for (mesh, id) in &mesh_ids {
-        let (_, v) = estate.get(&format!("/api/meshes/{mesh}")).await;
-        assert_eq!(&s(&v["id"]), id, "{mesh} recovered under its own MeshId");
+        assert_eq!(&estate.mesh_view(mesh).await.id.expect("the mesh still has its id").to_string(), id, "{mesh} recovered under its own MeshId");
     }
     let new = births(&after);
     let new_ids: BTreeMap<String, String> = after.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
@@ -403,17 +377,11 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
 async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
     let cell = "fabric_recovery_with_no_running_node_adopts_the_holders_own_clock";
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let shape = json!({"fabric": "fabric1", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": 1},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 1},
-    ]});
-    let (status, a) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_attempt(&s(&a["build_id"]), Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let want = names(&[("mesh1", 2, 1), ("mesh2", 2, 1)]);
-    let before = estate.settled(&want, Duration::from_secs(30)).await;
+    let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    let before = values(&estate.settled_views(&shape).await);
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
-    let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir_of(&holder).await };
+    let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&holder).await };
 
     // The fault: every runtime of the fabric, at once.
     for (_, pid) in estate.live_runtimes() {
@@ -424,8 +392,8 @@ async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
 
     let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
     estate.admin = base;
-    let after = estate.settled(&want, Duration::from_secs(240)).await;
-    assert_eq!(after.len(), want.len());
+    let after = estate.settles_to(&shape, Duration::from_secs(240)).await;
+    assert_eq!(after.len(), 6);
 
     estate.stop().await;
     let spans = estate.spans();

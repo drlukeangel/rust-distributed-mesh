@@ -11,7 +11,9 @@
 //! is asked who holds the fabric and the advertised endpoint is asked at once (the request the
 //! original failure refused); each pair is recorded with the run's own map of control endpoints.
 
-use rafka_test_scenario::estate::{named, own_fabric_at, wait_for, Estate, Owner};
+use rafka_node_admin_client::{NodeStatus, NodeView};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::typed::fabric_view_of;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -51,8 +53,8 @@ fn alive(pid: u64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
 
-fn mesh(name: &str) -> Value {
-    json!({"name": name, "node_admin": 2, "rpc_node": 3})
+fn mesh(name: &str) -> (&str, u32, u32) {
+    (name, 2, 3)
 }
 
 /// One process of the run, as the control APIs and the host describe it.
@@ -88,14 +90,12 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
-    let before = estate.settled_shape(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(60)).await;
+    let both = [mesh("mesh1"), mesh("mesh2")];
+    estate.reconcile_shape("fabric1", &both).await;
+    let before: Vec<Value> = estate.settled_views(&both).await.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
 
     // The seat's holder and the mesh that outlives it.
-    let (_, fabric) = estate.get("/api/fabric").await;
-    let holder = s(&fabric["fabric_primary"]);
+    let holder = estate.fabric_view().await.fabric_primary.expect("the fabric names its primary").to_string();
     let lost_mesh = holder.split('.').next().unwrap().to_string();
     let survivor_mesh = if lost_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
 
@@ -121,24 +121,29 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let stop = Arc::new(AtomicBool::new(false));
     let sampler = {
         let (samples, stop, fabric_id) = (samples.clone(), stop.clone(), fabric_id.clone());
-        let asked: Vec<String> = survivor_bases.iter().cloned().collect();
+        let asked: Vec<(String, String)> = survivors.iter().map(|n| (n.clone(), s(&described[n]["admin_api_base"]))).collect();
+        let peers = estate.peers().await;
         tokio::spawn(async move {
             while !stop.load(Ordering::SeqCst) {
-                for from in &asked {
+                for (from, from_base) in &asked {
                     let at = now_ns();
-                    let row = match own_fabric_at(from, &fabric_id).await {
-                        None => json!({"at_unix_nano": at, "asked": from, "answered": false}),
+                    let row = match fabric_view_of(&peers, &from.parse().unwrap(), &fabric_id).await {
+                        None => json!({"at_unix_nano": at, "asked": from_base, "answered": false}),
                         Some(f) => {
-                            let advertised = s(&f["admin_api_base"]);
-                            let holder = s(&f["fabric_primary"]);
+                            let advertised = f.admin_api_base.clone().unwrap_or_default();
+                            let holder = f.fabric_primary.as_ref().map(|h| h.to_string()).unwrap_or_default();
                             if advertised.is_empty() {
-                                json!({"at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": holder, "advertised": null})
+                                json!({"at_unix_nano": at, "asked": from_base, "answered": true, "fabric_primary": holder, "advertised": null})
                             } else {
-                                let followed = own_fabric_at(&advertised, &fabric_id).await;
+                                // The advertised holder is asked straight after, by the name the view gave.
+                                let followed = match f.fabric_primary.as_ref() {
+                                    Some(h) => fabric_view_of(&peers, h, &fabric_id).await,
+                                    None => None,
+                                };
                                 json!({
-                                    "at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": holder, "advertised": advertised,
-                                    "advertised_answers": followed.is_some(), "advertised_names": followed.as_ref().map(|f| f["fabric_primary"].clone()),
-                                    "advertised_agrees": followed.as_ref().is_some_and(|f| f["fabric_primary"].as_str() == Some(holder.as_str()) && f["admin_api_base"].as_str() == Some(advertised.as_str())),
+                                    "at_unix_nano": at, "asked": from_base, "answered": true, "fabric_primary": holder, "advertised": advertised,
+                                    "advertised_answers": followed.is_some(), "advertised_names": followed.as_ref().map(|f| f.fabric_primary.as_ref().map(|h| h.to_string())),
+                                    "advertised_agrees": followed.as_ref().is_some_and(|f| f.fabric_primary.as_ref().map(|h| h.to_string()).as_deref() == Some(holder.as_str()) && f.admin_api_base.as_deref() == Some(advertised.as_str())),
                                 })
                             }
                         }
@@ -152,25 +157,32 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
 
     // THE HAND-OFF, through the rectifier: one Build retiring the holder's mesh.
     let started = now_ns();
-    let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh(&survivor_mesh)]})).await;
-    assert_eq!(status, 202, "{b}");
-    let build_id = s(&b["build_id"]);
-    estate.await_build(&build_id, Duration::from_secs(240)).await;
+    let build_id = estate.reconcile_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.0;
     let build_complete = now_ns();
+    // mesh.deleted leaves the lost mesh's last admin alive; its end is its own node.delete, which the
+    // fabric-primary executes and whose TerminateRuntime proves the exit (mesh-delete.md step 7).
+    let last = estate
+        .until_view("the lost mesh's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
+            let left: Vec<&NodeView> = views.iter().filter(|n| n.mesh == lost_mesh).collect();
+            (left.len() == 1 && left[0].status == NodeStatus::ReadyForTraffic).then(|| left[0].name.clone())
+        })
+        .await;
+    let mut delete = estate.nodes_obj().await.delete(&last).await.unwrap_or_else(|e| panic!("the node.delete of the lost mesh's last admin {last} was refused: {e}"));
+    Estate::complete(&mut delete).await;
     // The former holder's runtimes: terminal, observed by the host.
     for (name, pid) in &lost_pids {
-        wait_for(&format!("{name}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
+        assert!(!alive(*pid), "{name}'s runtime {pid} is gone once the mesh.delete and the last admin's node.delete are complete");
     }
     // Authority after the loss: every survivor names one ready holder of the surviving mesh, and
     // that holder answers for this Fabric and agrees, repeatedly.
-    let after = estate.settled_shape(&[(&survivor_mesh, 2, 3)], Duration::from_secs(60)).await;
+    let after: Vec<Value> = estate.settled_views(&[(&survivor_mesh, 2, 3)]).await.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
     let consistent = std::sync::atomic::AtomicUsize::new(0);
     let agrees = || async {
-        for base in &survivor_bases {
-            let f = own_fabric_at(base, &fabric_id).await?;
-            let (holder, advertised) = (s(&f["fabric_primary"]), s(&f["admin_api_base"]));
-            let own = own_fabric_at(&advertised, &fabric_id).await?;
-            if !holder.starts_with(&format!("{survivor_mesh}.admin.")) || s(&own["fabric_primary"]) != holder || !survivor_bases.contains(&advertised) {
+        for name in &survivors {
+            let f = estate.fabric_view_at(&name.parse().unwrap()).await?;
+            let (holder, advertised) = (f.fabric_primary.clone()?, f.admin_api_base.clone().unwrap_or_default());
+            let own = estate.fabric_view_at(&holder).await?;
+            if !holder.to_string().starts_with(&format!("{survivor_mesh}.admin.")) || own.fabric_primary.as_ref() != Some(&holder) || !survivor_bases.contains(&advertised) {
                 return None;
             }
         }
@@ -189,9 +201,9 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let _ = settled;
     stop.store(true, Ordering::SeqCst);
     sampler.await.unwrap();
-    let (_, fabric_now) = estate.get("/api/fabric").await;
-    let new_holder = s(&fabric_now["fabric_primary"]);
-    let new_base = s(&fabric_now["admin_api_base"]);
+    let fabric_now = estate.fabric_view().await;
+    let new_holder = fabric_now.fabric_primary.as_ref().map(|h| h.to_string()).unwrap_or_default();
+    let new_base = fabric_now.admin_api_base.clone().unwrap_or_default();
     let holder_record = after.iter().find(|n| s(&n["name"]) == new_holder).unwrap_or_else(|| panic!("the new holder {new_holder} is a ready admin of the surviving view: {after:#?}")).clone();
     assert_eq!(s(&holder_record["admin_api_base"]), new_base, "the advertised authority is the holder's own control endpoint");
     assert!(survivor_bases.contains(&new_base), "the authority endpoint belongs to a surviving birth of this run: {new_base} not in {survivor_bases:?}");
@@ -199,8 +211,8 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     for n in after.iter().filter(|n| n["kind"] == "node_admin") {
         let name = s(&n["name"]);
         let base = s(&n["admin_api_base"]);
-        let fabric_view = own_fabric_at(&base, &fabric_id).await;
-        let nodes_view = estate.nodes_at(&base).await;
+        let fabric_view = estate.fabric_view_at(&name.parse().unwrap()).await.map(|f| serde_json::to_value(f).expect("a view serializes"));
+        let nodes_view = estate.node_values_at(&name).await;
         survivors_after.insert(name.clone(), json!({"admin_api_base": base, "node": describe(&estate, n).await, "fabric": fabric_view, "nodes_seen": nodes_view.iter().map(|v| json!({"name": v["name"], "status": v["status"], "is_primary": v["is_primary"], "is_fabric_primary": v["is_fabric_primary"], "admin_api_base": v["admin_api_base"]})).collect::<Vec<_>>()}));
     }
 
