@@ -463,7 +463,7 @@ pub fn restore_peer_recovery(me: &PathName, records: &Records, view: &Topology) 
         let report = records.declared.lock().unwrap().report_of(&recovery.mesh, view.cohort_primary(&recovery.mesh, NodeKind::NodeAdmin));
         if crate::round::recovered(&recovery, primary.as_ref(), report.as_ref()) {
             records.close_peer_recovery(&recovery.mesh);
-            tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = recovery.verdict_rafka_ms)
+            tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = ?recovery.verdict_rafka_ms)
                 .in_scope(|| tracing::info!("the reborn mesh's primary reported its round complete: the fabric is ready again"));
         }
     }
@@ -582,9 +582,7 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
                 if rebirth {
                     let verdict_ms = w.membership.clock().now_rafka_ms();
                     let lost = view.cohort(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
-                    w.records.open_peer_recovery(crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: verdict_ms, opened_at: Instant::now(), lost });
-                    tracing::info_span!("rdm.node_admin.mesh.create.via-rebirth", node = %w.me, mesh = %mesh, at = local_now_ms(), fabric_status = "degraded", verdict_rafka_ms = verdict_ms)
-                        .in_scope(|| tracing::info!("the existing Mesh Recovery opens; the fabric primary authors degraded"));
+                    w.records.open_mesh_recovery(&w.me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "carrier-edge-lost", true);
                 }
             }
             Step::Cancel { unheard_ms, probes } => {

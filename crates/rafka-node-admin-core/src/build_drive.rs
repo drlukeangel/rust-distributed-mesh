@@ -977,6 +977,10 @@ impl DriveEnv {
         // operation no admin executes waits for its mesh's own seat, and one another admin executes is
         // claimed for that admin, never for this one to hand on unrun.
         let rebirth = first.as_ref().is_some_and(|op| self.rebirth_admits(p, op, crashed));
+        // The create admitted on the provider's proof of a fully crashed mesh (not the ladder's decided
+        // rebirth, which the ladder told when it decided): the mesh this claim gives a node-admin.
+        let crash_mesh = first.as_ref().filter(|_| rebirth).and_then(|op| self.unheard_peer(op)).filter(|(_, _, decided)| !*decided).map(|(node, _, _)| node.mesh);
+        let from = std::time::Instant::now();
         let forced = if rebirth { Some(self.me.clone()) } else { forced.filter(|to| *to != self.me) };
         let lead = match forced {
             Some(to) => Some(to),
@@ -1008,7 +1012,12 @@ impl DriveEnv {
             return Err(self.stalled(drive, why));
         };
         match self.door.claim(&lead.to_string(), id, attempt).await {
-            BuildClaimReply::Won { context } => Ok((attempt, lead, context)),
+            BuildClaimReply::Won { context } => {
+                if let Some(mesh) = crash_mesh {
+                    self.departure.mesh_given_node_admin(&mesh, id, attempt, from).await;
+                }
+                Ok((attempt, lead, context))
+            }
             BuildClaimReply::Lost { holder } => match parse_path(&holder) {
                 Some(h) => {
                     let context = self.door.contexts.get(id, attempt).await.ok().flatten().unwrap_or_default();

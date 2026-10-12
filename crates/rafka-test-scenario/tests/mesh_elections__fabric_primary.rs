@@ -181,7 +181,7 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
         .expect("the new primary's investigation decided the lost mesh unreachable");
     let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "node") == new_primary && attr(p, "mesh") == lost && at(p) < at(&verdict)).collect();
     assert!(!probes.is_empty() && probes.iter().all(|p| attr(p, "outcome") == "unreachable"), "every probe of the lost mesh is unreachable: {probes:#?}");
-    let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|r| attr(r, "mesh") == lost).collect();
+    let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|r| attr(r, "mesh") == lost && attr(r, "verdict") == "carrier-edge-lost").collect();
     assert!(rebirths.is_empty(), "no carrier-edge-lost recovery of a mesh no member of which answers: {rebirths:#?}");
     // Until the decision the drive stopped at the fence on the lost mesh's first node-admin.
     let fence = named(&spans, "rdm.node_admin.build.reject.via-unheard-mesh-drive")
@@ -220,13 +220,14 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let others: Vec<(String, String)> = creates.iter().filter(|sp| attr(sp, "node") != first_admin).map(|sp| (attr(sp, "node"), executor_of(&attr(sp, "attempt")))).collect();
     assert!(!others.is_empty() && others.iter().all(|(_, executor)| *executor == first_admin), "the rest of the lost mesh was made by its new primary {first_admin}: {others:?}");
     // R-DG1 (mesh-investigation.md steps 5-7): when it gave the lost mesh its node-admin the new fabric primary authored
-    // the fabric degraded, and it cleared it on the report of the lost mesh's new primary, after the opening.
-    let opening = named(&spans, "rdm.node_admin.build.update.via-proven-drift")
+    // the fabric degraded, and it cleared it on the report of the lost mesh's new primary, after that.
+    let opening = named(&spans, "rdm.node_admin.mesh.create.via-rebirth")
         .into_iter()
-        .find(|sp| attr(sp, "authority") == new_primary && attr(sp, "scope") == first_admin)
+        .find(|sp| attr(sp, "node") == new_primary && attr(sp, "mesh") == lost && attr(sp, "verdict") == "fully-crashed")
         .cloned()
-        .unwrap_or_else(|| panic!("the new fabric primary opened the create of {first_admin} on the proof"));
-    assert_eq!(attr(&opening, "fabric_status"), "degraded", "the opening authored the fabric degraded: {opening}");
+        .unwrap_or_else(|| panic!("the new fabric primary authored degraded when it claimed the create of {first_admin} on the proof"));
+    assert_eq!(attr(&opening, "fabric_status"), "degraded", "the claim authored the fabric degraded: {opening}");
+    assert!(at(&opening) < at(first), "degraded was authored when the create was claimed, before the node-admin was made: {opening} {first}");
     let recovered = named(&spans, "rdm.node_admin.mesh.update.via-recovered")
         .into_iter()
         .find(|sp| attr(sp, "node") == new_primary && attr(sp, "mesh") == lost)

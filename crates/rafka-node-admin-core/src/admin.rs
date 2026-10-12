@@ -380,8 +380,9 @@ impl ServingDoor {
 pub struct PeerRecovery {
     /// The mesh's name.
     pub mesh: String,
-    /// The Rafka-time of the decision.
-    pub verdict_rafka_ms: u64,
+    /// The Rafka-time of the ladder's decision; `None` for a fully crashed mesh, which has no ladder
+    /// verdict (its create is admitted on the provider's proof).
+    pub verdict_rafka_ms: Option<u64>,
     /// When this admin took the decision: a report counts as the mesh's proof only if it arrived after.
     pub opened_at: std::time::Instant,
     /// The node-admin births of the mesh the decision found.
@@ -556,6 +557,29 @@ impl Records {
     /// already open for that mesh is replaced by this one; another mesh's is left as it is.
     pub fn open_peer_recovery(&self, recovery: PeerRecovery) {
         self.peer_recovery.lock().unwrap().insert(recovery.mesh.clone(), recovery);
+    }
+
+    /// The fabric primary `me` gives `recovery.mesh` a new node-admin and, at that same moment, authors
+    /// the fabric `degraded` (mesh-investigation.md step 6; R-DG1: on either arm), until that mesh's new
+    /// primary reports its round (step 7: [`crate::investigate::restore_peer_recovery`]). The one place
+    /// the recovery is opened and the one span that says so, `verdict` naming the arm:
+    /// `carrier-edge-lost` (the ladder's verdict, `replace`: a new decision replaces an earlier one's
+    /// recovery of the mesh) or `fully-crashed` (the create admitted on the provider's proof, which keeps
+    /// the recovery already open for the mesh: a later claim must not move `opened_at` past the report
+    /// it waits for). Answers whether it opened one.
+    pub fn open_mesh_recovery(&self, me: &PathName, recovery: PeerRecovery, verdict: &'static str, replace: bool) -> bool {
+        let (mesh, verdict_rafka_ms) = (recovery.mesh.clone(), recovery.verdict_rafka_ms);
+        {
+            let mut open = self.peer_recovery.lock().unwrap();
+            if !replace && open.contains_key(&mesh) {
+                return false;
+            }
+            open.insert(mesh.clone(), recovery);
+        }
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        tracing::info_span!("rdm.node_admin.mesh.create.via-rebirth", node = %me, mesh = %mesh, at, fabric_status = "degraded", verdict_rafka_ms = ?verdict_rafka_ms, verdict)
+            .in_scope(|| tracing::info!("the fabric primary gives the mesh a new node-admin and authors degraded"));
+        true
     }
 
     /// Close the recovery of `mesh`: its new primary reported its round.
@@ -2398,6 +2422,13 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         nodes_exit_proof(nodes, &map, &self.book, &durable, self.records.path_probe().as_deref(), &*self.provider).await
     }
 
+    /// The fabric-primary claimed the create of the fully crashed `mesh`'s first node-admin: it gives the
+    /// mesh a new node-admin and authors the fabric `degraded` ([`Records::open_mesh_recovery`]), naming
+    /// the node-admin births of the mesh its view holds.
+    async fn mesh_given_node_admin(&self, mesh: &str, _build_id: &crate::build::BuildId, _attempt: u32, from: std::time::Instant) {
+        give_mesh_node_admin(&self.records, &self.me, &self.topology, mesh, from).await;
+    }
+
     /// Whether the exit of the exact birth the view names for `executor` is recorded: a point read
     /// of its exit-proof row (node-recovery.md: "Exited is the proof, recorded durably"). A row that
     /// cannot be read is named and answers not recorded: the exit is proven again, and its row put
@@ -2415,6 +2446,16 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
             }
         }
     }
+}
+
+/// The fabric primary `me` claimed the create of the fully crashed `mesh`'s first node-admin on the
+/// provider's proof of every node: it gives the mesh a new node-admin and authors the fabric
+/// `degraded` ([`Records::open_mesh_recovery`], verdict `fully-crashed`), naming the node-admin births
+/// of the mesh `view` holds. `from` is the instant before the claim: the mesh's new primary reports
+/// after it.
+pub async fn give_mesh_node_admin(records: &Records, me: &PathName, view: &RwLock<Topology>, mesh: &str, from: std::time::Instant) -> bool {
+    let lost = view.read().await.cohort(mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
+    records.open_mesh_recovery(me, PeerRecovery { mesh: mesh.to_string(), verdict_rafka_ms: None, opened_at: from, lost }, "fully-crashed", false)
 }
 
 /// The provider's exact exit proof of every one of `nodes`, the nodes the accepted topology names for
@@ -2581,9 +2622,9 @@ fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], re
 /// - a peer mesh whose investigation decided `unreachable` (`unreachable`) and whose every node the
 ///   provider proves exited (mesh-investigation.md step 5, "Fully crashed": a mesh whose every node is gone is
 ///   unheard by construction and no member can answer): the same recipe, for the mesh's first node-admin
-///   ([`crashed_peer_mesh`]), and the fabric `degraded` from the attempt's opening (R-DG1), as the verdict
-///   authors it, until that mesh's new primary reports. A node whose exit is not proven holds the mesh,
-///   and the hold names it;
+///   ([`crashed_peer_mesh`]); the drive that claims that attempt authors the fabric `degraded`
+///   ([`Records::open_mesh_recovery`], R-DG1). A node whose exit is not proven holds the mesh, and the
+///   hold names it;
 /// - a mesh this authority hears (it is not held unheard) that lost its mesh-primary, whose node-admin the
 ///   provider proves exited (exact exit proof, never silence): the same recipe, for that admin. A peer mesh
 ///   held unheard is otherwise evidence only (R-D1);
@@ -2901,7 +2942,6 @@ pub async fn reconcile_drift(
             action = action_name,
             exit_code = crashed.as_ref().and_then(|(_, _, b)| b.as_ref()).or(first_exited.map(|(_, b)| b)).and_then(|b| b.code).map(|c| c.to_string()).unwrap_or_default(),
             exit_proof = crashed.as_ref().and_then(|(_, _, b)| b.as_ref()).or(first_exited.map(|(_, b)| b)).map(|b| b.source).unwrap_or("none"),
-            fabric_status = tracing::field::Empty,
         ),
     };
     let opened = crate::build_state::AttemptOpened {
@@ -2912,8 +2952,6 @@ pub async fn reconcile_drift(
         opened_by: me.to_string(),
         opened_at_ms: time.now_ms(),
     };
-    // A report counts as the new mesh-primary's only if it arrives at or after this moment.
-    let degraded_from = std::time::Instant::now();
     // The attempt's context is this span, on this fabric-primary, before the attempt is open to be claimed.
     if let Err(e) = contexts.put(&current.build_id, attempt, &span.in_scope(crate::build_claim::current_context)).await {
         span.in_scope(|| tracing::info!(error = %e, "the attempt's context could not be recorded; the attempt is not opened"));
@@ -2921,22 +2959,11 @@ pub async fn reconcile_drift(
     }
     match builds.open_attempt(&opened).await {
         Ok(()) => {
-            // R-DG1 (mesh-investigation.md steps 5-7): the fabric-primary gives the fully crashed mesh a new
-            // node-admin and, at that same moment, authors the fabric `degraded` as it does for the
-            // carrier-edge-lost verdict: the `peer_recovery` book the status projection reads
-            // ([`project_with`]) and [`crate::investigate::restore_peer_recovery`] clears on the new
-            // mesh-primary's report ("Only on that report, the fabric-primary clears the degraded
-            // health observation"). It is set once the attempt is open, never for a create that did not open.
-            if let Some((mesh, _, _)) = &crashed {
-                let lost = t.cohort(mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
-                exits.open_peer_recovery(PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: time.now_ms(), opened_at: degraded_from, lost });
-                span.record("fabric_status", "degraded");
-            }
             span.in_scope(|| {
                 if verdict.is_some() {
                     tracing::info!("the investigation decided the mesh's rebirth: the next attempt of the same Build, node.create of its node-admin, is open")
                 } else if crashed.is_some() {
-                    tracing::info!("every node of the fully crashed mesh is proven exited: the next attempt of the same Build, node.create of its node-admin, is open and the fabric is degraded")
+                    tracing::info!("every node of the fully crashed mesh is proven exited: the next attempt of the same Build, node.create of its node-admin, is open")
                 } else {
                     tracing::info!("a birth the accepted topology names is proven gone: the next attempt of the same Build is open")
                 }

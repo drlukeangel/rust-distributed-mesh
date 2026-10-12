@@ -426,7 +426,7 @@ mod tests {
     fn degraded_clears_only_on_the_current_primarys_report_after_the_decision() {
         let (lost, reborn) = (IncarnationId::mint(), IncarnationId::mint());
         let opened_at = Instant::now();
-        let recovery = PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: 1, opened_at, lost: vec![lost.clone()] };
+        let recovery = PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(1), opened_at, lost: vec![lost.clone()] };
         let later = opened_at + std::time::Duration::from_millis(5);
         // A ready primary of a newer birth that has not reported does not clear it.
         assert!(!recovered(&recovery, Some(&reborn), None));

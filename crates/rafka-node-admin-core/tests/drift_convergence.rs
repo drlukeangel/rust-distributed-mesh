@@ -100,12 +100,19 @@ struct WorldProofs {
     view: Arc<RwLock<Topology>>,
     book: DigestBook,
     provider: Provider,
+    /// The fabric-primary's records the claim of a fully crashed mesh's create authors degraded in, and the
+    /// fabric-primary they are the records of.
+    records: Arc<rafka_node_admin_core::admin::Records>,
+    me: PathName,
 }
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::build_drive::DepartureProof for WorldProofs {
     async fn proven(&self, executor: &PathName) -> Result<(), String> {
         Err(format!("{executor}'s runtime is not proven exited"))
+    }
+    async fn mesh_given_node_admin(&self, mesh: &str, _build_id: &BuildId, _attempt: u32, from: std::time::Instant) {
+        rafka_node_admin_core::admin::give_mesh_node_admin(&self.records, &self.me, &self.view, mesh, from).await;
     }
     async fn exits_of(&self, nodes: &[PathName]) -> rafka_node_admin_core::build_drive::ExitProofs {
         let view = self.view.read().await.clone();
@@ -177,6 +184,8 @@ struct Estate {
     provider: Provider,
     runner: Arc<Runner>,
     dispatch: Arc<crate::loopback::Loopback>,
+    /// The fabric-primary's records.
+    records: Arc<rafka_node_admin_core::admin::Records>,
 }
 
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
@@ -204,7 +213,7 @@ async fn estate() -> Estate {
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp).await.unwrap();
     let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), builds: builds.clone(), hear_after_birth: std::sync::atomic::AtomicBool::new(false), recovering: Mutex::new(Vec::new()), fail_recovery_create: std::sync::atomic::AtomicBool::new(false) });
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), view.clone(), runner.clone());
-    Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner, dispatch }
+    Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner, dispatch, records: Arc::new(exit_records()) }
 }
 
 /// A new birth at `path`: a runtime in the world, a digest in membership, a live node.
@@ -450,7 +459,7 @@ impl Estate {
             door,
             dispatcher: self.dispatch.clone(),
             gate,
-            departure: Arc::new(WorldProofs { view: self.view.clone(), book: self.book.clone(), provider: Provider(self.world.clone()) }),
+            departure: Arc::new(WorldProofs { view: self.view.clone(), book: self.book.clone(), provider: Provider(self.world.clone()), records: self.records.clone(), me: primary.clone() }),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
         })
     }
@@ -1626,21 +1635,22 @@ mod fully_crashed_mesh {
     }
 
     /// CONTRACT (R-DG1; mesh-investigation.md steps 5-7): the fabric-primary gives a fully crashed
-    /// mesh a new node-admin and, at that same moment, authors the fabric `degraded` (the fabric-primary's
-    /// `peer_recovery` book the carrier-edge-lost verdict opens a recovery in and the status projection
-    /// reads): not before the create is opened (an exit proof held for the decision opens nothing and
-    /// degrades nothing), naming the mesh and every node-admin the proof found. It is cleared only on the
-    /// report of the new mesh-primary after that moment: not by the reborn mesh's view alone, not by
-    /// a report of a node-admin the proof found, only by a birth the proof did not find reporting
-    /// after the create opened ("Only on that report, the fabric-primary clears the degraded
-    /// health observation"). Must NOT happen: a create of a node-admin that leaves the fabric
-    /// `ready-for-traffic`, or `degraded` that never clears.
+    /// mesh a new node-admin when it claims the create the provider's proof of every node admitted,
+    /// and at that same moment authors the fabric `degraded` (the `peer_recovery` book the
+    /// carrier-edge-lost verdict opens a recovery in and the status projection reads): not before (an exit
+    /// proof held for the ladder's decision opens nothing, and the attempt's opening alone gives the mesh
+    /// nothing), naming the mesh and every node-admin the proof found. It is cleared only on the report of
+    /// the new mesh-primary after that moment: not by the reborn mesh's view alone, not by a report of a
+    /// node-admin the proof found, only by a birth the proof did not find reporting after the claim
+    /// ("Only on that report, the fabric-primary clears the degraded health observation"). Must NOT
+    /// happen: a create of a node-admin that leaves the fabric `ready-for-traffic`, or `degraded` that
+    /// never clears.
     #[tokio::test]
-    async fn the_fabric_primary_authors_degraded_when_it_creates_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it() {
-        if crate::own_process::delegated(module_path!(), "the_fabric_primary_authors_degraded_when_it_creates_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it") {
+    async fn the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it() {
+        if crate::own_process::delegated(module_path!(), "the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it") {
             return;
         }
-        let dir = evidence_dir("the_fabric_primary_authors_degraded_when_it_creates_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it");
+        let dir = evidence_dir("the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("RDM_EVIDENCE_DIR", &dir);
@@ -1653,7 +1663,7 @@ mod fully_crashed_mesh {
             let found: HashSet<IncarnationId> = e.view.read().await.cohort(&peer_mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
             assert_eq!(found.len(), 2, "the proof finds both node-admins");
             let me: PathName = e.fabric_primary().await.parse().unwrap();
-            let records = exit_records();
+            let records = e.records.clone();
             let (mut held, mut started) = (Held::new(), HashSet::new());
             let peer = peer_mesh.clone();
             let decided = move |m: &str| (m == peer).then_some(DECIDED_UNREACHABLE).flatten();
@@ -1661,9 +1671,13 @@ mod fully_crashed_mesh {
             assert!(!records.peer_recovering(), "nothing was given to the mesh: the fabric is not degraded");
             let before = e.accepted.current(&*e.builds).await.unwrap();
             assert_eq!(pass_with(&e, &mut started, &mut held, &decided, &records).await, Some((before.build_id.clone(), before.attempt + 1)), "the decision plus the proof opens the create of {}", admins[0]);
-            let recovery = records.peer_recovery_of(&peer_mesh).expect("the create of the mesh's node-admin opened: the fabric-primary authors degraded");
-            assert_eq!(recovery.mesh, peer_mesh, "degraded names the mesh given a node-admin");
+            assert!(!records.peer_recovering(), "the attempt's opening gives the mesh nothing yet: the drive's claim of the create does");
+            // The drive claims the attempt and runs the create the proof admitted.
+            e.converge_under(Arc::new(HeldPeer { mesh: peer_mesh.clone(), held: DECIDED_UNREACHABLE.unwrap() })).await;
+            let recovery = records.peer_recovery_of(&peer_mesh).expect("the create of the mesh's node-admin was claimed: the fabric-primary authors degraded");
+            assert_eq!(recovery.verdict_rafka_ms, None, "a fully crashed mesh has no ladder verdict");
             assert_eq!(recovery.lost.iter().cloned().collect::<HashSet<_>>(), found, "it names every node-admin the proof found");
+            assert_eq!(records.peer_recoveries().len(), 1, "one recovery, the mesh's");
             // The mesh's new primary: a birth the proof did not find, in the view the fabric-primary reads.
             let reborn = IncarnationId::mint();
             let mut view = e.view.read().await.clone();
@@ -1682,7 +1696,7 @@ mod fully_crashed_mesh {
             assert!(records.peer_recovering(), "a report of a node-admin the proof found is not the new primary's");
             records.declared.lock().unwrap().record_report(&peer_mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(reborn), std::time::Instant::now());
             clear();
-            assert!(!records.peer_recovering(), "the new mesh-primary reported after the create opened: degraded clears");
+            assert!(!records.peer_recovering(), "the new mesh-primary reported after the claim: degraded clears");
         }
         .instrument(root.clone())
         .await;
@@ -1690,13 +1704,13 @@ mod fully_crashed_mesh {
         drop(telemetry);
         let spans = collect_spans(&dir);
         let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
-        let drift = named("rdm.node_admin.build.update.via-proven-drift");
-        assert_eq!(drift.len(), 1, "{drift:?}");
-        assert_eq!(drift[0]["attributes"]["fabric_status"], "degraded", "the opening span says the fabric-primary authored degraded: {}", drift[0]["attributes"]);
+        let rebirth = named("rdm.node_admin.mesh.create.via-rebirth");
+        assert_eq!(rebirth.len(), 1, "degraded is authored once: {rebirth:?}");
+        assert_eq!((rebirth[0]["attributes"]["verdict"].as_str(), rebirth[0]["attributes"]["fabric_status"].as_str()), (Some("fully-crashed"), Some("degraded")), "{}", rebirth[0]["attributes"]);
         let recovered = named("rdm.node_admin.mesh.update.via-recovered");
         assert_eq!(recovered.len(), 1, "the clear is named once: {recovered:?}");
-        assert_eq!(recovered[0]["trace_id"], drift[0]["trace_id"], "set and cleared are one story");
-        println!("trace_id={} opening={} cleared={}", drift[0]["trace_id"].as_str().unwrap_or_default(), drift[0]["attributes"], recovered[0]["attributes"]);
+        assert_eq!(recovered[0]["trace_id"], rebirth[0]["trace_id"], "set and cleared are one story");
+        println!("trace_id={} authored={} cleared={}", rebirth[0]["trace_id"].as_str().unwrap_or_default(), rebirth[0]["attributes"], recovered[0]["attributes"]);
     }
 
     /// CONTRACT (mesh-investigation.md step 5, "Fully crashed"; node-create.md: "Runtime exit requires
@@ -1797,7 +1811,7 @@ async fn two_meshes_given_new_node_admins_keep_the_fabric_degraded_until_each_ne
     let view = e.view.read().await.clone();
     for mesh in ["mesh1", "mesh2"] {
         let lost = view.cohort(mesh, NodeKind::NodeAdmin).filter_map(|n| n.incarnation_id.clone()).collect();
-        records.open_peer_recovery(rafka_node_admin_core::admin::PeerRecovery { mesh: mesh.into(), verdict_rafka_ms: 1, opened_at: std::time::Instant::now(), lost });
+        records.open_peer_recovery(rafka_node_admin_core::admin::PeerRecovery { mesh: mesh.into(), verdict_rafka_ms: Some(1), opened_at: std::time::Instant::now(), lost });
     }
     assert_eq!(records.peer_recoveries().len(), 2, "a recovery is open for each mesh: {:?}", records.peer_recoveries());
     // Each mesh's first node-admin is reborn and primary in the view the fabric-primary reads.
