@@ -69,8 +69,13 @@ impl RoundActions for NoScratchpad {
 /// "names the accepted Build's PLANNED births"). `key_build` is the round's own Build as this admin's
 /// log holds it, read only when it is another Build than the accepted one.
 pub(crate) fn superseded_by(key: &RoundKey, accepted: &crate::build_state::BuildProjection, key_build: Option<&crate::build_state::BuildProjection>) -> Option<String> {
-    let _ = (key, accepted, key_build);
-    None
+    if accepted.build_id.0 == key.build_id {
+        return (accepted.attempt > key.attempt).then(|| format!("the accepted Build {} is at attempt {}, past this round's attempt {}", key.build_id, accepted.attempt, key.attempt));
+    }
+    // Another Build: superseded only by one accepted after the round's own. A round of a Build this
+    // admin's log has not learned, or of one accepted after the Build it holds, came ahead of the pointer.
+    let own = key_build?;
+    (own.submitted_at_ms < accepted.submitted_at_ms).then(|| format!("Build {} (accepted at {} ms) was accepted after this round's Build {} (accepted at {} ms)", accepted.build_id.0, accepted.submitted_at_ms, key.build_id, own.submitted_at_ms))
 }
 
 /// RDM standalone's commit-state action (fabric-state-commit.md step 2: "Each node writes what it
@@ -708,7 +713,7 @@ impl FabricRounds {
         }
         let this = self.clone();
         tokio::spawn(async move {
-            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-mesh-round", node = %this.env.me, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, "otel.kind" = "internal");
+            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-mesh-round", node = %this.env.me, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, superseded_by = tracing::field::Empty, "otel.kind" = "internal");
             this.drive_mesh(&key, owes_upward).instrument(span.clone()).await;
             this.drivers.lock().unwrap().remove(&key);
         });
@@ -732,6 +737,17 @@ impl FabricRounds {
                 return;
             }
             let accepted = self.env.accepted.current(&*self.env.builds).await;
+            // A round the accepted Build moved past commands nothing more and owes no completion: the
+            // round of the accepted Build and attempt is the one its primaries run now.
+            if let Some(b) = &accepted {
+                let own = if b.build_id.0 == key.build_id { None } else { self.env.builds.read_build(&crate::build::BuildId(key.build_id.clone())).await.ok() };
+                if let Some(why) = superseded_by(key, b, own.as_ref()) {
+                    round_span.record("superseded_by", why.as_str());
+                    tracing::info!(superseded_by = %why, "the accepted Build moved past this round: it commands nothing more and owes no completion");
+                    self.mesh_book.close(key);
+                    return;
+                }
+            }
             let paths: Vec<PathName> = match &accepted {
                 Some(b) => crate::round::planned(&b.topology, &mesh),
                 None => view.members().filter(|n| n.mesh == mesh).map(|n| n.name.clone()).collect(),
