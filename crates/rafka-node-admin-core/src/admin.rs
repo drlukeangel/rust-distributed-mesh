@@ -4221,7 +4221,7 @@ impl AdminRunner {
                     // has joined its mesh, the fabric primary applies MeshStatus::Pending at that exact
                     // birth, before it is asked to be Ready; only with that certainty does the shape
                     // proceed (e4.s11).
-                    let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).all(|n| !n.status.is_live());
+                    let first_admin = self.topology.read().await.first_admin_of(node);
                     let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
                     self.create(build_id, attempt, node, before_ready).await
                 }

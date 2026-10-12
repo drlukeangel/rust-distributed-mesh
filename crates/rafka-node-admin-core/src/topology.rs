@@ -147,6 +147,13 @@ impl Topology {
         self.members().filter(move |n| n.mesh == mesh && n.kind == kind)
     }
 
+    /// Whether a node.create of the node-admin `node` makes it its mesh's first admin: it is a node-admin
+    /// and no node-admin of its mesh is live. The one rule of every node.create of a node-admin
+    /// (e4.s11; mesh-investigation.md "A node-admin joins the live mesh").
+    pub fn first_admin_of(&self, node: &PathName) -> bool {
+        node.kind == NodeKind::NodeAdmin && self.cohort(&node.mesh, NodeKind::NodeAdmin).all(|n| !n.status.is_live())
+    }
+
     /// Why `mesh` is not ready-for-traffic: a mesh is ready when it has a primary node-admin and
     /// every node of the mesh is ready-for-traffic (states.md). The nodes of the mesh are the
     /// accepted Build's planned births (`planned`), a planned birth the view does not hold yet
@@ -344,6 +351,30 @@ mod tests {
                 node("mesh1.rpc.3", R, false, false),
             ],
         }
+    }
+
+    /// CONTRACT: a node.create of a node-admin makes it its mesh's first admin when no OTHER node-admin
+    /// of the mesh is live: the node being created never counts against itself, whether the view
+    /// still holds a live birth at its path (a view that has not heard the mesh lost, or the exited
+    /// birth a node recovery creates over) or holds none. A live sibling makes it not the first; a
+    /// node that is not a node-admin is never one. Must NOT happen: the two node.create paths
+    /// (the recipe's create and node recovery's) answering differently for one view.
+    #[test]
+    fn a_node_admin_is_the_first_admin_when_no_other_node_admin_of_its_mesh_is_live() {
+        use NodeStatus::{Dead, ReadyForTraffic as R};
+        let mut t = mn();
+        let admin1: PathName = "mesh1.admin.1".parse().unwrap();
+        let admin2: PathName = "mesh1.admin.2".parse().unwrap();
+        assert!(!t.first_admin_of(&admin1), "admin.2 is live: admin.1 is not the first");
+        t.nodes[1].status = Dead;
+        assert!(t.first_admin_of(&admin1), "admin.1's own live birth does not count against it: no other node-admin lives");
+        assert!(!t.first_admin_of(&admin2), "admin.1 is live: admin.2 is not the first");
+        t.nodes[0].status = Dead;
+        assert!(t.first_admin_of(&admin1) && t.first_admin_of(&admin2), "no node-admin lives: either create is the first");
+        t.nodes[0].status = R;
+        t.nodes.retain(|n| n.name != admin2);
+        assert!(!t.first_admin_of(&admin2), "a path the view holds nothing at, beside a live admin.1: not the first");
+        assert!(!t.first_admin_of(&"mesh1.rpc.1".parse().unwrap()), "a node that is not a node-admin is never a mesh's first admin");
     }
 
     #[test]
