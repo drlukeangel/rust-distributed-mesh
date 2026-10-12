@@ -1447,6 +1447,88 @@ mod writer {
         eprintln!("trace {}: via-claimed-allocation node_id={x} outcome=launched-exited; claims {rpc9:?}", settled[0]["trace_id"].as_str().unwrap_or(""));
     }
 
+    /// The process provider's own `find` over the data dirs of the births it is asked about; it
+    /// records every spawn asked of it and launches nothing.
+    struct OnDisk {
+        inner: rafka_node_admin_core::deployment::process::ProcessDeploymentProvider,
+        spawned: Mutex<Vec<DeploymentId>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for OnDisk {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            self.inner.control_domain()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+            self.spawned.lock().unwrap().push(spec.deployment_id.clone());
+            Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this provider launches nothing".into() })
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+            self.inner.inspect(h).await
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+            self.inner.find(spec).await
+        }
+    }
+
+    /// CONTRACT (lifecycles/node-create.md: exact provider proof of a runtime's state, even for a
+    /// deployment that never joined; the receipt arm's rule: "the earlier attempt's runtime is gone: a
+    /// fresh birth"; node-identity-and-state.md: an incarnation names one exact runtime): A claims
+    /// `mesh1.rpc.11` in attempt 1, launches its birth and is lost, and that runtime exits before it
+    /// writes its runtime record: the birth's data dir holds only the process provider's deployment
+    /// record naming A's deployment, and its process is gone. B, holding none of A's receipts, asks the
+    /// process provider, which tells a launch that exited from one never launched: B withdraws A's
+    /// claim (that birth's key only), mints a new birth, claims the free name for it and reaches
+    /// `DeployRuntime` with a deployment of its own. Must NOT happen: B reading the exited launch as
+    /// never launched and relaunching it under A's node id, incarnation and deployment.
+    #[test]
+    fn a_create_whose_lost_executor_launched_a_birth_that_exited_before_its_runtime_record_decides_a_new_birth() {
+        let cap = capture();
+        let (a_identity, b_err, spawned) = cap.run(async {
+            let storage = Arc::new(MemoryNodesStorage::default());
+            let data_root = std::env::temp_dir().join(format!("node-rows-exited-before-record-{}", NodeId::mint()));
+            let build = BuildId("build-node-rows-11".into());
+            let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.11", &data_root).await;
+            // A launched the birth and its process exited before it wrote its runtime record: the data
+            // dir holds the provider's deployment record of A's deployment, naming a pid that is gone.
+            let dir = data_root.join(format!("mesh1.rpc.11-{}", a_identity["node_id"].as_str().unwrap()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut gone = std::process::Command::new("true").spawn().unwrap();
+            let pid = gone.id();
+            gone.wait().unwrap();
+            std::fs::write(dir.join("deployment.json"), json!({ "deployment_id": a_identity["deployment_id"], "pid": pid }).to_string()).unwrap();
+            let b_builds = MemoryBuildStateAdapter::new();
+            let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
+            rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
+            let (b_records, _b_view) = writer_of("mesh1.admin.2", &view(), &storage);
+            let on_disk = OnDisk { inner: rafka_node_admin_core::deployment::process::ProcessDeploymentProvider::new(), spawned: Mutex::default() };
+            let b_err = create_attempt_over(&b_records, &on_disk, &Unheard, &b_builds, &build, "mesh1.rpc.11", 2, &data_root).await;
+            let _ = std::fs::remove_dir_all(&data_root);
+            (a_identity, b_err, on_disk.spawned.into_inner().unwrap())
+        });
+        let x = a_identity["node_id"].as_str().unwrap().to_string();
+        let deployment = a_identity["deployment_id"].as_str().unwrap().to_string();
+        let settled = cap.spans_named("rdm.node_admin.node.resolve.via-claimed-allocation");
+        assert_eq!(settled.iter().map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>(), vec![(x.clone(), "launched-exited".to_string())], "{settled:#?}");
+        let b_err = b_err.expect_err("B's attempt fails where this provider launches nothing");
+        assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B decides a new birth and reaches DeployRuntime: {b_err}");
+        assert_eq!(spawned.len(), 1, "{spawned:?}");
+        assert_ne!(spawned[0].0, deployment, "B launches a deployment of its own, never the exited birth's again");
+        let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        let rpc11: Vec<(String, String)> = claims.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.11" && s["attributes"]["moment"] == "claim").map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
+        assert!(rpc11.len() == 2 && rpc11[0] == (x.clone(), "row-written".to_string()) && rpc11[1].0 != x && rpc11[1].1 == "row-written", "A's claim, then a new birth's once A's is withdrawn: {rpc11:?}");
+        eprintln!("trace {}: via-claimed-allocation node_id={x} outcome=launched-exited; claims {rpc11:?}", settled[0]["trace_id"].as_str().unwrap_or(""));
+    }
+
     /// CONTRACT (the lost-executor rule stops only a birth that never joined; a recoverable refusal
     /// over a terminated member): A claims `mesh1.rpc.10` in attempt 1 and is lost; the provider holds
     /// a running runtime of the exact deployment A's claim names, and that birth has joined fabric
