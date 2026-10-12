@@ -331,6 +331,43 @@ pub struct Records {
     /// Where this admin's mesh's status rows live, read when this admin takes its mesh's seat
     /// (`crate::status_rpc::SeatFold`). Set once at start.
     status: std::sync::OnceLock<crate::status_rpc::SeatFold>,
+    /// This admin's Node RPC door, opened by an installed view ([`ServingDoor`]). Set once at start.
+    door: std::sync::OnceLock<ServingDoor>,
+}
+
+/// An admin's Node RPC readiness gate (node-rpc-envelope.md, "Node RPC readiness gate": "The router
+/// refuses every op, Ping included, with typed NotReady until the Node RPC door is ready. A node-admin
+/// waits until its Status authority is filled and its view holds it"): it opens once the authority is
+/// filled and a view this admin installs holds its exact birth, under whatever name it holds now (its
+/// join answer hands it its row's name, R-JN1), never by the name it booted under.
+pub struct ServingDoor {
+    /// The router's gate.
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    /// This admin's exact birth.
+    birth: (NodeId, IncarnationId),
+    /// Whether the Status authority is filled.
+    authority_filled: Box<dyn Fn() -> bool + Send + Sync>,
+    /// The name this admin booted under, for the span.
+    boot_name: PathName,
+}
+
+impl ServingDoor {
+    /// The door over the router's gate `ready` for the birth `birth`, booted as `boot_name`.
+    pub fn new(ready: Arc<std::sync::atomic::AtomicBool>, birth: (NodeId, IncarnationId), authority_filled: Box<dyn Fn() -> bool + Send + Sync>, boot_name: PathName) -> Self {
+        Self { ready, birth, authority_filled, boot_name }
+    }
+
+    /// Open the door if it is closed, the authority is filled and `view` holds this admin's exact birth.
+    fn open_if_held(&self, view: &Topology) {
+        if self.ready.load(std::sync::atomic::Ordering::SeqCst) || !(self.authority_filled)() {
+            return;
+        }
+        if let Some(own) = view.births().find(|n| n.node_id == self.birth.0 && n.incarnation_id.as_ref() == Some(&self.birth.1)) {
+            self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            tracing::info_span!("rdm.node_admin.node.serve.via-view-holds-birth", node = %own.name, node_id = %self.birth.0, incarnation_id = %self.birth.1.0, held_name = %own.name, boot_name = %self.boot_name)
+                .in_scope(|| tracing::info!("the Status authority is filled and this admin's view holds its exact birth: the Node RPC router serves"));
+        }
+    }
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -373,6 +410,11 @@ impl Records {
     /// The writer of node rows the installed views feed (set once, at start).
     pub fn set_rows(&self, rows: Arc<crate::node_rows::NodeRows>) {
         let _ = self.rows.set(rows);
+    }
+
+    /// This admin's Node RPC door (set once, at start): the installed views open it.
+    pub fn set_door(&self, door: ServingDoor) {
+        let _ = self.door.set(door);
     }
 
     /// The status rows of `mesh` this admin (`name`, born as `me`) folds when it takes `mesh`'s seat
@@ -8586,6 +8628,41 @@ mod tests {
         let now_ms = 1_000_000u64;
         let silent = crate::offline::silent_set(watched.values(), &book, late_at, now_ms, floor);
         assert_eq!(silent.iter().map(|s| s.marked_at_ms).collect::<Vec<_>>(), vec![Some(now_ms - 500)], "the mark: first held plus the floor");
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, "Node RPC readiness gate": "A node-admin waits until its Status
+    /// authority is filled and its view holds it"): the admin's Node RPC door opens with the first view
+    /// installed that holds its exact birth once the authority is filled, whichever task installs that
+    /// view, so nothing that reads the installed view (the declarer that tells its primary it is ready
+    /// among them) sees its own birth while its door still refuses. A view without the birth, one
+    /// holding another birth of its name, and any view while the authority is not filled leave the
+    /// door closed. Must NOT happen: the door opened only by the view-rebuild task, which starts after
+    /// the declarer and a Build-log catch-up, so the admin declares itself ready to its primary while
+    /// its router answers every round command NotReady (gate red, tree b24a4303,
+    /// fabric_states__rounds trace 95adb727: mesh1.admin.2 declared ReadyForTraffic at 788604, its door
+    /// opened at 788637, and mesh1.admin.1's three commit-state sends had all come back NotReady).
+    #[tokio::test]
+    async fn an_admins_door_opens_with_the_first_installed_view_that_holds_its_exact_birth() {
+        let me = digest("mesh1.admin.2", MemberStatus::ReadyForTraffic);
+        let primary = digest("mesh1.admin.1", MemberStatus::ReadyForTraffic);
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let filled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let records = Records::default();
+        let authority = filled.clone();
+        records.set_door(ServingDoor::new(ready.clone(), (me.node.node_id.clone(), me.node.incarnation.clone()), Box::new(move || authority.load(std::sync::atomic::Ordering::SeqCst)), me.node.name.clone()));
+        let topology = RwLock::new(view(&[primary.clone()]));
+        let mut other = me.clone();
+        other.node.incarnation = IncarnationId::mint();
+        let opened = || ready.load(std::sync::atomic::Ordering::SeqCst);
+        records.install_projected(&topology, || view(&[primary.clone(), me.clone()])).await;
+        assert!(!opened(), "the authority is not filled: the door stays closed");
+        filled.store(true, std::sync::atomic::Ordering::SeqCst);
+        records.install_projected(&topology, || view(&[primary.clone()])).await;
+        assert!(!opened(), "a view without this admin's birth leaves the door closed");
+        records.install_projected(&topology, || view(&[primary.clone(), other.clone()])).await;
+        assert!(!opened(), "another birth of its name is not this admin's birth");
+        records.install_projected(&topology, || view(&[primary.clone(), me.clone()])).await;
+        assert!(opened(), "the first installed view holding its exact birth, the authority filled, opens the door");
     }
 
     /// CONTRACT (R-EL1, "a seat moves only by explicit yield": the election ignores a holder's
