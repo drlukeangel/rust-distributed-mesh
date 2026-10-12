@@ -4527,6 +4527,7 @@ impl DigestBook {
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-deleted",
+            holder = %self.holder.lock().unwrap(),
             node = %op.name,
             node_id = %op.node_id,
             incarnation_id = %op.incarnation.0,
