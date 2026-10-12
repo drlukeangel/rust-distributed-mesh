@@ -346,14 +346,6 @@ pub enum Refusal {
         /// The version offered.
         offered_version: u64,
     },
-    /// A publication of another epoch than the one this receiver holds, whose publisher's birth this
-    /// receiver holds stopped or departed: a stopped birth publishes nothing and a departed one has
-    /// left, so its publication was delayed, and taking it would switch the receiver back
-    /// (node-status-heartbeat-connections.md §A.3, §A.4). `reason` says which.
-    PredecessorPublisher {
-        /// `publisher-stopped` or `publisher-departed`.
-        reason: &'static str,
-    },
     /// A chunk of a mesh this receiver applied mesh-left for, within its departed retention: the
     /// mesh's removal is terminal (R-MD1 item 3), and nothing of that MeshId is installed again.
     MeshLeft {
@@ -412,12 +404,6 @@ pub enum Gap {
     },
     /// The source was already desynchronized: its deltas are not applied until a snapshot or a top-up.
     AlreadyDesynced,
-    /// A publication of the source by a publisher this node holds no seat evidence for: an unknown
-    /// source epoch, repaired by GetTopology (gossip.md §3.1).
-    UnknownEpoch {
-        /// The publisher of the refused publication.
-        offered: PublisherId,
-    },
 }
 
 impl std::fmt::Display for Gap {
@@ -427,7 +413,6 @@ impl std::fmt::Display for Gap {
             Gap::OtherEpoch { .. } => f.write_str("other-epoch"),
             Gap::Version { .. } => f.write_str("version-gap"),
             Gap::AlreadyDesynced => f.write_str("already-desynced"),
-            Gap::UnknownEpoch { .. } => f.write_str("unknown-epoch"),
         }
     }
 }
@@ -588,22 +573,6 @@ impl SnapshotReceiver {
         h.full.apply(delta);
         h.version = topology_version;
         Moved::Applied { mesh: mesh.to_string(), base_version, topology_version, delta: delta.clone() }
-    }
-
-    /// A publication of `mesh` by `offered`, a publisher this node holds no seat evidence for, was
-    /// refused: the source is desynchronized for GetTopology repair (gossip.md §3.1, "an unknown
-    /// source epoch"). Nothing of the publication is held. `true` when this desynchronized the
-    /// source, `false` when it already was.
-    pub fn unknown_epoch(&mut self, mesh: &str, offered: &PublisherId) -> bool {
-        let gap = Gap::UnknownEpoch { offered: offered.clone() };
-        match self.held.get_mut(mesh) {
-            Some(h) => matches!(Self::desync(mesh, h, gap), Moved::Desynced { gap: Gap::UnknownEpoch { .. }, .. }),
-            None => {
-                let new = !self.unbased.contains_key(mesh);
-                self.unbased.entry(mesh.to_string()).or_insert(gap);
-                new
-            }
-        }
     }
 
     fn desync(mesh: &str, h: &mut Held, gap: Gap) -> Moved {
