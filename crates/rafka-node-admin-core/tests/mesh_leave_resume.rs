@@ -15,7 +15,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, MeshLeaveEvent, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{await_handoff, settle_handoff, LeaveBook, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{await_handoff, settle_handoff, FinalPrimary, LeaveBook, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::node_rows::{Claimed, NodeRows, RowRefused};
@@ -1759,7 +1759,7 @@ fn the_owners_wait_ends_when_the_final_primary_is_proven_exited_never_on_a_timer
         let held = proven.clone();
         let (k, primary) = (key.clone(), format!("{} {}", final_primary.node, final_primary.incarnation_id));
         let wait = tokio::spawn(tracing::Instrument::instrument(
-            async move { await_handoff(&k, &primary, handoff, view_rx, move || std::future::ready(held.lock().unwrap().clone())).await },
+            async move { await_handoff(&k, &primary, handoff, view_rx, move || std::future::ready(held.lock().unwrap().clone().map_or(FinalPrimary::Live, FinalPrimary::Exited)), || std::future::ready(Ok(()))).await },
             root.clone(),
         ));
         // The final primary goes silent: the view changes and proves nothing.
@@ -1810,7 +1810,7 @@ fn a_handoff_held_ends_the_owners_wait_with_its_manifest_before_a_later_proven_e
         let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
         assert!(book.resolve(&key, manifest.clone()), "the first outcome of the leave");
         view_tx.send_modify(|t| *t += 1);
-        await_handoff(&key, FINAL, handoff, view_rx, || std::future::ready(Some("its exit-proof row is read".to_string()))).await
+        await_handoff(&key, FINAL, handoff, view_rx, || std::future::ready(FinalPrimary::Exited("its exit-proof row is read".to_string())), || std::future::ready(Ok(()))).await
     });
     assert_eq!(end.ok(), Some(manifest), "the handoff held ends the wait with its manifest");
 }
@@ -1833,7 +1833,7 @@ fn the_owners_wait_is_still_open_an_hour_after_it_began_and_ends_on_the_handoff_
         let trace_id = trace_id(&root);
         let (_view_tx, view_rx) = tokio::sync::watch::channel(0u64);
         let (k, primary) = (key.clone(), format!("{} {}", final_primary.node, final_primary.incarnation_id));
-        let wait = tokio::spawn(tracing::Instrument::instrument(async move { await_handoff(&k, &primary, handoff, view_rx, || std::future::ready(None)).await }, root.clone()));
+        let wait = tokio::spawn(tracing::Instrument::instrument(async move { await_handoff(&k, &primary, handoff, view_rx, || std::future::ready(FinalPrimary::Live), || std::future::ready(Ok(()))).await }, root.clone()));
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
@@ -1875,7 +1875,7 @@ fn a_handoff_the_owner_refuses_by_name_ends_its_wait_incomplete_at_once() {
         let (_view_tx, view_rx) = tokio::sync::watch::channel(0u64);
         let named = format!("{} {}", final_primary.node, final_primary.incarnation_id);
         let (k, primary) = (key.clone(), named.clone());
-        let wait = tokio::spawn(tracing::Instrument::instrument(async move { await_handoff(&k, &primary, handoff, view_rx, || std::future::ready(None)).await }, root.clone()));
+        let wait = tokio::spawn(tracing::Instrument::instrument(async move { await_handoff(&k, &primary, handoff, view_rx, || std::future::ready(FinalPrimary::Live), || std::future::ready(Ok(()))).await }, root.clone()));
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
@@ -1914,4 +1914,119 @@ fn a_handoff_the_owner_refuses_by_name_ends_its_wait_incomplete_at_once() {
     let refused = named("rdm.node_admin.mesh.update.via-handoff-refused");
     assert_eq!(refused.len(), 1, "one span names the end on the refusal, and the accepted reply left none: {spans:?}");
     assert_eq!((refused[0]["attributes"]["reply"].as_str(), refused[0]["attributes"]["ended"].as_str()), (Some("rejected-source-failed"), Some("true")), "{}", refused[0]);
+}
+
+/// CONTRACT: the owner's view holding the leaving mesh deleted, with no handoff held, is the one
+/// thing the owner acts on without ending its wait (mesh-delete.md step 5: the mesh-primary commits
+/// the row Dead before it calls `MeshLeave`, so the handoff is owed and may be lost; node-rpc-envelope.md,
+/// "Caller execution and certainty": "Reissuing a naturally idempotent uncertain step can settle it
+/// with AlreadyApplied"; "Gossip is for peers, never the caller's completion interface"). The owner
+/// reissues `LeaveMesh` once for the wait, under a span naming the final primary; the wait stays open
+/// through later ticks that still hold the mesh deleted, and ends on the handoff the reissue brings.
+/// Must NOT happen: the reissue before the view holds the mesh deleted, a second reissue in one
+/// wait, or the wait ending on the view alone (the handoff, never gossip, completes the leave).
+#[test]
+fn the_owner_reissues_leave_mesh_once_when_its_view_holds_the_mesh_deleted_and_no_handoff_is_held() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let cap = capture();
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let book = Arc::new(LeaveBook::default());
+    let (key, handoff, final_primary) = open_leave(&book, &records);
+    let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: live_roster(&records).unwrap(), final_primary: final_primary.clone(), final_runtime: None, receipts: Vec::new() };
+    let deleted = Arc::new(AtomicBool::new(false));
+    let reissues = Arc::new(AtomicU32::new(0));
+    let (before_deleted, after_deleted, after_more_ticks, open_on_view_alone, end, trace_id) = run_paused(&cap, async {
+        let root = tracing::info_span!("cell.owner-reissues-leave-mesh", operation = %key.operation);
+        let trace_id = trace_id(&root);
+        let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
+        let (k, primary) = (key.clone(), format!("{} {}", final_primary.node, final_primary.incarnation_id));
+        let (probe_flag, count) = (deleted.clone(), reissues.clone());
+        let wait = tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                await_handoff(
+                    &k,
+                    &primary,
+                    handoff,
+                    view_rx,
+                    move || std::future::ready(if probe_flag.load(Ordering::SeqCst) { FinalPrimary::MeshDeleted } else { FinalPrimary::Live }),
+                    move || {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        std::future::ready(Ok(()))
+                    },
+                )
+                .await
+            },
+            root.clone(),
+        ));
+        let settle = || async {
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+        };
+        settle().await;
+        // The view changes and does not hold the mesh deleted: nothing is reissued.
+        view_tx.send_modify(|t| *t += 1);
+        settle().await;
+        let before_deleted = reissues.load(Ordering::SeqCst);
+        // The view now holds the mesh deleted: LeaveMesh is reissued once.
+        deleted.store(true, Ordering::SeqCst);
+        view_tx.send_modify(|t| *t += 1);
+        settle().await;
+        let after_deleted = reissues.load(Ordering::SeqCst);
+        // Later ticks that still hold it reissue nothing more, and the view alone ends nothing.
+        view_tx.send_modify(|t| *t += 1);
+        view_tx.send_modify(|t| *t += 1);
+        settle().await;
+        let after_more_ticks = reissues.load(Ordering::SeqCst);
+        let open_on_view_alone = !wait.is_finished();
+        // The handoff the reissue brings ends the wait.
+        if open_on_view_alone {
+            assert!(book.resolve(&key, manifest.clone()), "the first outcome of the leave");
+        }
+        (before_deleted, after_deleted, after_more_ticks, open_on_view_alone, wait.await.unwrap(), trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("owner-reissues-leave-mesh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    assert_eq!(before_deleted, 0, "no reissue while the view does not hold the mesh deleted");
+    assert_eq!(after_deleted, 1, "LeaveMesh is reissued when the view holds the mesh deleted and no handoff is held");
+    assert_eq!(after_more_ticks, 1, "once for the wait");
+    assert!(open_on_view_alone, "the view alone ends nothing: only the handoff completes the leave, and it ended with {end:?}");
+    assert_eq!(end.ok(), Some(manifest), "the handoff ends the wait with its manifest");
+    let reissued: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-leave-mesh-reissued" && s["trace_id"] == trace_id.as_str()).collect();
+    assert_eq!(reissued.len(), 1, "one span names the reissue: {spans:?}");
+    assert_eq!(reissued[0]["attributes"]["final_primary"], json!(format!("{} {}", final_primary.node, final_primary.incarnation_id)), "{}", reissued[0]);
+}
+
+/// CONTRACT: the reissued `LeaveMesh` is the same step as the first, so its own uncertain or refused
+/// outcome ends the attempt as the first one does (node-rpc-envelope.md, "Caller execution and
+/// certainty": a step that answers Indeterminate or a refusal leaves the workflow incomplete): the
+/// wait ends incomplete naming the reissue's outcome and the next attempt resumes from the receipts.
+/// Must NOT happen: a failed reissue swallowed, the owner waiting on for a handoff nothing will send.
+#[test]
+fn a_reissue_of_leave_mesh_that_is_itself_uncertain_ends_the_owners_wait_incomplete() {
+    let cap = capture();
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let book = LeaveBook::default();
+    let (key, handoff, final_primary) = open_leave(&book, &records);
+    let end = run_paused(&cap, async {
+        let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
+        let (k, primary) = (key.clone(), format!("{} {}", final_primary.node, final_primary.incarnation_id));
+        let wait = tokio::spawn(async move {
+            await_handoff(&k, &primary, handoff, view_rx, || std::future::ready(FinalPrimary::MeshDeleted), || std::future::ready(Err(rafka_node_admin_core::executor::RunEnd::Incomplete("leave-mesh to mesh2.admin.1 ended not-sent (Connection(\"refused\")): the mesh may or may not have admitted it".to_string()))))
+                .await
+        });
+        view_tx.send_modify(|t| *t += 1);
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(wait.is_finished(), "the failed reissue ended the wait at once; it is still open");
+        wait.await.unwrap()
+    });
+    match end {
+        Err(rafka_node_admin_core::executor::RunEnd::Incomplete(reason)) => assert!(reason.contains("leave-mesh") && reason.contains("not-sent"), "the end names the reissue's outcome: {reason}"),
+        other => panic!("the attempt ends incomplete on the reissue's outcome: {other:?}"),
+    }
 }

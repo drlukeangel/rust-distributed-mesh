@@ -317,15 +317,7 @@ impl AdminRunner {
         // Step 2: the accepted command's hook, then the command.
         self.lifecycle_events.mesh_leaving(&event).await;
         let req = StatusRequest::LeaveMesh { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
-        let (out, _) = node_rpc.client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(primary.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
-        match &out {
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied) => {}
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => return Err(RunEnd::Failed(format!("{outer}: {} refused leave-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
-            // The call did not come back: the primary is unreached or the stream broke. A broken stream
-            // proves neither a failed step nor a completed one (node-rpc-envelope.md, "Caller execution
-            // and certainty"): the leave is incomplete and its receipts stand.
-            other => return Err(RunEnd::Incomplete(format!("{outer}: leave-mesh to {} ended {} ({other:?}): the mesh may or may not have admitted it", primary.name, other.name()))),
-        }
+        self.send_leave_mesh(node_rpc, primary, &req, outer).await?;
         // Steps 3-4 run at the mesh-primary; its validated handoff, mesh.deleted, is what this waits
         // for. The validation covered the accepted roster (and every amendment) exactly, every birth
         // but the final primary, which reports still running.
@@ -335,10 +327,40 @@ impl AdminRunner {
         };
         let named = format!("{} {}", admitted.final_primary.node, admitted.final_primary.incarnation_id);
         let inspected = std::sync::Mutex::new(None);
-        let manifest = crate::mesh_leave::await_handoff(key, &named, handoff, self.records.subscribe_view(), || self.final_primary_exit(key, primary, &admitted, &inspected)).await?;
+        let manifest = crate::mesh_leave::await_handoff(key, &named, handoff, self.records.subscribe_view(), || self.final_primary_state(key, primary, &admitted, &inspected), || self.send_leave_mesh(node_rpc, primary, &req, outer)).await?;
         // Step 5: mesh.deleted ends the mesh.delete. The final primary is not deleted inside its own
         // mesh.delete: it keeps publishing its aggregate until a separate node.delete (step 7).
         self.record_mesh_deleted(key, manifest).await.map_err(RunEnd::Failed)
+    }
+
+    /// `LeaveMesh` to the leaving mesh's primary (mesh-delete.md steps 2-3): admitted (`Applied` or
+    /// `AlreadyApplied`), or the attempt's end. A refusal by name fails the step. A call that did not
+    /// come back (the primary unreached, or the stream broke) proves neither a failed step nor a
+    /// completed one (node-rpc-envelope.md, "Caller execution and certainty"): the leave is
+    /// incomplete and its receipts stand.
+    async fn send_leave_mesh(&self, node_rpc: &crate::node_rpc::ProcessNodeRpc, primary: &Node, req: &StatusRequest, outer: &str) -> Result<(), RunEnd> {
+        let (out, _) = node_rpc.client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(primary.node_id.clone()), req, &rafka_node_rpc::CallOptions::default()).await;
+        match &out {
+            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied) => Ok(()),
+            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => Err(RunEnd::Failed(format!("{outer}: {} refused leave-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
+            other => Err(RunEnd::Incomplete(format!("{outer}: leave-mesh to {} ended {} ({other:?}): the mesh may or may not have admitted it", primary.name, other.name()))),
+        }
+    }
+
+    /// What this owner's view holds of the leave's final primary and mesh now
+    /// ([`crate::mesh_leave::FinalPrimary`]): the final primary proven exited
+    /// ([`Self::final_primary_exit`]), else the mesh held deleted in the view (its primary committed
+    /// the row Dead before it called `MeshLeave`), else neither.
+    async fn final_primary_state(&self, key: &LeaveKey, primary: &Node, admitted: &crate::mesh_leave::Admitted, inspected: &std::sync::Mutex<Option<Option<NodeStatus>>>) -> crate::mesh_leave::FinalPrimary {
+        if let Some(proof) = self.final_primary_exit(key, primary, admitted, inspected).await {
+            return crate::mesh_leave::FinalPrimary::Exited(proof);
+        }
+        let deleted = self.topology.read().await.meshes.iter().any(|m| m.id.as_ref() == Some(&key.mesh_id) && m.status == ScopeStatus::Dead);
+        if deleted {
+            crate::mesh_leave::FinalPrimary::MeshDeleted
+        } else {
+            crate::mesh_leave::FinalPrimary::Live
+        }
     }
 
     /// Whether the leave's final primary `primary` (the admitted or amended birth `admitted` names)

@@ -1290,6 +1290,19 @@ pub fn settle_handoff(book: &LeaveBook, key: &LeaveKey, primary: &str, reply: St
     reply
 }
 
+/// What the owner's view holds of the leaving mesh's final primary and of the mesh while the
+/// owner awaits the handoff ([`await_handoff`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinalPrimary {
+    /// The final primary is not proven exited, and the view does not hold the mesh deleted.
+    Live,
+    /// The final primary is proven exited; the string names the proof.
+    Exited(String),
+    /// The view holds the mesh deleted (its primary committed the row Dead before it called
+    /// `MeshLeave`, mesh-delete.md step 5) and the final primary is not proven exited.
+    MeshDeleted,
+}
+
 /// The owner's wait for the handoff of the open leave `key` (mesh-delete.md step 5), sent by the
 /// final primary `primary` (its exact birth, named): the validated manifest, or the attempt's
 /// incomplete end. It has no timer: "Forbidden proof: Silence, a closed endpoint, a failed call or a
@@ -1297,32 +1310,44 @@ pub fn settle_handoff(book: &LeaveBook, key: &LeaveKey, primary: &str, reply: St
 /// incomplete" for a later attempt to resume from its receipts (node-rpc-envelope.md, "Caller
 /// execution and certainty"). Every end is an event:
 ///
-/// - the handoff held, read first each time: the validated manifest, or the incomplete report the
-///   leaving primary made inside its `MeshLeave` call ([`LeaveBook::incomplete`]), which ends the
-///   attempt incomplete naming the births without an Exited receipt;
+/// - the handoff held, read first each time: the validated manifest, or the incomplete end a refused
+///   handoff made inside its call ([`settle_handoff`], [`LeaveBook::incomplete`]);
 /// - the final primary proven exited, asked each time the owner's view changes (`view`):
-///   `final_primary_exited` names the proof. A proven exit ends the attempt incomplete at once, so
-///   the next attempt resumes the leave in the order "Resume after the primary's loss" gives (the
-///   lost primary's exact Exited recorded first, then `RosterAmended`, then a fresh claim). A view
-///   change that proves nothing keeps the wait open: silence is not death;
-/// - the open leave closed, or the owner's view ended: the attempt ends incomplete.
+///   `probe` names the proof. A proven exit ends the attempt incomplete at once, so the next attempt
+///   resumes the leave in the order "Resume after the primary's loss" gives (the lost primary's
+///   exact Exited recorded first, then `RosterAmended`, then a fresh claim). A view change that
+///   proves nothing keeps the wait open: silence is not death;
+/// - the open leave closed, or the owner's view ended: the attempt ends incomplete;
+/// - `reissue` failing: it is the `LeaveMesh` step again, and its own uncertain or refused outcome
+///   ends the attempt as the first `LeaveMesh` would.
+///
+/// One thing is not an end: the view holding the mesh deleted with no handoff held. The mesh-primary
+/// committed the row Dead before it called `MeshLeave`, so the handoff is owed and may be in flight
+/// or lost; the view cannot tell which, and gossip is for peers, never the caller's completion
+/// interface. The owner reissues `LeaveMesh` once for the wait ("Reissuing a naturally idempotent
+/// uncertain step can settle it with AlreadyApplied"): the mesh-primary answers a held manifest with
+/// `AlreadyApplied` and calls `MeshLeave` again, and a handoff already in flight is answered
+/// `AlreadyApplied` when it arrives twice.
 ///
 /// An attempt that ends incomplete is handed back to the fabric-primary
 /// ([`crate::executor::RunEnd::Incomplete`]): the Build stays in progress and the next attempt
 /// resumes from the receipts.
-pub async fn await_handoff<F, Fut>(key: &LeaveKey, primary: &str, mut handoff: watch::Receiver<Option<LeaveOutcome>>, mut view: watch::Receiver<u64>, mut final_primary_exited: F) -> Result<ExitManifest, crate::executor::RunEnd>
+pub async fn await_handoff<F, Fut, R, RFut>(key: &LeaveKey, primary: &str, mut handoff: watch::Receiver<Option<LeaveOutcome>>, mut view: watch::Receiver<u64>, mut probe: F, mut reissue: R) -> Result<ExitManifest, crate::executor::RunEnd>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Option<String>>,
+    Fut: std::future::Future<Output = FinalPrimary>,
+    R: FnMut() -> RFut,
+    RFut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
 {
     let outer = key.operation.as_str();
+    let _ = &mut reissue;
     view.borrow_and_update();
     loop {
         let held = handoff.borrow_and_update().clone();
         if let Some(outcome) = held {
             return outcome.map_err(|reason| crate::executor::RunEnd::Incomplete(format!("{outer}: the handoff of {primary} ended the leave incomplete: {reason}")));
         }
-        if let Some(proof) = final_primary_exited().await {
+        if let FinalPrimary::Exited(proof) = probe().await {
             tracing::info_span!("rdm.node_admin.mesh.update.via-final-primary-exited", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, final_primary = %primary, proof = %proof)
                 .in_scope(|| tracing::info!("the final primary is proven exited before it sent mesh-leave: this attempt ends and the next resumes the leave from its receipts"));
             return Err(crate::executor::RunEnd::Incomplete(format!(
