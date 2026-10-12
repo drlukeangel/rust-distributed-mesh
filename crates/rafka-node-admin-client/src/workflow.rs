@@ -100,10 +100,14 @@ struct Row {
     /// The exact operation key the row belongs to, for a recipe's step: two steps of one recipe
     /// share an operation prefix (a stop of the predecessor and of the successor) and differ by path.
     key: Option<String>,
+    /// A step of the operation's stop half, which node.delete of an already stopped or proven-exited
+    /// birth does not run (node-delete.md: its stop steps are already done): absent while a later row
+    /// of the same operation is receipted, it is passed, never waited for.
+    stop_half: bool,
 }
 
 const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, events: &'static [NodeEvent], terminal: bool) -> Row {
-    Row { operation, step, node_step, events, terminal, key: None }
+    Row { operation, step, node_step, events, terminal, key: None, stop_half: false }
 }
 
 impl Row {
@@ -181,14 +185,7 @@ fn recipe_step_rows(step: &RecipeStep) -> Vec<Row> {
         RecipeStep::Stop { node } => stop_rows(node),
         RecipeStep::Update { .. } => vec![row("update-node", "UpdateNode", NodeStep::Update, &[], false), row("update-node", "Complete", NodeStep::Update, &[NodeEvent::Updated], false)],
         RecipeStep::Start { .. } => start_rows!("start-node", &[], NodeStep::Start).into(),
-        // A stopped node at a `.old` path is deleted by its own operation (its stop steps are done);
-        // any other node by node.delete's own workflow.
-        RecipeStep::Delete { node } if node.old => vec![
-            row("delete-node", "NodeDeleting", NodeStep::Delete, &[], false),
-            row("delete-node", "TerminateRuntime", NodeStep::Stop, &[], false),
-            row("delete-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
-            row("delete-node", "Complete", NodeStep::Delete, &[], false),
-        ],
+        // node.delete's own workflow, whatever the node's name: a stopped birth's runs no stop half.
         RecipeStep::Delete { node } => delete_rows(node),
     };
     for r in &mut rows {
@@ -221,14 +218,16 @@ fn stop_rows(n: &PathName) -> Vec<Row> {
     rows
 }
 
-/// node.delete's rows under `retire-node`.
+/// node.delete's rows under its one key, `retire-node`: a live birth's drains and stops first; an
+/// already stopped or proven-exited birth's runs no stop half and leaves no membership to remove
+/// (`stop_half`), the same operation.
 fn delete_rows(n: &PathName) -> Vec<Row> {
     let mut rows = vec![row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false)];
-    rows.extend(shutdown_rows("retire-node", n));
+    rows.extend(shutdown_rows("retire-node", n).into_iter().map(|r| Row { stop_half: true, ..r }));
     rows.extend([
         row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
         row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
-        row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false),
+        Row { stop_half: true, ..row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false) },
         row("retire-node", "Complete", NodeStep::Delete, &[], true),
     ]);
     rows
@@ -385,8 +384,13 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
     let mut frames = Vec::new();
     let mut completed = Vec::new();
     let mut next = None;
-    for r in &rows {
+    for (i, r) in rows.iter().enumerate() {
         let held = latest.iter().find(|(op, st, ..)| r.matches(kind, op) && *st == r.step);
+        // A stop-half row a stopped birth's node.delete never runs: passed once a later row of the
+        // same operation is receipted.
+        if held.is_none() && r.stop_half && rows[i + 1..].iter().any(|later| latest.iter().any(|(op, st, ..)| later.matches(kind, op) && r.matches(kind, op) && *st == later.step)) {
+            continue;
+        }
         match held {
             Some((op, st, _, None)) => {
                 completed.push((op.clone(), st.clone()));
