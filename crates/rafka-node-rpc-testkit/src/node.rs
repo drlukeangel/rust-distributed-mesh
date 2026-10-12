@@ -523,7 +523,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                     })
                                 };
                                 Arc::new(
-                                    rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), membership.clone(), set_status, current, Some(declare))
+                                    rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, current, Some(declare))
                                         .with_retire(cancel.clone())
                                         .with_round_actions(Arc::new(rafka_node_admin_core::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), None))),
                                 )
@@ -1023,7 +1023,8 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 /// the hook's blocker and republishes nothing. `DrainNode`, `StopNode` and `StartNode` are obeyed by
 /// `rafka_node_admin_core::node_self`. A stale incarnation is refused with the one held. Nothing
 /// checks who is calling (node-rpc.md §14): every request is decided on the target node id, the op
-/// and the exact birth it names; the caller is named in spans and is where a drain's completion goes.
+/// and the exact birth it names; the caller, the birth holding the call's endpoint key in the member
+/// projection this node installed, is named in spans and is the authority a blocked hook was addressed by.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
     b.serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: StatusRequest| {
@@ -1035,8 +1036,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // The hook's blocker as it stood when the call arrived, before this call addresses the
             // birth (a hook blocked on its authority's word runs again on it).
             let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
-            let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
-            // A sender this node holds no digest of is named by the one fact it holds of it: its endpoint.
+            // The sender is the birth that holds the call's endpoint key in the member projection this
+            // node installed (gossip.md §3.1, the authoritative member record), never the heartbeat
+            // book, which holds a member only once its own digest reached this node.
+            let sender = me.membership.projected_member_at(&peer.endpoint_id.to_string());
+            // A sender no projection this node holds names is named by the one fact it holds of it: its endpoint.
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
                 me.addressed.note(&from.node.node_id);

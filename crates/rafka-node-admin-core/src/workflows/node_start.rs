@@ -98,23 +98,30 @@ pub struct JoinThrough {
 }
 
 /// The authority a start after a stop joins (node-start.md step 2, "Join the accepting authority"):
-/// the admin that commanded the start, reached back through its own call. The commander reached
-/// this stopped node, so the call's endpoint key (`commander`, what the transport proved for it,
-/// node-rpc.md §14) names it and the path the call came in on is a path back: the join and every
-/// later call of the start go to that key at that path. Which birth holds the key (its node id, its
-/// `path.name`, its incarnation) is the member record this node installed from its mesh-primary's
-/// projection ([`Membership::projected_member_at`]; gossip.md §3.1, the authoritative member
-/// record), never the heartbeat book, which holds a member only once its own digest reached this
-/// node. Refused by name, with the key, when no projection this node holds names it (a commander born
-/// after this node's last topology read), or when the call left no path this node's endpoint holds.
+/// the admin that commanded the start, reached back through its own call ([`reached_back`] of the
+/// call's endpoint key `commander`): the join and every later call of the start go to that key at
+/// the path the call came in on. A commander that cannot be reached back fails the start at its
+/// join, the reason named.
 pub async fn join_back(node: &str, membership: &Membership, client: &NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, commander: &iroh::PublicKey) -> Result<JoinThrough, StartFailed> {
-    let Some(record) = membership.projected_member_at(&commander.to_string()) else {
-        return Err(StartFailed {
-            step: "node.join",
-            reason: format!("{node}: commander-unrecorded: no member projection this node holds names the admin whose call commanded the start (endpoint {commander}): it was born after this node's last topology read"),
-        });
+    reached_back(node, membership, client, resolver, commander).await.map_err(|reason| StartFailed { step: "node.join", reason })
+}
+
+/// The admin whose call commanded this node (`node`), reached back through that call. The commander
+/// reached this node, so the call's endpoint key `key` (what the transport proved for it, node-rpc.md
+/// §14) names it, and the path the call came in on is a path back. Which birth holds the key (its
+/// node id, its `path.name`, its incarnation) is the member record this node installed from its
+/// mesh-primary's projection ([`Membership::projected_member_at`]; gossip.md §3.1, the authoritative
+/// member record), never the heartbeat book, which holds a member only once its own digest reached
+/// this node. The birth is applied to `resolver` at that path, so a call to its node id goes back
+/// there. Refused by name, with the key: `commander-unrecorded` when no projection this node holds
+/// names it (a commander born after this node's last topology read), `commander-unreachable` when the
+/// call left no path this node's endpoint holds, `commander-refused` when the resolver refuses to hold
+/// the birth at that path (its refusal named).
+pub async fn reached_back(node: &str, membership: &Membership, client: &NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, key: &iroh::PublicKey) -> Result<JoinThrough, String> {
+    let Some(record) = membership.projected_member_at(&key.to_string()) else {
+        return Err(format!("{node}: commander-unrecorded: no member projection this node holds names the admin whose call commanded it (endpoint {key}): it was born after this node's last topology read"));
     };
-    let path = match client.endpoint().remote_info(*commander).await {
+    let path = match client.endpoint().remote_info(*key).await {
         Some(info) => info
             .addrs()
             .filter(|a| matches!(a.usage(), iroh::endpoint::TransportAddrUsage::Active))
@@ -125,13 +132,12 @@ pub async fn join_back(node: &str, membership: &Membership, client: &NodeRpcClie
         None => None,
     };
     let Some(addr) = path else {
-        return Err(StartFailed {
-            step: "node.join",
-            reason: format!("{node}: commander-unreachable: the call of {} (endpoint {commander}) that commanded the start left no active path this node's endpoint holds", record.node.name),
-        });
+        return Err(format!("{node}: commander-unreachable: the call of {} (endpoint {key}) that commanded this node left no active path this node's endpoint holds", record.node.name));
     };
-    resolver.apply(rafka_node_rpc::ResolvedNode { node_id: record.node.node_id.clone(), name: record.node.name.clone(), endpoint_id: *commander, transport_addr: addr, incarnation: record.node.incarnation.clone() }, None);
-    Ok(JoinThrough { node_id: record.node.node_id, name: record.node.name, incarnation: record.node.incarnation, anchor: commander.fmt_short().to_string() })
+    if let rafka_node_rpc::Applied::Refused(refusal) = resolver.apply(rafka_node_rpc::ResolvedNode { node_id: record.node.node_id.clone(), name: record.node.name.clone(), endpoint_id: *key, transport_addr: addr, incarnation: record.node.incarnation.clone() }, None) {
+        return Err(format!("{node}: commander-refused: this node's resolver does not take {} ({} at {}, endpoint {key}) at the call's path {addr}: {refusal:?}", record.node.name, record.node.node_id, record.node.incarnation.0));
+    }
+    Ok(JoinThrough { node_id: record.node.node_id, name: record.node.name, incarnation: record.node.incarnation, anchor: key.fmt_short().to_string() })
 }
 
 /// Starts the task a node-admin's first-start hook runs in, behind the admin's own task gate.

@@ -204,8 +204,12 @@ fn a_node_drained_by_a_commander_its_heartbeat_book_lacks_calls_its_completion_b
         assert!(sent.iter().any(|f| f.get("op").map(String::as_str) == Some("drain-node") && f.get("sender").map(String::as_str) == Some("mesh1.admin.2")), "the drain's command span names the commander as sender: {sent:?}");
         let drained = spans_of(&spans, "rdm.node_admin.status.update.via-drain-node", "mesh1.rpc.1");
         assert!(!drained.is_empty() && drained.iter().all(|f| f.get("commander") == Some(&commander_id)), "the drain names its commander: {drained:?}");
-        let calls = spans_of(&spans, "rdm.node_admin.status.update.via-completion-call", "mesh1.rpc.1");
-        assert!(calls.iter().any(|f| f.get("commander") == Some(&commander_id) && f.get("answer").map(String::as_str) == Some("applied")), "the completion call went to the commander and was applied: {calls:?}");
+        // The node opens its completion span once the commander's reply is back, after the commander
+        // resolved its command: it is awaited, never read before it can exist.
+        let applied = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.rpc.1") && f.get("commander") == Some(&commander_id) && f.get("answer").map(String::as_str) == Some("applied");
+        if tokio::time::timeout(NEVER, spans.recorded("rdm.node_admin.status.update.via-completion-call", applied)).await.is_err() {
+            panic!("the completion call went to the commander and was applied: {:?}", spans_of(&spans, "rdm.node_admin.status.update.via-completion-call", "mesh1.rpc.1"));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

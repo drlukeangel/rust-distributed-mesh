@@ -254,6 +254,9 @@ pub struct NodeSelf {
     pub server: NodeRpcServer,
     /// The process's one Node RPC client.
     pub client: Arc<NodeRpcClient>,
+    /// The process's live resolver: an admin that commanded this birth is applied to it at the path
+    /// its call came in on, so the completion call goes back there.
+    pub resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
     /// This birth's membership: the mesh channel its completion frames go out on.
     pub membership: Membership,
     /// Set this birth's status and answer the digest to publish.
@@ -294,12 +297,13 @@ impl NodeSelf {
         name: PathName,
         server: NodeRpcServer,
         client: Arc<NodeRpcClient>,
+        resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
         membership: Membership,
         set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, retire: None, backbone: None, drain: Mutex::new(None), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, retire: None, backbone: None, drain: Mutex::new(None), cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -1017,9 +1021,11 @@ impl NodeSelf {
     }
 
     /// The drain's completion: the node's own gossip hook on its mesh channel, then the call at the
-    /// commanding admin, while this endpoint is open. The commander is the caller as its command
-    /// resolved it, else the node this birth's book holds at the calling endpoint now; when it holds
-    /// none, the hook is all that goes out and the span says why no call was made.
+    /// commanding admin, while this endpoint is open. The commander is the admin whose call commanded
+    /// the drain, reached back through that call by its endpoint key `endpoint`
+    /// ([`crate::workflows::node_start::reached_back`]: its identity from the member projection this
+    /// birth installed, its path the call's); with no call, the caller as its command resolved it.
+    /// When none is reached the hook is all that goes out, and the span names why no call was made.
     async fn complete(&self, commander: Option<&NodeId>, endpoint: Option<iroh::PublicKey>, op: &LifecycleOp) {
         let frame = Frame::NodeDrained { op: op.clone(), forwarded_by: None };
         let req = StatusRequest::NodeDrained { node_id: op.node_id.clone(), incarnation: op.incarnation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
@@ -1029,26 +1035,23 @@ impl NodeSelf {
             Ok(()) => "published".to_string(),
             Err(e) => format!("not-published: {e}"),
         };
-        let target = commander.cloned().or_else(|| self.node_at_endpoint(endpoint));
+        let target = match endpoint {
+            Some(key) => crate::workflows::node_start::reached_back(&self.held_name().to_string(), &self.membership, &self.client, &self.resolver, &key).await.map(|t| t.node_id),
+            None => commander.cloned().ok_or_else(|| format!("{}: commander-uncalled: the drain came on no Node RPC call, so no endpoint names the admin to call back", self.held_name())),
+        };
         let answer = match &target {
-            Some(commander) => match self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await.0 {
+            Ok(commander) => match self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await.0 {
                 rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
                 other => other.name().to_string(),
             },
-            None => format!("commander-unresolved: the endpoint {} that commanded the drain is in no digest this birth holds", endpoint.map(|k| k.to_string()).unwrap_or_else(|| "(none)".into())),
+            Err(why) => why.clone(),
         };
         tracing::info_span!(
             "rdm.node_admin.status.update.via-completion-call",
             node = %self.held_name(), completion = kind, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-            commander = %named(target.as_ref()), hook = %hook, answer = %answer, "otel.kind" = "internal"
+            commander = %named(target.as_ref().ok()), hook = %hook, answer = %answer, "otel.kind" = "internal"
         )
         .in_scope(|| tracing::info!("the completion call was made to the commanding admin"));
-    }
-
-    /// The node this birth's digest book holds at the endpoint `key` now.
-    fn node_at_endpoint(&self, key: Option<iroh::PublicKey>) -> Option<NodeId> {
-        let key = key?.to_string();
-        self.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == key).map(|d| d.node.node_id)
     }
 }
 
