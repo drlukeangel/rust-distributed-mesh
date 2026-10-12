@@ -854,8 +854,8 @@ mod writer {
         async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
-            Ok(None)
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
+            Ok(rafka_node_admin_core::deployment::provider::Found::NeverLaunched)
         }
     }
 
@@ -1108,18 +1108,20 @@ mod writer {
         async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
             self.entered.notify_one();
             std::future::pending().await
         }
     }
 
-    /// Launches nothing, and records the deployment of every `find` (the exact provider proof that
-    /// no runtime of it exists) and every spawn it is asked for.
+    /// Launches nothing, and records the deployment of every `find` and every spawn it is asked for.
+    /// Its `find` proves the deployment named `exited` launched and exited, and every other one never
+    /// launched.
     #[derive(Default)]
     struct Proving {
         found: Mutex<Vec<DeploymentId>>,
         spawned: Mutex<Vec<DeploymentId>>,
+        exited: Mutex<Option<DeploymentId>>,
     }
 
     #[async_trait::async_trait]
@@ -1143,9 +1145,9 @@ mod writer {
         async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
             self.found.lock().unwrap().push(spec.deployment_id.clone());
-            Ok(None)
+            Ok(if self.exited.lock().unwrap().as_ref() == Some(&spec.deployment_id) { rafka_node_admin_core::deployment::provider::Found::Exited } else { rafka_node_admin_core::deployment::provider::Found::NeverLaunched })
         }
     }
 
@@ -1287,9 +1289,12 @@ mod writer {
         async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
             let first = { let mut f = self.found.lock().unwrap(); f.push(spec.deployment_id.clone()); f.len() == 1 };
-            Ok(first.then(|| DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: ProviderKind::Process, pid: Some(4242), start: Some(7), container: None, domain: Some("node-rows".into()) }))
+            Ok(match first {
+                true => rafka_node_admin_core::deployment::provider::Found::Running(DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: ProviderKind::Process, pid: Some(4242), start: Some(7), container: None, domain: Some("node-rows".into()) }),
+                false => rafka_node_admin_core::deployment::provider::Found::NeverLaunched,
+            })
         }
     }
 
@@ -1406,8 +1411,8 @@ mod writer {
     /// deployment that never joined; the receipt arm's rule: "the earlier attempt's runtime is gone: a
     /// fresh birth"; node-identity-and-state.md: an incarnation names one exact runtime): A claims
     /// `mesh1.rpc.9` in attempt 1, launches its birth, and is lost; that runtime has exited (the
-    /// provider finds none of it running) and the birth's data dir holds the runtime record naming A's
-    /// deployment. B, holding none of A's receipts, does not continue that birth: it withdraws its
+    /// provider proves A's deployment launched and exited, `Found::Exited`). B, holding none of A's
+    /// receipts, does not continue that birth: it withdraws its
     /// claim (that birth's key only), mints a new birth, claims the free name for it and reaches
     /// `DeployRuntime` with a deployment of its own. Must NOT happen: B relaunching the exited birth
     /// under A's node id, incarnation and deployment.
@@ -1419,16 +1424,12 @@ mod writer {
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-exited-{}", NodeId::mint()));
             let build = BuildId("build-node-rows-9".into());
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.9", &data_root).await;
-            // A launched the birth and it exited: its data dir holds the runtime record of A's deployment.
-            let dir = data_root.join(format!("mesh1.rpc.9-{}", a_identity["node_id"].as_str().unwrap()));
-            let mut record = rafka_mesh_entity::runtime::RuntimeFact::of_this_process("node-rows").unwrap();
-            record.deployment_id = a_identity["deployment_id"].as_str().unwrap().to_string();
-            record.write_record(&dir).unwrap();
             let b_builds = MemoryBuildStateAdapter::new();
             let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
             rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
             let (b_records, _b_view) = writer_of("mesh1.admin.2", &view(), &storage);
-            let proving = Proving::default();
+            // A launched the birth and it exited: the provider proves it.
+            let proving = Proving { exited: Mutex::new(Some(DeploymentId(a_identity["deployment_id"].as_str().unwrap().to_string()))), ..Proving::default() };
             let b_err = create_attempt_over(&b_records, &proving, &Unheard, &b_builds, &build, "mesh1.rpc.9", 2, &data_root).await;
             let _ = std::fs::remove_dir_all(&data_root);
             (a_identity, b_err, proving.spawned.into_inner().unwrap())
@@ -1475,7 +1476,7 @@ mod writer {
         async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
             self.inner.find(spec).await
         }
     }

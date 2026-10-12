@@ -12,7 +12,7 @@
 //! same path, so the launch environment is identical to the process
 //! provider's.
 
-use super::provider::{tail, DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
+use super::provider::{tail, DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use crate::model::ProviderKind;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -109,6 +109,28 @@ fn parse_network_addresses(out: &str) -> std::collections::BTreeSet<IpAddr> {
 }
 
 /// Does a `docker inspect` failure say no object has that name (and nothing else)?
+/// What a container's Docker status says of its launch ([`ContainerDeploymentProvider::find`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContainerLaunch {
+    /// `running`: the runtime runs.
+    Running,
+    /// `exited` or `dead`: the runtime ran and has exited.
+    Exited,
+    /// `created`: Docker created the container and never started its runtime.
+    NeverStarted,
+}
+
+/// The launch fact of the Docker status `status`; a status this build cannot place (`paused`,
+/// `restarting`, `removing`, or one it does not know) is refused by name, never read as any of them.
+fn container_launch(status: &str) -> Result<ContainerLaunch, String> {
+    match status {
+        "running" => Ok(ContainerLaunch::Running),
+        "exited" | "dead" => Ok(ContainerLaunch::Exited),
+        "created" => Ok(ContainerLaunch::NeverStarted),
+        other => Err(format!("docker inspect answered status {other:?}: this build cannot say whether the launch runs, has exited or never started")),
+    }
+}
+
 fn inspect_says_absent(err: &str) -> bool {
     let err = err.to_ascii_lowercase();
     err.contains("no such object") || err.contains("no such container")
@@ -416,28 +438,31 @@ impl ContainerDeploymentProvider {
         Ok(())
     }
 
-    /// The handle's immutable container id.
-    /// The live container this launch started, by its name.
-    /// `Ok(None)` when no container has the name or it is not running; `Err` names a `docker
-    /// inspect` that failed for any other reason, or answered what this build cannot read.
-    async fn find_by_name(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+    /// What became of this launch's container, by its name (the name carries the deployment id):
+    /// none by that name, or one Docker created and never started, was never launched; one that runs
+    /// is the live runtime; one that exited or is dead ran and has exited. `Err` names a `docker
+    /// inspect` that failed for any other reason, or answered what this build cannot read, a status
+    /// it cannot place included.
+    async fn find_by_name(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
         let name = container_name(spec);
         let named = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason: format!("finding container {name}: {reason}") };
         let state = match docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name]).await {
             Ok(state) => state,
-            Err(e) if inspect_says_absent(&e) => return Ok(None),
+            Err(e) if inspect_says_absent(&e) => return Ok(Found::NeverLaunched),
             Err(e) => return Err(named(e)),
         };
         let mut parts = state.split_whitespace();
         let (Some(status), Some(pid), Some(id)) = (parts.next(), parts.next(), parts.next()) else {
             return Err(named(format!("docker inspect answered {state:?}, not `<status> <pid> <id>`")));
         };
-        if status != "running" {
-            return Ok(None);
+        match container_launch(status).map_err(named)? {
+            ContainerLaunch::Running => {}
+            ContainerLaunch::Exited => return Ok(Found::Exited),
+            ContainerLaunch::NeverStarted => return Ok(Found::NeverLaunched),
         }
         let id = id.to_string();
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
-        Ok(Some(self.handle(spec.deployment_id.clone(), id, pid.parse().ok().filter(|p| *p > 0))))
+        Ok(Found::Running(self.handle(spec.deployment_id.clone(), id, pid.parse().ok().filter(|p| *p > 0))))
     }
 
     fn launched_handles(&self) -> Vec<DeploymentHandle> {
@@ -609,7 +634,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         Ok(())
     }
 
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
         self.find_by_name(spec).await
     }
 
@@ -788,5 +813,21 @@ mod tests {
     #[test]
     fn container_names_carry_only_safe_characters() {
         assert_eq!(docker_safe("mesh1.rpc.2/x y"), "mesh1.rpc.2-x-y");
+    }
+
+    /// CONTRACT (lifecycles/node-create.md: exact provider proof of a runtime's state): a container's
+    /// Docker status places its launch: `running` runs, `exited` and `dead` ran and exited, `created`
+    /// never started; any other status is refused by name. Must NOT happen: an exited container read
+    /// as a launch never made, or an unplaced status read as any of the three.
+    #[test]
+    fn a_containers_status_places_its_launch_or_is_refused_by_name() {
+        assert_eq!(container_launch("running"), Ok(ContainerLaunch::Running));
+        assert_eq!(container_launch("exited"), Ok(ContainerLaunch::Exited));
+        assert_eq!(container_launch("dead"), Ok(ContainerLaunch::Exited));
+        assert_eq!(container_launch("created"), Ok(ContainerLaunch::NeverStarted));
+        for other in ["paused", "restarting", "removing", "unheard-of"] {
+            let refused = container_launch(other).expect_err(other);
+            assert!(refused.contains(other), "{refused}");
+        }
     }
 }

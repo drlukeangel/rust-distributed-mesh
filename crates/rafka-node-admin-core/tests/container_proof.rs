@@ -126,7 +126,7 @@ async fn a_container_is_its_docker_domain_and_immutable_id_and_a_reused_name_nev
     assert_ne!(p.inspect(&first).await, DeploymentStatus::Running);
     assert!(fresh.terminate(&old, TerminationMode::Immediate).await.is_err(), "controlling the old id fails by name");
     assert_eq!(daemon_state(&id2), "running", "no control of the old id reached the runtime the name now runs");
-    let found = p.find(&spec).await.unwrap().expect("the name resolves to its current runtime");
+    let found = p.find(&spec).await.unwrap().running().expect("the name resolves to its current runtime");
     assert_eq!(container_id(&found), id2);
 }
 

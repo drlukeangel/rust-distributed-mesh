@@ -118,6 +118,38 @@ pub struct ResolvedNodeLaunch {
     pub listeners: Vec<(String, std::net::SocketAddr)>,
 }
 
+/// What a provider knows of one exact launch ([`DeploymentProvider::find`]): three distinct facts,
+/// never folded into one "nothing" (lifecycles/node-create.md: exact provider proof of a runtime's
+/// state, even for a deployment that never joined).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// The launch's runtime runs: its exact handle.
+    Running(DeploymentHandle),
+    /// The launch started a runtime, and that runtime has exited.
+    Exited,
+    /// No runtime of the launch was ever started in this provider's control domain.
+    NeverLaunched,
+}
+
+impl Found {
+    /// The handle of a runtime that runs.
+    pub fn running(self) -> Option<DeploymentHandle> {
+        match self {
+            Found::Running(h) => Some(h),
+            Found::Exited | Found::NeverLaunched => None,
+        }
+    }
+
+    /// The fact's name, as spans and refusals say it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Found::Running(_) => "running",
+            Found::Exited => "exited",
+            Found::NeverLaunched => "never-launched",
+        }
+    }
+}
+
 /// A realised runtime, exactly: a pid only together with its start token, a
 /// container by its immutable id, each within its provider control domain.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -328,11 +360,12 @@ pub trait DeploymentProvider: Send + Sync {
     /// (SIGTERM). A runtime already gone is not an error.
     async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError>;
 
-    /// The live runtime this exact launch (`spec.deployment_id`) already
-    /// started, if any: a re-run after a crash mid-`DeployRuntime` adopts it
-    /// instead of starting a second one.
-    /// `Err` names the record of the launch that could not be read.
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError>;
+    /// What became of this exact launch (`spec.deployment_id`) in this provider's control domain
+    /// ([`Found`]): its runtime runs (a re-run after a crash mid-`DeployRuntime` adopts it instead of
+    /// starting a second one), it ran and has exited, or it was never launched.
+    /// `Err` names the record of the launch that could not be read, or a state this provider cannot
+    /// place in any of the three.
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError>;
 
     /// The host address `node`'s runtime binds on, with port 0 (the operating system assigns the
     /// port; the node reports it at its join). Loopback for a process; a container's own address
@@ -398,8 +431,8 @@ mod tests {
         async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
-            Ok(None)
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+            Ok(Found::NeverLaunched)
         }
     }
 

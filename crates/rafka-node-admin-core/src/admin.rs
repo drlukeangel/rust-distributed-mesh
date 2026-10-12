@@ -7557,8 +7557,8 @@ mod tests {
         async fn signal_stop(&self, _: &crate::deployment::provider::DeploymentHandle) -> Result<(), crate::deployment::provider::DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<Option<crate::deployment::provider::DeploymentHandle>, crate::deployment::provider::DeployError> {
-            Ok(None)
+        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::Found, crate::deployment::provider::DeployError> {
+            Ok(crate::deployment::provider::Found::NeverLaunched)
         }
     }
 

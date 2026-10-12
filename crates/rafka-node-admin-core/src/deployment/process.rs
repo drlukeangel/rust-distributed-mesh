@@ -7,7 +7,7 @@
 //! control domain): a successor admin adopts it from the birth's published
 //! runtime fact, and a recycled pid never matches the old birth.
 
-use super::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
+use super::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 #[cfg(test)]
 use rafka_mesh_entity::RuntimeLocator;
 use crate::model::ProviderKind;
@@ -150,28 +150,41 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
     Ok((pid, start))
 }
 
-/// [`ProcessDeploymentProvider::find`] on the blocking pool: the pid and start token of the live
-/// process this launch started, if any. `Err` names a deployment record that cannot be read or
-/// parsed; only a record never written reads as nothing started.
-fn find_on_disk(spec: &ResolvedNodeLaunch) -> Result<Option<(u32, Option<u64>)>, DeployError> {
+/// What the deployment record in a launch's data dir says of it ([`ProcessDeploymentProvider::find`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OnDisk {
+    /// The record names this launch and its process runs: its pid and start token.
+    Running(u32, Option<u64>),
+    /// The record names this launch and its process is gone (or the pid names another process now).
+    Exited,
+    /// No record names this launch: none was written, or it names another launch.
+    NeverLaunched,
+}
+
+/// [`ProcessDeploymentProvider::find`] on the blocking pool: the spawn writes the deployment record
+/// (`deployment.json`) naming the launch and its pid, so a record naming this launch says it was
+/// launched, and its pid says whether that process still runs. `Err` names a deployment record that
+/// cannot be read or parsed; only a record never written, or one naming another launch, reads as
+/// never launched.
+fn find_on_disk(spec: &ResolvedNodeLaunch) -> Result<OnDisk, DeployError> {
     let path = spec.data_dir.join(DEPLOYMENT_FILE);
     let named = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason: format!("{}: {reason}", path.display()) };
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(OnDisk::NeverLaunched),
         Err(e) => return Err(named(e.to_string())),
     };
     let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| named(e.to_string()))?;
     if v.get("deployment_id").and_then(|d| d.as_str()) != Some(spec.deployment_id.0.as_str()) {
-        return Ok(None);
+        return Ok(OnDisk::NeverLaunched);
     }
     let pid = v.get("pid").and_then(|p| p.as_u64()).and_then(|p| u32::try_from(p).ok()).ok_or_else(|| named("no pid".into()))?;
     let start = v.get("start").and_then(|s| s.as_u64());
     #[cfg(unix)]
     if !ProcessDeploymentProvider::runs(pid, &spec.executable) || start.is_some_and(|s| process_start_token(pid) != Some(s)) {
-        return Ok(None);
+        return Ok(OnDisk::Exited);
     }
-    Ok(Some((pid, start.or_else(|| process_start_token(pid)))))
+    Ok(OnDisk::Running(pid, start.or_else(|| process_start_token(pid))))
 }
 
 #[async_trait::async_trait]
@@ -244,10 +257,13 @@ impl DeploymentProvider for ProcessDeploymentProvider {
     }
 
     /// The deployment record and /proc are read on the blocking pool (`record_store::blocking_io`).
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
         let owned = spec.clone();
-        let found = crate::record_store::blocking_io(move || find_on_disk(&owned)).await?;
-        Ok(found.map(|(pid, start)| self.handle(spec.deployment_id.clone(), pid, start)))
+        Ok(match crate::record_store::blocking_io(move || find_on_disk(&owned)).await? {
+            OnDisk::Running(pid, start) => Found::Running(self.handle(spec.deployment_id.clone(), pid, start)),
+            OnDisk::Exited => Found::Exited,
+            OnDisk::NeverLaunched => Found::NeverLaunched,
+        })
     }
 
     fn launched(&self) -> Vec<DeploymentHandle> {
@@ -373,7 +389,28 @@ mod tests {
         let fifo = dir.join(DEPLOYMENT_FILE);
         let (heard, found) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, br#"{"deployment_id":"another","pid":1}"#.to_vec(), Box::pin(async move { ProcessDeploymentProvider::new().find(&spec).await }));
         assert!(heard, "the runtime stopped while the deployment record was read");
-        assert_eq!(found.unwrap(), None, "another launch's record");
+        assert_eq!(found.unwrap(), Found::NeverLaunched, "another launch's record");
+    }
+
+    /// CONTRACT (lifecycles/node-create.md: exact provider proof of a runtime's state, even for a
+    /// deployment that never joined): the process provider's `find` tells the three facts of one exact
+    /// launch apart: a launch it spawned whose process runs is `Running` with its exact handle; the
+    /// same launch once its process exited is `Exited`; a launch never spawned in the data dir (no
+    /// record, or the record of another launch) is `NeverLaunched`. Must NOT happen: an exited launch
+    /// read as never launched, so a re-run relaunches it under the same incarnation.
+    #[tokio::test]
+    async fn find_tells_a_running_launch_an_exited_one_and_one_never_launched_apart() {
+        let dir = crate::record_store::tempdir("process-find-three");
+        let p = ProcessDeploymentProvider::new();
+        let never = launch(&dir);
+        assert_eq!(p.find(&never).await.unwrap(), Found::NeverLaunched, "no record in the data dir");
+        let spec = launch(&dir);
+        let h = p.spawn(&spec).await.unwrap();
+        assert_eq!(p.find(&spec).await.unwrap(), Found::Running(h.clone()), "its process runs");
+        assert_eq!(p.find(&never).await.unwrap(), Found::NeverLaunched, "the record names another launch");
+        p.terminate(&h, TerminationMode::Immediate).await.unwrap();
+        assert_eq!(p.find(&spec).await.unwrap(), Found::Exited, "its process is gone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// CONTRACT: a deployment record that cannot be read or parsed is an error naming it, never
