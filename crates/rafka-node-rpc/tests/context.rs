@@ -133,6 +133,7 @@ fn test_ledger() -> Vec<LedgerEntry> {
 /// A process serving Ping on `rpc-0`; the handler keeps the PeerContext each call brought.
 struct Process {
     _router: Router,
+    server: rafka_node_rpc::NodeRpcServer,
     resolved: ResolvedNode,
     seen: Arc<Mutex<Vec<PeerContext>>>,
 }
@@ -157,14 +158,17 @@ async fn process(name: &str) -> Process {
             s2.lock().unwrap().push(peer);
             async move {
                 let ProbeRequest::Probe { payload } = req;
+                if payload == b"fault" {
+                    return Err(rafka_node_rpc::HandlerFault::invariant_broken("the probe was asked to fault"));
+                }
                 Ok(ProbeReply::Probed { payload })
             }
         })
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .unwrap();
-    let router = Router::builder(endpoint).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(endpoint).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
-    Process { _router: router, resolved, seen }
+    Process { _router: router, server, resolved, seen }
 }
 
 async fn client(caller_system: Option<&str>, nodes: &[&ResolvedNode]) -> (NodeRpcClient, Arc<StaticResolver>) {
@@ -438,4 +442,27 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
     assert_eq!(inner[0].parent_span_id.to_string(), PARENT, "the origin's parent, not the hop");
     assert_eq!(attr(&inner[0], "caller_system").as_deref(), Some("rdm"));
     assert_eq!(attr(&inner[0], "scenario").as_deref(), Some("carried"));
+}
+
+/// CONTRACT: a handler's fault is a step of its serve: the internal RPC failure the runtime names once
+/// the handler returns its fault is a child of the serve span, in the caller's trace, naming the
+/// fault. Must NOT happen: the failure in a trace of its own with no parent, attributable to no call.
+/// Its trace: the caller's remote span, the serve span under it, the failure under the serve span.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handler_fault_is_named_under_its_serve_span_in_the_callers_trace() {
+    spans();
+    let p = process("mesh1.rpc.1").await;
+    let (c, _) = client(None, &[&p.resolved]).await;
+    let t = trace();
+    let req = ProbeRequest::Probe { payload: b"fault".to_vec() };
+    let (out, _) = c.call::<Probe>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &req, &with(full(&t))).await;
+    assert!(matches!(&out, RpcOutcome::Indeterminate(_)), "a fault after dispatch is indeterminate at the caller: {out:?}");
+    // The serve is over once its reply is settled: every span it opened has ended.
+    p.server.settled().await;
+    let serve = finished("rdm.node_rpc.request.serve.via-direct", Some(&t.id));
+    assert_eq!(serve.len(), 1, "{serve:?}");
+    let failure = finished("rdm.node_rpc.handler.reject.via-internal-rpc-failure", Some(&t.id));
+    assert_eq!(failure.len(), 1, "the failure is in the caller's trace: {failure:?}");
+    assert_eq!(failure[0].parent_span_id, serve[0].span_context.span_id(), "the failure is a child of the serve span");
+    assert_eq!(attr(&failure[0], "fault").as_deref(), Some("the probe was asked to fault"));
 }

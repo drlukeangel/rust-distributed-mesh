@@ -5,7 +5,9 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::stream::{SinkError, StreamFailure, StreamItem};
-use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
+use opentelemetry_sdk::export::trace::SpanData;
+use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
+use rafka_node_rpc_contract::context::CallContext;
 use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -100,6 +102,7 @@ impl StreamingProtocol for Count {
 
 struct Rig {
     _router: Router,
+    server: NodeRpcServer,
     client: NodeRpcClient,
     target: NodeTarget,
     stats: Arc<ServerStats>,
@@ -159,7 +162,7 @@ async fn rig() -> Rig {
     let key = SecretKey::generate();
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(ResolvedNode {
         node_id: node_id.clone(),
@@ -169,11 +172,37 @@ async fn rig() -> Rig {
         incarnation,
     });
     let cep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    Rig { _router: router, client: NodeRpcClient::new(cep, resolver), target: NodeTarget::ExactNode(node_id), stats, produced, caller_gone, finished }
+    Rig { _router: router, server, client: NodeRpcClient::new(cep, resolver), target: NodeTarget::ExactNode(node_id), stats, produced, caller_gone, finished }
 }
 
 fn count(n: u32, size: u32, mode: Mode) -> CountRequest {
     CountRequest::Count { n, size, mode }
+}
+
+/// A trace of the cell's own, continued at the target: the cells share the executable's one span
+/// exporter, so each reads only the spans of its trace.
+fn traced() -> (String, CallOptions) {
+    use std::hash::{BuildHasher, Hasher};
+    let half = || std::collections::hash_map::RandomState::new().build_hasher().finish() | 1;
+    let id = format!("{:016x}{:016x}", half(), half());
+    let context = CallContext { traceparent: Some(format!("00-{id}-b7ad6b7169203331-01")), ..Default::default() };
+    (id, CallOptions { context: Some(context), ..Default::default() })
+}
+
+/// Every span of `trace` the executable's capture holds.
+fn spans_of(trace: &str) -> Vec<SpanData> {
+    crate::common::spans_exporter().get_finished_spans().unwrap().into_iter().filter(|s| s.span_context.trace_id().to_string() == trace).collect()
+}
+
+/// The one span named `name` in `spans`.
+fn one<'a>(spans: &'a [SpanData], name: &str) -> &'a SpanData {
+    let named: Vec<&SpanData> = spans.iter().filter(|s| s.name == name).collect();
+    assert_eq!(named.len(), 1, "one {name} span in the cell's trace; the trace holds {:?}", spans.iter().map(|s| (s.name.to_string(), s.span_context.span_id().to_string(), s.parent_span_id.to_string())).collect::<Vec<_>>());
+    named[0]
+}
+
+fn attr(s: &SpanData, key: &str) -> Option<String> {
+    s.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.as_str().into_owned())
 }
 
 async fn in_flight_drains(stats: &ServerStats) -> bool {
@@ -282,4 +311,56 @@ async fn a_handler_that_panics_after_started_leaves_the_caller_indeterminate() {
     }
     assert!(matches!(last, Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::Reset(423))))), "{last:?}");
     assert!(in_flight_drains(&r.stats).await);
+}
+
+/// CONTRACT: a stream's end is a step of its serve: the terminal frame the runtime writes once the
+/// handler returns is named under the stream's serve span, in the caller's trace, and the serve span
+/// ends once that terminal is written. Must NOT happen: the terminal span in a trace of its own with no
+/// parent, attributable to no call. Its trace: the caller's remote span, the serve span under it, and
+/// the terminal (five frames: Started, three items, the terminal) under the serve span.
+#[tokio::test]
+async fn a_streams_terminal_is_named_under_its_serve_span_in_the_callers_trace() {
+    crate::common::spans_exporter();
+    let r = rig().await;
+    let (trace, opts) = traced();
+    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(3, 8, Mode::Normal), &opts).await.map_err(|e| e.0).unwrap();
+    while let Some(item) = s.next().await {
+        if let StreamItem::Failed(f) = item {
+            panic!("{f:?}");
+        }
+    }
+    // The serve is over once its reply is settled: every span it opened has ended.
+    r.server.settled().await;
+    let spans = spans_of(&trace);
+    let serve = one(&spans, "rdm.node_rpc.stream.serve.via-direct");
+    let terminal = one(&spans, "rdm.node_rpc.stream.serve.via-terminal");
+    assert_eq!(terminal.parent_span_id, serve.span_context.span_id(), "the terminal is a child of the stream's serve span");
+    assert_eq!(attr(terminal, "frames").as_deref(), Some("5"), "Started, three items and the terminal");
+    assert!(terminal.end_time <= serve.end_time, "the serve span ends once its terminal is written");
+}
+
+/// CONTRACT: a stream that does not end in its terminal is refused by name under its serve span, in
+/// the caller's trace: a handler that panics after Started is an internal RPC failure naming the
+/// panic, and a handler that ends with a Data frame is a protocol violation naming the missing
+/// terminal. Must NOT happen: either refusal in a trace of its own with no parent. Its trace, per call:
+/// the serve span under the caller's remote span, the refusal under the serve span.
+#[tokio::test]
+async fn a_stream_that_panics_or_ends_without_its_terminal_is_refused_under_its_serve_span() {
+    crate::common::spans_exporter();
+    let r = rig().await;
+    for (mode, refusal, key, names) in [
+        (Mode::Panic, "rdm.node_rpc.handler.reject.via-internal-rpc-failure", "fault", "panic"),
+        (Mode::BadFinal, "rdm.node_rpc.stream.reject.via-protocol-violation", "reason", "not its terminal"),
+    ] {
+        let (trace, opts) = traced();
+        let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(2, 8, mode), &opts).await.map_err(|e| e.0).unwrap();
+        while s.next().await.is_some() {}
+        r.server.settled().await;
+        let spans = spans_of(&trace);
+        let serve = one(&spans, "rdm.node_rpc.stream.serve.via-direct");
+        let refused = one(&spans, refusal);
+        assert_eq!(refused.parent_span_id, serve.span_context.span_id(), "{mode:?}: the refusal is a child of the stream's serve span");
+        let named = attr(refused, key).unwrap_or_default();
+        assert!(named.contains(names), "{mode:?}: the refusal's {key} names {names:?}: {named:?}");
+    }
 }
