@@ -411,19 +411,23 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
                         check_ins.send_modify(|held| held.push(req));
                         return Ok(StatusReply::Applied);
                     }
-                    // A member's report to its mesh's primary (node-status.md "Status report"): its
-                    // node.started sets it ready-for-traffic (states.md "Who sets each state"), as a
-                    // node-admin's status authority applies it into its book. A birth the book does
-                    // not hold yet is not known here: the member reports again.
+                    // A member's report to its mesh's primary sets its status (node-status.md "Status
+                    // report": "A node reports to its mesh's primary, which sets its status"), as a
+                    // node-admin's status authority applies it into its book: its node.started sets
+                    // it ready-for-traffic. A birth the book does not hold yet is not known here: the
+                    // member reports again.
                     if let R::DeclareNodeState { node_id, incarnation, state } = &req {
-                        if *state != NodeState::ReadyForTraffic {
-                            return Ok(StatusReply::Applied);
-                        }
                         let held = book.get(node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == *incarnation);
                         if !held {
                             return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
                         }
-                        book.started(node_id, incarnation);
+                        use rafka_mesh_entity::MemberStatus as M;
+                        match state {
+                            NodeState::ReadyForTraffic => book.started(node_id, incarnation),
+                            NodeState::Pending => book.reported(node_id, incarnation, M::Pending),
+                            NodeState::Draining => book.reported(node_id, incarnation, M::Draining),
+                            NodeState::Leaving => book.reported(node_id, incarnation, M::Leaving),
+                        };
                         return Ok(StatusReply::Applied);
                     }
                     let (R::NodeDrained { incarnation, .. } | R::NodeLeft { incarnation, .. }) = &req else {
@@ -468,7 +472,8 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
     };
     membership.publish(&admin_digest).await.expect("the admin's digest publishes");
     // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
-    // members' lifecycle, sets each member ready-for-traffic from the node.started it reports, and publishes its
+    // members' lifecycle, sets each member's status from what it reports (its node.started, its Draining and
+    // Leaving), and publishes its
     // member projection on its own mesh channel each round and at once on a material change
     // (gossip.md §3.1 `Members`, the admin's publication round). Its members take every status
     // from that projection.
