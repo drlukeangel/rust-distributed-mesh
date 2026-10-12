@@ -80,20 +80,20 @@ impl Gate for OpenGate {
     }
 }
 
-/// The provider's exit proof of a set of node-admins read together (mesh-investigation.md step 5,
-/// "Fully crashed"): each one proven exited, by path.name, and each one not proven, with why. Nothing
-/// is recorded by the read.
+/// The provider's exit proof of the set of nodes of one mesh read together (mesh-investigation.md step 5,
+/// "Fully crashed": "Every node of mesh-x, its node-admins included, has crashed"): each one proven
+/// exited, by path.name, and each one not proven, with why. Nothing is recorded by the read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExitProofs {
-    /// The node-admins whose exact runtime the provider proves exited.
+    /// The nodes whose exact runtime the provider proves exited.
     pub proven: Vec<String>,
-    /// Each node-admin not proven exited, with why (no birth at its path, no runtime fact, a runtime
-    /// that runs or cannot be told).
+    /// Each node not proven exited, with why (no birth at its path, no runtime fact, a runtime that
+    /// runs or cannot be told).
     pub unproven: Vec<String>,
 }
 
 impl ExitProofs {
-    /// `proven` when every node-admin read is proven exited, else `held`.
+    /// `proven` when every node read is proven exited, else `held`.
     pub fn outcome(&self) -> &'static str {
         if self.unproven.is_empty() {
             "proven"
@@ -103,22 +103,22 @@ impl ExitProofs {
     }
 }
 
-/// The read of the provider's exit proof of every node-admin of a mesh the peer-mesh investigation
-/// decided `unreachable` (mesh-investigation.md step 5, "Fully crashed"), named on its own span. The
-/// one emitter of the span: the fabric authority's pass and the drive each name a read once per
-/// distinct result.
-pub fn crash_proof_span(me: &PathName, build_id: &BuildId, mesh: &str, admins: usize, proofs: &ExitProofs) {
+/// The read of the provider's exit proof of every node of a mesh the peer-mesh investigation decided
+/// `unreachable` (mesh-investigation.md step 5, "Fully crashed"), named on its own span. The one
+/// emitter of the span: the fabric authority's pass and the drive each name a read once per distinct
+/// result.
+pub fn crash_proof_span(me: &PathName, build_id: &BuildId, mesh: &str, nodes: usize, proofs: &ExitProofs) {
     tracing::info_span!(
         "rdm.node_admin.mesh.update.via-crash-proof",
         node = %me,
         build_id = %build_id,
         mesh = %mesh,
-        admins,
+        nodes,
         proven = %proofs.proven.join(","),
         unproven = %proofs.unproven.join("; "),
         outcome = proofs.outcome(),
     )
-    .in_scope(|| tracing::info!("the provider's exit proof of every node-admin of a mesh the investigation found unreachable was read"));
+    .in_scope(|| tracing::info!("the provider's exit proof of every node of a mesh the investigation found unreachable was read"));
 }
 
 /// Proof that an executor's birth departed: the exact runtime inspected and found exited. Silence
@@ -134,12 +134,12 @@ pub trait DepartureProof: Send + Sync {
     async fn recorded(&self, _executor: &PathName) -> bool {
         false
     }
-    /// The provider's exit proof of the exact birth each of `admins` names in this admin's view (or a
-    /// durable runtime row names at a path the view holds nothing at), read now and recorded nowhere:
-    /// what the create of a fully crashed mesh's first node-admin is admitted on. A proof that holds
-    /// no provider proves nothing.
-    async fn exits_of(&self, admins: &[PathName]) -> ExitProofs {
-        ExitProofs { proven: Vec::new(), unproven: admins.iter().map(|a| format!("{a}: no provider proof is held here")).collect() }
+    /// The provider's exit proof of the exact birth each of `nodes` (every node the accepted topology
+    /// names for one mesh) names in this admin's view (or a durable runtime row names at a path the
+    /// view holds nothing at), read now and recorded nowhere: what the create of a fully crashed mesh's
+    /// first node-admin is admitted on. A proof that holds no provider proves nothing.
+    async fn exits_of(&self, nodes: &[PathName]) -> ExitProofs {
+        ExitProofs { proven: Vec::new(), unproven: nodes.iter().map(|a| format!("{a}: no provider proof is held here")).collect() }
     }
 }
 
@@ -701,9 +701,9 @@ impl DriveEnv {
     /// "Fully crashed"): `op` creates `node`, the mesh's first node-admin in path order (or the one
     /// the Build already carried across the fence, [`rebirth_owed`]), and `crashed` (this pass's
     /// [`Self::crash_proven`]) holds its mesh: the investigation's 60 s decision on it came out
-    /// `unreachable` and the provider proves every node-admin of it exited. Silence is never the
-    /// proof. Nothing else of that mesh crosses the fence, and the create's own fence deletes a birth
-    /// only on its exact exit.
+    /// `unreachable` and the provider proves every node of it exited. Silence is never the proof.
+    /// Nothing else of that mesh crosses the fence, and the create's own fence deletes a birth only on
+    /// its exact exit.
     fn crash_admits(&self, p: &BuildProjection, op: &BuildOperation, node: &PathName, crashed: &HashSet<String>) -> bool {
         op.created_node() == Some(node)
             && crashed.contains(&node.mesh)
@@ -711,21 +711,21 @@ impl DriveEnv {
     }
 
     /// The peer meshes of `p` a fully crashed mesh's create may be admitted for, read now: each mesh
-    /// the investigation decided `unreachable` whose every node-admin the accepted topology names the
-    /// provider proves exited (mesh-investigation.md step 5, "Fully crashed": "The fabric-primary acts
-    /// on the provider's exact exit proof, never on silence ... no exit proof: hold"). Each read is
-    /// named once per distinct result.
+    /// the investigation decided `unreachable` whose every node the accepted topology names the
+    /// provider proves exited (mesh-investigation.md step 5, "Fully crashed": "Every node of mesh-x,
+    /// its node-admins included, has crashed ... The fabric-primary acts on the provider's exact exit
+    /// proof, never on silence"; "Members live": no exit proof means hold). Each read is named once per
+    /// distinct result.
     async fn crash_proven(&self, drive: &Drive, p: &BuildProjection) -> HashSet<String> {
         let mut crashed = HashSet::new();
         for m in p.topology.meshes.values().filter(|m| m.name != self.me.mesh && self.gate.peer_mesh(&m.name).is_some_and(|pm| pm.unreachable_decided)) {
-            let mut admins: Vec<PathName> = m.cohort(NodeKind::NodeAdmin).cloned().collect();
-            if admins.is_empty() {
+            let nodes: Vec<PathName> = m.nodes.iter().cloned().collect();
+            if nodes.is_empty() {
                 continue;
             }
-            admins.sort();
-            let proofs = self.departure.exits_of(&admins).await;
+            let proofs = self.departure.exits_of(&nodes).await;
             if drive.first_time(format!("crash-proof|{}|{}|{}", m.name, proofs.proven.join(","), proofs.unproven.join("; "))) {
-                crash_proof_span(&self.me, &drive.build_id, &m.name, admins.len(), &proofs);
+                crash_proof_span(&self.me, &drive.build_id, &m.name, nodes.len(), &proofs);
             }
             if proofs.unproven.is_empty() {
                 crashed.insert(m.name.clone());
@@ -756,9 +756,9 @@ impl DriveEnv {
             if decided {
                 "; its decided rebirth admits only the mesh's first recovering node-admin"
             } else if unreachable && crashed.contains(&node.mesh) {
-                "; its decision is unreachable and the provider proves every node-admin of the mesh exited, which admits only the create of the mesh's first node-admin"
+                "; its decision is unreachable and the provider proves every node of the mesh exited, which admits only the create of the mesh's first node-admin"
             } else if unreachable {
-                "; its decision is unreachable and the provider does not prove every node-admin of the mesh exited (rdm.node_admin.mesh.update.via-crash-proof names which), so nothing of it is admitted"
+                "; its decision is unreachable and the provider does not prove every node of the mesh exited (rdm.node_admin.mesh.update.via-crash-proof names which), so nothing of it is admitted"
             } else {
                 ", with no rebirth decided"
             },

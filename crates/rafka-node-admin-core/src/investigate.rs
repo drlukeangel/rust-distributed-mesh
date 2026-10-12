@@ -168,7 +168,7 @@ pub struct PeerMesh {
     pub rebirth_decided: bool,
     /// The ladder's 60 s decision found the latest probe `unreachable`: no member answered and no
     /// carrier reported its edge to a node-admin lost. The mesh is held; its node-admin is created
-    /// only on the provider's exact exit proof of every node-admin of the mesh
+    /// only on the provider's exact exit proof of every node of the mesh
     /// (mesh-investigation.md step 5, "Fully crashed"), which the fabric-primary reads, never the ladder.
     pub unreachable_decided: bool,
 }

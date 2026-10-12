@@ -92,7 +92,7 @@ struct Provider(Arc<World>);
 
 /// The drive's departure proof over the estate: an executor's departure is proven by nothing here
 /// (the drive's executors in these cells never leave), and a fully crashed mesh's node-admins are
-/// proven by the product's own read of the world's provider (`admin::admins_exit_proof`), the read
+/// proven by the product's own read of the world's provider (`admin::nodes_exit_proof`), the read
 /// the fabric authority's pass makes.
 struct WorldProofs {
     view: Arc<RwLock<Topology>>,
@@ -105,9 +105,9 @@ impl rafka_node_admin_core::build_drive::DepartureProof for WorldProofs {
     async fn proven(&self, executor: &PathName) -> Result<(), String> {
         Err(format!("{executor}'s runtime is not proven exited"))
     }
-    async fn exits_of(&self, admins: &[PathName]) -> rafka_node_admin_core::build_drive::ExitProofs {
+    async fn exits_of(&self, nodes: &[PathName]) -> rafka_node_admin_core::build_drive::ExitProofs {
         let view = self.view.read().await.clone();
-        rafka_node_admin_core::admin::admins_exit_proof(admins, &view, &self.book, &[], &self.provider).await
+        rafka_node_admin_core::admin::nodes_exit_proof(nodes, &view, &self.book, &[], &self.provider).await
     }
 }
 
