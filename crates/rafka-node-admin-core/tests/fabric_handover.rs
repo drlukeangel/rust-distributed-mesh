@@ -445,9 +445,10 @@ async fn both_views_name_the_executor_once_the_seat_row_is_committed() {
     }
 }
 
-/// CONTRACT: a wrong birth, a stale epoch, a conflicting payload and an authority that is not the
-/// seat holder are each refused by their own typed reply and each emit the reject span naming
-/// the reason; nothing commits.
+/// CONTRACT (node-rpc-envelope.md op 0x21; R-RX1: a refusal keys on the receiver or the data, never
+/// on who calls): a command or completion naming another birth of the receiver, a stale epoch, a
+/// committed epoch that is not the next one, and a wrong fabric are each refused by their own typed
+/// reply and each emit the reject span naming the reason; nothing commits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wrong_birth_a_stale_epoch_and_a_conflict_are_each_refused_by_name() {
     if crate::own_process::delegated(module_path!(), "a_wrong_birth_a_stale_epoch_and_a_conflict_are_each_refused_by_name") {
@@ -457,34 +458,72 @@ async fn a_wrong_birth_a_stale_epoch_and_a_conflict_are_each_refused_by_name() {
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
     let op = "fabric-primary-handover:refusals";
     let other_birth = |b: &HandoverBirth| HandoverBirth { incarnation: IncarnationId("another-birth".into()), ..b.clone() };
-    // The command names a birth that is not the receiver's, or one the receiver's view does not hold.
+    // The command names a successor birth that is not the receiver's.
     let wrong_successor = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: other_birth(&birth(&f.successor)), expected_epoch: 7, operation: op.into() };
     assert_eq!(send(&f.incumbent, &f.successor, wrong_successor).await, Reply::RejectedWrongBirth { role: "successor".into() });
-    let wrong_incumbent = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: other_birth(&birth(&f.incumbent)), successor: birth(&f.successor), expected_epoch: 7, operation: op.into() };
-    assert_eq!(send(&f.incumbent, &f.successor, wrong_incumbent).await, Reply::RejectedWrongBirth { role: "incumbent".into() });
-    // A completion naming a successor the receiver's view does not hold, or an incumbent that is not the receiver.
-    let taken_wrong_successor = Request::FabricPrimaryTaken { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: other_birth(&birth(&f.successor)), expected_epoch: 7, committed_epoch: 8, operation: op.into() };
-    assert_eq!(send(&f.successor, &f.incumbent, taken_wrong_successor).await, Reply::RejectedWrongBirth { role: "successor".into() });
+    // A completion naming an incumbent birth that is not the receiver's.
     let taken_wrong_incumbent = Request::FabricPrimaryTaken { fabric: "fabric1".into(), incumbent: other_birth(&birth(&f.incumbent)), successor: birth(&f.successor), expected_epoch: 7, committed_epoch: 8, operation: op.into() };
     assert_eq!(send(&f.successor, &f.incumbent, taken_wrong_incumbent).await, Reply::RejectedWrongBirth { role: "incumbent".into() });
     // A stale epoch: the seat is at 7.
     assert_eq!(send(&f.incumbent, &f.successor, take(&f, 5, op)).await, Reply::RejectedStaleEpoch { expected: 5, current: 7 });
     // A completion whose committed epoch is not the next one.
     assert_eq!(send(&f.successor, &f.incumbent, taken(&f, 7, 9, op)).await, Reply::RejectedStaleEpoch { expected: 8, current: 9 });
-    // A command naming an incumbent that is not the seat holder: the successor's record says someone else.
-    let impostor = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: birth(&f.successor), expected_epoch: 7, operation: "fabric-primary-handover:impostor".into() };
-    let seat_elsewhere = SeatHolder { mesh: "mesh9".into(), node_id: NodeId::parse("000000000003").unwrap(), incarnation: IncarnationId("x".into()), epoch: 8 };
-    f.successor.door.membership.seats().take(Seat::FabricPrimary, &seat_elsewhere);
-    assert_eq!(send(&f.incumbent, &f.successor, impostor).await, Reply::RejectedNotAuthority);
     // A wrong fabric is a conflict.
     let wrong_fabric = Request::TakeFabricPrimary { fabric: "fabric9".into(), incumbent: birth(&f.incumbent), successor: birth(&f.successor), expected_epoch: 7, operation: op.into() };
     assert_eq!(send(&f.incumbent, &f.successor, wrong_fabric).await, Reply::RejectedConflict { operation: op.into() });
     let reasons: Vec<String> = spans.named(REJECTED).iter().map(|f| f["reason"].clone()).collect();
-    for reason in ["wrong-birth", "stale-epoch", "not-authority", "conflict"] {
+    for reason in ["wrong-birth", "stale-epoch", "conflict"] {
         assert!(reasons.iter().any(|r| r == reason), "no reject span for {reason}: {reasons:?}");
     }
     assert!(spans.named(COMMITTED).is_empty() && spans.named(CONFIRMED).is_empty(), "nothing committed");
     assert_eq!(f.incumbent.door.membership.seats().fabric(), Some(holder_of(&f.incumbent, 7)), "the incumbent still holds the seat");
+}
+
+/// CONTRACT (R-RX1, Luke 2026-10-12: "Every place a receiver ... refuses, ignores or fences an input
+/// because of WHO sent it is removed"; node-rpc.md §14: "Nothing inside the mesh checks who is
+/// calling"): a handover call is judged by the receiver's own birth and the epochs it names, never
+/// by the counterparty birth its body names. Three calls, each on a fresh fabric whose seat is at
+/// epoch 7:
+/// - a completion naming a successor birth the incumbent's view does not hold, at epoch 7 → 8, is
+///   applied: the incumbent's record moves to that birth at epoch 8;
+/// - a command naming another birth of the incumbent, at epoch 7, is applied: the successor commits
+///   the seat at epoch 8;
+/// - a command naming the incumbent while the successor's record holds the seat elsewhere at epoch
+///   8 is refused by the epoch it names (`RejectedStaleEpoch` 7 against 8), and the same command
+///   naming epoch 8 is applied.
+/// Must NOT happen: a call refused `RejectedWrongBirth` for the counterparty it names, or
+/// `RejectedNotAuthority` because the incumbent it names is not the seat holder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handover_call_naming_a_counterparty_the_receiver_does_not_hold_is_judged_by_its_epochs() {
+    if crate::own_process::delegated(module_path!(), "a_handover_call_naming_a_counterparty_the_receiver_does_not_hold_is_judged_by_its_epochs") {
+        return;
+    }
+    let spans = capture();
+    let other_birth = |b: &HandoverBirth| HandoverBirth { incarnation: IncarnationId("another-birth".into()), ..b.clone() };
+
+    let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
+    let taken_other_successor = Request::FabricPrimaryTaken { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: other_birth(&birth(&f.successor)), expected_epoch: 7, committed_epoch: 8, operation: "fabric-primary-handover:taken-other-successor".into() };
+    assert_eq!(send(&f.successor, &f.incumbent, taken_other_successor).await, Reply::Applied, "the completion is judged by the incumbent's own birth and its epochs");
+    let moved = f.incumbent.door.membership.seats().fabric().expect("the incumbent holds a fabric seat record");
+    assert_eq!((moved.incarnation.0.as_str(), moved.epoch), ("another-birth", 8), "the record moved to the birth the completion names: {moved}");
+
+    let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
+    let take_other_incumbent = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: other_birth(&birth(&f.incumbent)), successor: birth(&f.successor), expected_epoch: 7, operation: "fabric-primary-handover:take-other-incumbent".into() };
+    assert_eq!(send(&f.incumbent, &f.successor, take_other_incumbent).await, Reply::Applied, "the command is judged by the successor's own birth and the epoch it names");
+    assert_eq!(f.successor.door.membership.seats().fabric(), Some(holder_of(&f.successor, 8)), "the successor committed the seat at epoch 8");
+
+    let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
+    let seat_elsewhere = SeatHolder { mesh: "mesh9".into(), node_id: NodeId::parse("000000000003").unwrap(), incarnation: IncarnationId("x".into()), epoch: 8 };
+    f.successor.door.membership.seats().take(Seat::FabricPrimary, &seat_elsewhere);
+    assert_eq!(send(&f.incumbent, &f.successor, take(&f, 7, "fabric-primary-handover:elsewhere-7")).await, Reply::RejectedStaleEpoch { expected: 7, current: 8 });
+    assert_eq!(send(&f.incumbent, &f.successor, take(&f, 8, "fabric-primary-handover:elsewhere-8")).await, Reply::Applied);
+    assert_eq!(f.successor.door.membership.seats().fabric(), Some(holder_of(&f.successor, 9)), "the successor committed the seat at epoch 9");
+
+    let reasons: Vec<String> = spans.named(REJECTED).iter().map(|f| f["reason"].clone()).collect();
+    assert!(!reasons.iter().any(|r| r == "not-authority"), "no call is refused because the incumbent it names is not the seat holder: {reasons:?}");
+    let counterparty: Vec<_> = spans.named(REJECTED).into_iter().filter(|f| f["reason"] == "wrong-birth" && (f["detail"].starts_with("the command's incumbent") || f["detail"].starts_with("the completion's successor"))).collect();
+    assert!(counterparty.is_empty(), "no call is refused for the counterparty birth it names: {counterparty:?}");
+    assert_eq!(spans.named(COMMITTED).len(), 2, "two commands committed");
 }
 
 /// CONTRACT: the same operation with another payload is a conflict, and the replay lookup comes
@@ -966,22 +1005,18 @@ async fn a_retry_after_the_holder_drained_is_answered_from_the_row() {
     assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "nothing committed twice");
 }
 
-/// CONTRACT: P validates the executor before anything moves, each refusal by name: an admin the
-/// attempt's Won claim does not name; an admin the claim names that is not the one the election
-/// seats once P's birth is gone; a stale seat epoch; a holder birth that is not P's. Nothing commits.
+/// CONTRACT (node-rpc-envelope.md "TakeSeats": "Each seat's `expected_epoch` must be the seat's
+/// current epoch, else RejectedStaleSeat"; "a call naming another birth of P ... is
+/// RejectedWrongBirth"; "Boundary: TakeSeats moves seats inside P's mesh"): P refuses, each by name
+/// and before anything moves, a stale seat epoch, a holder birth that is not P's, and a successor of
+/// another mesh (X, mesh2's primary: the seats of mesh1 never leave mesh1). Nothing commits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_by_name() {
-    if crate::own_process::delegated(module_path!(), "a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_by_name") {
+async fn a_take_seats_naming_a_stale_seat_another_holder_birth_or_a_successor_outside_the_mesh_is_refused_by_name() {
+    if crate::own_process::delegated(module_path!(), "a_take_seats_naming_a_stale_seat_another_holder_birth_or_a_successor_outside_the_mesh_is_refused_by_name") {
         return;
     }
     let spans = capture();
     let f = seats_fabric().await;
-    // M calls under b1, whose claim names N.
-    let r = send(&f.m, &f.p, take_seats(&f.p, &f.m, 3, 7, "b1", "drain-node:mesh1.admin.1")).await;
-    assert!(matches!(&r, Reply::RejectedNotEligible { reason } if reason.contains("mesh1.admin.2")), "{r:?}");
-    // M calls under b2, whose claim names M: the election seats N once P is gone, not M.
-    let r = send(&f.m, &f.p, take_seats(&f.p, &f.m, 3, 7, "b2", "stop-node:mesh1.admin.1")).await;
-    assert!(matches!(&r, Reply::RejectedNotEligible { reason } if reason.contains("mesh1.admin.2")), "{r:?}");
     // N with a stale mesh epoch.
     assert_eq!(send(&f.n, &f.p, take_seats(&f.p, &f.n, 2, 7, "b1", "drain-node:mesh1.admin.1")).await, Reply::RejectedStaleSeat { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, expected: 2, current: 3 });
     // N naming another birth of P.
@@ -990,17 +1025,43 @@ async fn a_take_seats_from_an_admin_that_is_not_the_seated_executor_is_refused_b
         holder.incarnation = IncarnationId("another-birth".into());
     }
     assert_eq!(send(&f.n, &f.p, wrong).await, Reply::RejectedWrongBirth { role: "holder".into() });
-    // X, another mesh's primary, is never the successor of a same-mesh transfer.
-    f.p.claims.0.lock().unwrap().insert(("b3".into(), 1), "mesh2.admin.1".into());
+    // X, another mesh's primary, is never the successor of a transfer of mesh1's seats.
     let r = send(&f.x, &f.p, take_seats(&f.p, &f.x, 3, 7, "b3", "drain-node:mesh1.admin.1")).await;
-    assert!(matches!(&r, Reply::RejectedNotEligible { .. }), "{r:?}");
+    assert!(matches!(&r, Reply::RejectedNotEligible { reason } if reason.contains("mesh2") && reason.contains("mesh1")), "{r:?}");
     let reasons: Vec<String> = spans.named(SEATS_REJECTED).iter().map(|f| f["reason"].clone()).collect();
-    for reason in ["not-the-claimed-executor", "not-seated-once-gone", "stale-seat", "wrong-birth"] {
+    for reason in ["stale-seat", "wrong-birth", "successor-outside-mesh"] {
         assert!(reasons.iter().any(|r| r == reason), "no reject span for {reason}: {reasons:?}");
     }
     assert!(spans.named(SEATS_COMMITTED).is_empty(), "nothing committed");
     assert!(f.p.storage.seat_transfers().await.unwrap().is_empty());
     assert_eq!(f.p.door.membership.seats().fabric(), Some(holder_of(&f.p, 7)), "P still holds the fabric seat");
+}
+
+/// CONTRACT (R-RX1, Luke 2026-10-12: no receiver refuses an input because of who sent it;
+/// node-rpc.md §14): P judges a TakeSeats by its own birth, the seats it names and their epochs,
+/// never by who the successor is beyond its mesh. M (mesh1.admin.3) calls under b1, whose Won claim
+/// names N, and the election would seat N once P is gone: P commits both seats to M in one row at
+/// their next epochs (mesh1 4, fabric 8). N's later call for another operation finds P holding no
+/// seat and is refused `RejectedNotAuthority`, a refusal keyed on P's own seats. Must NOT happen: a
+/// call refused
+/// `not-the-claimed-executor` or `not-seated-once-gone`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_take_seats_is_judged_by_its_seats_and_epochs_whoever_the_claim_or_the_election_names() {
+    if crate::own_process::delegated(module_path!(), "a_take_seats_is_judged_by_its_seats_and_epochs_whoever_the_claim_or_the_election_names") {
+        return;
+    }
+    let spans = capture();
+    let f = seats_fabric().await;
+    let r = send(&f.m, &f.p, take_seats(&f.p, &f.m, 3, 7, "b1", "drain-node:mesh1.admin.1")).await;
+    assert_eq!(r, Reply::SeatsCommitted { seats: committed_to(&f.m, 4, 8) }, "P commits both seats to M");
+    assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "one row");
+    let r = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", "stop-node:mesh1.admin.1")).await;
+    assert_eq!(r, Reply::RejectedNotAuthority, "P holds no seat any more");
+    let reasons: Vec<String> = spans.named(SEATS_REJECTED).iter().map(|f| f["reason"].clone()).collect();
+    for gone in ["not-the-claimed-executor", "not-seated-once-gone"] {
+        assert!(!reasons.iter().any(|r| r == gone), "no call is refused {gone}: {reasons:?}");
+    }
+    assert_eq!(spans.named(SEATS_COMMITTED).len(), 1, "one commit");
 }
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer": "once P's birth is proven
