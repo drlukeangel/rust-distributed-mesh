@@ -16,7 +16,7 @@
 use rafka_node_admin_client::{await_fact, BuildCarrier, CallEnd};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_facts_read::{fetch_build_facts, FetchFailure};
-use rafka_node_admin_core::build_state::{fold, BuildFact, BuildProjection, StepOutcome};
+use rafka_node_admin_core::build_state::{fold, BuildFact, BuildProjection, BuildState, StepOutcome};
 use rafka_node_rpc::NodeTarget;
 use std::time::Duration;
 
@@ -80,4 +80,24 @@ pub async fn build_value(carrier: &BuildCarrier, id: &str) -> serde_json::Value 
     let facts = log_read(carrier, id).await.unwrap_or_else(|end| panic!("the Build log of {at} does not hold Build {id}: {end}"));
     let build = projection(&facts, id).unwrap_or_else(|| panic!("the Build log of {at} holds {} facts of Build {id} and no acceptance of it", facts.len()));
     serde_json::to_value(build).expect("a Build view serializes")
+}
+
+/// Await attempt `attempt`, or a later one, of Build `id` complete in the Build log of the node-admin
+/// `carrier` starts at: the Build reports the highest attempt claimed, so a reading below `attempt` is an
+/// earlier attempt's state (its `complete` included), never this attempt's. A Build that log folds to
+/// `failed` at `attempt` or later fails the cell with the Build; an admin whose log does not fold to it within
+/// `within` ends the call naming the fact, the admin and the Build it last held.
+pub async fn attempt_complete(carrier: &BuildCarrier, id: &str, attempt: u64, within: Duration) -> BuildProjection {
+    build_fact(carrier, id, &format!("attempt {attempt} complete"), within, |b| {
+        if u64::from(b.attempt) < attempt {
+            return false;
+        }
+        match b.state {
+            BuildState::Complete => true,
+            BuildState::Failed => panic!("Build {id} failed: {b:#?}"),
+            _ => false,
+        }
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"))
 }
