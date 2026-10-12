@@ -375,8 +375,14 @@ impl Estate {
     /// that runs and answers, in a mesh that has a live admin to forward its digests, is heard
     /// again and leaves `Dead` in the view.
     async fn converge(&self) {
+        self.converge_under(Arc::new(OpenGate)).await
+    }
+
+    /// [`Self::converge`] with the fabric-primary's drive reading `gate`: the fence on a peer mesh the
+    /// investigation holds unheard is the gate's `peer_mesh`.
+    async fn converge_under(&self, gate: Arc<dyn rafka_node_admin_core::build_drive::Gate>) {
         for _ in 0..8 {
-            let env = self.drive_env().await;
+            let env = self.drive_env_under(gate.clone()).await;
             if let Some(current) = self.accepted.current(&*self.builds).await {
                 if matches!(current.state, BuildState::Pending | BuildState::Running) {
                     let done = env.run(&Drive::detached(current.build_id.clone())).await;
@@ -397,6 +403,10 @@ impl Estate {
     /// The fabric-primary's drive over the estate: the claim decided at its own door, as the
     /// product decides it.
     async fn drive_env(&self) -> Arc<DriveEnv> {
+        self.drive_env_under(Arc::new(OpenGate)).await
+    }
+
+    async fn drive_env_under(&self, gate: Arc<dyn rafka_node_admin_core::build_drive::Gate>) -> Arc<DriveEnv> {
         let primary: PathName = self.fabric_primary().await.parse().expect("a fabric-primary");
         let primary_id = own_id(&*self.view.read().await, &primary);
         let door = Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
@@ -413,7 +423,7 @@ impl Estate {
             builds: self.builds.clone(),
             door,
             dispatcher: self.dispatch.clone(),
-            gate: Arc::new(OpenGate),
+            gate,
             departure: Arc::new(crate::loopback::Proofs::default()),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
         })
@@ -1376,6 +1386,26 @@ mod fully_crashed_mesh {
     /// The same mesh before the decision opens (30 s: silent-marked, probes outstanding).
     const BEFORE_THE_DECISION: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: false, unreachable_decided: false });
 
+    /// The fabric-primary's gate while the investigation holds one peer mesh unheard: the drive's fence
+    /// reads what the ladder holds of it.
+    struct HeldPeer {
+        mesh: String,
+        held: PeerMesh,
+    }
+
+    #[async_trait::async_trait]
+    impl rafka_node_admin_core::build_drive::Gate for HeldPeer {
+        fn authorizes(&self) -> bool {
+            true
+        }
+        async fn fence(&self) -> Result<Option<String>, rafka_node_admin_core::build_state::BuildStateError> {
+            Ok(None)
+        }
+        fn peer_mesh(&self, mesh: &str) -> Option<PeerMesh> {
+            (mesh == self.mesh).then_some(self.held)
+        }
+    }
+
     /// Every node of the peer mesh exits with `137` and the view holds them unheard, but the nodes in
     /// `silent`: those keep running and answer nothing. Returns the mesh and its two node-admins.
     async fn crash_the_peer_mesh(e: &Estate, silent: &[usize]) -> (String, [String; 2]) {
@@ -1429,7 +1459,8 @@ mod fully_crashed_mesh {
             let current = e.accepted.current(&*e.builds).await.unwrap();
             assert_eq!(one_step_create_of(&current.action).as_deref(), Some(admins[0].as_str()), "node.create of the mesh's first node-admin, a one-step recipe on the existing carrier: {:?}", current.action);
             assert_eq!(current.reason, rafka_node_admin_core::build_state::AttemptReason::Recipe, "the attempt is a recipe's");
-            e.converge().await;
+            // The drive reads the ladder's hold: the create the exit proof opened is the one thing that crosses the fence.
+            e.converge_under(Arc::new(HeldPeer { mesh: peer_mesh.clone(), held: DECIDED_UNREACHABLE.unwrap() })).await;
             assert_eq!(e.born(), vec![admins[0].clone()], "the create ran: the mesh's first node-admin is born, and nothing else of the mesh");
             let settled = e.accepted.current(&*e.builds).await.unwrap();
             assert_eq!((settled.build_id.clone(), settled.attempt, settled.state), (before.build_id.clone(), before.attempt + 1, BuildState::Complete), "the same accepted Build completed at the opened attempt");

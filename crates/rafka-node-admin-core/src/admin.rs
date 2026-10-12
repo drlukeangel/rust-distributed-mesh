@@ -2200,25 +2200,84 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     }
 }
 
-/// What a drift opening decides on, as one comparable string: for a carrier-edge-lost verdict, the
-/// decided mesh's node-admins by birth and status and the completed receipts of the create; for the
+/// The fully crashed mesh (mesh-investigation.md step 5, "Fully crashed"; R-ML3): a peer mesh whose
+/// investigation decided `unreachable` (`unreachable`: no member answered, no carrier reported its edge
+/// to a node-admin lost) is held as ever. It is owed node.create of its first node-admin only if the
+/// provider proves the exact runtime of EVERY node-admin the accepted topology names for it exited:
+/// the proof is read here, for each, from the birth the view or a durable runtime row holds at its
+/// path (`t`), and a node-admin with no birth there, or whose runtime is not proven exited, holds the
+/// mesh. Silence is never the proof. The proof read is one named span, once per distinct result.
+/// Answers the mesh, the node-admin owed (the mesh's first in path order, or the one the Build already
+/// carried across the fence) and that node-admin's proof; nothing is recorded, and the create's own
+/// fence deletes a birth only on its exact exit.
+#[allow(clippy::too_many_arguments)]
+async fn crashed_peer_mesh(
+    me: &PathName,
+    current: &crate::build_state::BuildProjection,
+    t: &Topology,
+    book: &DigestBook,
+    durable: &[crate::storage::RuntimeRow],
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+    started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
+    unreachable: &(dyn Fn(&str) -> bool + Sync),
+) -> Option<(String, PathName, crate::drift::ExitedBirth)> {
+    for m in current.topology.meshes.values().filter(|m| m.name != me.mesh && unreachable(&m.name)) {
+        let mut admins: Vec<PathName> = m.cohort(NodeKind::NodeAdmin).cloned().collect();
+        admins.sort();
+        let Some(first) = admins.first() else { continue };
+        let (mut proven, mut unproven) = (Vec::new(), Vec::new());
+        for admin in &admins {
+            let Some(n) = t.node(admin) else {
+                unproven.push(format!("{admin}: neither the view nor a durable runtime row holds a birth there"));
+                continue;
+            };
+            let Some(incarnation) = n.incarnation_id.clone() else {
+                unproven.push(format!("{admin}: its birth {} has no incarnation", n.node_id));
+                continue;
+            };
+            let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
+            let row = durable.iter().find(|r| r.node_id == n.node_id && r.incarnation_id == incarnation);
+            match exit_proof_of(provider, &held_row, row).await {
+                Ok((code, source)) => proven.push((admin.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source })),
+                Err(why) => unproven.push(format!("{admin}: {why}")),
+            }
+        }
+        let (proved, unproved) = (proven.iter().map(|(p, _)| p.to_string()).collect::<Vec<_>>().join(","), unproven.join("; "));
+        let outcome = if unproven.is_empty() { "proven" } else { "held" };
+        if started.insert((current.build_id.clone(), 0u32, vec!["crash-proof".to_string(), m.name.clone(), proved.clone(), unproved.clone()])) {
+            tracing::info_span!("rdm.node_admin.mesh.update.via-crash-proof", node = %me, mesh = %m.name, admins = admins.len(), proven = %proved, unproven = %unproved, outcome)
+                .in_scope(|| tracing::info!("the provider's exit proof of every node-admin of a mesh the investigation found unreachable was read"));
+        }
+        if !unproven.is_empty() {
+            continue;
+        }
+        let Some(owed) = crate::build_drive::rebirth_owed(current, &m.name, first) else { continue };
+        let Some((_, proof)) = proven.into_iter().find(|(p, _)| *p == owed) else { continue };
+        return Some((m.name.clone(), owed, proof));
+    }
+    None
+}
+
+/// What a drift opening decides on, as one comparable string: for a rebirth (the carrier-edge-lost
+/// verdict, or the fully crashed mesh), the decided mesh's node-admins by birth and status and the
+/// completed receipts of the create; for the
 /// mesh that lost its mesh-primary, the exited birth and the completed receipts of its create and delete
 /// (`retire-node:`, `create-node:`, `update-node:<path>`); for surplus, each live birth by
 /// incarnation and, per removed mesh's `shutdown-mesh:<mesh id>`, the mesh's seated node-admin, its
 /// live node-admins by birth and status, and the completed receipts under the workflow and its
 /// member operations (an exit, an amendment, a roster recorded since moves it).
-fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], repair: Option<(&PathName, &IncarnationId)>, verdict: Option<&PathName>, surplus: &[String]) -> String {
+fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], repair: Option<(&PathName, &IncarnationId)>, verdict: Option<(&str, &PathName)>, surplus: &[String]) -> String {
     let complete = |op: &str| {
         let member = format!("{op}/");
         steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && (s.operation == op || s.operation.starts_with(&member))).count()
     };
     let birth = |n: &Node| format!("{}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("-"));
-    if let Some(admin) = verdict {
+    if let Some((label, admin)) = verdict {
         // The node-admins the view holds of the decided mesh, as they are now: a created admin, or one
         // heard again, moves them.
         let mut admins: Vec<String> = t.cohort(&admin.mesh, NodeKind::NodeAdmin).map(|n| format!("{}:{:?}", birth(n), n.status)).collect();
         admins.sort();
-        return format!("carrier-edge-lost {} create {admin} admins=[{}] receipts={}", admin.mesh, admins.join(","), complete(&format!("create-node:{admin}")));
+        return format!("{label} {} create {admin} admins=[{}] receipts={}", admin.mesh, admins.join(","), complete(&format!("create-node:{admin}")));
     }
     if let Some((path, incarnation)) = repair {
         let receipts: usize = ["retire-node", "create-node", "update-node"].iter().map(|op| complete(&format!("{op}:{path}"))).sum();
@@ -2241,17 +2300,19 @@ fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], re
 
 /// The fabric authority's pass over the settled accepted Build (`Fabric.build_id` unchanged: the
 /// topology did not change). When this admin is the fabric primary it opens the next attempt for one
-/// of three things, in this order:
+/// of four things, in this order:
 /// - a peer mesh whose investigation decided `carrier-edge-lost` (`decided`): the verdict runs
 ///   node.create of the mesh's first node-admin into the live mesh, on this same Build and the mesh's
 ///   own MeshId (mesh-investigation.md step 6). The attempt is the one-step recipe of that create
 ///   (`AttemptAction::Recipe`, reason Recipe); the create's own fence asks the provider about the lost
 ///   admin and deletes it only on its exact exit, so nothing is proven or recorded here;
+/// - a peer mesh whose investigation decided `unreachable` (`unreachable`) and whose every node-admin the
+///   provider proves exited (mesh-investigation.md step 5, "Fully crashed": a mesh whose every node is gone is
+///   unheard by construction and no member can answer): the same recipe, for the mesh's first node-admin
+///   ([`crashed_peer_mesh`]). A node-admin whose exit is not proven holds the mesh, and the hold names it;
 /// - a mesh this authority hears (it is not held unheard) that lost its mesh-primary, whose node-admin the
 ///   provider proves exited (exact exit proof, never silence): the same recipe, for that admin. A peer mesh
-///   held unheard is evidence only (R-D1), so the case of mesh-investigation.md step 5, "Fully crashed" (a
-///   mesh whose every node is gone is unheard by construction and the ladder decides `unreachable`), opens
-///   nothing from here yet;
+///   held unheard is otherwise evidence only (R-D1);
 /// - surplus: a live birth of a kept mesh the topology does not name, or an incomplete mesh.delete.
 ///
 /// A member of a mesh with a live mesh-primary, a node-admin included, is not repaired here: its
@@ -2303,6 +2364,9 @@ pub async fn reconcile_drift(
         let first = m.cohort(NodeKind::NodeAdmin).min()?;
         crate::build_drive::rebirth_owed(&current, &m.name, first).map(|admin| (m.name.clone(), admin))
     });
+    // The fully crashed mesh (mesh-investigation.md step 5): a peer mesh the investigation found
+    // unreachable, every node-admin of which the provider proves exited, is owed the same create.
+    let crashed = if verdict.is_none() { crashed_peer_mesh(me, &current, t, book, durable, provider, started, unreachable).await } else { None };
     // The births this authority may have to prove: the ones it no longer hears.
     let candidates = crate::drift::unheard(t);
     let mut held_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();
@@ -2462,15 +2526,17 @@ pub async fn reconcile_drift(
             .map(|(_, op)| op),
     );
     surplus.sort();
-    if verdict.is_none() && first_exited.is_none() && surplus.is_empty() {
+    if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() {
         return None;
     }
+    // The node-admin a rebirth owes a node.create: the carrier-edge-lost verdict's, or the fully crashed mesh's.
+    let rebirth_admin: Option<&PathName> = verdict.as_ref().map(|(_, admin)| admin).or(crashed.as_ref().map(|(_, admin, _)| admin));
     let attempt = current.attempt + 1;
     // The create of a node-admin into a live mesh is a one-step recipe on the existing carrier
     // (`BuildChange::Recipe`; no new wire variant): the node the create names pins the birth the view
     // holds there, so a later loss of the same path is a different action.
     let create_of = |admin: &PathName| crate::accepted::recipe_action(vec![rafka_node_rpc_contract::build::RecipeStep::Create { node: admin.clone() }], t);
-    let (key, scope, action) = if let Some((_, admin)) = &verdict {
+    let (key, scope, action) = if let Some(admin) = rebirth_admin {
         match create_of(admin) {
             Ok(action) => (vec![admin.to_string()], admin.to_string(), Some(action)),
             Err(e) => {
@@ -2505,7 +2571,7 @@ pub async fn reconcile_drift(
     // attempt", once per failure; R-S2: event-driven, never per pass). A key carrying the attempt
     // number never matches the next pass (every failed attempt raises it), which reopened a resume
     // that failed fast on every pass.
-    let inputs = drift_inputs(t, &current.steps, first_exited.filter(|_| verdict.is_none()).map(|(p, b)| (p, &b.incarnation)), verdict.as_ref().map(|(_, a)| a), &surplus);
+    let inputs = drift_inputs(t, &current.steps, first_exited.filter(|_| rebirth_admin.is_none()).map(|(p, b)| (p, &b.incarnation)), rebirth_admin.map(|admin| (if crashed.is_some() { "fully-crashed" } else { "carrier-edge-lost" }, admin)), &surplus);
     let ident = key.join(" ");
     let opened_at = (current.build_id.clone(), 0u32, vec!["opened".to_string(), ident.clone(), inputs.clone()]);
     if started.contains(&opened_at) {
@@ -2555,8 +2621,8 @@ pub async fn reconcile_drift(
             authority_node_id = %authority.node_id,
             reason = reason.as_str(),
             action = action_name,
-            exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
-            exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
+            exit_code = crashed.as_ref().map(|(_, _, b)| b).or(first_exited.map(|(_, b)| b)).and_then(|b| b.code).map(|c| c.to_string()).unwrap_or_default(),
+            exit_proof = crashed.as_ref().map(|(_, _, b)| b).or(first_exited.map(|(_, b)| b)).map(|b| b.source).unwrap_or("none"),
         ),
     };
     let opened = crate::build_state::AttemptOpened {

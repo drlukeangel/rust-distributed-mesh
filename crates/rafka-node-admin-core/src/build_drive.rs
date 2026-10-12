@@ -640,7 +640,19 @@ impl DriveEnv {
     /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
     /// included): it is the mesh's first recovering node-admin.
     fn rebirth_admits(&self, p: &BuildProjection, op: &BuildOperation) -> bool {
-        self.unheard_peer(op).is_some_and(|(node, _, decided)| decided && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
+        self.unheard_peer(op).is_some_and(|(node, _, decided)| (decided || self.crash_admits(p, op, &node)) && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
+    }
+
+    /// The node.create of the node-admin a fully crashed mesh is owed (mesh-investigation.md step 5,
+    /// "Fully crashed"): `op` creates `node`, the mesh's first node-admin in path order (or the one
+    /// the Build already carried across the fence, [`rebirth_owed`]), and the investigation's 60 s
+    /// decision on the mesh came out `unreachable`. Nothing else of that mesh crosses the fence: the
+    /// fabric-primary opened the attempt on the provider's exact exit proof of every node-admin of the
+    /// mesh, and the create's own fence deletes a birth only on its exact exit.
+    fn crash_admits(&self, p: &BuildProjection, op: &BuildOperation, node: &PathName) -> bool {
+        op.created_node() == Some(node)
+            && self.gate.peer_mesh(&node.mesh).is_some_and(|m| m.unreachable_decided)
+            && p.topology.meshes.get(&node.mesh).and_then(|m| m.cohort(NodeKind::NodeAdmin).min()).and_then(|first| rebirth_owed(p, &node.mesh, first)).as_ref() == Some(node)
     }
 
     /// The fence on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
@@ -656,11 +668,18 @@ impl DriveEnv {
     /// The drive stops at the fence on `op` by name: once per mesh, operation and verdict on its own
     /// span, framed as the attempt's blocker, and stalled until the investigation's state changes.
     fn stop_at_fence(&self, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool)) -> DriveEnd {
+        let unreachable = self.gate.peer_mesh(&node.mesh).is_some_and(|m| m.unreachable_decided);
         let why = format!(
             "{}: {} acts on {node} of peer mesh {mesh}, which the peer-mesh investigation holds unheard ({unheard_ms} ms){}: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
             self.me,
             op.key(),
-            if decided { "; its decided rebirth admits only the mesh's first recovering node-admin" } else { ", with no rebirth decided" },
+            if decided {
+                "; its decided rebirth admits only the mesh's first recovering node-admin"
+            } else if unreachable {
+                "; its decision is unreachable, which admits only the create of the mesh's first node-admin once the provider proves every node-admin of the mesh exited"
+            } else {
+                ", with no rebirth decided"
+            },
             mesh = node.mesh,
         );
         if drive.stall_is_new(&format!("unheard-mesh|{}|{}|{decided}", node.mesh, op.key())) {

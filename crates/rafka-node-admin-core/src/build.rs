@@ -217,6 +217,15 @@ impl BuildOperation {
         }
     }
 
+    /// The node a create operation makes (`create-node`, or a recipe's Create step); `None` for any
+    /// other operation.
+    pub fn created_node(&self) -> Option<&PathName> {
+        match self {
+            Self::CreateNode { node, .. } | Self::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Create { node }, .. } => Some(node),
+            _ => None,
+        }
+    }
+
     /// The idempotency key.
     pub fn key(&self) -> String {
         match self {
@@ -492,5 +501,24 @@ pub(crate) fn shutdown_mesh(observed: &Topology, mesh: &str) -> Result<BuildOper
     match observed.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone()) {
         Some(mesh_id) => Ok(BuildOperation::ShutdownMesh { mesh: mesh.to_string(), mesh_id }),
         None => Err(BuildReject::MeshIdUnknown { mesh: mesh.to_string() }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_node_rpc_contract::build::RecipeStep;
+
+    /// CONTRACT: the node a create operation makes is named for `create-node` and for a recipe's Create
+    /// step alike, and for no other operation: the drive's fence on a fully crashed mesh admits a create
+    /// of its first node-admin and nothing else.
+    #[test]
+    fn only_a_create_operation_names_the_node_it_creates() {
+        let node: PathName = "mesh2.admin.1".parse().unwrap();
+        assert_eq!(BuildOperation::CreateNode { node: node.clone(), over: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Create { node: node.clone() }, birth: None }.created_node(), Some(&node));
+        assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Stop { node: node.clone() }, birth: None }.created_node(), None);
+        assert_eq!(BuildOperation::RecipeStep { step: RecipeStep::Start { node: node.clone() }, birth: None }.created_node(), None);
+        assert_eq!(BuildOperation::RestartNode { node: node.clone() }.created_node(), None);
     }
 }
