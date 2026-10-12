@@ -7518,6 +7518,86 @@ mod tests {
         assert_eq!(refused[2]["seat_holder"], seat_of(&p2, 2).to_string(), "the refusal names the seat holder: {refused:#?}");
     }
 
+    /// CONTRACT (node-status-heartbeat-connections.md §A.3: "a delayed predecessor publication cannot
+    /// switch receivers back"; gossip.md §3.3: "the source publisher's exact identity is its epoch";
+    /// §A.4: "A stopped birth publishes nothing"): a publication is refused only when it would switch
+    /// the receiver back to another epoch. A newer version of the epoch the receiver holds, published
+    /// before its publisher stopped and arriving after the receiver applied that stop, is the same
+    /// epoch moving forward: it is taken, and the stop it carries is held. It is ordered only against
+    /// its own epoch's facts, so it ends no stop and no restart it cannot be ordered after: its
+    /// publisher's own stop and a stop or restart another publisher carried stand. Once a successor's
+    /// full is installed, the stopped publisher's next delayed version is refused by name. Two
+    /// receivers:
+    /// - the fabric-primary on the backbone (rafka-v2 s42's successor, scratchpad m2a1.log:390-401: it
+    ///   refused mesh1.admin.1's v8 as `publisher-stopped`, kept v7 listing a stopped mesh1.admin.2
+    ///   Ready, and the election seated it): it holds mesh1.admin.1's v7 listing mesh1.admin.2 Ready
+    ///   and executed mesh1.admin.1's stop; v8, carrying mesh1.admin.2's stop, is taken, so
+    ///   mesh1.admin.2 is held stopped; mesh1.admin.3 takes the seat and its full is installed; then
+    ///   mesh1.admin.1's v9 is refused, naming the publisher stopped;
+    /// - an own-mesh member on its mesh channel holds mesh1.admin.1's stop and mesh1.rpc.1's restart,
+    ///   each from the fabric-primary's event; mesh1.admin.1's v8, listing itself Ready and carrying no
+    ///   restart, is taken, and the stop and the restart both stand.
+    /// Must NOT happen: a receiver kept on an older version of the epoch it holds; a stopped
+    /// publisher's delayed version ending a stop or a restart; a receiver switched back to the
+    /// stopped publisher after the successor's full.
+    #[test]
+    fn a_newer_version_of_the_held_epoch_published_before_its_publisher_stopped_is_taken_and_switches_nothing_back() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let held = |view: &View, side: Side| view.receiver(side).lock().unwrap().held_version("mesh1");
+        let (p, x, rpc, successor) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.admin.2", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.admin.3", 1));
+        let fabric_primary = birth_at("mesh2.admin.1", 1);
+        let stop_of = |d: &MeshDigest| op_at(&d.node.name.to_string(), &d.node.node_id, &d.node.incarnation, &format!("stop-node:{}", d.node.name));
+        let (stop_p, stop_x) = (stop_of(&p), stop_of(&x));
+
+        // The fabric-primary, on the backbone.
+        let fp = View::new("mesh2", "mesh2.admin.1");
+        fp.book.seats.take(Seat::MeshPrimary, &seat_of(&p, 1));
+        fp.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), None, 7, 7, vec![p.clone(), x.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::Backbone);
+        assert!(fp.book.stopped(stop_p.clone()), "the fabric-primary executed mesh1.admin.1's stop");
+        fp.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), None, 8, 8, vec![p.clone(), rpc.clone()], vec![stop_x.clone()], vec![]), &fabric, Side::Backbone);
+        assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&p), 8)), "a newer version of the held epoch, published before its publisher stopped, is taken");
+        assert!(fp.book.in_flight().contains(&stop_x) && fp.book.get(x.node.node_id.as_str()).is_none() && !fp.book.routable(x.node.node_id.as_str()), "the stop v8 carries is held: mesh1.admin.2 is no longer held Ready");
+        assert!(fp.book.in_flight().contains(&stop_p) && fp.book.get(p.node.node_id.as_str()).is_none(), "the publisher's own stop stands: v8 was published before it");
+        assert!(matches!(fp.book.seats.take(Seat::MeshPrimary, &seat_of(&successor, 2)), SeatTaken::Held { .. }));
+        fp.take_snapshot(&snapshot_of("mesh1", &publisher_of(&successor), None, 1, 1, vec![successor.clone(), rpc.clone()], vec![stop_p.clone(), stop_x.clone()], vec![]), &fabric, Side::Backbone);
+        assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&successor), 1)), "the successor's full is installed: its epoch");
+        fp.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), None, 9, 9, vec![p.clone(), x.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::Backbone);
+        assert_eq!(held(&fp, Side::Backbone), Some((publisher_of(&successor), 1)), "the stopped publisher's delayed version does not switch the receiver back");
+        assert!(fp.book.in_flight().contains(&stop_x) && fp.book.in_flight().contains(&stop_p), "both stops stand");
+
+        // An own-mesh member, on its mesh channel: the stop and the restart are the fabric-primary's.
+        let member = View::new("mesh1", "mesh1.rpc.9");
+        member.book.seats.take(Seat::MeshPrimary, &seat_of(&p, 1));
+        member.book.seats.take(Seat::FabricPrimary, &seat_of(&fabric_primary, 1));
+        member.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), Some("mesh1.admin.1"), 7, 7, vec![p.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel);
+        let restart = op_at("mesh1.rpc.1", &rpc.node.node_id, &rpc.node.incarnation, "restart-node:mesh1.rpc.1");
+        member.take(&StatusEvent::Stopped.frame(stop_p.clone(), publisher_of(&fabric_primary), 4), &fabric, "mesh-channel");
+        member.take(&StatusEvent::Restarting.frame(restart.clone(), publisher_of(&fabric_primary), 5), &fabric, "mesh-channel");
+        assert!(member.book.in_flight().contains(&stop_p) && member.book.in_flight().contains(&restart), "the fabric-primary's stop and restart are held");
+        member.take_snapshot(&snapshot_of("mesh1", &publisher_of(&p), Some("mesh1.admin.1"), 8, 8, vec![p.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel);
+        assert_eq!(held(&member, Side::MeshChannel), Some((publisher_of(&p), 8)), "a newer version of the held epoch is taken on the mesh channel too");
+        assert!(member.book.in_flight().contains(&stop_p) && member.book.get(p.node.node_id.as_str()).is_none(), "the publisher's own stop, carried by the fabric-primary, stands");
+        assert!(member.book.in_flight().contains(&restart), "a restart another publisher carried stands: the stopped publisher's version is not ordered after it");
+
+        let refused = spans.named("rdm.mesh.membership.reject.via-predecessor-publisher");
+        assert_eq!(
+            refused.iter().map(|f| (f["node"].clone(), f["frame"].clone(), f["topology_version"].clone(), f["held_publisher"].clone(), f["reason"].clone())).collect::<Vec<_>>(),
+            vec![("mesh2.admin.1".to_string(), "members".to_string(), "9".to_string(), publisher_of(&successor).to_string(), "publisher-stopped".to_string())],
+            "only the publication that would switch the receiver back is refused: {refused:#?}"
+        );
+        let in_projection = spans.named("rdm.mesh.membership.reject.via-stopped-birth");
+        assert_eq!(
+            in_projection.iter().filter(|f| f["door"] == "projection").map(|f| (f["node"].clone(), f["member"].clone(), f["topology_version"].clone())).collect::<Vec<_>>(),
+            vec![("mesh2.admin.1".to_string(), "mesh1.admin.1".to_string(), "8".to_string()), ("mesh1.rpc.9".to_string(), "mesh1.admin.1".to_string(), "8".to_string())],
+            "the stopped publisher's own entry in its delayed version is refused by name at each receiver: {in_projection:#?}"
+        );
+        assert!(spans.named("rdm.mesh.membership.update.via-stop-ended-in-projection").is_empty(), "no stop ends");
+        assert!(spans.named("rdm.mesh.membership.update.via-restart-ended-in-projection").is_empty(), "no restart ends");
+    }
+
     /// CONTRACT (gossip.md §3.1 `Members`/`MembersDelta`: "Missing versions or an unknown source
     /// epoch trigger GetTopology repair"; §3.3 the top-up): an ordinary node of mesh2 holds mesh1's
     /// seat record of mesh1.admin.1's lost birth (from its entry read: no `Seated` reaches a peer
