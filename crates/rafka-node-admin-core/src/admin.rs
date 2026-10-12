@@ -7215,6 +7215,41 @@ mod tests {
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
     }
 
+    /// CONTRACT (build.md §5.2: "Restarting every node-admin at once must not erase the facts needed to
+    /// reconstruct the Fabric", a restart reads the pointer from `fabric/`; §5.3 `fabric.storage`: one
+    /// pointer row per move of `Fabric.build_id`, a blind put of its own key, and a reader folds them to
+    /// the greatest): the fabric-primary writes every pointer it learns that is newer than the last it
+    /// wrote. It holds the seat and its round has written the pointer it learned, B27; it then learns
+    /// B30 (heard on the Build topic) with no seat change, and its next round writes B30's row, so an
+    /// admin that restarts reads B30 from `fabric/`. Must NOT happen: `fabric/` left at B27 because the
+    /// writer wrote a learned pointer once, so a restart reads B27 and B30 is lost.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_fabric_primary_writes_every_pointer_it_learns_newer_than_the_last_it_wrote() {
+        use crate::build_state::{BuildAccepted, BuildStateAdapter};
+        let storage: Arc<dyn crate::fabric_storage::FabricStorage> = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
+        let accepted = Arc::new(AcceptedStore::new(storage.clone(), "mesh1.admin.1"));
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let identity = crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
+        let (b27, b30) = (crate::build::BuildId("bld-27".into()), crate::build::BuildId("bld-30".into()));
+        for (id, at) in [(&b27, 27), (&b30, 30)] {
+            let topology = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
+            builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology, submitted_change: None, submitted_at_ms: at }).await.unwrap();
+        }
+        let me = rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 };
+        let seats = rafka_mesh_transport::membership::SeatBook::default();
+        seats.take(rafka_mesh_entity::Seat::FabricPrimary, &me);
+        let mut writer = FabricRowsWriter::new((me.node_id.clone(), me.incarnation.clone()), identity.clone(), storage.clone(), accepted.clone());
+        let record = |build_id: &crate::build::BuildId| crate::fabric_storage::FabricRecord { fabric_id: identity.fabric_id.clone(), name: identity.name.clone(), build_id: Some(build_id.clone()) };
+        accepted.learn(record(&b27), &builds, "entry-answer").await;
+        writer.round(&seats).await;
+        let restarted = || AcceptedStore::new(storage.clone(), "mesh1.admin.1-restarted");
+        assert_eq!(restarted().build_id().await, Some(b27.clone()), "the seat holder's round writes the pointer it learned");
+        accepted.learn(record(&b30), &builds, "build-topic").await;
+        writer.round(&seats).await;
+        assert_eq!(restarted().build_id().await, Some(b30.clone()), "a pointer learned after the first one written reaches fabric/: a restart reads B30, not B27");
+    }
+
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
     /// insert-and-fail on its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming a
     /// different one"; CLAUDE.md: the claim is the first durable write of a create, nothing is written
