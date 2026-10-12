@@ -3527,12 +3527,18 @@ impl AdminRunner {
     /// is not exited and is not deleted. The fence of the old birth is the create's
     /// ([`Self::create_over`]), done right before the new birth with its key is launched.
     async fn delete_exited(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), String> {
+        // The exit-proof row is read among the birth's own mesh's status rows, where its prover wrote it
+        // (`Records::put_exit`): the fabric-primary recovering a peer mesh's node-admin reads mesh2's
+        // rows, never its own mesh's.
+        let mut exited = Node::allocated(node.clone());
+        exited.node_id = from.node_id.clone();
+        exited.incarnation_id = Some(from.incarnation.clone());
         let exit = self
-            .status_storage
-            .node_exit(&from.node_id, &from.incarnation)
+            .records
+            .exit_row_of(&exited)
             .await
-            .map_err(|e| format!("retire-node:{node}: the exit-proof row of birth {} at {} could not be read from {}'s status.storage: {e}", from.node_id, from.incarnation.0, self.me))?
-            .ok_or_else(|| format!("retire-node:{node}: {} holds no exit-proof row for birth {} at {}: only a proven exit is deleted as a crashed target", self.me, from.node_id, from.incarnation.0))?;
+            .map_err(|e| format!("retire-node:{node}: the exit-proof row of birth {} at {} could not be read by {}: {e}", from.node_id, from.incarnation.0, self.me))?
+            .ok_or_else(|| format!("retire-node:{node}: {} reads no exit-proof row for birth {} at {} among {}'s status rows: only a proven exit is deleted as a crashed target", self.me, from.node_id, from.incarnation.0, node.mesh))?;
         self.delete_crashed(build_id, attempt, node, from, exit).await
     }
 
