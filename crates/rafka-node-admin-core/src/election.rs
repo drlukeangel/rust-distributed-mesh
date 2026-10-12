@@ -71,10 +71,6 @@ pub fn elect(candidates: &[Candidate<'_>]) -> Option<usize> {
     (0..candidates.len()).filter(|&i| candidates[i].ready).min_by_key(|&i| candidates[i].node_id)
 }
 
-fn candidate(n: &Node) -> Candidate<'_> {
-    Candidate { node_id: &n.node_id, ready: n.status == NodeStatus::ReadyForTraffic }
-}
-
 /// What an election takes beside the nodes: the seat holders this observer holds, and the births
 /// proven gone.
 #[derive(Debug, Clone, Default)]
